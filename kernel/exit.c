@@ -40,8 +40,10 @@ int getrusage(struct task_struct *, int, struct rusage __user *);
 static void __unhash_process(struct task_struct *p)
 {
 	nr_threads--;
+	/*分别从PIDTYPE_PID和PIDTYPE_TGID的PID散列表中删除进程描述符*/
 	detach_pid(p, PIDTYPE_PID);
 	detach_pid(p, PIDTYPE_TGID);
+	/*进程是线程组的领头进程*/
 	if (thread_group_leader(p)) {
 		detach_pid(p, PIDTYPE_PGID);
 		detach_pid(p, PIDTYPE_SID);
@@ -49,9 +51,15 @@ static void __unhash_process(struct task_struct *p)
 			__get_cpu_var(process_counts)--;
 	}
 
+	/*从进程链表中解除进程描述符的链接*/
 	REMOVE_LINKS(p);
 }
 
+/*
+ * 从僵死进程的描述符中分离出最后的数据结构
+ * 	1.若父进程不需要接收来自子进程的信号，调用do_exit()，内存的回收由进程调度程序来完成
+ * 	2.已经给父进程发送一个信号，调用wait4()或waitpid()，回收进程描述符所占用的内存空间
+ * */
 void release_task(struct task_struct * p)
 {
 	int zap_leader;
@@ -59,14 +67,18 @@ void release_task(struct task_struct * p)
 	struct dentry *proc_dentry;
 
 repeat: 
+	/*递减终止进程拥有者的进程个数*/
 	atomic_dec(&p->user->processes);
 	spin_lock(&p->proc_lock);
 	proc_dentry = proc_pid_unhash(p);
 	write_lock_irq(&tasklist_lock);
+	/*进程被跟踪，将它从调试程序的ptrace_children链表中删除，并让该进程重新属于初始的父进程*/
 	if (unlikely(p->ptrace))
 		__ptrace_unlink(p);
 	BUG_ON(!list_empty(&p->ptrace_list) || !list_empty(&p->ptrace_children));
+	/*删除所有的挂起信号并释放进程的signal_struct描述符，不被共享则删除该数据结构*/
 	__exit_signal(p);
+	/*删除信号处理函数*/
 	__exit_sighand(p);
 	__unhash_process(p);
 
@@ -77,8 +89,15 @@ repeat:
 	 */
 	zap_leader = 0;
 	leader = p->group_leader;
+	/*
+	 * 条件：
+	 * 	1.进程不是线程组的领头进程
+	 * 	2.领头进程处于僵死状态
+	 * 	3.进程是线程组的最后一个成员
+	 * */
 	if (leader != p && thread_group_empty(leader) && leader->exit_state == EXIT_ZOMBIE) {
 		BUG_ON(leader->exit_signal == -1);
+		/* 则领头进程的父进程发送一个信号，通知它进程已死亡*/
 		do_notify_parent(leader, leader->exit_signal);
 		/*
 		 * If we were the last child thread and the leader has
@@ -91,11 +110,16 @@ repeat:
 		zap_leader = (leader->exit_signal == -1);
 	}
 
+	/*调整父进程的时间片*/
 	sched_exit(p);
 	write_unlock_irq(&tasklist_lock);
 	spin_unlock(&p->proc_lock);
 	proc_pid_flush(proc_dentry);
 	release_thread(p);
+	/*
+	 * 递减进程描述符的使用计数器，
+	 * ==0-->终止所有残留的对进程的引用
+	 * */
 	put_task_struct(p);
 
 	p = leader;
@@ -777,6 +801,11 @@ static void exit_notify(struct task_struct *tsk)
 	tsk->flags |= PF_DEAD;
 }
 
+
+/*
+ * 处理所有进程的终止，从内核数据结构中删除对终止进程的大部分引用
+ * 参数：long code-->进程的终止代号
+ * */
 fastcall NORET_TYPE void do_exit(long code)
 {
 	struct task_struct *tsk = current;
@@ -798,7 +827,9 @@ fastcall NORET_TYPE void do_exit(long code)
 		ptrace_notify((PTRACE_EVENT_EXIT << 8) | SIGTRAP);
 	}
 
+	/*表示进程正在被删除*/
 	tsk->flags |= PF_EXITING;
+	/*从动态定时器队列中删除进程描述符*/
 	del_timer_sync(&tsk->real_timer);
 
 	if (unlikely(in_atomic()))
@@ -811,6 +842,10 @@ fastcall NORET_TYPE void do_exit(long code)
 	group_dead = atomic_dec_and_test(&tsk->signal->live);
 	if (group_dead)
 		acct_process(code);
+	/*
+	 * 从进程描述符中分离出分页，信号量，文件系统，打开文件描述符，命名空间，I/O权限位图
+	 * 若没有被共享，删除这些数据结构
+	 * */
 	exit_mm(tsk);
 
 	exit_sem(tsk);
@@ -823,10 +858,12 @@ fastcall NORET_TYPE void do_exit(long code)
 	if (group_dead && tsk->signal->leader)
 		disassociate_ctty(1);
 
+	/*实现了被杀死进程的执行域和可执行格式的函数包含在内核模块中，递减使用计数器*/
 	module_put(tsk->thread_info->exec_domain->module);
 	if (tsk->binfmt)
 		module_put(tsk->binfmt->module);
 
+	/*设置exit_code为进程的终止代号*/
 	tsk->exit_code = code;
 	exit_notify(tsk);
 #ifdef CONFIG_NUMA
@@ -835,6 +872,7 @@ fastcall NORET_TYPE void do_exit(long code)
 #endif
 
 	BUG_ON(!(current->flags & PF_DEAD));
+	/*选择新进程运行，忽略处于EXIT_ZOMBIE的状态，这种进程正好在schedule()中的宏switch_to被调用之后*/
 	schedule();
 	BUG();
 	/* Avoid "noreturn function does return".  */
@@ -867,13 +905,20 @@ EXPORT_SYMBOL(next_thread);
  * Take down every thread in the group.  This is called by fatal signals
  * as well as by sys_exit_group (below).
  */
+
+/*
+ * 杀死属于current线程组的所有进程，
+ * 参数：int exit_code-->进程终止代号，
+ * */
 NORET_TYPE void
 do_group_exit(int exit_code)
 {
 	BUG_ON(exit_code & 0x80); /* core dumps don't get here */
 
+	/*SIGNAL_GROUP_EXIT ！= 0-->内核已经开始为线程组执行退出的过程*/
 	if (current->signal->flags & SIGNAL_GROUP_EXIT)
 		exit_code = current->signal->group_exit_code;
+	/*设置进程的SIGNAL_GROUP_EXIT，并存入currnet->signal->group_exit_code*/
 	else if (!thread_group_empty(current)) {
 		struct signal_struct *const sig = current->signal;
 		struct sighand_struct *const sighand = current->sighand;
@@ -885,12 +930,14 @@ do_group_exit(int exit_code)
 		else {
 			sig->flags = SIGNAL_GROUP_EXIT;
 			sig->group_exit_code = exit_code;
+			/*杀死current线程组中的其他进程*/
 			zap_other_threads(current);
 		}
 		spin_unlock_irq(&sighand->siglock);
 		read_unlock(&tasklist_lock);
 	}
 
+	/*把进程的终止代号传递给它，杀死进程并不再返回*/
 	do_exit(exit_code);
 	/* NOTREACHED */
 }

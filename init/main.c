@@ -371,6 +371,11 @@ static void __init smp_init(void)
 static void noinline rest_init(void)
 	__releases(kernel_lock)
 {
+	/*
+	 * 创建进程1--init进程
+	 * 与进程0共享每进程的所有数据结构
+	 * 调度程序选择到它时，开始执行init()
+	 * */
 	kernel_thread(init, NULL, CLONE_FS | CLONE_SIGHAND);
 	numa_default_policy();
 	unlock_kernel();

@@ -28,9 +28,21 @@
 struct thread_info {
 	struct task_struct	*task;		/* main task structure */
 	struct exec_domain	*exec_domain;	/* execution domain */
+	/*存放TIF_NEED_RESCHED标志,如果必须调用调度程序,则设置该标志*/
 	unsigned long		flags;		/* low level flags */
 	unsigned long		status;		/* thread-synchronous flags */
+	/*可运行进程所在运行队列的CPU逻辑号*/
 	__u32			cpu;		/* current CPU */
+	/*
+	 * 用来跟踪内核抢占和内核控制路径的嵌套
+	 * 位		描述
+	 * 0-7		抢占计数器(max value == 255)记录显式禁用本地CPU内核抢占的次数==0表示允许内核抢占
+	 * 8-15		软中断计数器(max value == 255)表示可延迟函数被禁用的程度,==0表示可延迟函数处于激活状态
+	 * 			用该计数器,可在本地CPU上激活或禁止可延迟函数
+	 * 16-27	硬中断计数器(max value == 4096)表示在本地CPU上中断处理程序的嵌套数
+	 * 			irq_entry()-->递增它的值;irq_exit()-->递减它的值
+	 * 28		PREEMPT_ACTIVE标志
+	 * */
 	__s32			preempt_count; /* 0 => preemptable, <0 => BUG */
 
 

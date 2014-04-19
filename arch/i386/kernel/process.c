@@ -280,6 +280,11 @@ void show_regs(struct pt_regs * regs)
  * function to call, and %edx containing
  * the "args".
  */
+
+/*
+ * eip设置为kernel_thread_helper()的地址，即下面汇编代码的地址
+ * 新的内核线程开始执行fn(arg)函数，若该函数结束，调用_exit(),并把fn()的返回值传递给它
+ * */
 extern void kernel_thread_helper(void);
 __asm__(".section .text\n"
 	".align 4\n"
@@ -294,6 +299,13 @@ __asm__(".section .text\n"
 /*
  * Create a kernel thread
  */
+
+/*
+ * 创建内核线程
+ * 参数：int (*fn)(void *)-->要执行的内核函数的地址
+ * 	 void *arg-->要传递给函数的参数
+ * 	 unsigned long flags-->一组clone标志
+ * */
 int kernel_thread(int (*fn)(void *), void * arg, unsigned long flags)
 {
 	struct pt_regs regs;
@@ -311,6 +323,12 @@ int kernel_thread(int (*fn)(void *), void * arg, unsigned long flags)
 	regs.eflags = X86_EFLAGS_IF | X86_EFLAGS_SF | X86_EFLAGS_PF | 0x2;
 
 	/* Ok, create the new process.. */
+	/*
+	 * 最关键的一步
+	 * CLONE_VM-->避免复制调用进程的页表(因为新内核线程不会访问用户态地址空间，所以复制会造成浪费)
+	 * CLONE_UNTRACED-->保证不会有任何进程跟踪新内核线程
+	 * regs-->内核栈地址,copy_process()将从这里找到为新线程初始化CPU寄存器的值
+	 * */
 	return do_fork(flags | CLONE_VM | CLONE_UNTRACED, 0, &regs, 0, NULL, NULL);
 }
 

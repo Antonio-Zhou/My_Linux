@@ -136,12 +136,18 @@ static struct task_struct *dup_task_struct(struct task_struct *orig)
 	struct task_struct *tsk;
 	struct thread_info *ti;
 
+	/*若需要，在当前进程中调用__unlazy_fpu()，把FPU，MMX，SSE/SSE2寄存器保存到父进程的thread_info*/
 	prepare_to_copy(orig);
 
+	/*为新进程获取进程描述符*/
 	tsk = alloc_task_struct();
 	if (!tsk)
 		return NULL;
 
+	/*
+	 * 获取一块空闲内存区，存放新进程的thread_info结构和内核栈
+	 * 这块内存区字段的大小时8KB或4KB
+	 * */
 	ti = alloc_thread_info(tsk);
 	if (!ti) {
 		free_task_struct(tsk);
@@ -154,6 +160,7 @@ static struct task_struct *dup_task_struct(struct task_struct *orig)
 	ti->task = tsk;
 
 	/* One for us, one for whoever does the "release_task()" (usually parent) */
+	/*新进程描述符的使用计数器设为2，表示进程描述符正在内使用而且其相应的进程处于活动状态(不是EXIT_ZOMBIE或EXIT_DEAD)*/
 	atomic_set(&tsk->usage,2);
 	return tsk;
 }
@@ -783,6 +790,17 @@ asmlinkage long sys_set_tid_address(int __user *tidptr)
  * parts of the process environment (as per the clone
  * flags). The actual kick-off is left to the caller.
  */
+
+/*
+ * 创建进程描述符以及子进程执行所需要的所有其他数据结构
+ * 参数：unsigned long clone_flags-->与clone的参数flags相同,各种各样的信息
+ *       unsigned long stack_start-->与clone的参数child_stack相同,表示把用户态堆栈指针赋给进程的esp及寄存器
+ *       struct pt_regs *regs-->指向通用寄存器值的指针，通用寄存器的值是在从用户态切换到内核态时被保存到内核态堆栈中的
+ *       unsigned long stack_size-->未使用，总是被设置成0
+ *       int __user *parent_tidptr-->与clone的参数ptid相同,表示父进程用户态变量地址,该父进程与新轻量级进程相同的PID,只有在CLONE_PARENT_SETTID被设置时才有意义
+ *       int __user *child_tidptr-->与clone的参数ctid相同,表示新轻量级进程用户态变量地址,只有在CLONE_CHILD_SETTID被设置时才有意义
+ *	 int pid-->子进程PID
+ * */
 static task_t *copy_process(unsigned long clone_flags,
 				 unsigned long stack_start,
 				 struct pt_regs *regs,
@@ -794,6 +812,12 @@ static task_t *copy_process(unsigned long clone_flags,
 	int retval;
 	struct task_struct *p = NULL;
 
+	/*
+	 * 检查参数clone_flags传递标志的一致性，下列情况会返回错误
+	 * 	1.CLONE_NEWS和CLONE_FS都被设置
+	 * 	2.CLONE_THREAD设置，但CLONE_SIGHAND清0(同一线程组中的轻量级进程必须共享信号)
+	 * 	3.CLONE_SIGHAND设置，但CLONE_VM清0(共享信号处理程序的轻量级进程也必须共享内存描述符)
+	 * */
 	if ((clone_flags & (CLONE_NEWNS|CLONE_FS)) == (CLONE_NEWNS|CLONE_FS))
 		return ERR_PTR(-EINVAL);
 
@@ -812,16 +836,19 @@ static task_t *copy_process(unsigned long clone_flags,
 	if ((clone_flags & CLONE_SIGHAND) && !(clone_flags & CLONE_VM))
 		return ERR_PTR(-EINVAL);
 
+	/*执行所有附加的安全检查*/
 	retval = security_task_create(clone_flags);
 	if (retval)
 		goto fork_out;
 
 	retval = -ENOMEM;
+	/*为子进程获取进程描述符*/
 	p = dup_task_struct(current);
 	if (!p)
 		goto fork_out;
 
 	retval = -EAGAIN;
+	/*检查current->signal->rlim[RLIMIT_NPROC].rlim_cur不超过用户拥有的进程数*/
 	if (atomic_read(&p->user->processes) >=
 			p->signal->rlim[RLIMIT_NPROC].rlim_cur) {
 		if (!capable(CAP_SYS_ADMIN) && !capable(CAP_SYS_RESOURCE) &&
@@ -829,7 +856,9 @@ static task_t *copy_process(unsigned long clone_flags,
 			goto bad_fork_free;
 	}
 
+	/*user_struct结构的使用计数器*/
 	atomic_inc(&p->user->__count);
+	/*用户所拥有的进程的计数器*/
 	atomic_inc(&p->user->processes);
 	get_group_info(p->group_info);
 
@@ -838,19 +867,34 @@ static task_t *copy_process(unsigned long clone_flags,
 	 * triggers too late. This doesn't hurt, the check is only there
 	 * to stop root fork bombs.
 	 */
+	/*
+	 * 检查系统的进程数量
+	 * max_threads取决于系统内存容量
+	 * 原则是：所有thread_info描述符和内核栈所占用的空间不能超过物理内存的1/8
+	 * 通过/proc/sys/kernel/threads-max修改
+	 * */
 	if (nr_threads >= max_threads)
 		goto bad_fork_cleanup_count;
 
+	/*实现新进程的执行域和可执行格式的内核函数都包含在内核模块中，递增它们的使用计数器*/
 	if (!try_module_get(p->thread_info->exec_domain->module))
 		goto bad_fork_cleanup_count;
 
 	if (p->binfmt && !try_module_get(p->binfmt->module))
 		goto bad_fork_cleanup_put_domain;
 
+	/*记录了进程发出的execve()次数*/
 	p->did_exec = 0;
+	/*
+	 * 更新从父进程拷贝的flags
+	 * 	1.清除PF_SUPERPRIV-->进程是否使用了某种超级用户权限
+	 * 	2.设置PF_FORKNOEXEC-->子进程还没发出execve()
+	 * */
 	copy_flags(clone_flags, p);
+	/*新进程PID*/
 	p->pid = pid;
 	retval = -EFAULT;
+	/*设置了LONE_PARENT_SETTID，把子进程PID复制到parent_tidptr指向的用户态变量中*/
 	if (clone_flags & CLONE_PARENT_SETTID)
 		if (put_user(p->pid, parent_tidptr))
 			goto bad_fork_cleanup;
@@ -883,6 +927,7 @@ static task_t *copy_process(unsigned long clone_flags,
 	p->syscw = 0;		/* I/O counter: write syscalls */
 	acct_clear_integrals(p);
 
+	/*大内核锁*/
 	p->lock_depth = -1;		/* -1 = no lock */
 	do_posix_clock_monotonic_gettime(&p->start_time);
 	p->security = NULL;
@@ -899,6 +944,7 @@ static task_t *copy_process(unsigned long clone_flags,
 #endif
 
 	p->tgid = p->pid;
+	/*子进程属于它的父进程的线程组(设置CLONE_THREAD)*/
 	if (clone_flags & CLONE_THREAD)
 		p->tgid = current->tgid;
 
@@ -907,6 +953,7 @@ static task_t *copy_process(unsigned long clone_flags,
 	if ((retval = audit_alloc(p)))
 		goto bad_fork_cleanup_security;
 	/* copy all the process information */
+	/*复制进程的所有信息，创建新的数据结构*/
 	if ((retval = copy_semundo(clone_flags, p)))
 		goto bad_fork_cleanup_audit;
 	if ((retval = copy_files(clone_flags, p)))
@@ -923,10 +970,20 @@ static task_t *copy_process(unsigned long clone_flags,
 		goto bad_fork_cleanup_mm;
 	if ((retval = copy_namespace(clone_flags, p)))
 		goto bad_fork_cleanup_keys;
+	/*
+	 * 用调用clone()时CPU寄存器的值来初始化子进程的内核栈
+	 * 	1.eax对应的值(fork()和clone()在子进程中的返回值)置为0
+	 *	2.子进程描述符的thread.esp初始化为子进程内核栈的基地址
+	 * */
 	retval = copy_thread(0, clone_flags, stack_start, stack_size, p, regs);
 	if (retval)
 		goto bad_fork_cleanup_namespace;
 
+	/*
+	 * 必须改变子进程用户态地址空间的child_tidptr所指向变量的值，不过实际的写操作稍后执行
+	 * 设置了CLONE_CHILD_SETTID, 就赋给tsk->set_child_tid
+	 * 设置了CLONE_CHILD_CLEARTID, 就赋给tsk->clear_child_tid
+	 * */
 	p->set_child_tid = (clone_flags & CLONE_CHILD_SETTID) ? child_tidptr : NULL;
 	/*
 	 * Clear TID on mm_release()?
@@ -937,6 +994,10 @@ static task_t *copy_process(unsigned long clone_flags,
 	 * Syscall tracing should be turned off in the child regardless
 	 * of CLONE_PTRACE.
 	 */
+	/*
+	 * 清除子进程thread_info的TIF_SYSCALL_TRACE，以使ret_from_fork()不会把系统调用结束的消息通知给调试进程
+	 * 子进程的跟踪是由tsk->ptrace中的PTRACE_SYSCALL控制，所以子进程的系统调用跟踪不会被禁用
+	 * */
 	clear_tsk_thread_flag(p, TIF_SYSCALL_TRACE);
 
 	/* Our parent execution domain becomes current domain
@@ -945,11 +1006,21 @@ static task_t *copy_process(unsigned long clone_flags,
 	p->parent_exec_id = p->self_exec_id;
 
 	/* ok, now we should be set up.. */
+	/*
+	 * 若CLONE_THREAD未设置，用clone_flags低位的信号数字编码初始化tsk->exit_signal，否则tsk->exit_signal=-1
+	 * 只有当线程组的最后一个成员(通常是线程组的领头)"死亡"，才会产生一个信号，通知线程组领头进程的父进程
+	 * */
 	p->exit_signal = (clone_flags & CLONE_THREAD) ? -1 : (clone_flags & CSIGNAL);
 	p->pdeath_signal = 0;
 	p->exit_state = 0;
 
 	/* Perform scheduler related setup */
+	/*
+	 * 完成对新进程调度程序数据结构初始化，
+	 * 	1.把新进程状态设为TASK_RUNNING
+	 * 	2.把thread_info->preempt_count=1,从而禁止内核抢占
+	 * 	3.保证公平的进程调度，在父子进程之间共享父进程的时间片
+	 * */
 	sched_fork(p);
 
 	/*
@@ -984,12 +1055,14 @@ static task_t *copy_process(unsigned long clone_flags,
 	}
 
 	/* CLONE_PARENT re-uses the old parent */
+	/*初始化亲子关系字段*/
 	if (clone_flags & (CLONE_PARENT|CLONE_THREAD))
 		p->real_parent = current->real_parent;
 	else
 		p->real_parent = current;
 	p->parent = p->real_parent;
 
+	/*子进程属于它的父进程的线程组(设置CLONE_THREAD)*/
 	if (clone_flags & CLONE_THREAD) {
 		spin_lock(&current->sighand->siglock);
 		/*
@@ -1018,10 +1091,13 @@ static task_t *copy_process(unsigned long clone_flags,
 		spin_unlock(&current->sighand->siglock);
 	}
 
+	/*把新进程描述符插入进程链表*/
 	SET_LINKS(p);
+	/*子进程该必须被跟踪，将子进程插入调试程序的跟踪链表中*/
 	if (unlikely(p->ptrace & PT_PTRACED))
 		__ptrace_link(p, current->parent);
 
+	/*把新进程描述符的PID插入pidhash[PIDTYPE_PID]散列表*/
 	attach_pid(p, PIDTYPE_PID, p->pid);
 	attach_pid(p, PIDTYPE_TGID, p->tgid);
 	if (thread_group_leader(p)) {
@@ -1031,7 +1107,9 @@ static task_t *copy_process(unsigned long clone_flags,
 			__get_cpu_var(process_counts)++;
 	}
 
+	/*新进程已经加入进程集合*/
 	nr_threads++;
+	/*记录被创建的进程的数量*/
 	total_forks++;
 	write_unlock_irq(&tasklist_lock);
 	retval = 0;
@@ -1121,6 +1199,17 @@ static inline int fork_traceflag (unsigned clone_flags)
  * It copies the process, and if successful kick-starts
  * it and waits for it to finish using the VM if required.
  */
+
+/*
+ * 负责处理clone(),fork(),vfork()系统调用
+ * 参数：unsigned long clone_flags-->与clone的参数flags相同,各种各样的信息
+ * 	 unsigned long stack_start-->与clone的参数child_stack相同,表示把用户态堆栈指针赋给进程的esp及寄存器
+ * 	 struct pt_regs *regs-->指向通用寄存器值的指针，通用寄存器的值是在从用户态切换到内核态时被保存到内核态堆栈中的
+ * 	 unsigned long stack_size-->未使用，总是被设置成0
+ * 	 int __user *parent_tidptr-->与clone的参数ptid相同,表示父进程用户态变量地址,该父进程与新轻量级进程相同的PID,只有在CLONE_PARENT_SETTID被设置时才有意义
+ * 	 int __user *child_tidptr-->与clone的参数ctid相同,表示新轻量级进程用户态变量地址,只有在CLONE_CHILD_SETTID被设置时才有意义
+ * 返回：子进程PID
+ * */
 long do_fork(unsigned long clone_flags,
 	      unsigned long stack_start,
 	      struct pt_regs *regs,
@@ -1130,16 +1219,21 @@ long do_fork(unsigned long clone_flags,
 {
 	struct task_struct *p;
 	int trace = 0;
+	/*通过查找pidmap_array图，为子进程分配新的PID*/
 	long pid = alloc_pidmap();
 
 	if (pid < 0)
 		return -EAGAIN;
+
+	/*检查ptrace字段，如果不等于0,说明有另外一个进程正在跟踪父进程*/
 	if (unlikely(current->ptrace)) {
 		trace = fork_traceflag (clone_flags);
+		/*如果子进程不是内核线程(CLONE_UNTRACED被清零),那么do_fork()设置CLONE_PTRACE*/
 		if (trace)
 			clone_flags |= CLONE_PTRACE;
 	}
 
+	/*调用copy_process()复制进程描述符,返回刚创建的task_struct描述符的地址*/
 	p = copy_process(clone_flags, stack_start, regs, stack_size, parent_tidptr, child_tidptr, pid);
 	/*
 	 * Do this prior waking up the new thread - the thread pointer
@@ -1153,24 +1247,33 @@ long do_fork(unsigned long clone_flags,
 			init_completion(&vfork);
 		}
 
+		/*如果设置了CLONE_STOPPED标志，或者必须跟踪子进程(p->ptrace 中设置了 PT_PTRACED)*/
 		if ((p->ptrace & PT_PTRACED) || (clone_flags & CLONE_STOPPED)) {
 			/*
 			 * We'll start up with an immediate SIGSTOP.
 			 */
+			/*子进程增加挂起的SIGSTOP信号*/
 			sigaddset(&p->pending.signal, SIGSTOP);
 			set_tsk_thread_flag(p, TIF_SIGPENDING);
 		}
 
+		/*没有设置CLONE_STOPPED*/
 		if (!(clone_flags & CLONE_STOPPED))
 			wake_up_new_task(p, clone_flags);
 		else
+			 /* 子进程的状态被设置成TASK_STOPPED
+			  * 此时在另外一个进程将子进程的状态恢复为TASK_RUNNING之前(通常是SIGCONT信号),子进程将一直保持TASK_STOPPED
+			  * */
 			p->state = TASK_STOPPED;
 
+		/*如果父进程被跟踪,把子进程的PID存入current->ptrace_message,并调用ptrace_notify*/
 		if (unlikely (trace)) {
 			current->ptrace_message = pid;
+			/*使当前进程停止运行，并向当前进程父进程发送SIGCHLD信号*/
 			ptrace_notify ((trace << 8) | SIGTRAP);
 		}
 
+		/*如果设置了 CLONE_VFORK,把父进程插入等待队列,并挂起父进程直到子进程释放自己的内存地址空间(即:子进程结束或者执行新程序)*/
 		if (clone_flags & CLONE_VFORK) {
 			wait_for_completion(&vfork);
 			if (unlikely (current->ptrace & PT_TRACE_VFORK_DONE))
