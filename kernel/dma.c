@@ -14,6 +14,7 @@
 #include <linux/errno.h>
 #include <asm/dma.h>
 #include <asm/system.h>
+#include <asm/spinlock.h>
 
 
 /* A note on resource allocation:
@@ -31,6 +32,8 @@
  * in the kernel.
  */
 
+
+spinlock_t dma_spin_lock = SPIN_LOCK_UNLOCKED;
 
 
 /* Channel n is busy iff dma_chan_busy[n].lock != 0.
@@ -94,6 +97,6 @@ void free_dma(unsigned int dmanr)
 	if (xchg(&dma_chan_busy[dmanr].lock, 0) == 0) {
 		printk("Trying to free free DMA%d\n", dmanr);
 		return;
-	}
+	}	
 
 } /* free_dma */

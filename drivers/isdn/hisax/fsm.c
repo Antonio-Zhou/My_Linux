@@ -1,4 +1,4 @@
-/* $Id: fsm.c,v 1.4.2.5 1998/11/03 00:06:23 keil Exp $
+/* $Id: fsm.c,v 1.7 1997/11/06 17:09:13 keil Exp $
 
  * Author       Karsten Keil (keil@temic-ech.spacenet.de)
  *              based on the teles driver from Jan den Ouden
@@ -7,21 +7,8 @@
  *              Fritz Elfert
  *
  * $Log: fsm.c,v $
- * Revision 1.4.2.5  1998/11/03 00:06:23  keil
- * certification related changes
- * fixed logging for smaller stack use
- *
- * Revision 1.4.2.4  1998/05/27 18:05:21  keil
- * HiSax 3.0
- *
- * Revision 1.4.2.3  1998/03/07 23:15:20  tsbogend
- * made HiSax working on Linux/Alpha
- *
- * Revision 1.4.2.2  1997/11/15 18:54:29  keil
- * cosmetics
- *
- * Revision 1.4.2.1  1997/10/17 22:13:49  keil
- * update to last hisax version
+ * Revision 1.7  1997/11/06 17:09:13  keil
+ * New 2.1 init code
  *
  * Revision 1.6  1997/07/27 21:42:25  keil
  * proof Fsm routines
@@ -54,18 +41,18 @@ FsmNew(struct Fsm *fsm,
 {
 	int i;
 
-	fsm->jumpmatrix = (FSMFNPTR *)
-		kmalloc(sizeof (FSMFNPTR) * fsm->state_count * fsm->event_count, GFP_KERNEL);
-	memset(fsm->jumpmatrix, 0, sizeof (FSMFNPTR) * fsm->state_count * fsm->event_count);
+	fsm->jumpmatrix = (int *)
+	    kmalloc(4L * fsm->state_count * fsm->event_count, GFP_KERNEL);
+	memset(fsm->jumpmatrix, 0, 4L * fsm->state_count * fsm->event_count);
 
 	for (i = 0; i < fncount; i++) 
 		if ((fnlist[i].state>=fsm->state_count) || (fnlist[i].event>=fsm->event_count)) {
-			printk(KERN_ERR "FsmNew Error line %d st(%ld/%ld) ev(%ld/%ld)\n",
-				i,(long)fnlist[i].state,(long)fsm->state_count,
-				(long)fnlist[i].event,(long)fsm->event_count);
+			printk(KERN_ERR "FsmNew Error line %d st(%d/%d) ev(%d/%d)\n",
+				i,fnlist[i].state,fsm->state_count,
+				fnlist[i].event,fsm->event_count);
 		} else		
 			fsm->jumpmatrix[fsm->state_count * fnlist[i].event +
-				fnlist[i].state] = (FSMFNPTR) fnlist[i].routine;
+				fnlist[i].state] = (int) fnlist[i].routine;
 }
 
 void
@@ -77,26 +64,31 @@ FsmFree(struct Fsm *fsm)
 int
 FsmEvent(struct FsmInst *fi, int event, void *arg)
 {
-	FSMFNPTR r;
+	void (*r) (struct FsmInst *, int, void *);
+	char str[80];
 
 	if ((fi->state>=fi->fsm->state_count) || (event >= fi->fsm->event_count)) {
-		printk(KERN_ERR "FsmEvent Error st(%ld/%ld) ev(%d/%ld)\n",
-			(long)fi->state,(long)fi->fsm->state_count,event,(long)fi->fsm->event_count);
+		printk(KERN_ERR "FsmEvent Error st(%d/%d) ev(%d/%d)\n",
+			fi->state,fi->fsm->state_count,event,fi->fsm->event_count);
 		return(1);
 	}
-	r = fi->fsm->jumpmatrix[fi->fsm->state_count * event + fi->state];
+	r = (void (*)) fi->fsm->jumpmatrix[fi->fsm->state_count * event + fi->state];
 	if (r) {
-		if (fi->debug)
-			fi->printdebug(fi, "State %s Event %s",
+		if (fi->debug) {
+			sprintf(str, "State %s Event %s",
 				fi->fsm->strState[fi->state],
 				fi->fsm->strEvent[event]);
+			fi->printdebug(fi, str);
+		}
 		r(fi, event, arg);
 		return (0);
 	} else {
-		if (fi->debug)
-			fi->printdebug(fi, "State %s Event %s no routine",
+		if (fi->debug) {
+			sprintf(str, "State %s Event %s no routine",
 				fi->fsm->strState[fi->state],
 				fi->fsm->strEvent[event]);
+			fi->printdebug(fi, str);
+		}
 		return (!0);
 	}
 }
@@ -104,18 +96,25 @@ FsmEvent(struct FsmInst *fi, int event, void *arg)
 void
 FsmChangeState(struct FsmInst *fi, int newstate)
 {
+	char str[80];
+
 	fi->state = newstate;
-	if (fi->debug)
-		fi->printdebug(fi, "ChangeState %s",
+	if (fi->debug) {
+		sprintf(str, "ChangeState %s",
 			fi->fsm->strState[newstate]);
+		fi->printdebug(fi, str);
+	}
 }
 
 static void
 FsmExpireTimer(struct FsmTimer *ft)
 {
 #if FSM_TIMER_DEBUG
-	if (ft->fi->debug)
-		ft->fi->printdebug(ft->fi, "FsmExpireTimer %lx", (long) ft);
+	if (ft->fi->debug) {
+		char str[40];
+		sprintf(str, "FsmExpireTimer %lx", (long) ft);
+		ft->fi->printdebug(ft->fi, str);
+	}
 #endif
 	FsmEvent(ft->fi, ft->event, ft->arg);
 }
@@ -127,8 +126,11 @@ FsmInitTimer(struct FsmInst *fi, struct FsmTimer *ft)
 	ft->tl.function = (void *) FsmExpireTimer;
 	ft->tl.data = (long) ft;
 #if FSM_TIMER_DEBUG
-	if (ft->fi->debug)
-		ft->fi->printdebug(ft->fi, "FsmInitTimer %lx", (long) ft);
+	if (ft->fi->debug) {
+		char str[40];
+		sprintf(str, "FsmInitTimer %lx", (long) ft);
+		ft->fi->printdebug(ft->fi, str);
+	}
 #endif
 	init_timer(&ft->tl);
 }
@@ -137,8 +139,11 @@ void
 FsmDelTimer(struct FsmTimer *ft, int where)
 {
 #if FSM_TIMER_DEBUG
-	if (ft->fi->debug)
-		ft->fi->printdebug(ft->fi, "FsmDelTimer %lx %d", (long) ft, where);
+	if (ft->fi->debug) {
+		char str[40];
+		sprintf(str, "FsmDelTimer %lx %d", (long) ft, where);
+		ft->fi->printdebug(ft->fi, str);
+	}
 #endif
 	del_timer(&ft->tl);
 }
@@ -149,9 +154,11 @@ FsmAddTimer(struct FsmTimer *ft,
 {
 
 #if FSM_TIMER_DEBUG
-	if (ft->fi->debug)
-		ft->fi->printdebug(ft->fi, "FsmAddTimer %lx %d %d",
-			(long) ft, millisec, where);
+	if (ft->fi->debug) {
+		char str[40];
+		sprintf(str, "FsmAddTimer %lx %d %d", (long) ft, millisec, where);
+		ft->fi->printdebug(ft->fi, str);
+	}
 #endif
 
 	if (ft->tl.next || ft->tl.prev) {
@@ -173,9 +180,11 @@ FsmRestartTimer(struct FsmTimer *ft,
 {
 
 #if FSM_TIMER_DEBUG
-	if (ft->fi->debug)
-		ft->fi->printdebug(ft->fi, "FsmRestartTimer %lx %d %d",
-			(long) ft, millisec, where);
+	if (ft->fi->debug) {
+		char str[40];
+		sprintf(str, "FsmRestartTimer %lx %d %d", (long) ft, millisec, where);
+		ft->fi->printdebug(ft->fi, str);
+	}
 #endif
 
 	if (ft->tl.next || ft->tl.prev)
@@ -185,4 +194,25 @@ FsmRestartTimer(struct FsmTimer *ft,
 	ft->arg = arg;
 	ft->tl.expires = jiffies + (millisec * HZ) / 1000;
 	add_timer(&ft->tl);
+}
+
+void
+jiftime(char *s, long mark)
+{
+	s += 8;
+
+	*s-- = '\0';
+	*s-- = mark % 10 + '0';
+	mark /= 10;
+	*s-- = mark % 10 + '0';
+	mark /= 10;
+	*s-- = '.';
+	*s-- = mark % 10 + '0';
+	mark /= 10;
+	*s-- = mark % 6 + '0';
+	mark /= 6;
+	*s-- = ':';
+	*s-- = mark % 10 + '0';
+	mark /= 10;
+	*s-- = mark % 10 + '0';
 }

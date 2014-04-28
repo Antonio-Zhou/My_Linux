@@ -2,7 +2,7 @@
  *
  * linux/fs/autofs/init.c
  *
- *  Copyright 1997 Transmeta Corporation -- All Rights Reserved
+ *  Copyright 1997-1998 Transmeta Corporation -- All Rights Reserved
  *
  * This file is part of the Linux kernel and is made available under
  * the terms of the GNU General Public License, version 2, or at your
@@ -11,26 +11,20 @@
  * ------------------------------------------------------------------------- */
 
 #include <linux/module.h>
+#include <linux/init.h>
 #include "autofs_i.h"
 
-#if LINUX_VERSION_CODE < kver(2,1,36)
-#define __initfunc(X) X
-#else
-#include <linux/init.h>
-#endif
-
 static struct file_system_type autofs_fs_type = {
-	autofs_read_super, "autofs", 0, NULL
+	"autofs",
+	0,
+	autofs_read_super,
+	NULL
 };
 
 #ifdef MODULE
 int init_module(void)
 {
-	int status;
-	
-	if ((status = register_filesystem(&autofs_fs_type)) == 0)
-		register_symtab(0);
-	return status;
+	return register_filesystem(&autofs_fs_type);
 }
 
 void cleanup_module(void)

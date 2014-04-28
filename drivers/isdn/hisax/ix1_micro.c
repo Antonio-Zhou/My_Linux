@@ -1,4 +1,4 @@
-/* $Id: ix1_micro.c,v 1.3.2.8 1998/04/08 21:58:41 keil Exp $
+/* $Id: ix1_micro.c,v 2.6 1998/02/11 17:28:09 keil Exp $
 
  * ix1_micro.c  low level stuff for ITK ix1-micro Rev.2 isdn cards
  *              derived from the original file teles3.c from Karsten Keil
@@ -11,20 +11,20 @@
  *              Beat Doebeli
  *
  * $Log: ix1_micro.c,v $
- * Revision 1.3.2.8  1998/04/08 21:58:41  keil
- * New init code
+ * Revision 2.6  1998/02/11 17:28:09  keil
+ * Niccy PnP/PCI support
  *
- * Revision 1.3.2.7  1998/02/11 14:21:01  keil
- * cosmetic fixes
- *
- * Revision 1.3.2.6  1998/01/27 22:37:33  keil
+ * Revision 2.5  1998/02/02 13:29:42  keil
  * fast io
  *
- * Revision 1.3.2.5  1997/11/15 18:50:51  keil
- * new common init function
+ * Revision 2.4  1997/11/08 21:35:50  keil
+ * new l1 init
  *
- * Revision 1.3.2.4  1997/10/17 22:14:09  keil
- * update to last hisax version
+ * Revision 2.3  1997/11/06 17:09:35  keil
+ * New 2.1 init code
+ *
+ * Revision 2.2  1997/10/29 18:55:51  keil
+ * changes for 2.1.60 (irq2dev_map)
  *
  * Revision 2.1  1997/07/27 21:47:09  keil
  * new interface structures
@@ -81,7 +81,7 @@
 #include "isdnl1.h"
 
 extern const char *CardType[];
-const char *ix1_revision = "$Revision: 1.3.2.8 $";
+const char *ix1_revision = "$Revision: 2.6 $";
 
 #define byteout(addr,val) outb(val,addr)
 #define bytein(addr) inb(addr)
@@ -277,7 +277,10 @@ ix1_card_msg(struct IsdnCardState *cs, int mt, void *arg)
 			return(request_irq(cs->irq, &ix1micro_interrupt,
 					I4L_IRQ_FLAG, "HiSax", cs));
 		case CARD_INIT:
-			inithscxisac(cs, 3);
+			clear_pending_isac_ints(cs);
+			clear_pending_hscx_ints(cs);
+			initisac(cs);
+			inithscx(cs);
 			return(0);
 		case CARD_TEST:
 			return(0);

@@ -9,19 +9,8 @@
 
 #ifdef CONFIG_NCPFS_PACKET_SIGNING
 
-#if 0
-#ifdef MODULE
-#include <linux/module.h>
-#include <linux/version.h>
-#endif
-#endif
-
 #include <linux/string.h>
 #include <linux/ncp.h>
-#if 0
-#include <linux/ncp_fs.h>
-#include <linux/ncp_fs_sb.h>
-#endif
 #include "ncpsign_kernel.h"
 
 #define rol32(i,c) (((((i)&0xffffffff)<<c)&0xffffffff)| \
@@ -36,24 +25,24 @@
 #define PVAL(buf,pos) ((unsigned)BVAL(buf,pos))
 #define BSET(buf,pos,val) (BVAL(buf,pos) = (val))
 
-static inline word
+static inline __u16
 WVAL_LH(__u8 * buf, int pos)
 {
 	return PVAL(buf, pos) | PVAL(buf, pos + 1) << 8;
 }
-static inline dword
+static inline __u32
 DVAL_LH(__u8 * buf, int pos)
 {
 	return WVAL_LH(buf, pos) | WVAL_LH(buf, pos + 2) << 16;
 }
 static inline void
-WSET_LH(__u8 * buf, int pos, word val)
+WSET_LH(__u8 * buf, int pos, __u16 val)
 {
 	BSET(buf, pos, val & 0xff);
 	BSET(buf, pos + 1, val >> 8);
 }
 static inline void
-DSET_LH(__u8 * buf, int pos, dword val)
+DSET_LH(__u8 * buf, int pos, __u32 val)
 {
 	WSET_LH(buf, pos, val & 0xffff);
 	WSET_LH(buf, pos + 2, val >> 16);

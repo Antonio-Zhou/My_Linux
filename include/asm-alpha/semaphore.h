@@ -8,21 +8,53 @@
  */
 
 #include <asm/atomic.h>
-#include <asm/system.h>
 
 struct semaphore {
 	atomic_t count;
 	atomic_t waking;
-	int lock;			/* to make waking testing atomic */
 	struct wait_queue * wait;
 };
 
-#define MUTEX ((struct semaphore) { 1, 0, 0, NULL })
-#define MUTEX_LOCKED ((struct semaphore) { 0, 0, 0, NULL })
+#define MUTEX ((struct semaphore) { ATOMIC_INIT(1), ATOMIC_INIT(0), NULL })
+#define MUTEX_LOCKED ((struct semaphore) { ATOMIC_INIT(0), ATOMIC_INIT(0), NULL })
 
 extern void __down(struct semaphore * sem);
 extern int  __down_interruptible(struct semaphore * sem);
 extern void __up(struct semaphore * sem);
+
+#define sema_init(sem, val)	atomic_set(&((sem)->count), val)
+
+/*
+ * These two _must_ execute atomically wrt each other.
+ *
+ * This is trivially done with load_locked/store_cond,
+ * which we have.  Let the rest of the losers suck eggs.
+ */
+
+static inline void wake_one_more(struct semaphore * sem)
+{
+	atomic_inc(&sem->waking);
+}
+
+static inline int waking_non_zero(struct semaphore *sem)
+{
+	int ret, tmp;
+
+	__asm__ __volatile__(
+	"1:	ldl_l	%1,%2\n"
+	"	ble	%1,2f\n"
+	"	subl	%1,1,%0\n"
+	"	stl_c	%0,%2\n"
+	"	beq	%0,3f\n"
+	"2:\n"
+	".section .text2,\"ax\"\n"
+	"3:	br	1b\n"
+	".previous"
+	: "=r"(ret), "=r"(tmp), "=m"(__atomic_fool_gcc(&sem->waking))
+	: "0"(0));
+
+	return ret;
+}
 
 /*
  * This isn't quite as clever as the x86 side, but the gp register
@@ -33,23 +65,6 @@ extern inline void down(struct semaphore * sem)
 	if (atomic_dec_return(&sem->count) < 0)
 		__down(sem);
 }
-
-/*
- * Primitives to spin on a lock.  Needed only for SMP version.
- */
-extern inline void get_buzz_lock(int *lock_ptr)
-{
-#ifdef __SMP__
-        while (xchg(lock_ptr,1) != 0) ;
-#endif
-} /* get_buzz_lock */
-
-extern inline void give_buzz_lock(int *lock_ptr)
-{
-#ifdef __SMP__
-        *lock_ptr = 0 ;
-#endif
-} /* give_buzz_lock */
 
 extern inline int down_interruptible(struct semaphore * sem)
 {

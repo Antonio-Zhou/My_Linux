@@ -1,9 +1,3 @@
-Sun Dec 13  18:00 1998 Gerard Roudier (groudier@club-internet.fr)
-	* revision 3.1e
-	- Same work-around as for the 53c876 rev <= 0x15 for 53c896 rev 1:
-	  Disable overlapped arbitration. This will not make difference 
-	  since the chip has on-chip RAM.
-
 Thu Nov 26  22:00 1998 Gerard Roudier (groudier@club-internet.fr)
 	* revision 3.1d
 	- The SISL RAID change requires now remap_pci_mem() stuff to be 

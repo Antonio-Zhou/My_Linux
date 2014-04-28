@@ -54,40 +54,23 @@
   {if (buffer) kfree(buffer); \
   if (cont_extent){ \
     int block, offset, offset1; \
-    struct buffer_head * bh; \
+    struct buffer_head * pbh; \
     buffer = kmalloc(cont_size,GFP_KERNEL); \
     if (!buffer) goto out; \
     block = cont_extent; \
     offset = cont_offset; \
     offset1 = 0; \
-    if(ISOFS_BUFFER_SIZE(DEV) == 1024) {     \
-      block <<= 1;    \
-      if (offset >= 1024) block++; \
-      offset &= 1023; \
-      if(offset + cont_size >= 1024) { \
-	  bh = bread(DEV->i_dev, block++, ISOFS_BUFFER_SIZE(DEV)); \
-	  if(!bh) {printk("Unable to read continuation Rock Ridge record\n"); \
-		     kfree(buffer); \
-		     buffer = NULL; } else { \
-	    memcpy(buffer, bh->b_data + offset, 1024 - offset); \
-            brelse(bh); \
-	    offset1 = 1024 - offset; \
-	    offset = 0;} \
-      }  \
-    };     \
-    if(buffer) { \
-      bh = bread(DEV->i_dev, block, ISOFS_BUFFER_SIZE(DEV)); \
-      if(bh){       \
-        memcpy(buffer + offset1, bh->b_data + offset, cont_size - offset1); \
-        brelse(bh); \
-        chr = (unsigned char *) buffer; \
-        len = cont_size; \
-        cont_extent = 0; \
-        cont_size = 0; \
-        cont_offset = 0; \
-        goto LABEL; \
-      };    \
-    } \
+    pbh = bread(DEV->i_dev, block, ISOFS_BUFFER_SIZE(DEV)); \
+    if(pbh){       \
+      memcpy(buffer + offset1, pbh->b_data + offset, cont_size - offset1); \
+      brelse(pbh); \
+      chr = (unsigned char *) buffer; \
+      len = cont_size; \
+      cont_extent = 0; \
+      cont_size = 0; \
+      cont_offset = 0; \
+      goto LABEL; \
+    };    \
     printk("Unable to read rock-ridge attributes\n");    \
   }}
 
@@ -177,7 +160,6 @@ int get_rock_ridge_filename(struct iso_directory_record * de,
  
   if (!inode->i_sb->u.isofs_sb.s_rock) return 0;
   *retname = 0;
-  retnamlen = 0;
 
   SETUP_ROCK_RIDGE(de, chr, len);
  repeat:
@@ -204,6 +186,17 @@ int get_rock_ridge_filename(struct iso_directory_record * de,
 	break;
       case SIG('N','M'):
 	if (truncate) break;
+        /*
+	 * If the flags are 2 or 4, this indicates '.' or '..'.
+	 * We don't want to do anything with this, because it
+	 * screws up the code that calls us.  We don't really
+	 * care anyways, since we can just use the non-RR
+	 * name.
+	 */
+	if (rr->u.NM.flags & 6) {
+	  break;
+	}
+
 	if (rr->u.NM.flags & ~1) {
 	  printk("Unsupported NM flag settings (%d)\n",rr->u.NM.flags);
 	  break;
@@ -270,7 +263,7 @@ int parse_rock_ridge_inode(struct iso_directory_record * de,
 	break;
       case SIG('E','R'):
 	inode->i_sb->u.isofs_sb.s_rock = 1;
-	printk(KERN_DEBUG"ISO9660 Extensions: ");
+	printk(KERN_DEBUG"ISO 9660 Extensions: ");
 	{ int p;
 	  for(p=0;p<rr->u.ER.len_id;p++) printk("%c",rr->u.ER.data[p]);
 	};
@@ -368,6 +361,8 @@ int parse_rock_ridge_inode(struct iso_directory_record * de,
 	inode->u.isofs_i.i_first_extent = isonum_733(rr->u.CL.location) <<
 		inode -> i_sb -> u.isofs_sb.s_log_zone_size;
 	reloc = iget(inode->i_sb, inode->u.isofs_i.i_first_extent);
+	if (!reloc)
+		goto out;
 	inode->i_mode = reloc->i_mode;
 	inode->i_nlink = reloc->i_nlink;
 	inode->i_uid = reloc->i_uid;
@@ -400,9 +395,8 @@ char * get_rock_ridge_symlink(struct inode * inode)
   unsigned long bufsize = ISOFS_BUFFER_SIZE(inode);
   unsigned char bufbits = ISOFS_BUFFER_BITS(inode);
   struct buffer_head * bh;
+  char * rpnt = NULL;
   unsigned char * pnt;
-  void * cpnt = NULL;
-  char * rpnt;
   struct iso_directory_record * raw_inode;
   CONTINUE_DECLS;
   int block;
@@ -415,37 +409,20 @@ char * get_rock_ridge_symlink(struct inode * inode)
   if (!inode->i_sb->u.isofs_sb.s_rock)
     panic("Cannot have symlink with high sierra variant of iso filesystem\n");
 
-  rpnt = 0;
-  
   block = inode->i_ino >> bufbits;
-  if (!(bh=bread(inode->i_dev,block, bufsize))) {
-    printk("unable to read i-node block");
-    return NULL;
-  };
+  bh = bread(inode->i_dev, block, bufsize);
+  if (!bh)
+	goto out_noread;
   
   pnt = ((unsigned char *) bh->b_data) + (inode->i_ino & (bufsize - 1));
   
   raw_inode = ((struct iso_directory_record *) pnt);
   
-  if ((inode->i_ino & (bufsize - 1)) + *pnt > bufsize){
-    int frag1, offset;
-    
-    offset = (inode->i_ino & (bufsize - 1));
-    frag1 = bufsize - offset;
-    cpnt = kmalloc(*pnt,GFP_KERNEL);
-    if(!cpnt) return NULL;
-    memcpy(cpnt, bh->b_data + offset, frag1);
-    brelse(bh);
-    if (!(bh = bread(inode->i_dev,++block, bufsize))) {
-      kfree(cpnt);
-      printk("unable to read i-node block");
-      return NULL;
-    };
-    offset += *pnt - bufsize;
-    memcpy((char *)cpnt+frag1, bh->b_data, offset);
-    pnt = ((unsigned char *) cpnt);
-    raw_inode = ((struct iso_directory_record *) pnt);
-  };
+  /*
+   * If we go past the end of the buffer, there is some sort of error.
+   */
+  if ((inode->i_ino & (bufsize - 1)) + *pnt > bufsize)
+	goto out_bad_span;
   
   /* Now test for possible Rock Ridge extensions which will override some of
      these numbers in the inode structure. */
@@ -528,21 +505,23 @@ char * get_rock_ridge_symlink(struct inode * inode)
     };
   };
   MAYBE_CONTINUE(repeat,inode);
-  brelse(bh);
   
-  if (cpnt) {
-    kfree(cpnt);
-    cpnt = NULL;
-  };
+out_freebh:
+	brelse(bh);
+	return rpnt;
 
-  return rpnt;
- out:
-  if(buffer) kfree(buffer);
-  return 0;
+	/* error exit from macro */
+out:
+	if(buffer)
+		kfree(buffer);
+	if(rpnt)
+		kfree(rpnt);
+	rpnt = NULL;
+	goto out_freebh;
+out_noread:
+	printk("unable to read i-node block");
+	goto out_freebh;
+out_bad_span:
+	printk("symlink spans iso9660 blocks\n");
+	goto out_freebh;
 }
-
-
-
-
-
-

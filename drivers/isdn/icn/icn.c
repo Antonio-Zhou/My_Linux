@@ -1,8 +1,8 @@
- /* $Id: icn.c,v 1.45.2.4 1998/11/05 22:13:02 fritz Exp $
+/* $Id: icn.c,v 1.49 1998/02/13 11:14:15 keil Exp $
 
  * ISDN low-level module for the ICN active ISDN-Card.
  *
- * Copyright 1994-1998 by Fritz Elfert (fritz@isdn4linux.de)
+ * Copyright 1994,95,96 by Fritz Elfert (fritz@wuemaus.franken.de)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,27 +19,21 @@
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
  * $Log: icn.c,v $
- * Revision 1.45.2.4  1998/11/05 22:13:02  fritz
- * Changed mail-address.
+ * Revision 1.49  1998/02/13 11:14:15  keil
+ * change for 2.1.86 (removing FREE_READ/FREE_WRITE from [dev]_kfree_skb()
  *
- * Revision 1.45.2.3  1998/06/07 13:32:04  fritz
- * Minor bugfixes for broken Switches.
+ * Revision 1.48  1997/10/10 15:56:14  fritz
+ * New HL<->LL interface:
+ *   New BSENT callback with nr. of bytes included.
+ *   Sending without ACK.
  *
- * Revision 1.45.2.2  1998/03/07 23:35:36  detabc
- * added the abc-extension to the linux isdn-kernel
- * for kernel-version 2.0.xx
- * DO NOT USE FOR HIGHER KERNELS-VERSIONS
- * all source-lines are switched with the define  CONFIG_ISDN_WITH_ABC
- * (make config and answer ABC-Ext. Support (Compress,TCP-Keepalive ...) with yes
+ * Revision 1.47  1997/10/01 09:21:51  fritz
+ * Removed old compatibility stuff for 2.0.X kernels.
+ * From now on, this code is for 2.1.X ONLY!
+ * Old stuff is still in the separate branch.
  *
- * you need also a modified isdnctrl-source the switch on the
- * features of the abc-extension
- *
- * please use carefully. more detail will be follow.
- * thanks
- *
- * Revision 1.45.2.1  1997/08/21 15:56:50  fritz
- * Synchronized 2.0.X branch with 2.0.31-pre7
+ * Revision 1.46  1997/08/21 22:38:33  fritz
+ * Fixed a typo.
  *
  * Revision 1.45  1997/06/21 10:42:06  fritz
  * Added availability to select leased mode on only one channel.
@@ -202,7 +196,6 @@
  *
  */
 
-#include <linux/config.h>
 #include "icn.h"
 
 /*
@@ -216,7 +209,7 @@
 #undef MAP_DEBUG
 
 static char
-*revision = "$Revision: 1.45.2.4 $";
+*revision = "$Revision: 1.49 $";
 
 static int icn_addcard(int, char *, char *);
 
@@ -231,10 +224,20 @@ icn_free_queue(icn_card * card, int channel)
 {
 	struct sk_buff_head *queue = &card->spqueue[channel];
 	struct sk_buff *skb;
+	unsigned long flags;
 
 	while ((skb = skb_dequeue(queue)))
-		dev_kfree_skb(skb, FREE_WRITE);
+		dev_kfree_skb(skb);
+	save_flags(flags);
+	cli();
+	card->xlen[channel] = 0;
 	card->sndcount[channel] = 0;
+	if (card->xskb[channel]) {
+		card->xskb[channel] = NULL;
+		restore_flags(flags);
+		dev_kfree_skb(card->xskb[channel]);
+	} else
+		restore_flags(flags);
 }
 
 /* Put a value into a shift-register, highest bit first.
@@ -466,12 +469,14 @@ icn_pollbchan_send(int channel, icn_card * card)
 	struct sk_buff *skb;
 	isdn_ctrl cmd;
 
-	if (!(card->sndcount[channel] ||
+	if (!(card->sndcount[channel] || card->xskb[channel] ||
 	      skb_queue_len(&card->spqueue[channel])))
 		return;
 	if (icn_trymaplock_channel(card, mch)) {
-		while (sbfree && (card->sndcount[channel] ||
-			       skb_queue_len(&card->spqueue[channel]))) {
+		while (sbfree && 
+		       (card->sndcount[channel] ||
+			skb_queue_len(&card->spqueue[channel]) ||
+			card->xskb[channel])) {
 			save_flags(flags);
 			cli();
 			if (card->xmit_lock[channel]) {
@@ -480,7 +485,19 @@ icn_pollbchan_send(int channel, icn_card * card)
 			}
 			card->xmit_lock[channel]++;
 			restore_flags(flags);
-			skb = skb_dequeue(&card->spqueue[channel]);
+			skb = card->xskb[channel];
+			if (!skb) {
+				skb = skb_dequeue(&card->spqueue[channel]);
+				if (skb) {
+					/* Pop ACK-flag off skb.
+					 * Store length to xlen.
+					 */
+					if (*(skb_pull(skb,1)))
+						card->xlen[channel] = skb->len;
+					else
+						card->xlen[channel] = 0;
+				}
+			}
 			if (!skb)
 				break;
 			if (skb->len > ICN_FRAGSIZE) {
@@ -497,13 +514,22 @@ icn_pollbchan_send(int channel, icn_card * card)
 			sbnext; /* switch to next buffer        */
 			icn_maprelease_channel(card, mch & 2);
 			if (!skb->len) {
-				dev_kfree_skb(skb, FREE_WRITE);
-				cmd.command = ISDN_STAT_BSENT;
-				cmd.driver = card->myid;
-				cmd.arg = channel;
-				card->interface.statcallb(&cmd);
-			} else
-				skb_queue_head(&card->spqueue[channel], skb);
+				save_flags(flags);
+				cli();
+				if (card->xskb[channel]) {
+					card->xskb[channel] = NULL;
+					restore_flags(flags);
+					dev_kfree_skb(skb);
+				} else
+					restore_flags(flags);
+				if (card->xlen[channel]) {
+					cmd.command = ISDN_STAT_BSENT;
+					cmd.driver = card->myid;
+					cmd.arg = channel;
+					cmd.parm.length = card->xlen[channel];
+					card->interface.statcallb(&cmd);
+				}
+			}
 			card->xmit_lock[channel] = 0;
 			if (!icn_trymaplock_channel(card, mch))
 				break;
@@ -554,13 +580,8 @@ static icn_stat icn_stat_table[] =
 {
 	{"BCON_",          ISDN_STAT_BCONN, 1},	/* B-Channel connected        */
 	{"BDIS_",          ISDN_STAT_BHUP,  2},	/* B-Channel disconnected     */
-#ifdef CONFIG_ISDN_WITH_ABC
-	{"DCON_",          ISDN_STAT_DCONN, 10}, /* D-Channel connected       */
-	{"DDIS_",          ISDN_STAT_DHUP,  11}, /* D-Channel disconnected    */
-#else
-	{"DCON_",          ISDN_STAT_DCONN, 0}, /* D-Channel connected        */
-	{"DDIS_",          ISDN_STAT_DHUP,  0}, /* D-Channel disconnected     */
-#endif
+	{"DCON_",          ISDN_STAT_DCONN, 0},	/* D-Channel connected        */
+	{"DDIS_",          ISDN_STAT_DHUP,  0},	/* D-Channel disconnected     */
 	{"DCAL_I",         ISDN_STAT_ICALL, 3},	/* Incoming call dialup-line  */
 	{"DSCA_I",         ISDN_STAT_ICALL, 3},	/* Incoming call 1TR6-SPV     */
 	{"FCALL",          ISDN_STAT_ICALL, 4},	/* Leased line connection up  */
@@ -588,12 +609,11 @@ static icn_stat icn_stat_table[] =
  * This routine is called periodically via timer.
  */
 
-static int
+static void
 icn_parse_status(u_char * status, int channel, icn_card * card)
 {
 	icn_stat *s = icn_stat_table;
 	int action = -1;
-	int dflag = 0;
 	unsigned long flags;
 	isdn_ctrl cmd;
 
@@ -606,45 +626,11 @@ icn_parse_status(u_char * status, int channel, icn_card * card)
 		s++;
 	}
 	if (action == -1)
-		return 0;
+		return;
 	cmd.driver = card->myid;
 	cmd.arg = channel;
 	switch (action) {
-#ifdef CONFIG_ISDN_WITH_ABC
-	case 11:
-
-		save_flags(flags);
-		cli();
-		icn_free_queue(card,channel);
-		card->rcvidx[channel] = 0;
-
-		if( card->flags & 
-			((channel)?ICN_FLAGS_B2ACTIVE:ICN_FLAGS_B1ACTIVE)) {
-
-			isdn_ctrl ncmd;
-
-			printk(KERN_INFO "icn: D-Channel hangup before B-Channel hangup\n");
-
-			card->flags &= ~((channel)?
-					ICN_FLAGS_B2ACTIVE:ICN_FLAGS_B1ACTIVE);
-
-			memset(&ncmd,0,sizeof(ncmd));
-
-			ncmd.driver = card->myid;
-			ncmd.arg = channel;
-			ncmd.command = ISDN_STAT_BHUP;
-			restore_flags(flags);
-			card->interface.statcallb(&cmd);
-			dflag |= (channel+1);
-
-		} else restore_flags(flags);
-		
-		break;
-#endif
 		case 1:
-#ifdef CONFIG_ISDN_WITH_ABC
-			icn_free_queue(card,channel);
-#endif
 			card->flags |= (channel) ?
 			    ICN_FLAGS_B2ACTIVE : ICN_FLAGS_B1ACTIVE;
 			break;
@@ -656,29 +642,23 @@ icn_parse_status(u_char * status, int channel, icn_card * card)
 			cli();
 			card->rcvidx[channel] = 0;
 			restore_flags(flags);
-			dflag |= (channel + 1);
 			break;
 		case 3:
 			{
 				char *t = status + 6;
 				char *s = strpbrk(t, ",");
 
-				memset(&cmd.parm.setup, 0, sizeof(cmd.parm.setup));
-				if (!s)
-					break;
 				*s++ = '\0';
 				strncpy(cmd.parm.setup.phone, t,
 					sizeof(cmd.parm.setup.phone));
-				if (!(s = strpbrk(t = s, ",")))
-					break;
+				s = strpbrk(t = s, ",");
 				*s++ = '\0';
 				if (!strlen(t))
 					cmd.parm.setup.si1 = 0;
 				else
 					cmd.parm.setup.si1 =
 					    simple_strtoul(t, NULL, 10);
-				if (!(s = strpbrk(t = s, ",")))
-					break;
+				s = strpbrk(t = s, ",");
 				*s++ = '\0';
 				if (!strlen(t))
 					cmd.parm.setup.si2 = 0;
@@ -688,6 +668,8 @@ icn_parse_status(u_char * status, int channel, icn_card * card)
 				strncpy(cmd.parm.setup.eazmsn, s,
 					sizeof(cmd.parm.setup.eazmsn));
 			}
+			cmd.parm.setup.plan = 0;
+			cmd.parm.setup.screen = 0;
 			break;
 		case 4:
 			sprintf(cmd.parm.setup.phone, "LEASED%d", card->myid);
@@ -713,7 +695,6 @@ icn_parse_status(u_char * status, int channel, icn_card * card)
 				strncpy(cmd.parm.num, status + 1, sizeof(cmd.parm.num) - 1);
 			break;
 		case 8:
-			dflag = 3;
 			card->flags &= ~ICN_FLAGS_B1ACTIVE;
 			icn_free_queue(card, 0);
 			save_flags(flags);
@@ -743,7 +724,7 @@ icn_parse_status(u_char * status, int channel, icn_card * card)
 			break;
 	}
 	card->interface.statcallb(&cmd);
-	return dflag;
+	return;
 }
 
 static void
@@ -769,11 +750,10 @@ icn_polldchan(unsigned long data)
 	icn_card *card = (icn_card *) data;
 	int mch = card->secondhalf ? 2 : 0;
 	int avail = 0;
-	int dflag = 0;
 	int left;
 	u_char c;
 	int ch;
-	unsigned long flags;
+	int flags;
 	int i;
 	u_char *p;
 	isdn_ctrl cmd;
@@ -790,7 +770,7 @@ icn_polldchan(unsigned long data)
 				    card->imsg[1] <= '2' && card->imsg[2] == ';') {
 					ch = (card->imsg[1] - '0') - 1;
 					p = &card->imsg[3];
-					dflag |= icn_parse_status(p, ch, card);
+					icn_parse_status(p, ch, card);
 				} else {
 					p = card->imsg;
 					if (!strncmp(p, "DRV1.", 5)) {
@@ -839,10 +819,6 @@ icn_polldchan(unsigned long data)
 		cmd.arg = avail;
 		card->interface.statcallb(&cmd);
 	}
-	if (dflag & 1)
-		card->interface.rcvcallb(card->myid, 0, card->rcvbuf[0], 0);
-	if (dflag & 2)
-		card->interface.rcvcallb(card->myid, 1, card->rcvbuf[1], 0);
 	if (card->flags & (ICN_FLAGS_B1ACTIVE | ICN_FLAGS_B2ACTIVE))
 		if (!(card->flags & ICN_FLAGS_RBTIMER)) {
 			/* schedule b-channel polling */
@@ -875,7 +851,7 @@ icn_polldchan(unsigned long data)
  */
 
 static int
-icn_sendbuf(int channel, struct sk_buff *skb, icn_card * card)
+icn_sendbuf(int channel, int ack, struct sk_buff *skb, icn_card * card)
 {
 	int len = skb->len;
 	unsigned long flags;
@@ -895,8 +871,12 @@ icn_sendbuf(int channel, struct sk_buff *skb, icn_card * card)
 		cli();
 		nskb = skb_clone(skb, GFP_ATOMIC);
 		if (nskb) {
+			/* Push ACK flag as one
+			 * byte in front of data.
+			 */
+			*(skb_push(nskb, 1)) = ack?1:0;
 			skb_queue_tail(&card->spqueue[channel], nskb);
-			dev_kfree_skb(skb, FREE_WRITE);
+			dev_kfree_skb(skb);
 		} else
 			len = 0;
 		card->sndcount[channel] += len;
@@ -934,8 +914,7 @@ icn_check_loader(int cardnumber)
 			printk(KERN_DEBUG "Loader %d TO?\n", cardnumber);
 #endif
 			current->state = TASK_INTERRUPTIBLE;
-			current->timeout = jiffies + ICN_BOOT_TIMEOUT1;
-			schedule();
+			schedule_timeout(ICN_BOOT_TIMEOUT1);
 		} else {
 #ifdef BOOT_DEBUG
 			printk(KERN_DEBUG "Loader %d OK\n", cardnumber);
@@ -961,8 +940,7 @@ int slsec = sec; \
   printk(KERN_DEBUG "SLEEP(%d)\n",slsec); \
   while (slsec) { \
     current->state = TASK_INTERRUPTIBLE; \
-    current->timeout = jiffies + HZ; \
-    schedule(); \
+    schedule_timeout(HZ); \
     slsec--; \
   } \
 }
@@ -1124,8 +1102,7 @@ icn_loadproto(u_char * buffer, icn_card * card)
 				return -EIO;
 			}
 			current->state = TASK_INTERRUPTIBLE;
-			current->timeout = jiffies + 10;
-			schedule();
+			schedule_timeout(10);
 		}
 	}
 	writeb(0x20, &sbuf_n);
@@ -1149,8 +1126,7 @@ icn_loadproto(u_char * buffer, icn_card * card)
 			printk(KERN_DEBUG "Proto TO?\n");
 #endif
 			current->state = TASK_INTERRUPTIBLE;
-			current->timeout = jiffies + ICN_BOOT_TIMEOUT1;
-			schedule();
+			schedule_timeout(ICN_BOOT_TIMEOUT1);
 		} else {
 			if ((card->secondhalf) || (!card->doubleS0)) {
 #ifdef BOOT_DEBUG
@@ -1254,7 +1230,7 @@ icn_writecmd(const u_char * buf, int len, int user, icn_card * card)
 			icn_map_channel(lastmap_card, lastmap_channel);
 		restore_flags(flags);
 		if (len) {
-			udelay(1000);
+			mdelay(1);
 			if (loop++ > 20)
 				break;
 		} else
@@ -1445,11 +1421,9 @@ icn_command(isdn_ctrl * c, icn_card * card)
 						if (!card->leased) {
 							card->leased = 1;
 							while (card->ptype == ISDN_PTYPE_UNKNOWN) {
-								current->timeout = jiffies + ICN_BOOT_TIMEOUT1;
-								schedule();
+								schedule_timeout(ICN_BOOT_TIMEOUT1);
 							}
-							current->timeout = jiffies + ICN_BOOT_TIMEOUT1;
-							schedule();
+							schedule_timeout(ICN_BOOT_TIMEOUT1);
 							sprintf(cbuf, "00;FV2ON\n01;EAZ%c\n02;EAZ%c\n",
 								(a & 1)?'1':'C', (a & 2)?'2':'C');
 							i = icn_writecmd(cbuf, strlen(cbuf), 0, card);
@@ -1707,14 +1681,14 @@ if_readstatus(u_char * buf, int len, int user, int id, int channel)
 }
 
 static int
-if_sendbuf(int id, int channel, struct sk_buff *skb)
+if_sendbuf(int id, int channel, int ack, struct sk_buff *skb)
 {
 	icn_card *card = icn_findcard(id);
 
 	if (card) {
 		if (!card->flags & ICN_FLAGS_RUNNING)
 			return -ENODEV;
-		return (icn_sendbuf(channel, skb, card));
+		return (icn_sendbuf(channel, ack, skb, card));
 	}
 	printk(KERN_ERR
 	       "icn: if_sendbuf called with invalid driverId!\n");
@@ -1738,6 +1712,7 @@ icn_initcard(int port, char *id)
 	}
 	memset((char *) card, 0, sizeof(icn_card));
 	card->port = port;
+	card->interface.hl_hdrlen = 1;
 	card->interface.channels = ICN_BCH;
 	card->interface.maxbufsize = 4000;
 	card->interface.command = if_command;
@@ -1850,11 +1825,7 @@ icn_init(void)
 	dev.firstload = 1;
 
 	/* No symbols to export, hide all symbols */
-#if (LINUX_VERSION_CODE < 0x020111)
-	register_symtab(NULL);
-#else
 	EXPORT_NO_SYMBOLS;
-#endif
 
 	if ((p = strchr(revision, ':'))) {
 		strcpy(rev, p + 1);

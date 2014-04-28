@@ -15,12 +15,12 @@
  *            quite a bit, modularized the code.
  * fvk 4/'93  waltje@uwalt.nl.mugnet.org (Fred N. van Kempen)
  *	      Renamed "route_get_info()" to "rt_get_info()" for consistency.
- * Alan Cox (alan@lxorguk.ukuu.org.uk) 4/94
+ * Alan Cox (gw4pts@gw4pts.ampr.org) 4/94
  *	      Dusted off the code and added IPX. Fixed the 4K limit.
  * Erik Schoenfelder (schoenfr@ibr.cs.tu-bs.de)
  *	      /proc/net/snmp.
- * Alan Cox (alan@lxorguk.ukuu.org.uk) 1/95
- *	      Added Appletalk slots
+ * Alan Cox (gw4pts@gw4pts.ampr.org) 1/95
+ *	      Added AppleTalk slots
  *
  *  proc net directory handling functions
  */
@@ -31,12 +31,12 @@
 #include <linux/fcntl.h>
 #include <linux/mm.h>
 
-#include <asm/segment.h>
+#include <asm/uaccess.h>
 
 #define PROC_BLOCK_SIZE	(3*1024)		/* 4K page size but our output routines use some slack for overruns */
 
-static int proc_readnet(struct inode * inode, struct file * file,
-			char * buf, int count)
+static long proc_readnet(struct inode * inode, struct file * file,
+			char * buf, unsigned long count)
 {
 	char * page;
 	int bytes=count;
@@ -72,7 +72,7 @@ static int proc_readnet(struct inode * inode, struct file * file,
 		/*
  		 *	Copy the bytes
 		 */
-		memcpy_tofs(buf+copied, start, length);
+		copy_to_user(buf+copied, start, length);
 		file->f_pos += length;	/* Move down the file */
 		bytes  -= length;
 		copied += length;
@@ -88,10 +88,11 @@ static struct file_operations proc_net_operations = {
 	proc_readnet,		/* read - bad */
 	NULL,			/* write - bad */
 	NULL,			/* readdir */
-	NULL,			/* select - default */
+	NULL,			/* poll - default */
 	NULL,			/* ioctl - default */
 	NULL,			/* mmap */
 	NULL,			/* no special open code */
+	NULL,			/* flush */
 	NULL,			/* no special release code */
 	NULL			/* can't fsync */
 };

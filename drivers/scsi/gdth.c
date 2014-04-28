@@ -2,7 +2,7 @@
  * GDT ISA/EISA/PCI Disk Array Controller driver for Linux              *
  *                                                                      *
  * gdth.c                                                               *
- * Copyright (C) 1995-98 ICP vortex Computersysteme GmbH, Achim Leubner *
+ * Copyright (C) 1995-97 ICP vortex Computersysteme GmbH, Achim Leubner *
  *                                                                      *
  * <achim@vortex.de>                                                    *
  *                                                                      *
@@ -20,36 +20,21 @@
  * along with this kernel; if not, write to the Free Software           *
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.            *
  *                                                                      *
- * Tested with Linux 1.2.13, ..., 2.1.103                               *
+ * Tested with Linux 1.2.13, ..., 2.1.61                                *
  *                                                                      *
  * $Log: gdth.c,v $
- * Revision 1.16  1998/09/28 16:08:46  achim
- * GDT_PCIMPR: DPMEM remapping, if required
- * mdelay() added
+ * Revision 1.3  1998/02/25 23:52:32  ecd
+ * Final round of PCI device driver patches by Martin Mares.
  *
- * Revision 1.15  1998/06/03 14:54:06  achim
- * gdth_delay(), gdth_flush() implemented
- * Bugfix: gdth_release() changed
+ * I could not verify each and every change to the drivers locally,
+ * please consult linux/Documentation/pci.txt to understand changes
+ * made in case patching should be necessary.
  *
- * Revision 1.14  1998/05/22 10:01:17  achim
- * mj: pcibios_strerror() removed
- * Improved SMP support (if version >= 2.1.95)
- * gdth_halt(): halt_called flag added (if version < 2.1)
- *
- * Revision 1.13  1998/04/16 09:14:57  achim
- * Reserve drives (for raw service) implemented
- * New error handling code enabled
- * Get controller name from board_info() IOCTL
- * Final round of PCI device driver patches by Martin Mares
- *
- * Revision 1.12  1998/03/03 09:32:37  achim
- * Fibre channel controller support added
- *
- * Revision 1.11  1998/01/27 16:19:14  achim
- * SA_SHIRQ added
- * add_timer()/del_timer() instead of GDTH_TIMER
- * scsi_add_timer()/scsi_del_timer() instead of SCSI_TIMER
- * New error handling included
+ * Revision 1.2  1997/11/12 23:58:51  davem
+ * Merge to 2.1.63 to get the Ingo P5 bugfix.
+ * I did not touch the sound changes at all, Alan
+ * please look into that stuff as it is your
+ * territory.
  *
  * Revision 1.10  1997/10/31 12:29:57  achim
  * Read heads/sectors from host drive
@@ -88,7 +73,7 @@
  * Initial revision
  *
  *
- * $Id: gdth.c,v 1.16 1998/09/28 16:08:46 achim Exp $ 
+ * $Id: gdth.c,v 1.4 1998/04/15 14:35:26 mj Exp $ 
  ************************************************************************/
 
 #ifdef MODULE
@@ -97,7 +82,6 @@
 
 #include <linux/version.h>
 #include <linux/kernel.h>
-#include <linux/head.h>
 #include <linux/types.h>
 #include <linux/pci.h>
 #include <linux/string.h>
@@ -117,9 +101,7 @@
 #include <asm/dma.h>
 #include <asm/system.h>
 #include <asm/io.h>
-#if LINUX_VERSION_CODE >= 0x02015F
 #include <asm/spinlock.h>
-#endif
 
 #if LINUX_VERSION_CODE >= 0x010300
 #include <linux/blk.h>
@@ -132,35 +114,9 @@
 
 #include "gdth.h"
 
-/****************************************************************************/
-
-/* LILO params: gdth=<IRQ>
- *
- * Where: <IRQ> is any of the valid IRQs for EISA controllers (10,11,12,14)
- * Sets the IRQ of the GDT3000/3020 EISA controller to this value,
- * if the IRQ can not automat. detect (controller BIOS disabled)
- * See gdth_init_eisa() 
- *
- * You can use the command line gdth=0 to disable the driver 
- */
-static unchar irqs[MAXHA] = {0xff};
-static unchar disable_gdth_scan = FALSE;
-
-/* Reserve drives for raw service: Fill the following structure with the
- * appropriate values: Controller number, Channel, Target ID 
- */
-static gdth_reserve_str reserve_list[] = {
-    /* { 0, 1, 4 },		Example: Controller 0, Channel B, ID 4 */
-    { 0xff, 0xff, 0xff }	/* end of list */
-};
-
-/****************************************************************************/
-
-#if LINUX_VERSION_CODE >= 0x02015F
+#if LINUX_VERSION_CODE >= 0x010346
 static void gdth_interrupt(int irq,void *dev_id,struct pt_regs *regs);
 static void do_gdth_interrupt(int irq,void *dev_id,struct pt_regs *regs);
-#elif LINUX_VERSION_CODE >= 0x010346
-static void gdth_interrupt(int irq,void *dev_id,struct pt_regs *regs);
 #else
 static void gdth_interrupt(int irq,struct pt_regs *regs);
 #endif
@@ -203,19 +159,29 @@ static void *gdth_mmap(ulong paddr, ulong size);
 static void gdth_munmap(void *addr);
 
 static const char *gdth_ctr_name(int hanum);
-
-static void gdth_flush(int hanum);
 #if LINUX_VERSION_CODE >= 0x020100
 static int gdth_halt(struct notifier_block *nb, ulong event, void *buf);
 #else
-static int halt_called = FALSE;
 void gdth_halt(void);
 #endif
 
 #ifdef DEBUG_GDTH
 static unchar   DebugState = DEBUG_GDTH;
 extern int sys_syslog(int,char*,int);
-#define LOGEN           sys_syslog(7,NULL,0)
+#define LOGEN           sys_syslog(7,NULL,0);
+#define WAITSEC(a)      mdelay((a)*1000)
+
+#ifdef SLOWMOTION_GDTH
+#define SLOWM   WAITSEC(2)  
+#undef  INIT_RETRIES
+#undef  INIT_TIMEOUT
+#undef  POLL_TIMEOUT
+#define INIT_RETRIES    15
+#define INIT_TIMEOUT    150
+#define POLL_TIMEOUT    150
+#else
+#define SLOWM
+#endif
 
 #ifdef __SERIAL__
 #define MAX_SERBUF 160
@@ -279,14 +245,14 @@ static int ser_printk(const char *fmt, ...)
     return i;
 }
 
-#define TRACE(a)    {if (DebugState==1) {ser_printk a;}}
-#define TRACE2(a)   {if (DebugState==1 || DebugState==2) {ser_printk a;}}
-#define TRACE3(a)   {if (DebugState!=0) {ser_printk a;}}
+#define TRACE(a)    {if (DebugState==1) {ser_printk a; SLOWM}}
+#define TRACE2(a)   {if (DebugState==1 || DebugState==2) {ser_printk a; SLOWM}}
+#define TRACE3(a)   {if (DebugState!=0) {ser_printk a; SLOWM}}
 
 #else /* !__SERIAL__ */
-#define TRACE(a)    {if (DebugState==1) {LOGEN;printk a;}}
-#define TRACE2(a)   {if (DebugState==1 || DebugState==2) {LOGEN;printk a;}}
-#define TRACE3(a)   {if (DebugState!=0) {LOGEN;printk a;}}
+#define TRACE(a)    {if (DebugState==1) {LOGEN;printk a; SLOWM}}
+#define TRACE2(a)   {if (DebugState==1 || DebugState==2) {LOGEN;printk a; SLOWM}}
+#define TRACE3(a)   {if (DebugState!=0) {LOGEN;printk a; SLOWM}}
 #endif
 
 #else /* !DEBUG */
@@ -298,10 +264,11 @@ static int ser_printk(const char *fmt, ...)
 #ifdef GDTH_STATISTICS
 static ulong max_rq=0, max_index=0, max_sg=0;
 static ulong act_ints=0, act_ios=0, act_stats=0, act_rq=0;
-static struct timer_list gdth_timer;
+#define GDTH_TIMER      31                      /* see linux/timer.h ! */
 #endif
 
 #define PTR2USHORT(a)   (ushort)(ulong)(a)
+#define JIFFYWAIT(a)    {ulong gdtjf;gdtjf=jiffies+(a);while(gdtjf>jiffies);}
 #define GDTOFFSOF(a,b)  (size_t)&(((a*)0)->b)   
 #define INDEX_OK(i,t)   ((i)<sizeof(t)/sizeof((t)[0]))
 
@@ -378,7 +345,6 @@ static unchar   gdth_from_wait  = FALSE;                /* gdth_wait() */
 static int      wait_index,wait_hanum;                  /* gdth_wait() */
 static int      gdth_ctr_count  = 0;                    /* controller count */
 static int      gdth_ctr_vcount = 0;                    /* virt. ctr. count */
-static int	gdth_ctr_released = 0;			/* gdth_release() */
 static struct Scsi_Host *gdth_ctr_tab[MAXHA];           /* controller table */
 static struct Scsi_Host *gdth_ctr_vtab[MAXHA*MAXBUS];   /* virt. ctr. table */
 static unchar   gdth_write_through = FALSE;             /* write through */
@@ -415,14 +381,17 @@ static unchar gdth_direction_tab[0x100] = {
     DUN,DUN,DUN,DUN,DUN,DUN,DUN,DUN,DUN,DUN,DUN,DUN,DUN,DUN,DUN,DUN
 };
 
-/* __initfunc, __initdata macros */
-#if LINUX_VERSION_CODE >= 0x020126
-#include <linux/init.h>
-#else
-#define __initfunc(A) A
-#define __initdata
-#define __init
-#endif
+/* LILO params: gdth=<IRQ>
+ *
+ * Where: <IRQ> is any of the valid IRQs for EISA controllers (10,11,12,14)
+ * Sets the IRQ of the GDT3000/3020 EISA controller to this value,
+ * if the IRQ can not automat. detect (controller BIOS disabled)
+ * See gdth_init_eisa() 
+ *
+ * You can use the command line gdth=0 to disable the driver 
+ */
+static unchar irqs[MAXHA] = {0xff};
+static unchar disable_gdth_scan = FALSE;
 
 /* /proc support */
 #if LINUX_VERSION_CODE >= 0x010300
@@ -442,24 +411,9 @@ static struct notifier_block gdth_notifier = {
 };
 #endif
 
-static void gdth_delay(int milliseconds)
-{
-    if (milliseconds == 0) {
-        udelay(1);
-    } else {
-#if LINUX_VERSION_CODE >= 0x020168
-        mdelay(milliseconds);
-#else
-        int i;
-        for (i = 0; i < milliseconds; ++i) 
-            udelay(1000);
-#endif
-    }
-}
-
 /* controller search and initialization functions */
 
-__initfunc (static int gdth_search_eisa(ushort eisa_adr))
+static int gdth_search_eisa(ushort eisa_adr)
 {
     ulong id;
     
@@ -477,7 +431,7 @@ __initfunc (static int gdth_search_eisa(ushort eisa_adr))
 }
 
 
-__initfunc (static int gdth_search_isa(ulong bios_adr))
+static int gdth_search_isa(ulong bios_adr)
 {
     void *addr;
     ulong id;
@@ -493,7 +447,7 @@ __initfunc (static int gdth_search_isa(ulong bios_adr))
 }
 
 
-__initfunc (static int gdth_search_pci(ushort device_id,ushort index,gdth_pci_str *pcistr))
+static int gdth_search_pci(ushort device_id,ushort index,gdth_pci_str *pcistr)
 {
     int error;
     ulong base0,base1,base2;
@@ -501,13 +455,8 @@ __initfunc (static int gdth_search_pci(ushort device_id,ushort index,gdth_pci_st
     TRACE(("gdth_search_pci() device_id %d, index %d\n",
                  device_id,index));
 
-#if LINUX_VERSION_CODE >= 0x20155
     if (!pci_present())
         return 0;
-#else
-    if (!pcibios_present())
-        return 0;
-#endif
 
     if (pcibios_find_device(PCI_VENDOR_ID_VORTEX,device_id,index,
                              &pcistr->bus,&pcistr->device_fn))
@@ -521,11 +470,11 @@ __initfunc (static int gdth_search_pci(ushort device_id,ushort index,gdth_pci_st
 	base1 = pdev->base_address[1];
 	base2 = pdev->base_address[2];
 	if ((error = pcibios_read_config_dword(pcistr->bus,pcistr->device_fn,
-					       PCI_ROM_ADDRESS,
-					       (int *) &pcistr->bios))) {
-	    printk("GDT-PCI: error %d reading configuration space", error);
-	    return -1;
-	}
+                                           PCI_ROM_ADDRESS,
+                                           (int *) &pcistr->bios))) {
+		printk("GDT-PCI: error %d reading configuration space", error);
+		return -1;
+		}
 	pcistr->irq = pdev->irq;
     }
 #else
@@ -572,7 +521,7 @@ __initfunc (static int gdth_search_pci(ushort device_id,ushort index,gdth_pci_st
 }
 
 
-__initfunc (static int gdth_init_eisa(ushort eisa_adr,gdth_ha_str *ha))
+static int gdth_init_eisa(ushort eisa_adr,gdth_ha_str *ha)
 {
     ulong retries,id;
     unchar prot_ver,eisacf,i,irq_found;
@@ -586,13 +535,13 @@ __initfunc (static int gdth_init_eisa(ushort eisa_adr,gdth_ha_str *ha))
     
     outb(0xff,eisa_adr+LDOORREG);
     retries = INIT_RETRIES;
-    gdth_delay(20);
+    JIFFYWAIT(2);
     while (inb(eisa_adr+EDOORREG) != 0xff) {
         if (--retries == 0) {
             printk("GDT-EISA: Initialization error (DEINIT failed)\n");
             return 0;
         }
-        gdth_delay(1);
+        mdelay(1);
         TRACE2(("wait for DEINIT: retries=%ld\n",retries));
     }
     prot_ver = inb(eisa_adr+MAILBOXREG);
@@ -616,13 +565,13 @@ __initfunc (static int gdth_init_eisa(ushort eisa_adr,gdth_ha_str *ha))
         outl(1,eisa_adr+MAILBOXREG+8);
         outb(0xfe,eisa_adr+LDOORREG);
         retries = INIT_RETRIES;
-        gdth_delay(20);
+        JIFFYWAIT(2);
         while (inb(eisa_adr+EDOORREG) != 0xfe) {
             if (--retries == 0) {
                 printk("GDT-EISA: Initialization error (get IRQ failed)\n");
                 return 0;
             }
-            gdth_delay(1);
+            mdelay(1);
         }
         ha->irq = inb(eisa_adr+MAILBOXREG);
         outb(0xff,eisa_adr+EDOORREG);
@@ -660,7 +609,7 @@ __initfunc (static int gdth_init_eisa(ushort eisa_adr,gdth_ha_str *ha))
 }
 
        
-__initfunc (static int gdth_init_isa(ulong bios_adr,gdth_ha_str *ha))
+static int gdth_init_isa(ulong bios_adr,gdth_ha_str *ha)
 {
     register gdt2_dpram_str *dp2_ptr;
     int i;
@@ -678,11 +627,6 @@ __initfunc (static int gdth_init_isa(ulong bios_adr,gdth_ha_str *ha))
     writeb(1, &dp2_ptr->io.memlock);			/* switch off write protection */
     /* reset interface area */
     memset_io((char *)&dp2_ptr->u,0,sizeof(dp2_ptr->u));
-    if (readl(&dp2_ptr->u) != 0) {
-	printk("GDT-PCI: Initialization error (DPMEM write error)\n");
-	gdth_munmap(ha->brd);
-	return 0;
-    }
 
     /* disable board interrupts, read DRQ and IRQ */
     writeb(0xff, &dp2_ptr->io.irqdel);
@@ -711,14 +655,14 @@ __initfunc (static int gdth_init_isa(ulong bios_adr,gdth_ha_str *ha))
     writeb(0xff, &dp2_ptr->u.ic.S_Cmd_Indx);
     writeb(0, &dp2_ptr->io.event);
     retries = INIT_RETRIES;
-    gdth_delay(20);
+    JIFFYWAIT(2);
     while (readb(&dp2_ptr->u.ic.S_Status) != 0xff) {
         if (--retries == 0) {
             printk("GDT-ISA: Initialization error (DEINIT failed)\n");
 	    gdth_munmap(ha->brd);
             return 0;
         }
-        gdth_delay(1);
+        mdelay(1);
     }
     prot_ver = (unchar)readl(&dp2_ptr->u.ic.S_Info[0]);
     writeb(0, &dp2_ptr->u.ic.Status);
@@ -742,14 +686,14 @@ __initfunc (static int gdth_init_isa(ulong bios_adr,gdth_ha_str *ha))
     writeb(0xfe, &dp2_ptr->u.ic.S_Cmd_Indx);
     writeb(0, &dp2_ptr->io.event);
     retries = INIT_RETRIES;
-    gdth_delay(20);
+    JIFFYWAIT(2);
     while (readb(&dp2_ptr->u.ic.S_Status) != 0xfe) {
         if (--retries == 0) {
             printk("GDT-ISA: Initialization error\n");
 	    gdth_munmap(ha->brd);
             return 0;
         }
-        gdth_delay(1);
+        mdelay(1);
     }
     writeb(0, &dp2_ptr->u.ic.Status);
     writeb(0xff, &dp2_ptr->io.irqdel);
@@ -757,14 +701,13 @@ __initfunc (static int gdth_init_isa(ulong bios_adr,gdth_ha_str *ha))
 }
 
 
-__initfunc (static int gdth_init_pci(gdth_pci_str *pcistr,gdth_ha_str *ha))
+static int gdth_init_pci(gdth_pci_str *pcistr,gdth_ha_str *ha)
 {
     register gdt6_dpram_str *dp6_ptr;
     register gdt6c_dpram_str *dp6c_ptr;
     register gdt6m_dpram_str *dp6m_ptr;
     ulong retries;
     unchar prot_ver;
-    int i, found = FALSE;
 
     TRACE(("gdth_init_pci()\n"));
 
@@ -798,14 +741,14 @@ __initfunc (static int gdth_init_pci(gdth_pci_str *pcistr,gdth_ha_str *ha))
         writeb(0xff, &dp6_ptr->u.ic.S_Cmd_Indx);
         writeb(0, &dp6_ptr->io.event);
         retries = INIT_RETRIES;
-        gdth_delay(20);
+        JIFFYWAIT(2);
         while (readb(&dp6_ptr->u.ic.S_Status) != 0xff) {
             if (--retries == 0) {
                 printk("GDT-PCI: Initialization error (DEINIT failed)\n");
 		gdth_munmap(ha->brd);
                 return 0;
             }
-            gdth_delay(1);
+            mdelay(1);
         }
         prot_ver = (unchar)readl(&dp6_ptr->u.ic.S_Info[0]);
         writeb(0, &dp6_ptr->u.ic.S_Status);
@@ -827,14 +770,14 @@ __initfunc (static int gdth_init_pci(gdth_pci_str *pcistr,gdth_ha_str *ha))
         writeb(0xfe, &dp6_ptr->u.ic.S_Cmd_Indx);
         writeb(0, &dp6_ptr->io.event);
         retries = INIT_RETRIES;
-        gdth_delay(20);
+        JIFFYWAIT(2);
         while (readb(&dp6_ptr->u.ic.S_Status) != 0xfe) {
             if (--retries == 0) {
                 printk("GDT-PCI: Initialization error\n");
 		gdth_munmap(ha->brd);
                 return 0;
             }
-            gdth_delay(1);
+            mdelay(1);
         }
         writeb(0, &dp6_ptr->u.ic.S_Status);
         writeb(0xff, &dp6_ptr->io.irqdel);
@@ -871,14 +814,14 @@ __initfunc (static int gdth_init_pci(gdth_pci_str *pcistr,gdth_ha_str *ha))
         outb(1,PTR2USHORT(&ha->plx->ldoor_reg));
 
         retries = INIT_RETRIES;
-        gdth_delay(20);
+        JIFFYWAIT(2);
         while (readb(&dp6c_ptr->u.ic.S_Status) != 0xff) {
             if (--retries == 0) {
                 printk("GDT-PCI: Initialization error (DEINIT failed)\n");
 		gdth_munmap(ha->brd);
                 return 0;
             }
-            gdth_delay(1);
+            mdelay(1);
         }
         prot_ver = (unchar)readl(&dp6c_ptr->u.ic.S_Info[0]);
         writeb(0, &dp6c_ptr->u.ic.Status);
@@ -901,14 +844,14 @@ __initfunc (static int gdth_init_pci(gdth_pci_str *pcistr,gdth_ha_str *ha))
         outb(1,PTR2USHORT(&ha->plx->ldoor_reg));
 
         retries = INIT_RETRIES;
-        gdth_delay(20);
+        JIFFYWAIT(2);
         while (readb(&dp6c_ptr->u.ic.S_Status) != 0xfe) {
             if (--retries == 0) {
                 printk("GDT-PCI: Initialization error\n");
 		gdth_munmap(ha->brd);
                 return 0;
             }
-            gdth_delay(1);
+            mdelay(1);
         }
         writeb(0, &dp6c_ptr->u.ic.S_Status);
 
@@ -920,38 +863,14 @@ __initfunc (static int gdth_init_pci(gdth_pci_str *pcistr,gdth_ha_str *ha))
 	    return 0;
 	}
 
-        /* check and reset interface area */
         dp6m_ptr = (gdt6m_dpram_str *)ha->brd;
-	writel(DPMEM_MAGIC, &dp6m_ptr->u);
-	if (readl(&dp6m_ptr->u) != DPMEM_MAGIC) {
-	    printk("GDT-PCI: Cannot access DPMEM at 0x%x (shadowed?)\n", 
-		   (int)ha->brd);
-	    found = FALSE;
-	    for (i = 0xC8000; i < 0xE8000; i += 0x4000) {
-		pcibios_write_config_dword( pcistr->bus, pcistr->device_fn,
-					    PCI_BASE_ADDRESS_0, i );
-		gdth_munmap( ha->brd );
-		ha->brd = gdth_mmap(i, sizeof(gdt6m_dpram_str)); 
-		if (ha->brd == NULL) {
-		    printk("GDT-PCI: Initialization error (DPMEM remap error)\n");
-		    return 0;
-		}
-		dp6m_ptr = (gdt6m_dpram_str *)ha->brd;
-		writel(DPMEM_MAGIC, &dp6m_ptr->u);
-		if (readl(&dp6m_ptr->u) == DPMEM_MAGIC) {
-		    printk("GDT-PCI: Use free address at 0x%x\n",
-			   (int)ha->brd);
-		    found = TRUE;
-		    break;
-		}
-	    }	
-	    if (!found) {
-		printk("GDT-PCI: No free address found!\n");
-		gdth_munmap( ha->brd );
-		return 0;
-	    }
-	}
+        /* reset interface area */
         memset_io((char *)&dp6m_ptr->u,0,sizeof(dp6m_ptr->u));
+        if (readl(&dp6m_ptr->u) != 0) {
+            printk("GDT-PCI: Initialization error (DPMEM write error)\n");
+	    gdth_munmap(ha->brd);
+            return 0;
+        }
         
         /* disable board interrupts, deinit services */
         writeb(readb(&dp6m_ptr->i960r.edoor_en_reg) | 4,
@@ -964,14 +883,14 @@ __initfunc (static int gdth_init_pci(gdth_pci_str *pcistr,gdth_ha_str *ha))
         writeb(0xff, &dp6m_ptr->u.ic.S_Cmd_Indx);
         writeb(1, &dp6m_ptr->i960r.ldoor_reg);
         retries = INIT_RETRIES;
-        gdth_delay(20);
+        JIFFYWAIT(2);
         while (readb(&dp6m_ptr->u.ic.S_Status) != 0xff) {
             if (--retries == 0) {
                 printk("GDT-PCI: Initialization error (DEINIT failed)\n");
 		gdth_munmap(ha->brd);
                 return 0;
             }
-            gdth_delay(1);
+            mdelay(1);
         }
         prot_ver = (unchar)readl(&dp6m_ptr->u.ic.S_Info[0]);
         writeb(0, &dp6m_ptr->u.ic.S_Status);
@@ -992,14 +911,14 @@ __initfunc (static int gdth_init_pci(gdth_pci_str *pcistr,gdth_ha_str *ha))
         writeb(0xfe, &dp6m_ptr->u.ic.S_Cmd_Indx);
         writeb(1, &dp6m_ptr->i960r.ldoor_reg);
         retries = INIT_RETRIES;
-        gdth_delay(20);
+        JIFFYWAIT(2);
         while (readb(&dp6m_ptr->u.ic.S_Status) != 0xfe) {
             if (--retries == 0) {
                 printk("GDT-PCI: Initialization error\n");
 		gdth_munmap(ha->brd);
                 return 0;
             }
-            gdth_delay(1);
+            mdelay(1);
         }
         writeb(0, &dp6m_ptr->u.ic.S_Status);
     }
@@ -1010,7 +929,7 @@ __initfunc (static int gdth_init_pci(gdth_pci_str *pcistr,gdth_ha_str *ha))
 
 /* controller protocol functions */
 
-__initfunc (static void gdth_enable_int(int hanum))
+static void gdth_enable_int(int hanum)
 {
     gdth_ha_str *ha;
     ulong flags;
@@ -1266,12 +1185,12 @@ static int gdth_wait(int hanum,int index,ulong time)
             answer_found = TRUE;
             break;
         }
-        gdth_delay(1);
+        mdelay(1);
     } while (--time);
     gdth_from_wait = FALSE;
     
     while (gdth_test_busy(hanum))
-        gdth_delay(0);
+        udelay(1);
 
     return (answer_found);
 }
@@ -1322,14 +1241,14 @@ static int gdth_internal_cmd(int hanum,unchar service,ushort opcode,ulong p1,
         ha->cmd_cnt          = 0;
         gdth_copy_command(hanum);
         gdth_release_event(hanum);
-        gdth_delay(20);
+        JIFFYWAIT(2);
         if (!gdth_wait(hanum,index,INIT_TIMEOUT)) {
             printk("GDT: Initialization error (timeout service %d)\n",service);
             return 0;
         }
         if (ha->status != S_BSY || --retries == 0)
             break;
-        gdth_delay(1);   
+        mdelay(1);   
     }   
     
     return (ha->status != S_OK ? 0:1);
@@ -1338,7 +1257,7 @@ static int gdth_internal_cmd(int hanum,unchar service,ushort opcode,ulong p1,
 
 /* search for devices */
 
-__initfunc (static int gdth_search_drives(int hanum))
+static int gdth_search_drives(int hanum)
 {
     register gdth_ha_str *ha;
     ushort cdev_cnt,i;
@@ -1346,7 +1265,6 @@ __initfunc (static int gdth_search_drives(int hanum))
     ulong drv_cyls, drv_hds, drv_secs;
     ulong bus_no;
     gdth_getch_str *chn;
-    gdth_iochan_str *ioc;
     
     TRACE(("gdth_search_drives() hanum %d\n",hanum));
     ha = HADATA(gdth_ctr_tab[hanum]);
@@ -1381,41 +1299,25 @@ __initfunc (static int gdth_search_drives(int hanum))
     TRACE2(("gdth_search_drives() CACHES. init. after mountall\n"));
     cdev_cnt = (ushort)ha->info;
 
-    /* detect number of SCSI buses - try new IOCTL */
-    ioc = (gdth_iochan_str *)DMADATA(gdth_ctr_tab[hanum]);
-    ioc->version 	= -1UL;
-    ioc->list_entries	= MAXBUS;
-    ioc->first_chan	= 0;
-    ioc->last_chan	= MAXBUS-1;
-    ioc->list_offset	= GDTOFFSOF(gdth_iochan_str, list[0]);
-    if (gdth_internal_cmd(hanum,CACHESERVICE,GDT_IOCTL,GET_IOCHAN_DESC,
-			  INVALID_CHANNEL,sizeof(gdth_iochan_str))) {
-	TRACE2(("GET_IOCHAN_DESC supported!\n"));
-	ha->bus_cnt = ioc->chan_count;
-	for (bus_no = 0; bus_no < ha->bus_cnt; ++bus_no)
-	    if (ioc->list[bus_no].proc_id < MAXID)
-		ha->id[bus_no][ioc->list[bus_no].proc_id].type = SIOP_DTYP;
-    } else {
-	/* old method */
-	chn = (gdth_getch_str *)DMADATA(gdth_ctr_tab[hanum]);
-	for (bus_no = 0; bus_no < MAXBUS; ++bus_no) {
-	    chn->channel_no = bus_no;
-	    if (!gdth_internal_cmd(hanum,CACHESERVICE,GDT_IOCTL,
-				   SCSI_CHAN_CNT | L_CTRL_PATTERN,
-				   IO_CHANNEL | INVALID_CHANNEL,
-				   sizeof(gdth_getch_str))) {
-		if (bus_no == 0) {
-		    printk("GDT: Error detecting SCSI channel count (0x%x)\n",
-			   ha->status);
-		    return 0;
-		}
-		break;
+    /* detect number of SCSI buses */
+    chn = (gdth_getch_str *)DMADATA(gdth_ctr_tab[hanum]);
+    for (bus_no=0; bus_no<MAXBUS; ++bus_no) {
+	chn->channel_no = bus_no;
+	if (!gdth_internal_cmd(hanum,CACHESERVICE,GDT_IOCTL,
+			       SCSI_CHAN_CNT | L_CTRL_PATTERN,
+			       IO_CHANNEL | INVALID_CHANNEL,
+			       sizeof(gdth_getch_str))) {
+	    if (bus_no == 0) {
+		printk("GDT: Error detecting SCSI channel count (0x%x)\n",
+		       ha->status);
+		return 0;
 	    }
-	    if (chn->siop_id < MAXID)
-		ha->id[bus_no][chn->siop_id].type = SIOP_DTYP;
-	}       
-	ha->bus_cnt = (unchar)bus_no;
-    }
+	    break;
+	}
+	if (chn->siop_id < MAXID)
+	    ha->id[bus_no][chn->siop_id].type = SIOP_DTYP;
+    }       
+    ha->bus_cnt = (unchar)bus_no;
     TRACE2(("gdth_search_drives() %d SCSI channels\n",ha->bus_cnt));
 
     /* read cache configuration */
@@ -1430,16 +1332,6 @@ __initfunc (static int gdth_search_drives(int hanum))
 	    ha->cpar.version,ha->cpar.state,ha->cpar.strategy,
 	    ha->cpar.write_back,ha->cpar.block_size));
 
-    /* read board info, fill ctr_name[] */
-    if (gdth_internal_cmd(hanum,CACHESERVICE,GDT_IOCTL,BOARD_INFO,
-			  INVALID_CHANNEL,sizeof(gdth_binfo_str))) {
-	TRACE2(("BOARD_INFO supported!\n"));
-	strcpy(ha->ctr_name, ((gdth_binfo_str *)DMADATA(gdth_ctr_tab[hanum]))->type_string);
-    } else {
-	strcpy(ha->ctr_name, gdth_ctr_name(hanum));
-    }
-    TRACE2(("Controller name: %s\n",ha->ctr_name));
-
     /* initialize raw service */
     if (!gdth_internal_cmd(hanum,SCSIRAWSERVICE,GDT_INIT,0,0,0)) {
         printk("GDT: Initialization error raw service (code %d)\n",
@@ -1453,7 +1345,8 @@ __initfunc (static int gdth_search_drives(int hanum))
     if (gdth_internal_cmd(hanum,SCSIRAWSERVICE,GDT_SET_FEAT,SCATTER_GATHER,
                           0,0)) {
         TRACE2(("gdth_search_drives(): set features RAWSERVICE OK\n"));
-        if (gdth_internal_cmd(hanum,SCSIRAWSERVICE,GDT_GET_FEAT,0,0,0)) {
+        if (gdth_internal_cmd(hanum,SCSIRAWSERVICE,GDT_GET_FEAT,0,0,0))
+        {
             TRACE2(("gdth_search_dr(): get feat RAWSERVICE %ld\n",
                           ha->info));
             ha->raw_feat = (ushort)ha->info;
@@ -1469,21 +1362,6 @@ __initfunc (static int gdth_search_drives(int hanum))
                           ha->info));
             ha->cache_feat = (ushort)ha->info;
         }
-    }
-
-    /* reserve drives for raw service */
-    for (i = 0; reserve_list[i].hanum != 0xff; ++i) {
-	if (reserve_list[i].hanum < MAXHA && reserve_list[i].hanum == hanum &&
-	    reserve_list[i].bus < MAXBUS && reserve_list[i].id < MAXID) {
-	    TRACE2(("gdth_search_drives(): reserve ha %d bus %d id %d\n",
-		    reserve_list[i].hanum, reserve_list[i].bus,
-		    reserve_list[i].id));
-	    if (!gdth_internal_cmd(hanum,SCSIRAWSERVICE,GDT_RESERVE,0,
-				   reserve_list[i].bus, reserve_list[i].id)) {
-		printk("GDT: Error raw service (RESERVE, code %d)\n",
-		       ha->status);
-	    }
-	}
     }
 
     /* scanning for raw devices */
@@ -1583,7 +1461,7 @@ static void gdth_putq(int hanum,Scsi_Cmnd *scp,unchar priority)
 
     ha = HADATA(gdth_ctr_tab[hanum]);
     scp->SCp.this_residual = (int)priority;
-    gdth_update_timeout(hanum, scp, scp->timeout_per_command * 6);
+    gdth_update_timeout(scp, scp->timeout * 6);
 #if LINUX_VERSION_CODE >= 0x020000
     b = scp->channel;
 #else
@@ -1593,7 +1471,7 @@ static void gdth_putq(int hanum,Scsi_Cmnd *scp,unchar priority)
 #if LINUX_VERSION_CODE >= 0x010300
     if (priority >= DEFAULT_PRI && ha->id[b][t].lock) {
         TRACE2(("gdth_putq(): locked IO -> update_timeout()\n"));
-        scp->SCp.buffers_residual = gdth_update_timeout(hanum, scp, 0);
+        scp->SCp.buffers_residual = gdth_update_timeout(scp, 0);
     }
 #endif
 
@@ -1662,7 +1540,7 @@ static void gdth_next(int hanum)
                         return;
                     }
                     while (gdth_test_busy(hanum))
-                        gdth_delay(1);
+                        mdelay(1);
                 }
                 firsttime = FALSE;
             }
@@ -1700,10 +1578,7 @@ static void gdth_next(int hanum)
                         TRACE2(("Prevent r. nonremov. drive->do nothing\n"));
                         nscp->result = DID_OK << 16;
                         restore_flags( flags );
-                        if (!nscp->SCp.have_data_in)
-                            nscp->SCp.have_data_in++;
-                        else
-                            nscp->scsi_done(nscp);
+                        nscp->scsi_done(nscp);
                         save_flags( flags );
                         cli();
                     } else {
@@ -1731,10 +1606,7 @@ static void gdth_next(int hanum)
                        nscp->cmnd[0]);
                     nscp->result = DID_ABORT << 16;
                     restore_flags( flags );
-                    if (!nscp->SCp.have_data_in)
-                        nscp->SCp.have_data_in++;
-                    else
-                        nscp->scsi_done(nscp);
+                    nscp->scsi_done( nscp );
                     save_flags( flags );
                     cli();
                     break;
@@ -1872,10 +1744,7 @@ static int gdth_internal_cache_cmd(int hanum,Scsi_Cmnd *scp,
     }
 
     restore_flags(*flags);
-    if (!scp->SCp.have_data_in)
-        scp->SCp.have_data_in++;
-    else
-        scp->scsi_done(scp);
+    scp->scsi_done(scp);
     save_flags(*flags);
     cli();
     return 1;
@@ -2284,18 +2153,16 @@ static void gdth_clear_events()
 
 /* SCSI interface functions */
 
-#if LINUX_VERSION_CODE >= 0x02015F
-static void do_gdth_interrupt(int irq,void *dev_id,struct pt_regs *regs)
+#if LINUX_VERSION_CODE >= 0x010346
+static void do_gdth_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 {
-    ulong flags;
+    unsigned long flags;
 
     spin_lock_irqsave(&io_request_lock, flags);
     gdth_interrupt(irq, dev_id, regs);
     spin_unlock_irqrestore(&io_request_lock, flags);
 }
-#endif
 
-#if LINUX_VERSION_CODE >= 0x010346
 static void gdth_interrupt(int irq,void *dev_id,struct pt_regs *regs)
 #else
 static void gdth_interrupt(int irq,struct pt_regs *regs)
@@ -2496,7 +2363,7 @@ static int gdth_sync_event(int hanum,int service,unchar index,Scsi_Cmnd *scp)
 
         if (msg->msg_ext && !msg->msg_answer) {
             while (gdth_test_busy(hanum))
-                gdth_delay(0);
+                udelay(1);
             cmdp->Service       = SCREENSERVICE;
             cmdp->RequestBuffer = SCREEN_CMND;
             gdth_get_cmd_index(hanum);
@@ -2533,7 +2400,7 @@ static int gdth_sync_event(int hanum,int service,unchar index,Scsi_Cmnd *scp)
             }
             msg->msg_len = i;
             while (gdth_test_busy(hanum))
-                gdth_delay(0);
+                udelay(1);
             cmdp->Service       = SCREENSERVICE;
             cmdp->RequestBuffer = SCREEN_CMND;
             gdth_get_cmd_index(hanum);
@@ -2560,7 +2427,7 @@ static int gdth_sync_event(int hanum,int service,unchar index,Scsi_Cmnd *scp)
             scp->result = DID_OK << 16;
         } else if (ha->status == S_BSY) {
             TRACE2(("Controller busy -> retry !\n"));
-            gdth_putq(hanum,scp,scp->SCp.this_residual);
+            gdth_putq(hanum,scp,DEFAULT_PRI);
             return 1;
         } else {
             if (service == CACHESERVICE) {
@@ -2587,17 +2454,15 @@ static int gdth_sync_event(int hanum,int service,unchar index,Scsi_Cmnd *scp)
                         gdth_store_event(ES_SYNC, service, &dvr);
                 }
             } else {
-                if (ha->status!=S_RAW_SCSI || ha->status==S_RAW_ILL || ha->info>=0x100) {
+                if (ha->status!=S_RAW_SCSI || ha->status==S_RAW_ILL) {
                     scp->result = DID_BAD_TARGET << 16;
                 } else {
                     scp->result = (DID_OK << 16) | ha->info;
                 }
             }
         }
-	if (!scp->SCp.have_data_in)
-	    scp->SCp.have_data_in++;
-	else
-	    scp->scsi_done(scp);
+        scp->SCp.have_data_in++;
+        scp->scsi_done(scp);
     }
 
     return 1;
@@ -2745,7 +2610,7 @@ static int gdth_async_event(int hanum,int service)
     if (service == SCREENSERVICE) {
         if (ha->status == MSG_REQUEST) {
             while (gdth_test_busy(hanum))
-                gdth_delay(0);
+                udelay(1);
             cmdp->Service       = SCREENSERVICE;
             cmdp->RequestBuffer = SCREEN_CMND;
             cmd_index = gdth_get_cmd_index(hanum);
@@ -2812,9 +2677,8 @@ static int gdth_async_event(int hanum,int service)
     return 1;
 }
 
-
 #ifdef GDTH_STATISTICS
-void gdth_timeout(ulong data)
+void gdth_timeout(void)
 {
     ulong flags,i;
     Scsi_Cmnd *nscp;
@@ -2836,14 +2700,13 @@ void gdth_timeout(ulong data)
             act_ints, act_ios, act_stats, act_rq));
     act_ints = act_ios = 0;
 
-    gdth_timer.expires = jiffies + 30 * HZ;
-    add_timer(&gdth_timer);
+    timer_table[GDTH_TIMER].expires = jiffies + 30*HZ;
+    timer_active |= 1<<GDTH_TIMER;
     restore_flags(flags);
 }
 #endif
 
-
-__initfunc (int gdth_detect(Scsi_Host_Template *shtp))
+int gdth_detect(Scsi_Host_Template *shtp)
 {
     struct Scsi_Host *shp;
     gdth_ha_str *ha;
@@ -2868,7 +2731,7 @@ __initfunc (int gdth_detect(Scsi_Host_Template *shtp))
 #else
     printk("Console\n");
 #endif
-    gdth_delay(3000);
+    WAITSEC(3);
 #endif
 
     TRACE(("gdth_detect()\n"));
@@ -2903,10 +2766,8 @@ __initfunc (int gdth_detect(Scsi_Host_Template *shtp))
 
             save_flags(flags);
             cli();
-#if LINUX_VERSION_CODE >= 0x02015F 
+#if LINUX_VERSION_CODE >= 0x010346 
             if (request_irq(ha->irq,do_gdth_interrupt,SA_INTERRUPT,"gdth",NULL))
-#elif LINUX_VERSION_CODE >= 0x010346 
-            if (request_irq(ha->irq,gdth_interrupt,SA_INTERRUPT,"gdth",NULL))
 #else
             if (request_irq(ha->irq,gdth_interrupt,SA_INTERRUPT,"gdth")) 
 #endif
@@ -2952,7 +2813,6 @@ __initfunc (int gdth_detect(Scsi_Host_Template *shtp))
                 for (j=0; j<MAXID; ++j) {
                     ha->id[i][j].type = EMPTY_DTYP;
                     ha->id[i][j].lock = 0;
-		    ha->id[i][j].heads = 0;
                 }
             }
             restore_flags(flags);
@@ -2975,7 +2835,7 @@ __initfunc (int gdth_detect(Scsi_Host_Template *shtp))
 
 #if LINUX_VERSION_CODE >= 0x020000
             shp->max_id      = 8;
-            shp->max_lun     = MAXLUN;
+            shp->max_lun     = 8;
             shp->max_channel = ha->bus_cnt - 1;
 #else
             /* register addit. SCSI channels as virtual controllers */
@@ -3015,10 +2875,8 @@ __initfunc (int gdth_detect(Scsi_Host_Template *shtp))
 
             save_flags(flags);
             cli();
-#if LINUX_VERSION_CODE >= 0x02015F 
+#if LINUX_VERSION_CODE >= 0x010346 
             if (request_irq(ha->irq,do_gdth_interrupt,SA_INTERRUPT,"gdth",NULL))
-#elif LINUX_VERSION_CODE >= 0x010346 
-            if (request_irq(ha->irq,gdth_interrupt,SA_INTERRUPT,"gdth",NULL))
 #else
             if (request_irq(ha->irq,gdth_interrupt,SA_INTERRUPT,"gdth")) 
 #endif
@@ -3053,7 +2911,6 @@ __initfunc (int gdth_detect(Scsi_Host_Template *shtp))
                 for (j=0; j<MAXID; ++j) {
                     ha->id[i][j].type = EMPTY_DTYP;
                     ha->id[i][j].lock = 0;
-		    ha->id[i][j].heads = 0;
                 }
             }
             restore_flags(flags);
@@ -3076,7 +2933,7 @@ __initfunc (int gdth_detect(Scsi_Host_Template *shtp))
 
 #if LINUX_VERSION_CODE >= 0x020000
             shp->max_id      = 8;
-            shp->max_lun     = MAXLUN;
+            shp->max_lun     = 8;
             shp->max_channel = ha->bus_cnt - 1;
 #else
             /* register addit. SCSI channels as virtual controllers */
@@ -3105,7 +2962,7 @@ __initfunc (int gdth_detect(Scsi_Host_Template *shtp))
     }
 
     /* scanning for PCI controllers */
-    for (device_id = 0; device_id <= PCI_DEVICE_ID_VORTEX_GDTMAXRP; ++device_id) {
+    for (device_id = 0; device_id <= PCI_DEVICE_ID_VORTEX_GDT6x21RP2; ++device_id) {
         if (device_id > PCI_DEVICE_ID_VORTEX_GDT6555 &&
             device_id < PCI_DEVICE_ID_VORTEX_GDT6x17RP)
             continue;
@@ -3124,12 +2981,10 @@ __initfunc (int gdth_detect(Scsi_Host_Template *shtp))
 
             save_flags(flags);
             cli();
-#if LINUX_VERSION_CODE >= 0x02015F 
-            if (request_irq(ha->irq,do_gdth_interrupt,SA_INTERRUPT|SA_SHIRQ,"gdth",NULL))
-#elif LINUX_VERSION_CODE >= 0x010346 
-            if (request_irq(ha->irq,gdth_interrupt,SA_INTERRUPT|SA_SHIRQ,"gdth",NULL))
+#if LINUX_VERSION_CODE >= 0x010346 
+            if (request_irq(ha->irq,do_gdth_interrupt,SA_INTERRUPT,"gdth",NULL))
 #else
-            if (request_irq(ha->irq,gdth_interrupt,SA_INTERRUPT|SA_SHIRQ,"gdth")) 
+            if (request_irq(ha->irq,gdth_interrupt,SA_INTERRUPT,"gdth")) 
 #endif
             {
                 printk("GDT-PCI: Unable to allocate IRQ\n");
@@ -3160,7 +3015,6 @@ __initfunc (int gdth_detect(Scsi_Host_Template *shtp))
                 for (j=0; j<MAXID; ++j) {
                     ha->id[i][j].type = EMPTY_DTYP;
                     ha->id[i][j].lock = 0;
-		    ha->id[i][j].heads = 0;
                 }
             }
             restore_flags(flags);
@@ -3182,8 +3036,8 @@ __initfunc (int gdth_detect(Scsi_Host_Template *shtp))
             }
 
 #if LINUX_VERSION_CODE >= 0x020000
-            shp->max_id      = MAXID;
-            shp->max_lun     = MAXLUN;
+            shp->max_id      = 8;
+            shp->max_lun     = 8;
             shp->max_channel = ha->bus_cnt - 1;
 #else
             /* register addit. SCSI channels as virtual controllers */
@@ -3212,11 +3066,9 @@ __initfunc (int gdth_detect(Scsi_Host_Template *shtp))
     if (gdth_ctr_count > 0) {
 #ifdef GDTH_STATISTICS
 	TRACE2(("gdth_detect(): Initializing timer !\n"));
-	init_timer(&gdth_timer);
-	gdth_timer.expires = jiffies + HZ;
-	gdth_timer.data = 0L;
-	gdth_timer.function = gdth_timeout;
-	add_timer(&gdth_timer);
+	timer_table[GDTH_TIMER].fn = gdth_timeout;
+	timer_table[GDTH_TIMER].expires = jiffies + HZ;
+	timer_active |= 1<<GDTH_TIMER;
 #endif
 #if LINUX_VERSION_CODE >= 0x020100
 	register_reboot_notifier(&gdth_notifier);
@@ -3233,11 +3085,9 @@ int gdth_release(struct Scsi_Host *shp)
 
     TRACE2(("gdth_release()\n"));
 
+    save_flags(flags);
+    cli();
     if (NUMDATA(shp)->busnum == 0) {
-	gdth_flush(NUMDATA(shp)->hanum);
-
-	save_flags(flags);
-	cli();
         if (shp->irq) {
 #if LINUX_VERSION_CODE >= 0x010346
             free_irq(shp->irq,NULL);
@@ -3248,21 +3098,9 @@ int gdth_release(struct Scsi_Host *shp)
         if (shp->dma_channel != 0xff) {
             free_dma(shp->dma_channel);
         }
-	restore_flags(flags);
-	gdth_ctr_released++;
-	TRACE2(("gdth_release(): HA %d of %d\n", 
-		gdth_ctr_released, gdth_ctr_count));
-
-	if (gdth_ctr_released == gdth_ctr_count) {
-#ifdef GDTH_STATISTICS
-	    del_timer(&gdth_timer);
-#endif
-#if LINUX_VERSION_CODE >= 0x020100
-	    unregister_reboot_notifier(&gdth_notifier);
-#endif
-	}
     }
 
+    restore_flags(flags);
     scsi_unregister(shp);
     return 0;
 }
@@ -3279,40 +3117,102 @@ static const char *gdth_ctr_name(int hanum)
     if (ha->type == GDT_EISA) {
         switch (ha->stype) {
           case GDT3_ID:
-            return("GDT3000/3020");
+            return("GDT3000/3020 (EISA)");
           case GDT3A_ID:
-            return("GDT3000A/3020A/3050A");
+            return("GDT3000A/3020A/3050A (EISA)");
           case GDT3B_ID:
-            return("GDT3000B/3010A");
+            return("GDT3000B/3010A (EISA)");
         }
     } else if (ha->type == GDT_ISA) {
-        return("GDT2000/2020");
+        return("GDT2000/2020 (ISA)");
     } else if (ha->type == GDT_PCI) {
         switch (ha->stype) {
           case PCI_DEVICE_ID_VORTEX_GDT60x0:
-            return("GDT6000/6020/6050");
+            return("GDT6000/6020/6050 (PCI)");
           case PCI_DEVICE_ID_VORTEX_GDT6000B:
-            return("GDT6000B/6010");
+            return("GDT6000B/6010 (PCI)");
         }
-    } 
-    /* new controllers (GDT_PCINEW, GDT_PCIMPR, ..) use board_info IOCTL! */
-
+    } else if (ha->type == GDT_PCINEW) {
+        switch (ha->stype) {
+          case PCI_DEVICE_ID_VORTEX_GDT6x10:
+            return("GDT6110/6510 (PCI)");
+          case PCI_DEVICE_ID_VORTEX_GDT6x20:
+            return("GDT6120/6520 (PCI)");
+          case PCI_DEVICE_ID_VORTEX_GDT6530:
+            return("GDT6530 (PCI)");
+          case PCI_DEVICE_ID_VORTEX_GDT6550:
+            return("GDT6550 (PCI)");
+          case PCI_DEVICE_ID_VORTEX_GDT6x17:
+            return("GDT6117/6517 (PCI)");
+          case PCI_DEVICE_ID_VORTEX_GDT6x27:
+            return("GDT6127/6527 (PCI)");
+          case PCI_DEVICE_ID_VORTEX_GDT6537:
+            return("GDT6537 (PCI)");
+          case PCI_DEVICE_ID_VORTEX_GDT6557:
+            return("GDT6557/6557-ECC (PCI)");
+          case PCI_DEVICE_ID_VORTEX_GDT6x15:
+            return("GDT6115/6515 (PCI)");
+          case PCI_DEVICE_ID_VORTEX_GDT6x25:
+            return("GDT6125/6525 (PCI)");
+          case PCI_DEVICE_ID_VORTEX_GDT6535:
+            return("GDT6535 (PCI)");
+          case PCI_DEVICE_ID_VORTEX_GDT6555:
+            return("GDT6555/6555-ECC (PCI)");
+        }
+    } else if (ha->type == GDT_PCIMPR) {
+        switch (ha->stype) {
+          case PCI_DEVICE_ID_VORTEX_GDT6x17RP:
+            return("GDT6117RP/GDT6517RP (PCI)");
+          case PCI_DEVICE_ID_VORTEX_GDT6x27RP:
+            return("GDT6127RP/GDT6527RP (PCI)");
+          case PCI_DEVICE_ID_VORTEX_GDT6537RP:
+            return("GDT6537RP (PCI)");
+          case PCI_DEVICE_ID_VORTEX_GDT6557RP:
+            return("GDT6557RP (PCI)");
+          case PCI_DEVICE_ID_VORTEX_GDT6x11RP:
+            return("GDT6111RP/GDT6511RP (PCI)");
+          case PCI_DEVICE_ID_VORTEX_GDT6x21RP:
+            return("GDT6121RP/GDT6521RP (PCI)");
+          case PCI_DEVICE_ID_VORTEX_GDT6x17RP1:
+            return("GDT6117RP1/GDT6517RP1 (PCI)");
+          case PCI_DEVICE_ID_VORTEX_GDT6x27RP1:
+            return("GDT6127RP1/GDT6527RP1 (PCI)");
+          case PCI_DEVICE_ID_VORTEX_GDT6537RP1:
+            return("GDT6537RP1 (PCI)");
+          case PCI_DEVICE_ID_VORTEX_GDT6557RP1:
+            return("GDT6557RP1 (PCI)");
+          case PCI_DEVICE_ID_VORTEX_GDT6x11RP1:
+            return("GDT6111RP1/GDT6511RP1 (PCI)");
+          case PCI_DEVICE_ID_VORTEX_GDT6x21RP1:
+            return("GDT6121RP1/GDT6521RP1 (PCI)");
+          case PCI_DEVICE_ID_VORTEX_GDT6x17RP2:
+            return("GDT6117RP2/GDT6517RP2 (PCI)");
+          case PCI_DEVICE_ID_VORTEX_GDT6x27RP2:
+            return("GDT6127RP2/GDT6527RP2 (PCI)");
+          case PCI_DEVICE_ID_VORTEX_GDT6537RP2:
+            return("GDT6537RP2 (PCI)");
+          case PCI_DEVICE_ID_VORTEX_GDT6557RP2:
+            return("GDT6557RP2 (PCI)");
+          case PCI_DEVICE_ID_VORTEX_GDT6x11RP2:
+            return("GDT6111RP2/GDT6511RP2 (PCI)");
+          case PCI_DEVICE_ID_VORTEX_GDT6x21RP2:
+            return("GDT6121RP2/GDT6521RP2 (PCI)");
+        }
+    }
     return("");
 }
 
 const char *gdth_info(struct Scsi_Host *shp)
 {
     int hanum;
-    gdth_ha_str *ha;
-
+    
     TRACE2(("gdth_info()\n"));
     hanum = NUMDATA(shp)->hanum;
-    ha    = HADATA(gdth_ctr_tab[hanum]);
 
-    return ((const char *)ha->ctr_name);
+    return (gdth_ctr_name(hanum));
 }
 
-/* old error handling */
+
 int gdth_abort(Scsi_Cmnd *scp)
 {
     TRACE2(("gdth_abort() reason %d\n",scp->abort_reason));
@@ -3329,32 +3229,6 @@ int gdth_reset(Scsi_Cmnd *scp)
     return SCSI_RESET_PUNT;
 }
 
-#if LINUX_VERSION_CODE >= 0x02015F
-/* new error handling */
-int gdth_eh_abort(Scsi_Cmnd *scp)
-{
-    TRACE2(("gdth_eh_abort()\n"));
-    return FAILED;
-}
-
-int gdth_eh_device_reset(Scsi_Cmnd *scp)
-{
-    TRACE2(("gdth_eh_device_reset()\n"));
-    return FAILED;
-}
-
-int gdth_eh_bus_reset(Scsi_Cmnd *scp)
-{
-    TRACE2(("gdth_eh_bus_reset()\n"));
-    return FAILED;
-}
-
-int gdth_eh_host_reset(Scsi_Cmnd *scp)
-{
-    TRACE2(("gdth_eh_host_reset()\n"));
-    return FAILED;
-}
-#endif
 
 #if LINUX_VERSION_CODE >= 0x010300
 int gdth_bios_param(Disk *disk,kdev_t dev,int *ip)
@@ -3365,30 +3239,12 @@ int gdth_bios_param(Disk *disk,int dev,int *ip)
     unchar b, t;
     int hanum;
     gdth_ha_str *ha;
-    int drv_hds, drv_secs;
 
     hanum = NUMDATA(disk->device->host)->hanum;
     b = disk->device->channel;
     t = disk->device->id;
     TRACE2(("gdth_bios_param() ha %d bus %d target %d\n", hanum, b, t));
     ha = HADATA(gdth_ctr_tab[hanum]);
-
-    if (ha->id[b][t].heads == 0) {
-	/* raw device: evaluate mapping (sectors per head, heads per cylinder) */
-	if (disk->capacity /HEADS/SECS <= MAXCYLS) {
-	    drv_hds = HEADS;
-	    drv_secs= SECS;
-	} else if (disk->capacity /MEDHEADS/MEDSECS <= MAXCYLS) {
-	    drv_hds = MEDHEADS;
-	    drv_secs= MEDSECS;
-	} else {
-	    drv_hds = BIGHEADS;
-	    drv_secs= BIGSECS;
-	}
-	ha->id[b][t].heads = drv_hds;
-	ha->id[b][t].secs = drv_secs;
-	TRACE2(("gdth_bios_param(): raw device -> params evaluated\n"));
-    }
 
     ip[0] = ha->id[b][t].heads;
     ip[1] = ha->id[b][t].secs;
@@ -3427,7 +3283,7 @@ int gdth_queuecommand(Scsi_Cmnd *scp,void (*done)(Scsi_Cmnd *))
                   scp->cmnd[0],scp->target,scp->lun));
     
     scp->scsi_done = (void *)done;
-    scp->SCp.have_data_in = 1;
+    scp->SCp.have_data_in = 0;
     hanum = NUMDATA(scp->host)->hanum;
 #ifdef GDTH_STATISTICS
     ++act_ios;
@@ -3443,53 +3299,6 @@ int gdth_queuecommand(Scsi_Cmnd *scp,void (*done)(Scsi_Cmnd *))
     return 0;
 }
 
-/* flush routine */
-static void gdth_flush(int hanum)
-{
-    int             i, j;
-    gdth_ha_str     *ha;
-    Scsi_Cmnd       scp;
-    Scsi_Device     sdev;
-    gdth_cmd_str    gdtcmd;
-    char            cmnd[12];
-
-    TRACE2(("gdth_flush() hanum %d\n",hanum));
-    ha = HADATA(gdth_ctr_tab[hanum]);
-    memset(&sdev,0,sizeof(Scsi_Device));
-    memset(&scp, 0,sizeof(Scsi_Cmnd));
-    sdev.host = gdth_ctr_tab[hanum];
-    sdev.id = sdev.host->this_id;
-    scp.cmd_len = 12;
-    scp.host = gdth_ctr_tab[hanum];
-    scp.target = sdev.host->this_id;
-    scp.device = &sdev;
-    scp.use_sg = 0;
-
-    for (i = 0; i < MAXBUS; ++i) {
-	for (j = 0; j < MAXID; ++j) {
-	    if (ha->id[i][j].type == CACHE_DTYP) {
-		gdtcmd.BoardNode = LOCALBOARD;
-		gdtcmd.Service = CACHESERVICE;
-		gdtcmd.OpCode = GDT_FLUSH;
-		gdtcmd.u.cache.DeviceNo = ha->id[i][j].hostdrive;
-		gdtcmd.u.cache.BlockNo = 1;
-		gdtcmd.u.cache.sg_canz = 0;
-		TRACE2(("gdth_flush(): flush ha %d drive %d\n",
-                        hanum, ha->id[i][j].hostdrive));
-		{
-		    struct semaphore sem = MUTEX_LOCKED;
-		    scp.request.rq_status = RQ_SCSI_BUSY;
-		    scp.request.sem = &sem;
-		    scp.SCp.this_residual = IOCTL_PRI;
-		    scsi_do_cmd(&scp, cmnd, &gdtcmd,
-				sizeof(gdth_cmd_str), gdth_scsi_done,
-				30*HZ, 1);
-		    down(&sem);
-		}
-	    }
-	}
-    }
-}
 
 /* shutdown routine */
 #if LINUX_VERSION_CODE >= 0x020100
@@ -3498,7 +3307,8 @@ static int gdth_halt(struct notifier_block *nb, ulong event, void *buf)
 void gdth_halt(void)
 #endif
 {
-    int             hanum;
+    int             hanum, i, j;
+    gdth_ha_str     *ha;
     Scsi_Cmnd       scp;
     Scsi_Device     sdev;
     gdth_cmd_str    gdtcmd;
@@ -3510,17 +3320,10 @@ void gdth_halt(void)
 	return NOTIFY_DONE;
 #else
     TRACE2(("gdth_halt()\n"));
-    if (halt_called) {
-	TRACE2(("already called\n"));
-	return;
-    }
-    halt_called = TRUE;
 #endif
     printk("GDT: Flushing all host drives .. ");
     for (hanum = 0; hanum < gdth_ctr_count; ++hanum) {
-        gdth_flush(hanum);
-
-        /* controller reset */
+        ha = HADATA(gdth_ctr_tab[hanum]);
         memset(&sdev,0,sizeof(Scsi_Device));
         memset(&scp, 0,sizeof(Scsi_Cmnd));
         sdev.host = gdth_ctr_tab[hanum];
@@ -3531,6 +3334,32 @@ void gdth_halt(void)
         scp.device = &sdev;
         scp.use_sg = 0;
 
+        /* flush */
+        for (i = 0; i < MAXBUS; ++i) {
+            for (j = 0; j < MAXID; ++j) {
+                if (ha->id[i][j].type == CACHE_DTYP) {
+                    gdtcmd.BoardNode = LOCALBOARD;
+                    gdtcmd.Service = CACHESERVICE;
+                    gdtcmd.OpCode = GDT_FLUSH;
+                    gdtcmd.u.cache.DeviceNo = ha->id[i][j].hostdrive;
+                    gdtcmd.u.cache.BlockNo = 1;
+                    gdtcmd.u.cache.sg_canz = 0;
+                    TRACE2(("gdth_halt(): flush ha %d drive %d\n",
+                        hanum, ha->id[i][j].hostdrive));
+                    {
+                        struct semaphore sem = MUTEX_LOCKED;
+                        scp.request.rq_status = RQ_SCSI_BUSY;
+                        scp.request.sem = &sem;
+                        scsi_do_cmd(&scp, cmnd, &gdtcmd,
+                                    sizeof(gdth_cmd_str), gdth_scsi_done,
+                                    30*HZ, 1);
+                        down(&sem);
+                    }
+                }
+            }
+        }
+
+        /* controller reset */
         gdtcmd.BoardNode = LOCALBOARD;
         gdtcmd.Service = CACHESERVICE;
         gdtcmd.OpCode = GDT_RESET;
@@ -3539,7 +3368,6 @@ void gdth_halt(void)
             struct semaphore sem = MUTEX_LOCKED;
             scp.request.rq_status = RQ_SCSI_BUSY;
             scp.request.sem = &sem;
-            scp.SCp.this_residual = IOCTL_PRI;
             scsi_do_cmd(&scp, cmnd, &gdtcmd,
                 sizeof(gdth_cmd_str), gdth_scsi_done,
                 10*HZ, 1);
@@ -3549,7 +3377,7 @@ void gdth_halt(void)
     printk("Done.\n");
 
 #ifdef GDTH_STATISTICS
-    del_timer(&gdth_timer);
+    timer_active &= ~(1<<GDTH_TIMER);
 #endif
 #if LINUX_VERSION_CODE >= 0x020100
     unregister_reboot_notifier(&gdth_notifier);
@@ -3559,7 +3387,7 @@ void gdth_halt(void)
 
 
 /* called from init/main.c */
-__initfunc (void gdth_setup(char *str,int *ints))
+void gdth_setup(char *str,int *ints)
 {
     static size_t setup_idx = 0;
 

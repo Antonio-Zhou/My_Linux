@@ -1,38 +1,28 @@
-/* $Id: avm_a1.c,v 1.6.2.12 1998/11/03 00:05:44 keil Exp $
+/* $Id: avm_a1.c,v 2.7 1998/02/02 13:29:37 keil Exp $
 
  * avm_a1.c     low level stuff for AVM A1 (Fritz) isdn cards
  *
- * Author       Karsten Keil (keil@isdn4linux.de)
+ * Author       Karsten Keil (keil@temic-ech.spacenet.de)
  *
  *
  * $Log: avm_a1.c,v $
- * Revision 1.6.2.12  1998/11/03 00:05:44  keil
- * certification related changes
- * fixed logging for smaller stack use
- *
- * Revision 1.6.2.11  1998/09/27 13:05:30  keil
- * Apply most changes from 2.1.X (HiSax 3.1)
- *
- * Revision 1.6.2.10  1998/05/27 18:04:50  keil
- * HiSax 3.0
- *
- * Revision 1.6.2.9  1998/04/08 21:58:39  keil
- * New init code
- *
- * Revision 1.6.2.8  1998/01/27 22:37:49  keil
+ * Revision 2.7  1998/02/02 13:29:37  keil
  * fast io
  *
- * Revision 1.6.2.7  1998/01/13 23:06:11  keil
- * really disable internal timer
+ * Revision 2.6  1998/01/13 23:09:46  keil
+ * really disable timer
  *
- * Revision 1.6.2.6  1998/01/02 06:49:01  calle
+ * Revision 2.5  1998/01/02 06:50:29  calle
  * Perodic timer of A1 now disabled, no need for linux driver.
  *
- * Revision 1.6.2.5  1997/11/15 18:50:41  keil
- * new common init function
+ * Revision 2.4  1997/11/08 21:35:42  keil
+ * new l1 init
  *
- * Revision 1.6.2.4  1997/10/17 22:13:29  keil
- * update to last hisax version
+ * Revision 2.3  1997/11/06 17:13:32  keil
+ * New 2.1 init code
+ *
+ * Revision 2.2  1997/10/29 18:55:48  keil
+ * changes for 2.1.60 (irq2dev_map)
  *
  * Revision 2.1  1997/07/27 21:47:13  keil
  * new interface structures
@@ -67,7 +57,7 @@
 #include "isdnl1.h"
 
 extern const char *CardType[];
-static const char *avm_revision = "$Revision: 1.6.2.12 $";
+const char *avm_revision = "$Revision: 2.7 $";
 
 #define	 AVM_A1_STAT_ISAC	0x01
 #define	 AVM_A1_STAT_HSCX	0x02
@@ -155,6 +145,7 @@ avm_a1_interrupt(int intno, void *dev_id, struct pt_regs *regs)
 {
 	struct IsdnCardState *cs = dev_id;
 	u_char val, sval, stat = 0;
+	char tmp[32];
 
 	if (!cs) {
 		printk(KERN_WARNING "AVM A1: Spurious interrupt!\n");
@@ -164,8 +155,10 @@ avm_a1_interrupt(int intno, void *dev_id, struct pt_regs *regs)
 		if (!(sval & AVM_A1_STAT_TIMER)) {
 			byteout(cs->hw.avm.cfg_reg, 0x1E);
 			sval = bytein(cs->hw.avm.cfg_reg);
-		} else if (cs->debug & L1_DEB_INTSTAT)
-			debugl1(cs, "avm IntStatus %x", sval);
+		} else if (cs->debug & L1_DEB_INTSTAT) {
+			sprintf(tmp, "avm IntStatus %x", sval);
+			debugl1(cs, tmp);
+		}
 		if (!(sval & AVM_A1_STAT_HSCX)) {
 			val = readreg(cs->hw.avm.hscx[1], HSCX_ISTA);
 			if (val) {
@@ -224,10 +217,10 @@ AVM_card_msg(struct IsdnCardState *cs, int mt, void *arg)
 			return(request_irq(cs->irq, &avm_a1_interrupt,
 					I4L_IRQ_FLAG, "HiSax", cs));
 		case CARD_INIT:
-			inithscxisac(cs, 1);
-			byteout(cs->hw.avm.cfg_reg, 0x16);
-			byteout(cs->hw.avm.cfg_reg, 0x1E);
-			inithscxisac(cs, 2);
+			clear_pending_isac_ints(cs);
+			clear_pending_hscx_ints(cs);
+			initisac(cs);
+			inithscx(cs);
 			return(0);
 		case CARD_TEST:
 			return(0);
@@ -355,6 +348,7 @@ setup_avm_a1(struct IsdnCard *card))
 	val = bytein(cs->hw.avm.cfg_reg + 2);
 	printk(KERN_INFO "AVM A1: Byte at %x is %x\n",
 	       cs->hw.avm.cfg_reg + 2, val);
+	byteout(cs->hw.avm.cfg_reg, 0x1E);
 	val = bytein(cs->hw.avm.cfg_reg);
 	printk(KERN_INFO "AVM A1: Byte at %x is %x\n",
 	       cs->hw.avm.cfg_reg, val);

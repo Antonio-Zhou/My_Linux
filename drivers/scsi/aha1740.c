@@ -27,7 +27,6 @@
 #endif
 
 #include <linux/kernel.h>
-#include <linux/head.h>
 #include <linux/types.h>
 #include <linux/string.h>
 #include <linux/ioport.h>
@@ -93,7 +92,7 @@ int aha1740_proc_info(char *buffer, char **start, off_t offset,
     }
     host = HOSTDATA(shpnt);
 
-    len = sprintf(buffer, "aha174x at IO:%x, IRQ %d, SLOT %d.\n"
+    len = sprintf(buffer, "aha174x at IO:%lx, IRQ %d, SLOT %d.\n"
 		  "Extended translation %sabled.\n",
 		  shpnt->io_port, shpnt->irq, host->slot,
 		  host->translation ? "en" : "dis");
@@ -228,6 +227,9 @@ void aha1740_intr_handle(int irq, void *dev_id, struct pt_regs * regs)
     struct ecb *ecbptr;
     Scsi_Cmnd *SCtmp;
     unsigned int base;
+    unsigned long flags;
+
+    spin_lock_irqsave(&io_request_lock, flags);
 
     if (!aha_host[irq - 9])
 	panic("aha1740.c: Irq from unknown host!\n");
@@ -304,6 +306,8 @@ void aha1740_intr_handle(int irq, void *dev_id, struct pt_regs * regs)
 	}
 	number_serviced++;
     }
+
+    spin_unlock_irqrestore(&io_request_lock, flags);
 }
 
 int aha1740_queuecommand(Scsi_Cmnd * SCpnt, void (*done)(Scsi_Cmnd *))

@@ -8,9 +8,9 @@
  |                       W. Metzenthen, 22 Parker St, Ormond, Vic 3163,      |
  |                       Australia.  E-mail billm@suburbia.net               |
  |                                                                           |
- | This code has three possible entry points.                                |
+ | This code has four possible entry points.                                 |
  | The following must be entered by a jmp instruction:                       |
- |   fpu_reg_round, and fpu_Arith_exit.                                      |
+ |   fpu_reg_round, fpu_reg_round_sqrt, and fpu_Arith_exit.                  |
  |                                                                           |
  | The FPU_round entry point is intended to be used by C code.               |
  | From C, call as:                                                          |
@@ -25,17 +25,18 @@
  +---------------------------------------------------------------------------*/
 
 /*---------------------------------------------------------------------------+
- | Three entry points.                                                       |
+ | Four entry points.                                                        |
  |                                                                           |
- | Needed by the fpu_reg_round entry point:                                  |
+ | Needed by both the fpu_reg_round and fpu_reg_round_sqrt entry points:     |
  |  %eax:%ebx  64 bit significand                                            |
  |  %edx       32 bit extension of the significand                           |
  |  %edi       pointer to an FPU_REG for the result to be stored             |
  |  stack      calling function must have set up a C stack frame and         |
  |             pushed %esi, %edi, and %ebx                                   |
  |                                                                           |
- | A control word in the same format as the FPU control word must            |
- | be in PARAM4.                                                             |
+ | Needed just for the fpu_reg_round_sqrt entry point:                       |
+ |  %cx  A control word in the same format as the FPU control word.          |
+ | Otherwise, PARAM4 must give such a value.                                 |
  |                                                                           |
  |                                                                           |
  | The significand and its extension are assumed to be exact in the          |
@@ -94,16 +95,17 @@
 /*	Not re-entrant, so we can gain speed by putting
 	local storage in a static area: */
 .data
-	.align 4,0
+	.align 2,0
 FPU_bits_lost:
 	.byte	0
 FPU_denormal:
 	.byte	0
-#endif /* NON_REENTRANT_FPU */
+#endif NON_REENTRANT_FPU
 
 
 .text
 .globl fpu_reg_round
+.globl fpu_reg_round_sqrt
 .globl fpu_Arith_exit
 
 /* Entry point when called from C */
@@ -124,13 +126,13 @@ fpu_reg_round:			/* Normal entry point */
 
 #ifndef NON_REENTRANT_FPU
 	pushl	%ebx		/* adjust the stack pointer */
-#endif /* NON_REENTRANT_FPU */ 
+#endif NON_REENTRANT_FPU
 
 #ifdef PARANOID
 /* Cannot use this here yet */
 /*	orl	%eax,%eax */
 /*	jns	L_entry_bugged */
-#endif /* PARANOID */
+#endif PARANOID
 
 	cmpw	EXP_UNDER,EXP(%edi)
 	jle	L_Make_denorm			/* The number is a de-normal */
@@ -158,12 +160,12 @@ Denorm_done:
 	je	LRound_To_64
 #ifdef PARANOID
 	jmp	L_bugged_denorm_486
-#endif /* PARANOID */ 
+#endif PARANOID
 #else
 #ifdef PARANOID
 	jmp	L_bugged_denorm	/* There is no bug, just a bad control word */
-#endif /* PARANOID */ 
-#endif /* PECULIAR_486 */
+#endif PARANOID
+#endif PECULIAR_486
 
 
 /* Round etc to 24 bit precision */
@@ -184,7 +186,7 @@ LRound_To_24:
 
 #ifdef PARANOID
 	jmp	L_bugged_round24
-#endif /* PARANOID */ 
+#endif PARANOID
 
 LUp_24:
 	cmpb	SIGN_POS,PARAM5
@@ -264,7 +266,7 @@ LRound_To_53:
 
 #ifdef PARANOID
 	jmp	L_bugged_round53
-#endif /* PARANOID */ 
+#endif PARANOID
 
 LUp_53:
 	cmpb	SIGN_POS,PARAM5
@@ -338,7 +340,7 @@ LRound_To_64:
 
 #ifdef PARANOID
 	jmp	L_bugged_round64
-#endif /* PARANOID */ 
+#endif PARANOID
 
 LUp_64:
 	cmpb	SIGN_POS,PARAM5
@@ -363,7 +365,7 @@ LRound_nearest_64:
 	jne	LDo_64_round_up
 
 	/* Now test for round-to-even */
-	testb	$1,%bl
+	testb	$1,%ebx
 	jz	LCheck_truncate_64
 
 LDo_64_round_up:
@@ -428,7 +430,7 @@ fpu_reg_round_special_exit:
 
 #ifndef NON_REENTRANT_FPU
 	popl	%ebx		/* adjust the stack pointer */
-#endif /* NON_REENTRANT_FPU */ 
+#endif NON_REENTRANT_FPU
 
 fpu_Arith_exit:
 	popl	%ebx
@@ -568,7 +570,7 @@ Normalise_result:
 	/* But check it... just in case. */
 	cmpw	EXP_UNDER+1,EXP(%edi)
 	jne	L_norm_bugged
-#endif /* PARANOID */
+#endif PARANOID
 
 #ifdef PECULIAR_486
 	/*
@@ -584,7 +586,7 @@ Normalise_result:
 #else
 	orl	%eax,%eax		/* ms bits */
 	js	L_Normalised		/* No longer a denormal */
-#endif /* PECULIAR_486 */ 
+#endif PECULIAR_486
 
 	jnz	LDenormal_adj_exponent
 
@@ -633,17 +635,9 @@ L_underflow_to_zero:
 /* The operations resulted in a number too large to represent. */
 L_overflow:
 	addw	EXTENDED_Ebias,EXP(%edi)	/* Set for unmasked response. */
-	cmpb	SIGN_POS,PARAM5
-	jne	L_ovfl_neg
-	push	$0
-	jmp	L_ovfl_signed
-L_ovfl_neg:
-	push	$1
-L_ovfl_signed:
 	push	%edi
 	call	SYMBOL_NAME(arith_overflow)
 	pop	%edi
-	addl	$4,%esp
 	jmp	fpu_reg_round_signed_special_exit
 
 
@@ -679,7 +673,7 @@ L_bugged_denorm:
 	call	EXCEPTION
 	popl	%ebx
 	jmp	L_exception_exit
-#endif /* PECULIAR_486 */ 
+#endif PECULIAR_486
 
 L_bugged_round24:
 	pushl	EX_INTERNAL|0x231
@@ -712,4 +706,4 @@ L_entry_bugged:
 L_exception_exit:
 	mov	$-1,%eax
 	jmp	fpu_reg_round_special_exit
-#endif /* PARANOID */ 
+#endif PARANOID

@@ -39,16 +39,8 @@ static int max_interrupt_work = 20;
 #define RX_RING_SIZE	16
 #define PKT_BUF_SZ		1536			/* Size of each temporary Rx buffer.*/
 
-#ifdef MODULE
-#ifdef MODVERSIONS
-#include <linux/modversions.h>
-#endif
 #include <linux/module.h>
 #include <linux/version.h>
-#else
-#define MOD_INC_USE_COUNT
-#define MOD_DEC_USE_COUNT
-#endif
 
 #include <linux/kernel.h>
 #include <linux/sched.h>
@@ -59,8 +51,6 @@ static int max_interrupt_work = 20;
 #include <linux/ioport.h>
 #include <linux/malloc.h>
 #include <linux/interrupt.h>
-#include <linux/pci.h>
-#include <linux/bios32.h>
 #include <linux/timer.h>
 #include <asm/bitops.h>
 #include <asm/io.h>
@@ -69,12 +59,9 @@ static int max_interrupt_work = 20;
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
 #include <linux/skbuff.h>
-#if (LINUX_VERSION_CODE >= 0x10344)
+
 #define NEW_MULTICAST
 #include <linux/delay.h>
-#else
-#define udelay(microsec)	do { int _i = 4*microsec; while (--_i > 0) { __SLOW_DOWN_IO; }} while (0)
-#endif
 
 /* Kernel version compatibility functions. */
 #define RUN_AT(x) (jiffies + (x))
@@ -978,7 +965,7 @@ vortex_start_xmit(struct sk_buff *skb, struct device *dev)
 	} else {
 		/* ... and the packet rounded to a doubleword. */
 		outsl(ioaddr + TX_FIFO, skb->data, (skb->len + 3) >> 2);
-		dev_kfree_skb (skb, FREE_WRITE);
+		dev_kfree_skb (skb);
 		if (inw(ioaddr + TxFree) > 1536) {
 			dev->tbusy = 0;
 		} else
@@ -988,7 +975,7 @@ vortex_start_xmit(struct sk_buff *skb, struct device *dev)
 #else
 	/* ... and the packet rounded to a doubleword. */
 	outsl(ioaddr + TX_FIFO, skb->data, (skb->len + 3) >> 2);
-	dev_kfree_skb (skb, FREE_WRITE);
+	dev_kfree_skb (skb);
 	if (inw(ioaddr + TxFree) > 1536) {
 		dev->tbusy = 0;
 	} else
@@ -1086,7 +1073,7 @@ static void vortex_interrupt IRQ(int irq, void *dev_id, struct pt_regs *regs)
 					virt_to_bus(&lp->tx_ring[entry]))
 					break;			/* It still hasn't been processed. */
 				if (lp->tx_skbuff[entry]) {
-					dev_kfree_skb(lp->tx_skbuff[entry], FREE_WRITE);
+					dev_kfree_skb(lp->tx_skbuff[entry]);
 					lp->tx_skbuff[entry] = 0;
 				}
 				dirty_tx++;
@@ -1103,7 +1090,7 @@ static void vortex_interrupt IRQ(int irq, void *dev_id, struct pt_regs *regs)
 		if (status & DMADone) {
 			outw(0x1000, ioaddr + Wn7_MasterStatus); /* Ack the event. */
 			dev->tbusy = 0;
-			dev_kfree_skb (lp->tx_skb, FREE_WRITE); /* Release the transfered buffer */
+			dev_kfree_skb (lp->tx_skb); /* Release the transfered buffer */
 			mark_bh(NET_BH);
 		}
 #endif
@@ -1379,7 +1366,7 @@ vortex_close(struct device *dev)
 #if LINUX_VERSION_CODE < 0x20100
 				vp->rx_skbuff[i]->free = 1;
 #endif
-				dev_kfree_skb (vp->rx_skbuff[i], FREE_WRITE);
+				dev_kfree_skb (vp->rx_skbuff[i]);
 				vp->rx_skbuff[i] = 0;
 			}
 	}
@@ -1387,7 +1374,7 @@ vortex_close(struct device *dev)
 		outl(0, ioaddr + DownListPtr);
 		for (i = 0; i < TX_RING_SIZE; i++)
 			if (vp->tx_skbuff[i]) {
-				dev_kfree_skb(vp->tx_skbuff[i], FREE_WRITE);
+				dev_kfree_skb(vp->tx_skbuff[i]);
 				vp->tx_skbuff[i] = 0;
 			}
 	}

@@ -326,10 +326,6 @@ void parse(char * pnt) {
       tok = tok_menuoption;
       pnt += 15;
     }
-  else if (strncmp(pnt, "$MAKE ", 6) == 0) 
-    {
-      tok = tok_make;
-    }
   else if (strncmp(pnt, "comment", 7) == 0) 
     {
       tok = tok_comment;
@@ -344,11 +340,6 @@ void parse(char * pnt) {
     {
       tok = tok_define;
       pnt += 11;
-    }
-  else if (strncmp(pnt, "define_int", 10) == 0) 
-    {
-      tok = tok_define_int;
-      pnt += 10;
     }
   else if (strncmp(pnt, "bool", 4) == 0) 
     {
@@ -374,6 +365,11 @@ void parse(char * pnt) {
     {
       tok = tok_hex;
       pnt += 3;
+    }
+  else if (strncmp(pnt, "string", 6) == 0) 
+    {
+      tok = tok_string;
+      pnt += 6;
     }
   else if (strncmp(pnt, "if", 2) == 0) 
     {
@@ -452,10 +448,6 @@ void parse(char * pnt) {
       if(*pnt == 'n' || *pnt == 'N' ) kcfg->value = "0";
       if(*pnt == 'm' || *pnt == 'M' ) kcfg->value = "2";
       break;
-    case tok_define_int:
-      pnt = get_string(pnt, &kcfg->optionname);
-      pnt = get_string(pnt, &kcfg->value);
-      break;
     case tok_menuname:
       pnt = get_qstring(pnt, &kcfg->label);
       break;
@@ -466,6 +458,7 @@ void parse(char * pnt) {
       break;
     case tok_int:
     case tok_hex:
+    case tok_string:
       pnt = get_qstring(pnt, &kcfg->label);
       pnt = get_string(pnt, &kcfg->optionname);
       pnt = get_string(pnt, &kcfg->value);
@@ -515,9 +508,6 @@ void parse(char * pnt) {
 	{
 	  pnt = get_qstring(pnt, &kcfg->label);
 	}
-      break;
-    case tok_make:
-      kcfg->value=strdup(pnt);
       break;
     case tok_else:
     case tok_fi:
@@ -588,7 +578,7 @@ static int do_source(char * filename)
   char buffer[1024];
   int  offset;
   int old_lineno;
-  char * old_file;
+  char * old_file = 0;		/* superfluous, just for gcc */
   char * pnt;
   FILE * infile;
 
@@ -711,6 +701,9 @@ int main(int argc, char * argv[])
 	case tok_hex:
 	  printf("hex ");
 	  break;
+	case tok_string:
+	  printf("istring ");
+	  break;
 	case tok_comment:
 	  printf("comment ");
 	  break;
@@ -741,6 +734,7 @@ int main(int argc, char * argv[])
 	case tok_dep_tristate:
 	case tok_int:
 	case tok_hex:
+	case tok_string:
 	  printf("%s %s\n", cfg->label, cfg->optionname);
 	  break;
 	case tok_if:

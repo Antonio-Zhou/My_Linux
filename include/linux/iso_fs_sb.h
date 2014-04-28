@@ -13,11 +13,9 @@ struct isofs_sb_info {
 	
 	unsigned char s_high_sierra; /* A simple flag */
 	unsigned char s_mapping;
-	unsigned char s_conversion;
 	unsigned char s_rock;
 	unsigned char s_joliet_level;
 	unsigned char s_utf8;
-	unsigned char s_name_check; /* r = relaxed, s = strict */
 	unsigned char s_cruft; /* Broken disks with high
 				  byte of length containing
 				  junk */
@@ -31,10 +29,3 @@ struct isofs_sb_info {
 };
 
 #endif
-
-
-
-
-
-
-

@@ -213,8 +213,8 @@ static const char *version = "defxx.c:v1.04 09/16/96  Lawrence V. Stefani (stefa
 #include <linux/malloc.h>
 #include <linux/interrupt.h>
 #include <linux/pci.h>
-#include <linux/bios32.h>
 #include <linux/delay.h>
+#include <linux/init.h>
 #include <asm/byteorder.h>
 #include <asm/bitops.h>
 #include <asm/io.h>
@@ -224,6 +224,15 @@ static const char *version = "defxx.c:v1.04 09/16/96  Lawrence V. Stefani (stefa
 #include <linux/skbuff.h>
 
 #include "defxx.h"
+
+#define DYNAMIC_BUFFERS 1
+
+#define SKBUFF_RX_COPYBREAK 200
+/*
+ * NEW_SKB_SIZE = PI_RCV_DATA_K_SIZE_MAX+128 to allow 128 byte
+ * alignment for compatibility with old EISA boards.
+ */
+#define NEW_SKB_SIZE (PI_RCV_DATA_K_SIZE_MAX+128)
 
 /* Define global routines */
 
@@ -247,7 +256,7 @@ static void		dfx_int_type_0_process(DFX_board_t *bp);
 static void		dfx_int_common(DFX_board_t *bp);
 static void		dfx_interrupt(int irq, void *dev_id, struct pt_regs *regs);
 
-static struct	enet_statistics *dfx_ctl_get_stats(struct device *dev);
+static struct		net_device_stats *dfx_ctl_get_stats(struct device *dev);
 static void		dfx_ctl_set_multicast_list(struct device *dev);
 static int		dfx_ctl_set_mac_address(struct device *dev, void *addr);
 static int		dfx_ctl_update_cam(DFX_board_t *bp);
@@ -437,17 +446,16 @@ static inline void dfx_port_read_long(
  *   the device structure.
  */
 
-int dfx_probe(
+__initfunc(int dfx_probe(
 	struct device *dev
-	)
+	))
 
 	{
 	int				i;				/* used in for loops */
 	int				version_disp;	/* was version info string already displayed? */
 	int				port_len;		/* length of port address range (in bytes) */
-	u8				pci_bus;		/* PCI bus number (0-255) */
-	u8				pci_dev_fun;	/* PCI device and function numbers (0-255) */
 	u16				port;			/* temporary I/O (port) address */
+	struct pci_dev *		pdev = NULL;		/* PCI device record */
 	u16				command;		/* PCI Configuration space Command register val */
 	u32				slot_id;		/* EISA hardware (slot) ID read from adapter */
 	DFX_board_t		*bp;			/* board pointer */
@@ -520,61 +528,58 @@ int dfx_probe(
 
 	/* Scan for FDDI PCI controllers */
 
-	if (pcibios_present())						/* is PCI BIOS even present? */
-		for (i=0; i < DFX_MAX_NUM_BOARDS; i++)	/* scan for up to 8 PCI cards */
-			if (pcibios_find_device(PCI_VENDOR_ID_DEC, PCI_DEVICE_ID_DEC_FDDI, i, &pci_bus, &pci_dev_fun) == 0)
+	if (pci_present())						/* is PCI even present? */
+		while ((pdev = pci_find_device(PCI_VENDOR_ID_DEC, PCI_DEVICE_ID_DEC_FDDI, pdev)))
+			{
+			if (!version_disp)					/* display version info if adapter is found */
 				{
-				if (!version_disp)					/* display version info if adapter is found */
-					{
-					version_disp = 1;				/* set display flag to TRUE so that */
-					printk(version);				/* we only display this string ONCE */
-					}
-
-				/* Verify that I/O enable bit is set (PCI slot is enabled) */
-
-				pcibios_read_config_word(pci_bus, pci_dev_fun, PCI_COMMAND, &command);
-				if ((command & PCI_COMMAND_IO) == 0)
-					printk("I/O enable bit not set!  Verify that slot is enabled\n");
-				else
-					{
-					/* Turn off memory mapped space and enable mastering */
-
-					command |= PCI_COMMAND_MASTER;
-					command &= ~PCI_COMMAND_MEMORY;
-					pcibios_write_config_word(pci_bus, pci_dev_fun, PCI_COMMAND, command);
-
-					/* Read I/O base address from PCI Configuration Space */
-				
-					pcibios_read_config_word(pci_bus, pci_dev_fun, PCI_BASE_ADDRESS_1, &port);
-					port &= PCI_BASE_ADDRESS_IO_MASK;		/* clear I/O bit (bit 0) */
-
-					/* Verify port address range is not already being used */
-
-					port_len = PFI_K_CSR_IO_LEN;
-					if (check_region(port, port_len) == 0)
-						{
-						/* Allocate a new device structure for this adapter */
-
-						dev = dfx_alloc_device(dev, port);
-						if (dev != NULL)
-							{
-							/* Initialize board structure with bus-specific info */
-
-							bp = (DFX_board_t *) dev->priv;
-							bp->dev = dev;
-							bp->bus_type = DFX_BUS_TYPE_PCI;
-							bp->pci_bus = pci_bus;
-							bp->pci_dev_fun = pci_dev_fun;
-							if (dfx_driver_init(dev) == DFX_K_SUCCESS)
-								num_boards++;		/* only increment global board count on success */
-							else
-								dev->base_addr = 0;	/* clear port address field in device structure on failure */
-							}
-						}
-					else
-						printk("I/O range allocated to adapter (0x%X-0x%X) is already being used!\n", port, (port + port_len-1));
-					}
+				version_disp = 1;				/* set display flag to TRUE so that */
+				printk(version);				/* we only display this string ONCE */
 				}
+
+			/* Verify that I/O enable bit is set (PCI slot is enabled) */
+
+			pci_read_config_word(pdev, PCI_COMMAND, &command);
+			if ((command & PCI_COMMAND_IO) == 0)
+				printk("I/O enable bit not set!  Verify that slot is enabled\n");
+			else
+				{
+				/* Turn off memory mapped space and enable mastering */
+
+				command |= PCI_COMMAND_MASTER;
+				command &= ~PCI_COMMAND_MEMORY;
+				pci_write_config_word(pdev, PCI_COMMAND, command);
+
+				/* Get I/O base address from PCI Configuration Space */
+
+				port = pdev->base_address[1] & PCI_BASE_ADDRESS_IO_MASK;
+
+				/* Verify port address range is not already being used */
+
+				port_len = PFI_K_CSR_IO_LEN;
+				if (check_region(port, port_len) == 0)
+					{
+					/* Allocate a new device structure for this adapter */
+
+					dev = dfx_alloc_device(dev, port);
+					if (dev != NULL)
+						{
+						/* Initialize board structure with bus-specific info */
+
+						bp = (DFX_board_t *) dev->priv;
+						bp->dev = dev;
+						bp->bus_type = DFX_BUS_TYPE_PCI;
+						bp->pci_dev = pdev;
+						if (dfx_driver_init(dev) == DFX_K_SUCCESS)
+							num_boards++;		/* only increment global board count on success */
+						else
+							dev->base_addr = 0;	/* clear port address field in device structure on failure */
+						}
+					}
+				else
+					printk("I/O range allocated to adapter (0x%X-0x%X) is already being used!\n", port, (port + port_len-1));
+				}
+			}
 
 	/*
 	 * If we're at this point we're going through dfx_probe() for the first
@@ -636,10 +641,10 @@ int dfx_probe(
  *   None
  */
 
-struct device *dfx_alloc_device(
+__initfunc(struct device *dfx_alloc_device(
 	struct device	*dev,
 	u16				iobase
-	)
+	))
 
 	{
 	struct device *tmp_dev;		/* pointer to a device structure */
@@ -687,11 +692,11 @@ struct device *dfx_alloc_device(
 	tmp_dev->rebuild_header			= NULL;		/* set in fddi_setup() */
 	tmp_dev->set_multicast_list		= &dfx_ctl_set_multicast_list;
 	tmp_dev->set_mac_address		= &dfx_ctl_set_mac_address;
-	tmp_dev->do_ioctl				= NULL;		/* not supported for now &&& */
-	tmp_dev->set_config				= NULL;		/* not supported for now &&& */
-	tmp_dev->header_cache_bind		= NULL;		/* not supported */
-	tmp_dev->header_cache_update	= NULL;		/* not supported */
-	tmp_dev->change_mtu				= NULL;		/* set in fddi_setup() */
+	tmp_dev->do_ioctl			= NULL;		/* not supported for now &&& */
+	tmp_dev->set_config			= NULL;		/* not supported for now &&& */
+	tmp_dev->hard_header_cache		= NULL;		/* not supported */
+	tmp_dev->header_cache_update		= NULL;		/* not supported */
+	tmp_dev->change_mtu			= NULL;		/* set in fddi_setup() */
 
 	/* Initialize remaining device structure information */
 
@@ -731,9 +736,9 @@ struct device *dfx_alloc_device(
  *   enabled yet.
  */
 
-void dfx_bus_init(
+__initfunc(void dfx_bus_init(
 	struct device *dev
-	)
+	))
 
 	{
 	DFX_board_t *bp = (DFX_board_t *)dev->priv;
@@ -813,18 +818,19 @@ void dfx_bus_init(
 		}
 	else
 		{
+		struct pci_dev *pdev = bp->pci_dev;
+
 		/* Get the interrupt level from the PCI Configuration Table */
 
-		pcibios_read_config_byte(bp->pci_bus, bp->pci_dev_fun, PCI_INTERRUPT_LINE, &val);
-		dev->irq = val;					/* save IRQ value in device table */
+		dev->irq = pdev->irq;
 
 		/* Check Latency Timer and set if less than minimal */
 
-		pcibios_read_config_byte(bp->pci_bus, bp->pci_dev_fun, PCI_LATENCY_TIMER, &val);
+		pci_read_config_byte(pdev, PCI_LATENCY_TIMER, &val);
 		if (val < PFI_K_LAT_TIMER_MIN)	/* if less than min, override with default */
 			{
 			val = PFI_K_LAT_TIMER_DEF;
-			pcibios_write_config_byte(bp->pci_bus, bp->pci_dev_fun, PCI_LATENCY_TIMER, val);
+			pci_write_config_byte(pdev, PCI_LATENCY_TIMER, val);
 			}
 
 		/* Enable interrupts at PCI bus interface chip (PFI) */
@@ -865,9 +871,9 @@ void dfx_bus_init(
  *   None
  */
 
-void dfx_bus_config_check(
+__initfunc(void dfx_bus_config_check(
 	DFX_board_t *bp
-	)
+	))
 
 	{
 	int	status;				/* return code from adapter port control call */
@@ -969,9 +975,9 @@ void dfx_bus_config_check(
  *   returning from this routine.
  */
 
-int dfx_driver_init(
+__initfunc(int dfx_driver_init(
 	struct device *dev
-	)
+	))
 
 	{
 	DFX_board_t *bp = (DFX_board_t *)dev->priv;
@@ -1082,7 +1088,9 @@ int dfx_driver_init(
 	alloc_size = sizeof(PI_DESCR_BLOCK) +
 					PI_CMD_REQ_K_SIZE_MAX +
 					PI_CMD_RSP_K_SIZE_MAX +
+#ifndef DYNAMIC_BUFFERS
 					(bp->rcv_bufs_to_post * PI_RCV_DATA_K_SIZE_MAX) +
+#endif
 					sizeof(PI_CONSUMER_BLOCK) +
 					(PI_ALIGN_K_DESC_BLK - 1);
 	top_v = (char *) kmalloc(alloc_size, GFP_KERNEL);
@@ -1134,8 +1142,11 @@ int dfx_driver_init(
 
 	bp->rcv_block_virt = curr_v;
 	bp->rcv_block_phys = curr_p;
+
+#ifndef DYNAMIC_BUFFERS
 	curr_v += (bp->rcv_bufs_to_post * PI_RCV_DATA_K_SIZE_MAX);
 	curr_p += (bp->rcv_bufs_to_post * PI_RCV_DATA_K_SIZE_MAX);
+#endif
 
 	/* Reserve space for the consumer block */
 
@@ -1991,7 +2002,7 @@ void dfx_interrupt(
  *   None
  */
 
-struct enet_statistics *dfx_ctl_get_stats(
+struct net_device_stats *dfx_ctl_get_stats(
 	struct device *dev
 	)
 
@@ -2002,6 +2013,8 @@ struct enet_statistics *dfx_ctl_get_stats(
 
 	bp->stats.rx_packets			= bp->rcv_total_frames;
 	bp->stats.tx_packets			= bp->xmt_total_frames;
+	bp->stats.rx_bytes			= bp->rcv_total_bytes;
+	bp->stats.tx_bytes			= bp->xmt_total_bytes;
 	bp->stats.rx_errors				= (u32)(bp->rcv_crc_errors + bp->rcv_frame_status_errors + bp->rcv_length_errors);
 	bp->stats.tx_errors				= bp->xmt_length_errors;
 	bp->stats.rx_dropped			= bp->rcv_discards;
@@ -2013,7 +2026,7 @@ struct enet_statistics *dfx_ctl_get_stats(
 
 	bp->cmd_req_virt->cmd_type = PI_CMD_K_SMT_MIB_GET;
 	if (dfx_hw_dma_cmd_req(bp) != DFX_K_SUCCESS)
-		return((struct enet_statistics *) &bp->stats);
+		return((struct net_device_stats *) &bp->stats);
 
 	/* Fill the bp->stats structure with the SMT MIB object values */
 
@@ -2114,7 +2127,7 @@ struct enet_statistics *dfx_ctl_get_stats(
 
 	bp->cmd_req_virt->cmd_type = PI_CMD_K_CNTRS_GET;
 	if (dfx_hw_dma_cmd_req(bp) != DFX_K_SUCCESS)
-		return((struct enet_statistics *) &bp->stats);
+		return((struct net_device_stats *) &bp->stats);
 
 	/* Fill the bp->stats structure with the FDDI counter values */
 
@@ -2130,7 +2143,7 @@ struct enet_statistics *dfx_ctl_get_stats(
 	bp->stats.port_lem_cts[0]			= bp->cmd_rsp_virt->cntrs_get.cntrs.link_errors[0].ls;
 	bp->stats.port_lem_cts[1]			= bp->cmd_rsp_virt->cntrs_get.cntrs.link_errors[1].ls;
 
-	return((struct enet_statistics *) &bp->stats);
+	return((struct net_device_stats *) &bp->stats);
 	}
 
 
@@ -2925,6 +2938,28 @@ void dfx_rcv_init(
 	 *		driver initialization when we allocated memory for the receive buffers.
 	 */
 
+#ifdef DYNAMIC_BUFFERS
+	for (i = 0; i < (int)(bp->rcv_bufs_to_post); i++)
+		for (j = 0; (i + j) < (int)PI_RCV_DATA_K_NUM_ENTRIES; j += bp->rcv_bufs_to_post)
+		{
+			struct sk_buff *newskb;
+			bp->descr_block_virt->rcv_data[i+j].long_0 = (u32) (PI_RCV_DESCR_M_SOP |
+				((PI_RCV_DATA_K_SIZE_MAX / PI_ALIGN_K_RCV_DATA_BUFF) << PI_RCV_DESCR_V_SEG_LEN));
+			newskb = dev_alloc_skb(NEW_SKB_SIZE);
+			/*
+			 * align to 128 bytes for compatibility with
+			 * the old EISA boards.
+			 */
+			newskb->data = (char *)((unsigned long)
+						(newskb->data+127) & ~127);
+			bp->descr_block_virt->rcv_data[i+j].long_1 = virt_to_bus(newskb->data);
+			/*
+			 * p_rcv_buff_va is only used inside the
+			 * kernel so we put the skb pointer here.
+			 */
+			bp->p_rcv_buff_va[i+j] = (char *) newskb;
+		}
+#else
 	for (i=0; i < (int)(bp->rcv_bufs_to_post); i++)
 		for (j=0; (i + j) < (int)PI_RCV_DATA_K_NUM_ENTRIES; j += bp->rcv_bufs_to_post)
 			{
@@ -2933,6 +2968,7 @@ void dfx_rcv_init(
 			bp->descr_block_virt->rcv_data[i+j].long_1 = (u32) (bp->rcv_block_phys + (i * PI_RCV_DATA_K_SIZE_MAX));
 			bp->p_rcv_buff_va[i+j] = (char *) (bp->rcv_block_virt + (i * PI_RCV_DATA_K_SIZE_MAX));
 			}
+#endif
 
 	/* Update receive producer and Type 2 register */
 
@@ -2991,7 +3027,14 @@ void dfx_rcv_queue_process(
 		{
 		/* Process any errors */
 
-		p_buff = (char *) bp->p_rcv_buff_va[bp->rcv_xmt_reg.index.rcv_comp];
+		int entry;
+
+		entry = bp->rcv_xmt_reg.index.rcv_comp;
+#ifdef DYNAMIC_BUFFERS
+		p_buff = (char *) (((struct sk_buff *)bp->p_rcv_buff_va[entry])->data);
+#else
+		p_buff = (char *) bp->p_rcv_buff_va[entry];
+#endif
 		memcpy(&descr, p_buff + RCV_BUFF_K_DESCR, sizeof(u32));
 
 		if (descr & PI_FMC_DESCR_M_RCC_FLUSH)
@@ -3002,29 +3045,54 @@ void dfx_rcv_queue_process(
 				bp->rcv_frame_status_errors++;
 			}
 		else
-			{
+		{
+			int rx_in_place = 0;
+
 			/* The frame was received without errors - verify packet length */
 
 			pkt_len = (u32)((descr & PI_FMC_DESCR_M_LEN) >> PI_FMC_DESCR_V_LEN);
 			pkt_len -= 4;				/* subtract 4 byte CRC */
 			if (!IN_RANGE(pkt_len, FDDI_K_LLC_ZLEN, FDDI_K_LLC_LEN))
 				bp->rcv_length_errors++;
-			else
-				{
-				skb = dev_alloc_skb(pkt_len+3);	/* alloc new buffer to pass up, add room for PRH */
+			else{
+#ifdef DYNAMIC_BUFFERS
+				if (pkt_len > SKBUFF_RX_COPYBREAK) {
+					struct sk_buff *newskb;
+
+					newskb = dev_alloc_skb(NEW_SKB_SIZE);
+					if (newskb){
+						rx_in_place = 1;
+
+						newskb->data = (char *)((unsigned long)(newskb->data+127) & ~127);
+						skb = (struct sk_buff *)bp->p_rcv_buff_va[entry];
+						skb->data += RCV_BUFF_K_PADDING;
+						bp->p_rcv_buff_va[entry] = (char *)newskb;
+						bp->descr_block_virt->rcv_data[entry].long_1 = virt_to_bus(newskb->data);
+					} else
+						skb = 0;
+				} else
+#endif
+					skb = dev_alloc_skb(pkt_len+3);	/* alloc new buffer to pass up, add room for PRH */
 				if (skb == NULL)
 					{
 					printk("%s: Could not allocate receive buffer.  Dropping packet.\n", bp->dev->name);
 					bp->rcv_discards++;
+					break;
 					}
-				else
+				else {
+#ifndef DYNAMIC_BUFFERS
+					if (! rx_in_place)
+#endif
 					{
-					/* Receive buffer allocated, pass receive packet up */
+						/* Receive buffer allocated, pass receive packet up */
 
-					memcpy(skb->data, p_buff + RCV_BUFF_K_PADDING, pkt_len+3);
+						memcpy(skb->data, p_buff + RCV_BUFF_K_PADDING, pkt_len+3);
+					}
+
 					skb->data += 3;			/* adjust data field so that it points to FC byte */
 					skb->len = pkt_len;		/* pass up packet length, NOT including CRC */
 					skb->dev = bp->dev;		/* pass up device pointer */
+
 					skb->protocol = fddi_type_trans(skb, bp->dev);
 					netif_rx(skb);
 
@@ -3033,8 +3101,10 @@ void dfx_rcv_queue_process(
 					bp->rcv_total_frames++;
 					if (*(p_buff + RCV_BUFF_K_DA) & 0x01)
 						bp->rcv_multicast_frames++;
-					}
+				 
+					bp->rcv_total_bytes += skb->len;
 				}
+			}
 			}
 
 		/*
@@ -3134,14 +3204,14 @@ int dfx_xmt_queue_pkt(
 	 */
 
 	if (!IN_RANGE(skb->len, FDDI_K_LLC_ZLEN, FDDI_K_LLC_LEN))
-		{
-		printk("%s: Invalid packet length - %lu bytes\n", dev->name, skb->len);
-		bp->xmt_length_errors++;	/* bump error counter */
-		dev_tint(dev);				/* dequeue packets from xmt queue and send them */
-		dev_kfree_skb(skb, FREE_WRITE);
-		return(0);					/* return "success" */
-		}
-
+	{
+		printk("%s: Invalid packet length - %u bytes\n", 
+			dev->name, skb->len);
+		bp->xmt_length_errors++;		/* bump error counter */
+		mark_bh(NET_BH);
+		dev_kfree_skb(skb);
+		return(0);				/* return "success" */
+	}
 	/*
 	 * See if adapter link is available, if not, free buffer
 	 *
@@ -3161,7 +3231,7 @@ int dfx_xmt_queue_pkt(
 		else
 			{
 			bp->xmt_discards++;					/* bump error counter */
-			dev_kfree_skb(skb, FREE_WRITE);		/* free sk_buff now */
+			dev_kfree_skb(skb);		/* free sk_buff now */
 			return(0);							/* return "success" */
 			}
 		}
@@ -3172,12 +3242,14 @@ int dfx_xmt_queue_pkt(
 	p_xmt_descr = &(bp->descr_block_virt->xmt_data[prod]);
 
 	/*
-	 * Get pointer to auxiliary queue entry to contain information for this packet.
+	 * Get pointer to auxiliary queue entry to contain information
+	 * for this packet.
 	 *
-	 * Note: The current xmt producer index will become the current xmt completion
-	 *       index when we complete this packet later on.  So, we'll get the
-	 *       pointer to the next auxiliary queue entry now before we bump the
-	 *		 producer index.
+	 * Note: The current xmt producer index will become the
+	 *	 current xmt completion index when we complete this
+	 *	 packet later on.  So, we'll get the pointer to the
+	 *	 next auxiliary queue entry now before we bump the
+	 *	 producer index.
 	 */
 
 	p_xmt_drv_descr = &(bp->xmt_drv_descr_blk[prod++]);	/* also bump producer index */
@@ -3222,15 +3294,15 @@ int dfx_xmt_queue_pkt(
 	 * Verify that descriptor is actually available
 	 *
 	 * Note: If descriptor isn't available, return 1 which tells
-	 *		 the upper layer to requeue the packet for later
-	 *		 transmission.
+	 *	 the upper layer to requeue the packet for later
+	 *	 transmission.
 	 *
 	 *       We need to ensure that the producer never reaches the
-	 *		 completion, except to indicate that the queue is empty.
+	 *	 completion, except to indicate that the queue is empty.
 	 */
 
 	if (prod == bp->rcv_xmt_reg.index.xmt_comp)
-		return(1);						/* requeue packet for later */
+		return(1);			/* requeue packet for later */
 
 	/*
 	 * Save info for this packet for xmt done indication routine
@@ -3243,9 +3315,9 @@ int dfx_xmt_queue_pkt(
 	 * one (1) for each completed packet.
 	 *
 	 * Note: If this assumption changes and we're presented with
-	 *		 an inconsistent number of transmit fragments for packet
-	 *		 data, we'll need to modify this code to save the current
-	 *		 transmit producer index.
+	 *	 an inconsistent number of transmit fragments for packet
+	 *	 data, we'll need to modify this code to save the current
+	 *	 transmit producer index.
 	 */
 
 	p_xmt_drv_descr->p_skb = skb;
@@ -3307,13 +3379,14 @@ void dfx_xmt_done(
 
 		p_xmt_drv_descr = &(bp->xmt_drv_descr_blk[bp->rcv_xmt_reg.index.xmt_comp]);
 
-		/* Return skb to operating system */
-
-		dev_kfree_skb(p_xmt_drv_descr->p_skb, FREE_WRITE);
-
 		/* Increment transmit counters */
 
 		bp->xmt_total_frames++;
+		bp->xmt_total_bytes += p_xmt_drv_descr->p_skb->len;
+
+		/* Return skb to operating system */
+
+		dev_kfree_skb(p_xmt_drv_descr->p_skb);
 
 		/*
 		 * Move to start of next packet by updating completion index
@@ -3386,7 +3459,7 @@ void dfx_xmt_flush(
 
 		/* Return skb to operating system */
 
-		dev_kfree_skb(p_xmt_drv_descr->p_skb, FREE_WRITE);
+		dev_kfree_skb(p_xmt_drv_descr->p_skb);
 
 		/* Increment transmit error counter */
 

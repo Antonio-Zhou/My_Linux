@@ -20,6 +20,9 @@
 
 #include <linux/stddef.h>
 
+#include <asm/uaccess.h>
+#include <asm/desc.h>
+
 #include "fpu_system.h"
 #include "exception.h"
 #include "fpu_emu.h"
@@ -138,9 +141,9 @@ static unsigned long vm86_segment(u_char segment,
   if ( segment > PREFIX_SS_ )
     {
       EXCEPTION(EX_INTERNAL|0x130);
-      math_abort(SIGSEGV);
+      math_abort(FPU_info,SIGSEGV);
     }
-#endif /* PARANOID */
+#endif PARANOID
   addr->selector = VM86_REG_(segment);
   return (unsigned long)VM86_REG_(segment) << 4;
 }
@@ -152,7 +155,6 @@ static long pm_address(u_char FPU_modrm, u_char segment,
 { 
   struct desc_struct descriptor;
   unsigned long base_address, limit, address, seg_top;
-  unsigned short selector;
 
   segment--;
 
@@ -161,9 +163,9 @@ static long pm_address(u_char FPU_modrm, u_char segment,
   if ( segment > PREFIX_SS_ )
     {
       EXCEPTION(EX_INTERNAL|0x132);
-      math_abort(SIGSEGV);
+      math_abort(FPU_info,SIGSEGV);
     }
-#endif /* PARANOID */
+#endif PARANOID
 
   switch ( segment )
     {
@@ -172,15 +174,12 @@ static long pm_address(u_char FPU_modrm, u_char segment,
     case PREFIX_FS_-1:
       /* The cast is needed here to get gcc 2.8.0 to use a 16 bit register
 	 in the assembler statement. */
-
-      __asm__("mov %%fs,%0":"=r" (selector));
-      addr->selector = selector;
+      __asm__("mov %%fs,%0":"=r" ((unsigned short)addr->selector));
       break;
     case PREFIX_GS_-1:
       /* The cast is needed here to get gcc 2.8.0 to use a 16 bit register
 	 in the assembler statement. */
-      __asm__("mov %%gs,%0":"=r" (selector));
-      addr->selector = selector;
+      __asm__("mov %%gs,%0":"=r" ((unsigned short)addr->selector));
       break;
     default:
       addr->selector = PM_REG_(segment);
@@ -252,7 +251,7 @@ void *FPU_get_address(u_char FPU_modrm, unsigned long *fpu_eip,
   if ( !addr_modes.default_mode && (FPU_modrm & FPU_WRITE_BIT)
       && (addr_modes.override.segment == PREFIX_CS_) )
     {
-      math_abort(SIGSEGV);
+      math_abort(FPU_info,SIGSEGV);
     }
 
   addr->selector = FPU_DS;   /* Default, for 32 bit non-segmented mode. */
@@ -345,7 +344,7 @@ void *FPU_get_address_16(u_char FPU_modrm, unsigned long *fpu_eip,
   if ( !addr_modes.default_mode && (FPU_modrm & FPU_WRITE_BIT)
       && (addr_modes.override.segment == PREFIX_CS_) )
     {
-      math_abort(SIGSEGV);
+      math_abort(FPU_info,SIGSEGV);
     }
 
   addr->selector = FPU_DS;   /* Default, for 32 bit non-segmented mode. */

@@ -58,6 +58,7 @@ more than a few  PCI versions of the card. */
 #define SX_BOARD(line)		((line) / SX_NPORT)
 #define SX_PORT(line)		((line) & (SX_NPORT - 1))
 
+
 #define SX_DATA_REG 0     /* Base+0 : Data register */
 #define SX_ADDR_REG 1     /* base+1 : Address register. */
 

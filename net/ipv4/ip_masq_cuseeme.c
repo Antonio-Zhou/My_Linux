@@ -2,7 +2,7 @@
  *		IP_MASQ_FTP CUSeeMe masquerading module
  *
  *
- * Version:	@(#)$Id: ip_masq_cuseeme.c,v 1.1.2.2 1997/05/29 18:27:41 davem Exp $
+ * Version:	@(#)$Id: ip_masq_cuseeme.c,v 1.4 1998/10/06 04:48:57 davem Exp $
  *
  * Author:	Richard Lynch
  *		
@@ -17,6 +17,7 @@
  *					Fixes audio and "chat" problems
  *					Thanx to the CU-SeeMe Consortium for
  *					technical docs
+ *	Steven Clarke		:	Small changes for 2.1	
  *
  *
  *
@@ -38,6 +39,7 @@
  *	
  */
 
+#include <linux/config.h>
 #include <linux/module.h>
 #include <asm/system.h>
 #include <linux/types.h>
@@ -45,13 +47,12 @@
 #include <linux/skbuff.h>
 #include <linux/in.h>
 #include <linux/ip.h>
+#include <linux/init.h>
 #include <net/protocol.h>
 #include <net/udp.h>
-#include <net/ip_masq.h>
 
-#ifndef DEBUG_CONFIG_IP_MASQ_CUSEEME
-#define DEBUG_CONFIG_IP_MASQ_CUSEEME 0
-#endif
+/* #define IP_MASQ_NDEBUG */
+#include <net/ip_masq.h>
 
 #pragma pack(1)
 /* CU-SeeMe Data Header */
@@ -88,8 +89,18 @@ typedef struct {
  * List of ports (up to MAX_MASQ_APP_PORTS) to be handled by helper
  * First port is set to the default port.
  */
-int ports[MAX_MASQ_APP_PORTS] = {7648}; /* I rely on the trailing items being set to zero */
+static int ports[MAX_MASQ_APP_PORTS] = {7648}; /* I rely on the trailing items being set to zero */
 struct ip_masq_app *masq_incarnations[MAX_MASQ_APP_PORTS];
+
+/*
+ *     Debug level
+ */
+#ifdef CONFIG_IP_MASQ_DEBUG
+static int debug=0;
+MODULE_PARM(debug, "i");
+#endif
+
+MODULE_PARM(ports, "1-" __MODULE_STRING(MAX_MASQ_APP_PORTS) "i");
 
 static int
 masq_cuseeme_init_1 (struct ip_masq_app *mapp, struct ip_masq *ms)
@@ -106,10 +117,10 @@ masq_cuseeme_done_1 (struct ip_masq_app *mapp, struct ip_masq *ms)
 }
 
 int
-masq_cuseeme_out (struct ip_masq_app *mapp, struct ip_masq *ms, struct sk_buff **skb_p, struct device *dev)
+masq_cuseeme_out (struct ip_masq_app *mapp, struct ip_masq *ms, struct sk_buff **skb_p, __u32 maddr)
 {
 	struct sk_buff *skb = *skb_p;
-	struct iphdr *iph = skb->h.iph;
+	struct iphdr *iph = skb->nh.iph;
 	struct udphdr *uh = (struct udphdr *)&(((char *)iph)[iph->ihl*4]);
 	cu_header *cu_head;
 	char *data=(char *)&uh[1];
@@ -119,20 +130,18 @@ masq_cuseeme_out (struct ip_masq_app *mapp, struct ip_masq *ms, struct sk_buff *
 		cu_head         = (cu_header *) data;
 		/* cu_head->port   = ms->mport; */
 	        if( cu_head->addr )
-		cu_head->addr = (u_long) dev->pa_addr;
-#if DEBUG_CONFIG_IP_MASQ_CUSEEME	  
+		cu_head->addr = (u_long) maddr;
 	        if(ntohs(cu_head->data_type) == 257)
-	           printk(KERN_INFO "Sending talk packet!\n");
-#endif	  
+		        IP_MASQ_DEBUG(1-debug, "Sending talk packet!\n");
 	}
 	return 0;
 }
 
 int
-masq_cuseeme_in (struct ip_masq_app *mapp, struct ip_masq *ms, struct sk_buff **skb_p, struct device *dev)
+masq_cuseeme_in (struct ip_masq_app *mapp, struct ip_masq *ms, struct sk_buff **skb_p, __u32 maddr)
 {
 	struct sk_buff *skb = *skb_p;
-	struct iphdr *iph = skb->h.iph;
+	struct iphdr *iph = skb->nh.iph;
 	struct udphdr *uh = (struct udphdr *)&(((char *)iph)[iph->ihl*4]);
 	cu_header *cu_head;
 	oc_header	*oc;
@@ -156,7 +165,7 @@ masq_cuseeme_in (struct ip_masq_app *mapp, struct ip_masq *ms, struct sk_buff **
 			    i++)		    
 			{
 			        ci=(client_info *)(data+off);
-				if(ci->address==(u_long) dev->pa_addr)
+				if(ci->address==(u_long) maddr)
 				{
 				        /* Update w/ our real ip address and exit */
 					ci->address = (u_long) ms->saddr;
@@ -186,7 +195,7 @@ struct ip_masq_app ip_masq_cuseeme = {
  * 	ip_masq_cuseeme initialization
  */
 
-int ip_masq_cuseeme_init(void)
+__initfunc(int ip_masq_cuseeme_init(void))
 {
 	int i, j;
 
@@ -202,7 +211,7 @@ int ip_masq_cuseeme_init(void)
 				return j;
 			}
 #if DEBUG_CONFIG_IP_MASQ_CUSEEME
-			printk(KERN_INFO "CuSeeMe: loaded support on port[%d] = %d\n",
+			IP_MASQ_DEBUG(1-debug, "CuSeeMe: loaded support on port[%d] = %d\n",
 			       i, ports[i]);
 #endif
 		} else {
@@ -229,10 +238,7 @@ int ip_masq_cuseeme_done(void)
 			} else {
 				kfree(masq_incarnations[i]);
 				masq_incarnations[i] = NULL;
-#if DEBUG_CONFIG_IP_MASQ_CUSEEME
-				printk(KERN_INFO "CuSeeMe: unloaded support on port[%d] = %d\n",
-				       i, ports[i]);
-#endif
+				IP_MASQ_DEBUG(1-debug, "CuSeeMe: unloaded support on port[%d] = %d\n", i, ports[i]);
 			}
 		}
 	}
@@ -240,19 +246,19 @@ int ip_masq_cuseeme_done(void)
 }
 
 #ifdef MODULE
+EXPORT_NO_SYMBOLS;
 
 int init_module(void)
 {
         if (ip_masq_cuseeme_init() != 0)
                 return -EIO;
-        register_symtab(0);
         return 0;
 }
 
 void cleanup_module(void)
 {
         if (ip_masq_cuseeme_done() != 0)
-                printk(KERN_INFO "ip_masq_cuseeme: can't remove module");
+                IP_MASQ_DEBUG(1-debug, "ip_masq_cuseeme: can't remove module");
 }
 
 #endif /* MODULE */

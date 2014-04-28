@@ -22,6 +22,8 @@
 	ATI provided their EEPROM configuration code header file.
     Thanks to NIIBE Yutaka <gniibe@mri.co.jp> for bug fixes.
 
+    MCA bus (AT1720) support by Rene Schmit <rene@bss.lu>
+
   Bugs:
 	The MB86965 has a design flaw that makes all probes unreliable.  Not
 	only is it difficult to detect, it also moves around in I/O space in
@@ -31,6 +33,7 @@
 static const char *version =
 	"at1700.c:v1.15 4/7/98  Donald Becker (becker@cesdis.gsfc.nasa.gov)\n";
 
+#include <linux/config.h>
 #include <linux/module.h>
 
 #include <linux/kernel.h>
@@ -43,6 +46,7 @@ static const char *version =
 #include <linux/in.h>
 #include <linux/malloc.h>
 #include <linux/string.h>
+#include <linux/init.h>
 #include <asm/system.h>
 #include <asm/bitops.h>
 #include <asm/io.h>
@@ -53,17 +57,43 @@ static const char *version =
 #include <linux/etherdevice.h>
 #include <linux/skbuff.h>
 
+#include <linux/mca.h>
+
 /* Tunable parameters. */
 
 /* When to switch from the 64-entry multicast filter to Rx-all-multicast. */
 #define MC_FILTERBREAK 64
 
 /* These unusual address orders are used to verify the CONFIG register. */
-static int at1700_probe_list[] =
-{0x260, 0x280, 0x2a0, 0x240, 0x340, 0x320, 0x380, 0x300, 0};
-static int fmv18x_probe_list[] =
-{0x220, 0x240, 0x260, 0x280, 0x2a0, 0x2c0, 0x300, 0x340, 0};
 
+static int fmv18x_probe_list[] = {
+	0x220, 0x240, 0x260, 0x280, 0x2a0, 0x2c0, 0x300, 0x340, 0
+};
+
+/*
+ *	ISA
+ */
+
+static int at1700_probe_list[] = {
+	0x260, 0x280, 0x2a0, 0x240, 0x340, 0x320, 0x380, 0x300, 0
+};
+
+/*
+ *	MCA
+ */
+
+static int at1700_ioaddr_pattern[] = {
+	0x00, 0x04, 0x01, 0x05, 0x02, 0x06, 0x03, 0x07
+};
+
+static int at1700_mca_probe_list[] = {
+	0x400, 0x1400, 0x2400, 0x3400, 0x4400, 0x5400, 0x6400, 0x7400, 0
+};
+
+static int at1700_irq_pattern[] = {
+	0x00, 0x00, 0x00, 0x30, 0x70, 0xb0, 0x00, 0x00,
+	0x00, 0xf0, 0x34, 0x74, 0xb4, 0x00, 0x00, 0xf4, 0x00
+};
 
 /* use 0 for production, 1 for verification, >2 for debug */
 #ifndef NET_DEBUG
@@ -81,7 +111,8 @@ struct net_local {
 	uint tx_started:1;			/* Packets are on the Tx queue. */
 	uint invalid_irq:1;
 	uchar tx_queue;				/* Number of packet on the Tx queue. */
-	ushort tx_queue_len;		/* Current length of the Tx queue. */
+	char mca_slot;				/* -1 means ISA */
+	ushort tx_queue_len;			/* Current length of the Tx queue. */
 };
 
 
@@ -122,20 +153,36 @@ static struct enet_statistics *net_get_stats(struct device *dev);
 static void set_rx_mode(struct device *dev);
 
 
+#ifdef CONFIG_MCA
+struct at1720_mca_adapters_struct {
+	char* name;
+	int id;
+};
+/* rEnE : maybe there are others I don't know off... */
+
+struct at1720_mca_adapters_struct at1720_mca_adapters[] = {
+	{ "Allied Telesys AT1720AT",	0x6410 },
+	{ "Allied Telesys AT1720BT", 	0x6413 },
+	{ "Allied Telesys AT1720T",		0x6416 },
+	{ NULL, 0 },
+};
+#endif
+
 /* Check for a network adaptor of this type, and return '0' iff one exists.
    If dev->base_addr == 0, probe all likely locations.
    If dev->base_addr == 1, always return failure.
    If dev->base_addr == 2, allocate space for the device and return success
    (detachable devices only).
    */
+
 #ifdef HAVE_DEVLIST
 /* Support for a alternate probe manager, which will eliminate the
    boilerplate below. */
 struct netdev_entry at1700_drv =
 {"at1700", at1700_probe1, AT1700_IO_EXTENT, at1700_probe_list};
 #else
-int
-at1700_probe(struct device *dev)
+
+int at1700_probe(struct device *dev)
 {
 	int i;
 	int base_addr = dev ? dev->base_addr : 0;
@@ -152,7 +199,6 @@ at1700_probe(struct device *dev)
 		if (at1700_probe1(dev, ioaddr) == 0)
 			return 0;
 	}
-
 	return ENODEV;
 }
 #endif
@@ -170,8 +216,10 @@ int at1700_probe1(struct device *dev, int ioaddr)
 	char fmv_irqmap[4] = {3, 7, 10, 15};
 	char at1700_irqmap[8] = {3, 4, 5, 9, 10, 11, 14, 15};
 	unsigned int i, irq, is_fmv18x = 0, is_at1700 = 0;
-
-	/* Resetting the chip doesn't reset the ISA interface, so don't bother.
+	int l_i;
+	int slot;
+	
+		/* Resetting the chip doesn't reset the ISA interface, so don't bother.
 	   That means we have to be careful with the register values we probe for.
 	   */
 #ifdef notdef
@@ -179,6 +227,65 @@ int at1700_probe1(struct device *dev, int ioaddr)
 		   ioaddr, read_eeprom(ioaddr, 4), read_eeprom(ioaddr, 5),
 		   read_eeprom(ioaddr, 6), inw(ioaddr + EEPROM_Ctrl));
 #endif
+
+#ifdef CONFIG_MCA
+	/* rEnE (rene@bss.lu): got this from 3c509 driver source , adapted for AT1720 */
+
+    /* Based on Erik Nygren's (nygren@mit.edu) 3c529 patch, heavily
+	modified by Chris Beauregard (cpbeaure@csclub.uwaterloo.ca)
+	to support standard MCA probing. */
+
+	/* redone for multi-card detection by ZP Gu (zpg@castle.net) */
+	/* now works as a module */
+
+	if( MCA_bus ) {
+		int j;
+		u_char pos3, pos4;
+
+		for( j = 0; at1720_mca_adapters[j].name != NULL; j ++ ) {
+			slot = 0;
+			while( slot != MCA_NOTFOUND ) {
+				
+				slot = mca_find_unused_adapter( at1720_mca_adapters[j].id, slot );
+				if( slot == MCA_NOTFOUND ) break;
+
+				/* if we get this far, an adapter has been detected and is
+				enabled */
+
+				pos3 = mca_read_stored_pos( slot, 3 );
+				pos4 = mca_read_stored_pos( slot, 4 );
+
+				for (l_i = 0; l_i < 0x09; l_i++)
+					if (( pos3 & 0x07) == at1700_ioaddr_pattern[l_i])
+						break;
+				ioaddr = at1700_mca_probe_list[l_i];
+				
+				for (irq = 0; irq < 0x10; irq++)
+					if (((((pos4>>4) & 0x0f) | (pos3 & 0xf0)) & 0xff) == at1700_irq_pattern[irq])
+						break;
+
+					/* probing for a card at a particular IO/IRQ */
+				if (dev &&
+					((dev->irq && dev->irq != irq) ||
+					 (dev->base_addr && dev->base_addr != ioaddr))) {
+				  	slot++;		/* probing next slot */
+				  	continue;
+				}
+
+				if (dev)
+					dev->irq = irq;
+				
+				/* claim the slot */
+				mca_set_adapter_name( slot, at1720_mca_adapters[j].name );
+				mca_mark_as_used(slot);
+
+				goto found;
+			}
+		}
+		/* if we get here, we didn't find an MCA adapter - try ISA */
+	}
+#endif
+	slot = -1;
 	/* We must check for the EEPROM-config boards first, else accessing
 	   IOCONFIG0 will move the board! */
 	if (at1700_probe_list[inb(ioaddr + IOCONFIG1) & 0x07] == ioaddr
@@ -192,8 +299,10 @@ int at1700_probe1(struct device *dev, int ioaddr)
 		is_fmv18x = 1;
 	else
 		return -ENODEV;
+			
+found:
 
-	/* Reset the internal state machines. */
+		/* Reset the internal state machines. */
 	outb(0, ioaddr + RESET);
 
 	/* Allocate a new 'dev' if needed. */
@@ -204,8 +313,9 @@ int at1700_probe1(struct device *dev, int ioaddr)
 		irq = at1700_irqmap[(read_eeprom(ioaddr, 12)&0x04)
 						   | (read_eeprom(ioaddr, 0)>>14)];
 	else
-		irq = fmv_irqmap[(inb(ioaddr + IOCONFIG)>>6) & 0x03];
-
+		if (is_fmv18x)
+			irq = fmv_irqmap[(inb(ioaddr + IOCONFIG)>>6) & 0x03];
+	
 	/* Grab the region so that we can find another board if the IRQ request
 	   fails. */
 	request_region(ioaddr, AT1700_IO_EXTENT, dev->name);
@@ -278,6 +388,7 @@ int at1700_probe1(struct device *dev, int ioaddr)
 	{
 		struct net_local *lp = (struct net_local *)dev->priv;
 		lp->jumpered = is_fmv18x;
+		lp->mca_slot = slot;
 		/* Snarf the interrupt vector now. */
 		if (request_irq(irq, &net_interrupt, 0, dev->name, dev)) {
 			printk ("  AT1700 at %#3x is unusable due to a conflict on"
@@ -415,17 +526,9 @@ net_send_packet(struct sk_buff *skb, struct device *dev)
 		lp->tx_queue_len = 0;
 	}
 
-	/* If some higher layer thinks we've missed an tx-done interrupt
-	   we are passed NULL. Caution: dev_tint() handles the cli()/sti()
-	   itself. */
-	if (skb == NULL) {
-		dev_tint(dev);
-		return 0;
-	}
-
 	/* Block a timer-based transmit from overlapping.  This could better be
 	   done with atomic_swap(1, dev->tbusy), but set_bit() works as well. */
-	if (set_bit(0, (void*)&dev->tbusy) != 0)
+	if (test_and_set_bit(0, (void*)&dev->tbusy) != 0)
 		printk("%s: Transmitter access conflict.\n", dev->name);
 	else {
 		short length = ETH_ZLEN < skb->len ? skb->len : ETH_ZLEN;
@@ -455,7 +558,7 @@ net_send_packet(struct sk_buff *skb, struct device *dev)
 		/* Turn on Tx interrupts back on. */
 		outb(0x82, ioaddr + TX_INTR);
 	}
-	dev_kfree_skb (skb, FREE_WRITE);
+	dev_kfree_skb (skb);
 
 	return 0;
 }
@@ -595,6 +698,7 @@ net_rx(struct device *dev)
 /* The inverse routine to net_open(). */
 static int net_close(struct device *dev)
 {
+/*	struct net_local *lp = (struct net_local *)dev->priv;*/
 	int ioaddr = dev->base_addr;
 
 	dev->tbusy = 1;
@@ -604,6 +708,14 @@ static int net_close(struct device *dev)
 	outb(0xda, ioaddr + CONFIG_0);
 
 	/* No statistic counters on the chip to update. */
+
+#if 0
+	/* Disable the IRQ on boards where it is feasible. */
+	if (lp->jumpered) {
+		outb(0x00, ioaddr + IOCONFIG1);
+		free_irq(dev->irq, dev);
+	}
+#endif
 
 	/* Power-down the chip.  Green, green, green! */
 	outb(0x00, ioaddr + CONFIG_1);
@@ -724,7 +836,12 @@ int init_module(void)
 void
 cleanup_module(void)
 {
+	struct net_local *lp = dev_at1700.priv;
 	unregister_netdev(&dev_at1700);
+	if(lp->mca_slot)
+	{
+		mca_mark_as_unused(lp->mca_slot);
+	}
 	kfree(dev_at1700.priv);
 	dev_at1700.priv = NULL;
 
@@ -743,3 +860,4 @@ cleanup_module(void)
  *  c-indent-level: 4
  * End:
  */
+

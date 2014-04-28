@@ -2,7 +2,7 @@
  *		IP_MASQ_QUAKE quake masquerading module
  *
  *
- * Version:	@(#)ip_masq_quake.c 1.00   22/02/97
+ * Version:	@(#)ip_masq_quake.c 0.02   22/02/97
  *
  * Author:	Harald Hoyer mailto:HarryH@Royal.Net
  *		
@@ -11,6 +11,7 @@
  *      Harald Hoyer            :       Unofficial Quake Specs found at 
  *                                 http://www.gamers.org/dEngine/quake/spec/ 
  *      Harald Hoyer            :       Check for QUAKE-STRING
+ *	Juan Jose Ciarlante	:  litl bits for 2.1
  *
  *	This program is free software; you can redistribute it and/or
  *	modify it under the terms of the GNU General Public License
@@ -21,36 +22,24 @@
  */
 
 #include <linux/module.h>
-
-#include <linux/types.h>
-#include <linux/config.h>
-#include <linux/kernel.h>
 #include <asm/system.h>
+#include <linux/types.h>
+#include <linux/kernel.h>
 #include <linux/skbuff.h>
 #include <linux/in.h>
 #include <linux/ip.h>
+#include <linux/init.h>
 #include <net/protocol.h>
 #include <net/udp.h>
 #include <net/ip_masq.h>
 
-#ifndef DEBUG_CONFIG_IP_MASQ_QUAKE
 #define DEBUG_CONFIG_IP_MASQ_QUAKE 0
-#endif
-
-/* 
- * List of ports (up to MAX_MASQ_APP_PORTS) to be handled by helper
- * First ports are set to the default port.
- */
-int ports[MAX_MASQ_APP_PORTS] = { 26000,   /* I rely on the trailing items */
-				  27000 }; /* being set to zero */
-struct ip_masq_app *masq_incarnations[MAX_MASQ_APP_PORTS];
-
 
 typedef struct
 { 
-        __u16 type;     /* (Little Endian) Type of message. */
-	__u16 length;   /* (Little Endian) Length of message, header included. */
-	char  message[0];  /* The contents of the message. */
+        __u16 type;     // (Little Endian) Type of message.
+	__u16 length;   // (Little Endian) Length of message, header included. 
+	char  message[0];  // The contents of the message.
 } QUAKEHEADER;
 
 struct quake_priv_data {
@@ -84,11 +73,8 @@ masq_quake_done_1 (struct ip_masq_app *mapp, struct ip_masq *ms)
 }
 
 int
-masq_quake_in (struct ip_masq_app *mapp, struct ip_masq *ms, struct sk_buff **skb_p, struct device *dev)
+masq_quake_in (struct ip_masq_app *mapp, struct ip_masq *ms, struct sk_buff **skb_p, __u32 maddr)
 {
-#ifdef CONFIG_IP_MASQUERADE_IPSEC
-	unsigned long flags;
-#endif /* CONFIG_IP_MASQUERADE_IPSEC */
 	struct sk_buff *skb;
 	struct iphdr *iph;
 	struct udphdr *uh;
@@ -102,9 +88,8 @@ masq_quake_in (struct ip_masq_app *mapp, struct ip_masq *ms, struct sk_buff **sk
 	  return 0;
 
 	skb = *skb_p;
-	iph = skb->h.iph;
-/*	iph = skb->nh.iph; */
 
+	iph = skb->nh.iph;
 	uh = (struct udphdr *)&(((char *)iph)[iph->ihl*4]);
 
 	/* Check for lenght */
@@ -159,16 +144,7 @@ masq_quake_in (struct ip_masq_app *mapp, struct ip_masq *ms, struct sk_buff **sk
 
 	  memcpy(&udp_port, data, 2);
 
-#ifdef CONFIG_IP_MASQUERADE_IPSEC
-	  save_flags(flags);
-	  cli();
-	  ip_masq_unhash(ms);
-#endif /* CONFIG_IP_MASQUERADE_IPSEC */
 	  ms->dport = htons(udp_port);
-#ifdef CONFIG_IP_MASQUERADE_IPSEC
-	  ip_masq_hash(ms);
-	  restore_flags(flags);
-#endif /* CONFIG_IP_MASQUERADE_IPSEC */
 
 #if DEBUG_CONFIG_IP_MASQ_QUAKE
 	  printk("Quake_in: in_rewrote UDP port %d \n", udp_port);
@@ -182,7 +158,7 @@ masq_quake_in (struct ip_masq_app *mapp, struct ip_masq *ms, struct sk_buff **sk
 }
 
 int
-masq_quake_out (struct ip_masq_app *mapp, struct ip_masq *ms, struct sk_buff **skb_p, struct device *dev)
+masq_quake_out (struct ip_masq_app *mapp, struct ip_masq *ms, struct sk_buff **skb_p, __u32 maddr)
 {
 	struct sk_buff *skb;
 	struct iphdr *iph;
@@ -198,9 +174,8 @@ masq_quake_out (struct ip_masq_app *mapp, struct ip_masq *ms, struct sk_buff **s
 	  return 0;
         
 	skb = *skb_p;
-	iph = skb->h.iph;
-/*	iph = skb->nh.iph; */
 
+	iph = skb->nh.iph;
 	uh = (struct udphdr *)&(((char *)iph)[iph->ihl*4]);
 
 	/* Check for lenght */
@@ -251,9 +226,6 @@ masq_quake_out (struct ip_masq_app *mapp, struct ip_masq *ms, struct sk_buff **s
 	  break;
 
 	case 0x81:
-	  /* Maybe a redirection of a quake-server at the inner side works in
-             the future? */
-
 	  /* Accept Connection */
 	  if((ntohs(qh->length) < 0x09) || (priv->cl_connect == 0))
 	    return 0;
@@ -262,7 +234,8 @@ masq_quake_out (struct ip_masq_app *mapp, struct ip_masq *ms, struct sk_buff **s
 
 	  memcpy(&udp_port, data, 2);
 	  
-	  n_ms = ip_masq_new(dev, IPPROTO_UDP,
+	  n_ms = ip_masq_new(IPPROTO_UDP,
+			     maddr, 0,
 			     ms->saddr, htons(udp_port),
 			     ms->daddr, ms->dport,
 			     0);
@@ -277,6 +250,10 @@ masq_quake_out (struct ip_masq_app *mapp, struct ip_masq *ms, struct sk_buff **s
 	  udp_port = ntohs(n_ms->mport);
 	  memcpy(data, &udp_port, 2);
 
+	  ip_masq_listen(n_ms);
+	  ip_masq_control_add(n_ms, ms);
+	  ip_masq_put(n_ms);
+
 	  break;
 	}
 	 
@@ -285,7 +262,17 @@ masq_quake_out (struct ip_masq_app *mapp, struct ip_masq *ms, struct sk_buff **s
 
 struct ip_masq_app ip_masq_quake = {
         NULL,			/* next */
-	"Quake",	       	/* name */
+	"Quake_26",	       	/* name */
+        0,                      /* type */
+        0,                      /* n_attach */
+        masq_quake_init_1,      /* ip_masq_init_1 */
+        masq_quake_done_1,      /* ip_masq_done_1 */
+        masq_quake_out,         /* pkt_out */
+        masq_quake_in           /* pkt_in */
+};
+struct ip_masq_app ip_masq_quakenew = {
+        NULL,			/* next */
+	"Quake_27",	       	/* name */
         0,                      /* type */
         0,                      /* n_attach */
         masq_quake_init_1,      /* ip_masq_init_1 */
@@ -298,31 +285,10 @@ struct ip_masq_app ip_masq_quake = {
  * 	ip_masq_quake initialization
  */
 
-int ip_masq_quake_init(void)
+__initfunc(int ip_masq_quake_init(void))
 {
-	int i, j;
-
-	for (i=0; (i<MAX_MASQ_APP_PORTS); i++) {
-		if (ports[i]) {
-			if ((masq_incarnations[i] = kmalloc(sizeof(struct ip_masq_app),
-							    GFP_KERNEL)) == NULL)
-				return -ENOMEM;
-			memcpy(masq_incarnations[i], &ip_masq_quake, sizeof(struct ip_masq_app));
-			if ((j = register_ip_masq_app(masq_incarnations[i], 
-						      IPPROTO_UDP, 
-						      ports[i]))) {
-				return j;
-			}
-#if DEBUG_CONFIG_IP_MASQ_QUAKE
-			printk("Quake: loaded support on port[%d] = %d\n",
-			       i, ports[i]);
-#endif
-		} else {
-			/* To be safe, force the incarnation table entry to NULL */
-			masq_incarnations[i] = NULL;
-		}
-	}
-	return 0;
+        return (register_ip_masq_app(&ip_masq_quake, IPPROTO_UDP, 26000) +
+		register_ip_masq_app(&ip_masq_quakenew, IPPROTO_UDP, 27000));
 }
 
 /*
@@ -331,33 +297,17 @@ int ip_masq_quake_init(void)
 
 int ip_masq_quake_done(void)
 {
-	int i, j, k;
-
-	k=0;
-	for (i=0; (i<MAX_MASQ_APP_PORTS); i++) {
-		if (masq_incarnations[i]) {
-			if ((j = unregister_ip_masq_app(masq_incarnations[i]))) {
-				k = j;
-			} else {
-				kfree(masq_incarnations[i]);
-				masq_incarnations[i] = NULL;
-#if DEBUG_CONFIG_IP_MASQ_QUAKE
-				printk("Quake: unloaded support on port[%d] = %d\n",
-				       i, ports[i]);
-#endif
-			}
-		}
-	}
-	return k;
+        return (unregister_ip_masq_app(&ip_masq_quake) +
+                unregister_ip_masq_app(&ip_masq_quakenew));
 }
 
 #ifdef MODULE
+EXPORT_NO_SYMBOLS;
 
 int init_module(void)
 {
         if (ip_masq_quake_init() != 0)
                 return -EIO;
-        register_symtab(0);
         return 0;
 }
 
@@ -368,3 +318,5 @@ void cleanup_module(void)
 }
 
 #endif /* MODULE */
+
+

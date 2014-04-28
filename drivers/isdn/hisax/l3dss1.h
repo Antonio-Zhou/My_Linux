@@ -1,16 +1,13 @@
-/* $Id: l3dss1.h,v 1.3.2.3 1998/05/27 18:06:14 keil Exp $
+/* $Id: l3dss1.h,v 1.5 1998/02/02 13:34:30 keil Exp $
  *
  *  DSS1 (Euro) D-channel protocol defines
  *
  * $Log: l3dss1.h,v $
- * Revision 1.3.2.3  1998/05/27 18:06:14  keil
- * HiSax 3.0
+ * Revision 1.5  1998/02/02 13:34:30  keil
+ * Support australian Microlink net and german AOCD
  *
- * Revision 1.3.2.2  1998/02/03 23:16:10  keil
- * german AOC
- *
- * Revision 1.3.2.1  1997/10/17 22:10:52  keil
- * new files on 2.0
+ * Revision 1.4  1997/10/29 19:07:54  keil
+ * changes for 2.1
  *
  * Revision 1.3  1997/08/07 17:44:37  keil
  * Fix RESTART
@@ -66,9 +63,8 @@
 
 #define MT_INVALID             0xff
 
-#define IE_BEARER              0x04
 #define IE_CAUSE               0x08
-#define IE_CALLID              0x10
+#define IE_BEARER              0x04
 #define IE_FACILITY            0x1c
 #define IE_CALL_STATE          0x14
 #define IE_CHANNEL_ID          0x18

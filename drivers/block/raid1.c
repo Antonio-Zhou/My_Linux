@@ -36,6 +36,8 @@
 #define PRINTK(x)   do { ; } while (0);
 #endif
 
+#define MAX(a,b)	((a) > (b) ? (a) : (b))
+#define MIN(a,b)	((a) < (b) ? (a) : (b))
 
 static struct md_personality raid1_personality;
 static struct md_thread *raid1_thread = NULL;
@@ -73,7 +75,7 @@ static int raid1_map (struct md_dev *mddev, kdev_t *rdev,
 
 void raid1_reschedule_retry (struct buffer_head *bh)
 {
-	struct raid1_bh * r1_bh = (struct raid1_bh *)(bh->private_bh);
+	struct raid1_bh * r1_bh = (struct raid1_bh *)(bh->b_dev_id);
 
 	PRINTK(("raid1_reschedule_retry().\n"));
 
@@ -84,33 +86,32 @@ void raid1_reschedule_retry (struct buffer_head *bh)
 
 /*
  * raid1_end_buffer_io() is called when we have finished servicing a mirrored
- * operation and are ready to return a success/failture code to the buffer
+ * operation and are ready to return a success/failure code to the buffer
  * cache layer.
  */
-static inline void raid1_end_buffer_io (struct buffer_head *bh, int uptodate)
+static inline void raid1_end_buffer_io(struct raid1_bh *r1_bh, int uptodate)
 {
-	/*
-	 * kfree() can sleep and we try to keep this bh operation atomic.
-	 */
-	struct raid1_bh * tmp = (struct raid1_bh *) bh->private_bh;
+	struct buffer_head *bh = r1_bh->master_bh;
 
-	clear_bit (BH_MD, &bh->b_state);
-	bh->private_bh = NULL;
-	bh->personality = NULL;
-	mark_buffer_uptodate(bh, uptodate);
-	unlock_buffer(bh);
-	kfree(tmp);
+	bh->b_end_io(bh, uptodate);
+	kfree(r1_bh);
 }
+
+int raid1_one_error=0;
 
 void raid1_end_request (struct buffer_head *bh, int uptodate)
 {
-	struct raid1_bh * r1_bh = (struct raid1_bh *)(bh->private_bh);
+	struct raid1_bh * r1_bh = (struct raid1_bh *)(bh->b_dev_id);
 	unsigned long flags;
 
 	save_flags(flags);
 	cli();
 	PRINTK(("raid1_end_request().\n"));
 
+	if (raid1_one_error) {
+		raid1_one_error=0;
+		uptodate=0;
+	}
 	/*
 	 * this branch is our 'one mirror IO has finished' event handler:
 	 */
@@ -143,7 +144,7 @@ void raid1_end_request (struct buffer_head *bh, int uptodate)
 		 */
 		if (uptodate) {
 			PRINTK(("raid1_end_request(), read branch, uptodate.\n"));
-			raid1_end_buffer_io (bh, uptodate);
+			raid1_end_buffer_io(r1_bh, uptodate);
 			restore_flags(flags);
 			return;
 		}
@@ -163,7 +164,7 @@ void raid1_end_request (struct buffer_head *bh, int uptodate)
 	PRINTK(("raid1_end_request(), write branch.\n"));
 
 	/*
-	 * lets see if all mirrored write operations have finished 
+	 * Let's see if all mirrored write operations have finished 
 	 * already [we have irqs off, so we can decrease]:
 	 */
 
@@ -174,82 +175,10 @@ void raid1_end_request (struct buffer_head *bh, int uptodate)
 
 		PRINTK(("raid1_end_request(), remaining == 0.\n"));
 
-		/*
-		 * kfree() can sleep? really? if yes then we are
-		 * doomed here ...
-		 */
-		for ( i=0; i<n; i++) {
+		for ( i=0; i<n; i++)
 			if (r1_bh->mirror_bh[i]) kfree(r1_bh->mirror_bh[i]);
-		}
 
-		/*
-		 * the 'master' bh is the one that is used in page IO,
-		 * perhaps someone is waiting on it. Lets erase all
-		 * signs of mirroring, and lets finish the bh operation:
-		 *
-		 * In particular, the "uptodate" value which we return
-		 * to the higher level represents the entire mirror set.
-		 *
-		 * yes, and this is why i want to use the 'master' bh as
-		 * a 'representative'. Thats why i think it's not clean to
-		 * use the master bh for real IO. We mix concepts, which
-		 * isnt too good.
-		 *
-		 * a buffer_head is basically a user-side file buffer.
-		 * Normally it has direct relationship with the physical
-		 * device, but as in this case, we have an abstract mapping
-		 * between the file buffer and the physical layout. So i've
-		 * reverted all changes that do this mixing.
-		 *
-		 * we 'waste' about 76 bytes for the one more buffer_head,
-		 * but note that we will do the mirror bh allocation at once
-		 * in the future, so this isnt really a valid point, i think.
-		 *
-		 * Also i dont like the current way of mixing the user-side buffer
-		 * concept with the 'real' physical layout like raid0.c does
-		 * now: it increases the size of buffer_head even for nonstriped
-		 * devices, etc.
-		 *
-		 * IMHO, in the future, we should have a lightweight buffer_head
-		 * structure, which holds almost no physical device information.
-		 
-		 * Abstract relationship between buffers:
-		 * ===================================== 
-		 * 
-		 *           [user] 
-		 *              |
-		 *              |
-		 *    ['master' buffer_head] + [private_buffer_head]
-		 *                                      |
-		 *                                      |
-		 *                                      |
-		 *                        [additional 'sub'-buffer_heads]
-		 *                           |          |           | 
-		 *                         [dev1]     [dev2]      [dev3]
-		 * 
- 
-		 * In this scheme it's not clean to use the 'master' as one of
-		 * the 'sub' buffer_heads. If you think about it, currently we can 
-		 * do this only because raid0 introduced it's own private_buffer_head
-		 * structure in buffer_head: rdev,rsector. And raid0 has a 1:1
-		 * relationship to the physical device. But this is really just a
-		 * special case. Once we have our megafast bh pools running, we could
-		 * clean up raid0.c too :))
-		 *
-		 * Not that it isnt clean, it is lethal if in the future we insert our 
-		 * sub buffer_heads into the global block cache. The master request
-		 * should be an IO operation label for the complex operation, nothing
-		 * more.
-		 *
-		 * So we have almost no performance arguments, and alot of cleanness
-		 * arguments.
-		 *
-		 * Comments? Gonna change it back to your way again if you can convince
-		 * me :)) --mingo
-		 *
-		 */
-		raid1_end_buffer_io ( r1_bh->master_bh, 
-				test_bit (BH_Uptodate, &r1_bh->state));
+		raid1_end_buffer_io(r1_bh, test_bit(BH_Uptodate, &r1_bh->state));
 	}
 	else PRINTK(("raid1_end_request(), remaining == %u.\n", r1_bh->remaining));
 	restore_flags(flags);
@@ -261,9 +190,9 @@ void raid1_end_request (struct buffer_head *bh, int uptodate)
 static inline void
 map_and_make_request (int rw, struct buffer_head *bh)
 {
-	if (MAJOR (bh->b_rdev) == MD_MAJOR){
+	if (MAJOR (bh->b_rdev) == MD_MAJOR)
 		md_map (MINOR (bh->b_rdev), &bh->b_rdev, &bh->b_rsector, bh->b_size >> 9);
-	}
+	clear_bit(BH_Lock, &bh->b_state);
 	make_request (MAJOR (bh->b_rdev), rw, bh);
 }
 	
@@ -272,29 +201,19 @@ raid1_make_request (struct md_dev *mddev, int rw, struct buffer_head * bh)
 {
 
 	struct raid1_data *raid_conf = (struct raid1_data *) mddev->private;
-	struct buffer_head *mirror_bh[MD_SB_DISKS];
+	struct buffer_head *mirror_bh[MD_SB_DISKS], *bh_req;
 	struct raid1_bh * r1_bh;
 	int n = raid_conf->raid_disks, i, sum_bhs = 0, switch_disks = 0, sectors;
 	struct mirror_info *mirror;
 
 	PRINTK(("raid1_make_request().\n"));
 
-/*
- * We put allocations at the beginning, to avoid sleeping while doing
- * atomic operations of buffer heads. This might or might not make much
- * difference, but lets rather be careful.
- *
- * but this has two side effects (probably non harmless):
- *
- *	1.	The buffer will not be locked while we sleep.
- *	2.	The rest of the kernel will see BH_Req without
- *		BH_Lock.
- */
 	while (!( /* FIXME: now we are rather fault tolerant than nice */
 	r1_bh = kmalloc (sizeof (struct raid1_bh), GFP_KERNEL)
 	) )
 		printk ("raid1_make_request(#1): out of memory\n");
 	memset (r1_bh, 0, sizeof (struct raid1_bh));
+
 /*
  * make_request() can abort the operation when READA or WRITEA are being
  * used and no empty request is available.
@@ -316,10 +235,6 @@ raid1_make_request (struct md_dev *mddev, int rw, struct buffer_head * bh)
 	r1_bh->mddev=mddev;
 	r1_bh->cmd = rw;
 
-	set_bit (BH_MD,	&bh->b_state);
-	bh->personality  = &raid1_personality;
-	bh->private_bh   = (void*)(r1_bh);
-
 	if (rw==READ || rw==READA) {
 		int last_used = raid_conf->last_used;
 		PRINTK(("raid1_make_request(), read branch.\n"));
@@ -336,39 +251,26 @@ raid1_make_request (struct md_dev *mddev, int rw, struct buffer_head * bh)
 		if (switch_disks) {
 			PRINTK(("read-balancing: switching %d -> %d (%d sectors)\n", last_used, mirror->next, raid_conf->sect_count));
 			raid_conf->sect_count = 0;
-			raid_conf->last_used = mirror->next;
+			last_used = raid_conf->last_used = mirror->next;
+			/*
+			 * Do not switch to write-only disks ... resyncing
+			 * is in progress
+			 */
+			while (raid_conf->mirrors[last_used].write_only)
+				raid_conf->last_used = raid_conf->mirrors[last_used].next;
 		}
 		PRINTK (("raid1 read queue: %d %d\n", MAJOR (bh->b_rdev), MINOR (bh->b_rdev)));
-
-		clear_bit (BH_Lock, &bh->b_state);
-		map_and_make_request (rw, bh);
+		bh_req = &r1_bh->bh_req;
+		memcpy(bh_req, bh, sizeof(*bh));
+		bh_req->b_end_io = raid1_end_request;
+		bh_req->b_dev_id = r1_bh;
+		map_and_make_request (rw, bh_req);
 		return 0;
 	}
 
 	/*
 	 * WRITE or WRITEA.
 	 */
-/*
- * btw, we have no more master disk. 'slave' is gone too :) [i hate that word :))]
- *
- * We are now using the master bh for a real IO. It seems important that:
- *
- * 1.	lock_buffer() will be called when we start to handle the request,
- *	before we do anything (done by ll_rw_blk.c).
- *
- * 2.	It seems that Linus took great care to set mark_buffer_clean()
- *	atomically with cli() in effect just when the buffer was placed
- *	into the queue. To be compatible with this behavior, it would be
- *	best to lock the buffer *first*, but mark it clean *last*, and to
- *	do this by passing through the exact logic in ll_rw_blk.c.
- *
- * Note: i've reverted this #3 thing, see the big comment in this file.
- *
- * 3.	We are now called from within make_request(), so the real bh
- *	will be automatically handled last when we return, so we only need
- *	to add the rest of the buffers (but remember to include the
- *	master bh in the remaining count).
- */
 	PRINTK(("raid1_make_request(n=%d), write branch.\n",n));
 
 	for (i = 0; i < n; i++) {
@@ -407,14 +309,13 @@ raid1_make_request (struct md_dev *mddev, int rw, struct buffer_head * bh)
 		mirror_bh [i]->b_dev        = bh->b_dev;
 		mirror_bh [i]->b_rdev 	    = raid_conf->mirrors [i].dev;
 		mirror_bh [i]->b_rsector    = bh->b_rsector;
-		mirror_bh [i]->b_state      =   (1<<BH_MD)      | (1<<BH_Req) | 
-						(1<<BH_Touched) | (1<<BH_Dirty);
+		mirror_bh [i]->b_state      = (1<<BH_Req) | (1<<BH_Dirty);
 		mirror_bh [i]->b_count      = 1;
 		mirror_bh [i]->b_size       = bh->b_size;
 		mirror_bh [i]->b_data       = bh->b_data;
 		mirror_bh [i]->b_list       = BUF_LOCKED;
-		mirror_bh [i]->personality  = &raid1_personality;
-		mirror_bh [i]->private_bh   = (void*)(r1_bh);
+		mirror_bh [i]->b_end_io     = raid1_end_request;
+		mirror_bh [i]->b_dev_id     = r1_bh;
 
 		r1_bh->mirror_bh[i] = mirror_bh[i];
 		sum_bhs++;
@@ -463,6 +364,22 @@ static void raid1_fix_links (struct raid1_data *raid_conf, int failed_index)
 			raid_conf->mirrors [j].next = raid_conf->mirrors [failed_index].next;
 }
 
+#define LAST_DISK KERN_ALERT \
+"raid1: only one disk left and IO error.\n"
+
+#define NO_SPARE_DISK KERN_ALERT \
+"raid1: no spare disk left, degrading mirror level by one.\n"
+
+#define DISK_FAILED KERN_ALERT \
+"raid1: Disk failure on %s, disabling device. \n" \
+"       Operation continuing on %d devices\n"
+
+#define START_SYNCING KERN_ALERT \
+"raid1: start syncing spare disk.\n"
+
+#define ALREADY_SYNCING KERN_INFO \
+"raid1: syncing already in progress.\n"
+
 static int raid1_error (struct md_dev *mddev, kdev_t dev)
 {
 	struct raid1_data *raid_conf = (struct raid1_data *) mddev->private;
@@ -479,34 +396,192 @@ static int raid1_error (struct md_dev *mddev, kdev_t dev)
 		 * first check if this is a queued request for a device
 		 * which has just failed.
 		 */
-		for (i = 0, mirror = raid_conf->mirrors; i < disks; i++, mirror++)
+		for (i = 0, mirror = raid_conf->mirrors; i < disks;
+				 i++, mirror++)
 			if (mirror->dev == dev && !mirror->operational)
 				return 0;
-		printk (KERN_ALERT "RAID1: only one disk left and IO error.\n");
-		return 0;
-	}
-
-	/* Mark disk as unusable */
-	for (i = 0, mirror = raid_conf->mirrors; i < disks; i++, mirror++) {
-		if (mirror->dev == dev && mirror->operational){
-			mirror->operational = 0;
-			raid1_fix_links (raid_conf, i);
-			sb->disks[mirror->number].state |= (1 << MD_FAULTY_DEVICE);
-			sb->disks[mirror->number].state &= ~(1 << MD_SYNC_DEVICE);
-			sb->disks[mirror->number].state &= ~(1 << MD_ACTIVE_DEVICE);
-			sb->active_disks--;
-			sb->working_disks--;
-			sb->failed_disks++;
-			mddev->sb_dirty = 1;
-			md_wakeup_thread(raid1_thread);
-			raid_conf->working_disks--;
-			printk (KERN_ALERT
-				"RAID1: Disk failure on %s, disabling device."
-				"Operation continuing on %d devices\n",
-				kdevname (dev), raid_conf->working_disks);
+		printk (LAST_DISK);
+	} else {
+		/* Mark disk as unusable */
+		for (i = 0, mirror = raid_conf->mirrors; i < disks;
+				 i++, mirror++) {
+			if (mirror->dev == dev && mirror->operational){
+				mirror->operational = 0;
+				raid1_fix_links (raid_conf, i);
+				sb->disks[mirror->number].state |=
+						(1 << MD_FAULTY_DEVICE);
+				sb->disks[mirror->number].state &=
+						~(1 << MD_SYNC_DEVICE);
+				sb->disks[mirror->number].state &=
+						~(1 << MD_ACTIVE_DEVICE);
+				sb->active_disks--;
+				sb->working_disks--;
+				sb->failed_disks++;
+				mddev->sb_dirty = 1;
+				md_wakeup_thread(raid1_thread);
+				raid_conf->working_disks--;
+				printk (DISK_FAILED, kdevname (dev),
+						raid_conf->working_disks);
+			}
 		}
 	}
+	return 0;
+}
 
+#undef LAST_DISK
+#undef NO_SPARE_DISK
+#undef DISK_FAILED
+#undef START_SYNCING
+
+/*
+ * This is the personality-specific hot-addition routine
+ */
+
+#define NO_SUPERBLOCK KERN_ERR \
+"raid1: cannot hot-add disk to the array with no RAID superblock\n"
+
+#define WRONG_LEVEL KERN_ERR \
+"raid1: hot-add: level of disk is not RAID-1\n"
+
+#define HOT_ADD_SUCCEEDED KERN_INFO \
+"raid1: device %s hot-added\n"
+
+static int raid1_hot_add_disk (struct md_dev *mddev, kdev_t dev)
+{
+	unsigned long flags;
+	struct raid1_data *raid_conf = (struct raid1_data *) mddev->private;
+	struct mirror_info *mirror;
+	md_superblock_t *sb = mddev->sb;
+	struct real_dev * realdev;
+	int n;
+
+	/*
+	 * The device has its superblock already read and it was found
+	 * to be consistent for generic RAID usage.  Now we check whether
+	 * it's usable for RAID-1 hot addition.
+	 */
+
+	n = mddev->nb_dev++;
+	realdev = &mddev->devices[n];
+	if (!realdev->sb) {
+		printk (NO_SUPERBLOCK);
+		return -EINVAL;
+	}
+	if (realdev->sb->level != 1) {
+		printk (WRONG_LEVEL);
+		return -EINVAL;
+	}
+	/* FIXME: are there other things left we could sanity-check? */
+
+	/*
+	 * We have to disable interrupts, as our RAID-1 state is used
+	 * from irq handlers as well.
+	 */
+	save_flags(flags);
+	cli();
+
+	raid_conf->raid_disks++;
+	mirror = raid_conf->mirrors+n;
+
+	mirror->number=n;
+	mirror->raid_disk=n;
+	mirror->dev=dev;
+	mirror->next=0; /* FIXME */
+	mirror->sect_limit=128;
+
+	mirror->operational=0;
+	mirror->spare=1;
+	mirror->write_only=0;
+
+	sb->disks[n].state |= (1 << MD_FAULTY_DEVICE);
+	sb->disks[n].state &= ~(1 << MD_SYNC_DEVICE);
+	sb->disks[n].state &= ~(1 << MD_ACTIVE_DEVICE);
+	sb->nr_disks++;
+	sb->spare_disks++;
+
+	restore_flags(flags);
+
+	md_update_sb(MINOR(dev));
+
+	printk (HOT_ADD_SUCCEEDED, kdevname(realdev->dev));
+
+	return 0;
+}
+
+#undef NO_SUPERBLOCK
+#undef WRONG_LEVEL
+#undef HOT_ADD_SUCCEEDED
+
+/*
+ * Insert the spare disk into the drive-ring
+ */
+static void add_ring(struct raid1_data *raid_conf, struct mirror_info *mirror)
+{
+	int j, next;
+	struct mirror_info *p = raid_conf->mirrors;
+
+	for (j = 0; j < raid_conf->raid_disks; j++, p++)
+		if (p->operational && !p->write_only) {
+			next = p->next;
+			p->next = mirror->raid_disk;
+			mirror->next = next;
+			return;
+		}
+	printk("raid1: bug: no read-operational devices\n");
+}
+
+static int raid1_mark_spare(struct md_dev *mddev, md_descriptor_t *spare,
+				int state)
+{
+	int i = 0, failed_disk = -1;
+	struct raid1_data *raid_conf = mddev->private;
+	struct mirror_info *mirror = raid_conf->mirrors;
+	md_descriptor_t *descriptor;
+	unsigned long flags;
+
+	for (i = 0; i < MD_SB_DISKS; i++, mirror++) {
+		if (mirror->spare && mirror->number == spare->number)
+			goto found;
+	}
+	return 1;
+found:
+	for (i = 0, mirror = raid_conf->mirrors; i < raid_conf->raid_disks;
+								i++, mirror++)
+		if (!mirror->operational)
+			failed_disk = i;
+
+	save_flags(flags);
+	cli();
+	switch (state) {
+		case SPARE_WRITE:
+			mirror->operational = 1;
+			mirror->write_only = 1;
+			raid_conf->raid_disks = MAX(raid_conf->raid_disks,
+							mirror->raid_disk + 1);
+			break;
+		case SPARE_INACTIVE:
+			mirror->operational = 0;
+			mirror->write_only = 0;
+			break;
+		case SPARE_ACTIVE:
+			mirror->spare = 0;
+			mirror->write_only = 0;
+			raid_conf->working_disks++;
+			add_ring(raid_conf, mirror);
+
+			if (failed_disk != -1) {
+				descriptor = &mddev->sb->disks[raid_conf->mirrors[failed_disk].number];
+				i = spare->raid_disk;
+				spare->raid_disk = descriptor->raid_disk;
+				descriptor->raid_disk = i;
+			}
+			break;
+		default:
+			printk("raid1_mark_spare: bug: state == %d\n", state);
+			restore_flags(flags);
+			return 1;
+	}
+	restore_flags(flags);
 	return 0;
 }
 
@@ -514,7 +589,7 @@ static int raid1_error (struct md_dev *mddev, kdev_t dev)
  * This is a kernel thread which:
  *
  *	1.	Retries failed read operations on working mirrors.
- *	2.	Updates the raid superblock when problems are encountered.
+ *	2.	Updates the raid superblock when problems encounter.
  */
 void raid1d (void *data)
 {
@@ -529,12 +604,13 @@ void raid1d (void *data)
 	cli();
 	while (raid1_retry_list) {
 		bh = raid1_retry_list;
-		r1_bh = (struct raid1_bh *)(bh->private_bh);
+		r1_bh = (struct raid1_bh *)(bh->b_dev_id);
 		raid1_retry_list = r1_bh->next_retry;
 		restore_flags(flags);
 
 		mddev = md_dev + MINOR(bh->b_dev);
 		if (mddev->sb_dirty) {
+			printk("dirty sb detected, updating.\n");
 			mddev->sb_dirty = 0;
 			md_update_sb(MINOR(bh->b_dev));
 		}
@@ -544,24 +620,22 @@ void raid1d (void *data)
 			printk (KERN_ALERT 
 					"raid1: %s: unrecoverable I/O read error for block %lu\n",
 						kdevname(bh->b_dev), bh->b_blocknr);
-			raid1_end_buffer_io (bh, 0);
+			raid1_end_buffer_io(r1_bh, 0);
 		} else {
 			printk (KERN_ERR "raid1: %s: redirecting sector %lu to another mirror\n", 
 					  kdevname(bh->b_dev), bh->b_blocknr);
-			clear_bit (BH_Lock, &bh->b_state);
 			map_and_make_request (r1_bh->cmd, bh);
 		}
 		cli();
 	}
 	restore_flags(flags);
-	
 }
 
 /*
  * This will catch the scenario in which one of the mirrors was
  * mounted as a normal device rather than as a part of a raid set.
  */
-static int check_consistenty (struct md_dev *mddev)
+static int __check_consistency (struct md_dev *mddev, int row)
 {
 	struct raid1_data *raid_conf = mddev->private;
 	kdev_t dev;
@@ -574,7 +648,7 @@ static int check_consistenty (struct md_dev *mddev)
 			continue;
 		dev = raid_conf->mirrors[i].dev;
 		set_blocksize(dev, 4096);
-		if ((bh = bread(dev, 0, 4096)) == NULL)
+		if ((bh = bread(dev, row / 4, 4096)) == NULL)
 			break;
 		if (!buffer) {
 			buffer = (char *) __get_free_page(GFP_KERNEL);
@@ -601,6 +675,17 @@ static int check_consistenty (struct md_dev *mddev)
 	return rc;
 }
 
+static int check_consistency (struct md_dev *mddev)
+{
+	int size = mddev->sb->size;
+	int row;
+
+	for (row = 0; row < size; row += size / 8)
+		if (__check_consistency(mddev, row))
+			return 1;
+	return 0;
+}
+
 static int raid1_run (int minor, struct md_dev *mddev)
 {
 	struct raid1_data *raid_conf;
@@ -612,14 +697,15 @@ static int raid1_run (int minor, struct md_dev *mddev)
 	MOD_INC_USE_COUNT;
 
 	if (sb->level != 1) {
-		printk("raid1: %s: raid level not set to mirroring (%d)\n", kdevname(MKDEV(MD_MAJOR, minor)), sb->level);
+		printk("raid1: %s: raid level not set to mirroring (%d)\n",
+				kdevname(MKDEV(MD_MAJOR, minor)), sb->level);
 		MOD_DEC_USE_COUNT;
 		return -EIO;
 	}
 	/****
-	 * copy the now verified devices into our private RAID1 bookkeeping area:
-	 *
-	 * [whatever we allocate in raid1_run(), should be freed in raid1_stop()]
+	 * copy the now verified devices into our private RAID1 bookkeeping
+	 * area. [whatever we allocate in raid1_run(), should be freed in
+	 * raid1_stop()]
 	 */
 
 	while (!( /* FIXME: now we are rather fault tolerant than nice */
@@ -669,6 +755,20 @@ static int raid1_run (int minor, struct md_dev *mddev)
 			raid_conf->mirrors[raid_disk].operational = 1;
 			raid_conf->mirrors[raid_disk].sect_limit = 128;
 			raid_conf->working_disks++;
+		} else {
+		/*
+		 * Must be a spare disk ..
+		 */
+			printk(KERN_INFO "raid1: spare disk %s\n", kdevname(realdev->dev));
+			raid_disk = descriptor->raid_disk;
+			raid_conf->mirrors[raid_disk].number = descriptor->number;
+			raid_conf->mirrors[raid_disk].raid_disk = raid_disk;
+			raid_conf->mirrors[raid_disk].dev = mddev->devices [i].dev;
+			raid_conf->mirrors[raid_disk].sect_limit = 128;
+
+			raid_conf->mirrors[raid_disk].operational = 0;
+			raid_conf->mirrors[raid_disk].write_only = 0;
+			raid_conf->mirrors[raid_disk].spare = 1;
 		}
 	}
 	if (!raid_conf->working_disks) {
@@ -692,7 +792,7 @@ static int raid1_run (int minor, struct md_dev *mddev)
 		}
 	}
 
-	if (check_consistenty(mddev)) {
+	if (check_consistency(mddev)) {
 		printk(KERN_ERR "raid1: detected mirror differences -- run ckraid\n");
 		sb->state |= 1 << MD_SB_ERRORS;
 		kfree(raid_conf);
@@ -742,7 +842,10 @@ static struct md_personality raid1_personality=
 	raid1_status,
 	NULL,			/* no ioctls */
 	0,
-	raid1_error
+	raid1_error,
+	raid1_hot_add_disk,
+	/* raid1_hot_remove_drive */ NULL,
+	raid1_mark_spare
 };
 
 int raid1_init (void)

@@ -1,5 +1,5 @@
 /*
- * linux/drivers/block/ide-floppy.c	Version 0.71 - ALPHA	May  21, 1998
+ * linux/drivers/block/ide-floppy.c	Version 0.8		Dec   7, 1997
  *
  * Copyright (C) 1996, 1997 Gadi Oxman <gadio@netvision.net.il>
  */
@@ -21,15 +21,14 @@
  *                       Use the minimum of the LBA and CHS capacities.
  *                       Avoid hwgroup->rq == NULL on the last irq.
  *                       Fix potential null dereferencing with DEBUG_LOG.
- * Ver 0.6   Jul  3 97   Limit max sectors per read/write command to 64.
- * Ver 0.7   Aug  4 97   Increase irq timeout from 10 to 100 seconds.
- * Ver 0.71  May 21 98   Disallow opening a write protected media for writing
- *                       Limit max sectors only on IOMEGA ZIP 21.D
- *                       Issue START cmd only if TEST_UNIT_READY fails
- *                       Add CDROMEJECT ioctl
- *                       Clean up error messages a bit
- * Ver 0.72  Jul  8 98   Limit max sectors only on IOMEGA ZIP 23.D
+ * Ver 0.8   Dec  7 97   Increase irq timeout from 10 to 50 seconds.
+ *                       Add media write-protect detection.
+ *                       Issue START command only if TEST UNIT READY fails.
+ *                       Add work-around for IOMEGA ZIP revision 21.D.
+ *                       Remove idefloppy_get_capabilities().
  */
+
+#define IDEFLOPPY_VERSION "0.8"
 
 #include <linux/config.h>
 #include <linux/module.h>
@@ -39,19 +38,16 @@
 #include <linux/delay.h>
 #include <linux/timer.h>
 #include <linux/mm.h>
-#include <linux/ioport.h>
 #include <linux/interrupt.h>
 #include <linux/major.h>
-#include <linux/blkdev.h>
 #include <linux/errno.h>
-#include <linux/hdreg.h>
 #include <linux/genhd.h>
 #include <linux/malloc.h>
 #include <linux/cdrom.h>
 
 #include <asm/byteorder.h>
 #include <asm/irq.h>
-#include <asm/segment.h>
+#include <asm/uaccess.h>
 #include <asm/io.h>
 #include <asm/unaligned.h>
 #include <asm/bitops.h>
@@ -67,6 +63,11 @@
 #define IDEFLOPPY_DEBUG_LOG		0
 #define IDEFLOPPY_DEBUG_INFO		0
 #define IDEFLOPPY_DEBUG_BUGS		1
+
+/*
+ *	Some drives require a longer irq timeout.
+ */
+#define IDEFLOPPY_WAIT_CMD		(5 * WAIT_CMD)
 
 /*
  *	After each failed packet command we issue a request sense command
@@ -86,13 +87,6 @@
  *	we leave the driver to wait for an interrupt or a timeout event.
  */
 #define IDEFLOPPY_PC_STACK		(10 + IDEFLOPPY_MAX_PC_RETRIES)
-
-#define IDEFLOPPY_MAX_SECTORS		256
-
-/*
- *	Some drives require a longer irq timeout.
- */
-#define IDEFLOPPY_WAIT_CMD		(10 * WAIT_CMD)
 
 /*
  *	Our view of a packet command.
@@ -127,10 +121,19 @@ typedef struct idefloppy_packet_command_s {
  *	Removable Block Access Capabilities Page
  */
 typedef struct {
+#if defined(__LITTLE_ENDIAN_BITFIELD)
 	unsigned	page_code	:6;	/* Page code - Should be 0x1b */
 	unsigned	reserved1_6	:1;	/* Reserved */
 	unsigned	ps		:1;	/* Should be 0 */
+#elif defined(__BIG_ENDIAN_BITFIELD)
+	unsigned	ps		:1;	/* Should be 0 */
+	unsigned	reserved1_6	:1;	/* Reserved */
+	unsigned	page_code	:6;	/* Page code - Should be 0x1b */
+#else
+#error "Bitfield endianness not defined! Check your byteorder.h"
+#endif
 	u8		page_length;		/* Page Length - Should be 0xa */
+#if defined(__LITTLE_ENDIAN_BITFIELD)
 	unsigned	reserved2	:6;
 	unsigned	srfp		:1;	/* Supports reporting progress of format */
 	unsigned	sflp		:1;	/* System floppy type device */
@@ -138,6 +141,17 @@ typedef struct {
 	unsigned	reserved3	:3;
 	unsigned	sml		:1;	/* Single / Multiple lun supported */
 	unsigned	ncd		:1;	/* Non cd optical device */
+#elif defined(__BIG_ENDIAN_BITFIELD)
+	unsigned	sflp		:1;	/* System floppy type device */
+	unsigned	srfp		:1;	/* Supports reporting progress of format */
+	unsigned	reserved2	:6;
+	unsigned	ncd		:1;	/* Non cd optical device */
+	unsigned	sml		:1;	/* Single / Multiple lun supported */
+	unsigned	reserved3	:3;
+	unsigned	tlun		:3;	/* Total logical units supported by the device */
+#else
+#error "Bitfield endianness not defined! Check your byteorder.h"
+#endif
 	u8		reserved[8];
 } idefloppy_capabilities_page_t;
 
@@ -145,9 +159,17 @@ typedef struct {
  *	Flexible disk page.
  */
 typedef struct {
+#if defined(__LITTLE_ENDIAN_BITFIELD)
 	unsigned	page_code	:6;	/* Page code - Should be 0x5 */
 	unsigned	reserved1_6	:1;	/* Reserved */
 	unsigned	ps		:1;	/* The device is capable of saving the page */
+#elif defined(__BIG_ENDIAN_BITFIELD)
+	unsigned	ps		:1;	/* The device is capable of saving the page */
+	unsigned	reserved1_6	:1;	/* Reserved */
+	unsigned	page_code	:6;	/* Page code - Should be 0x5 */
+#else
+#error "Bitfield endianness not defined! Check your byteorder.h"
+#endif
 	u8		page_length;		/* Page Length - Should be 0x1e */
 	u16		transfer_rate;		/* In kilobits per second */
 	u8		heads, sectors;		/* Number of heads, Number of sectors per track */
@@ -170,8 +192,15 @@ typedef struct {
 
 typedef struct {
 	u32		blocks;			/* Number of blocks */
+#if defined(__LITTLE_ENDIAN_BITFIELD)
 	unsigned	dc		:2;	/* Descriptor Code */
 	unsigned	reserved	:6;
+#elif defined(__BIG_ENDIAN_BITFIELD)
+	unsigned	reserved	:6;
+	unsigned	dc		:2;	/* Descriptor Code */
+#else
+#error "Bitfield endianness not defined! Check your byteorder.h"
+#endif
 	u8		length_msb;		/* Block Length (MSB)*/
 	u16		length;			/* Block Length */
 } idefloppy_capacity_descriptor_t;
@@ -207,8 +236,7 @@ typedef struct {
 	int blocks, block_size, bs_factor;			/* Current format */
 	idefloppy_capacity_descriptor_t capacity;		/* Last format capacity */
 	idefloppy_flexible_disk_page_t flexible_disk_page;	/* Copy of the flexible disk page */
-	int wp;
-	int max_sectors;
+	int wp;							/* Write protect */
 
 	unsigned int flags;			/* Status/Action flags */
 } idefloppy_floppy_t;
@@ -278,6 +306,7 @@ typedef struct {
 typedef union {
 	unsigned all			:8;
 	struct {
+#if defined(__LITTLE_ENDIAN_BITFIELD)
 		unsigned check		:1;	/* Error occurred */
 		unsigned idx		:1;	/* Reserved */
 		unsigned corr		:1;	/* Correctable error occurred */
@@ -286,6 +315,18 @@ typedef union {
 		unsigned reserved5	:1;	/* Reserved */
 		unsigned drdy		:1;	/* Ignored for ATAPI commands (ready to accept ATA command) */
 		unsigned bsy		:1;	/* The device has access to the command block */
+#elif defined(__BIG_ENDIAN_BITFIELD)
+		unsigned bsy		:1;	/* The device has access to the command block */
+		unsigned drdy		:1;	/* Ignored for ATAPI commands (ready to accept ATA command) */
+		unsigned reserved5	:1;	/* Reserved */
+		unsigned dsc		:1;	/* Media access command finished */
+		unsigned drq		:1;	/* Data is request by the device */
+		unsigned corr		:1;	/* Correctable error occurred */
+		unsigned idx		:1;	/* Reserved */
+		unsigned check		:1;	/* Error occurred */
+#else
+#error "Bitfield endianness not defined! Check your byteorder.h"
+#endif
 	} b;
 } idefloppy_status_reg_t;
 
@@ -295,11 +336,21 @@ typedef union {
 typedef union {
 	unsigned all			:8;
 	struct {
+#if defined(__LITTLE_ENDIAN_BITFIELD)
 		unsigned ili		:1;	/* Illegal Length Indication */
 		unsigned eom		:1;	/* End Of Media Detected */
 		unsigned abrt		:1;	/* Aborted command - As defined by ATA */
 		unsigned mcr		:1;	/* Media Change Requested - As defined by ATA */
 		unsigned sense_key	:4;	/* Sense key of the last failed packet command */
+#elif defined(__BIG_ENDIAN_BITFIELD)
+		unsigned sense_key	:4;	/* Sense key of the last failed packet command */
+		unsigned mcr		:1;	/* Media Change Requested - As defined by ATA */
+		unsigned abrt		:1;	/* Aborted command - As defined by ATA */
+		unsigned eom		:1;	/* End Of Media Detected */
+		unsigned ili		:1;	/* Illegal Length Indication */
+#else
+#error "Bitfield endianness not defined! Check your byteorder.h"
+#endif
 	} b;
 } idefloppy_error_reg_t;
 
@@ -309,10 +360,19 @@ typedef union {
 typedef union {
 	unsigned all			:8;
 	struct {
+#if defined(__LITTLE_ENDIAN_BITFIELD)
 		unsigned dma		:1;	/* Using DMA or PIO */
 		unsigned reserved321	:3;	/* Reserved */
 		unsigned reserved654	:3;	/* Reserved (Tag Type) */
 		unsigned reserved7	:1;	/* Reserved */
+#elif defined(__BIG_ENDIAN_BITFIELD)
+		unsigned reserved7	:1;	/* Reserved */
+		unsigned reserved654	:3;	/* Reserved (Tag Type) */
+		unsigned reserved321	:3;	/* Reserved */
+		unsigned dma		:1;	/* Using DMA or PIO */
+#else
+#error "Bitfield endianness not defined! Check your byteorder.h"
+#endif
 	} b;
 } idefloppy_feature_reg_t;
 
@@ -322,8 +382,15 @@ typedef union {
 typedef union {
 	unsigned all			:16;
 	struct {
+#if defined(__LITTLE_ENDIAN_BITFIELD)
 		unsigned low		:8;	/* LSB */
 		unsigned high		:8;	/* MSB */
+#elif defined(__BIG_ENDIAN_BITFIELD)
+		unsigned high		:8;	/* MSB */
+		unsigned low		:8;	/* LSB */
+#else
+#error "Bitfield endianness not defined! Check your byteorder.h"
+#endif
 	} b;
 } idefloppy_bcount_reg_t;
 
@@ -333,9 +400,17 @@ typedef union {
 typedef union {
 	unsigned all			:8;
 	struct {
+#if defined(__LITTLE_ENDIAN_BITFIELD)
 		unsigned cod		:1;	/* Information transferred is command (1) or data (0) */
 		unsigned io		:1;	/* The device requests us to read (1) or write (0) */
 		unsigned reserved	:6;	/* Reserved */
+#elif defined(__BIG_ENDIAN_BITFIELD)
+		unsigned reserved	:6;	/* Reserved */
+		unsigned io		:1;	/* The device requests us to read (1) or write (0) */
+		unsigned cod		:1;	/* Information transferred is command (1) or data (0) */
+#else
+#error "Bitfield endianness not defined! Check your byteorder.h"
+#endif
 	} b;
 } idefloppy_ireason_reg_t;
 
@@ -345,12 +420,23 @@ typedef union {
 typedef union {	
 	unsigned all			:8;
 	struct {
+#if defined(__LITTLE_ENDIAN_BITFIELD)
 		unsigned sam_lun	:3;	/* Logical unit number */
 		unsigned reserved3	:1;	/* Reserved */
 		unsigned drv		:1;	/* The responding drive will be drive 0 (0) or drive 1 (1) */
 		unsigned one5		:1;	/* Should be set to 1 */
 		unsigned reserved6	:1;	/* Reserved */
 		unsigned one7		:1;	/* Should be set to 1 */
+#elif defined(__BIG_ENDIAN_BITFIELD)
+		unsigned one7		:1;	/* Should be set to 1 */
+		unsigned reserved6	:1;	/* Reserved */
+		unsigned one5		:1;	/* Should be set to 1 */
+		unsigned drv		:1;	/* The responding drive will be drive 0 (0) or drive 1 (1) */
+		unsigned reserved3	:1;	/* Reserved */
+		unsigned sam_lun	:3;	/* Logical unit number */
+#else
+#error "Bitfield endianness not defined! Check your byteorder.h"
+#endif
 	} b;
 } idefloppy_drivesel_reg_t;
 
@@ -360,11 +446,21 @@ typedef union {
 typedef union {			
 	unsigned all			:8;
 	struct {
+#if defined(__LITTLE_ENDIAN_BITFIELD)
 		unsigned zero0		:1;	/* Should be set to zero */
 		unsigned nien		:1;	/* Device interrupt is disabled (1) or enabled (0) */
 		unsigned srst		:1;	/* ATA software reset. ATAPI devices should use the new ATAPI srst. */
 		unsigned one3		:1;	/* Should be set to 1 */
 		unsigned reserved4567	:4;	/* Reserved */
+#elif defined(__BIG_ENDIAN_BITFIELD)
+		unsigned reserved4567	:4;	/* Reserved */
+		unsigned one3		:1;	/* Should be set to 1 */
+		unsigned srst		:1;	/* ATA software reset. ATAPI devices should use the new ATAPI srst. */
+		unsigned nien		:1;	/* Device interrupt is disabled (1) or enabled (0) */
+		unsigned zero0		:1;	/* Should be set to zero */
+#else
+#error "Bitfield endianness not defined! Check your byteorder.h"
+#endif
 	} b;
 } idefloppy_control_reg_t;
 
@@ -373,6 +469,7 @@ typedef union {
  *	the ATAPI IDENTIFY DEVICE command.
  */
 struct idefloppy_id_gcw {	
+#if defined(__LITTLE_ENDIAN_BITFIELD)
 	unsigned packet_size		:2;	/* Packet Size */
 	unsigned reserved234		:3;	/* Reserved */
 	unsigned drq_type		:2;	/* Command packet DRQ type */
@@ -380,12 +477,24 @@ struct idefloppy_id_gcw {
 	unsigned device_type		:5;	/* Device type */
 	unsigned reserved13		:1;	/* Reserved */
 	unsigned protocol		:2;	/* Protocol type */
+#elif defined(__BIG_ENDIAN_BITFIELD)
+	unsigned protocol		:2;	/* Protocol type */
+	unsigned reserved13		:1;	/* Reserved */
+	unsigned device_type		:5;	/* Device type */
+	unsigned removable		:1;	/* Removable media */
+	unsigned drq_type		:2;	/* Command packet DRQ type */
+	unsigned reserved234		:3;	/* Reserved */
+	unsigned packet_size		:2;	/* Packet Size */
+#else
+#error "Bitfield endianness not defined! Check your byteorder.h"
+#endif
 };
 
 /*
  *	INQUIRY packet command - Data Format
  */
 typedef struct {
+#if defined(__LITTLE_ENDIAN_BITFIELD)
 	unsigned	device_type	:5;	/* Peripheral Device Type */
 	unsigned	reserved0_765	:3;	/* Peripheral Qualifier - Reserved */
 	unsigned	reserved1_6t0	:7;	/* Reserved */
@@ -397,6 +506,21 @@ typedef struct {
 	unsigned	reserved3_45	:2;	/* Reserved */
 	unsigned	reserved3_6	:1;	/* TrmIOP - Reserved */
 	unsigned	reserved3_7	:1;	/* AENC - Reserved */
+#elif defined(__BIG_ENDIAN_BITFIELD)
+	unsigned	reserved0_765	:3;	/* Peripheral Qualifier - Reserved */
+	unsigned	device_type	:5;	/* Peripheral Device Type */
+	unsigned	rmb		:1;	/* Removable Medium Bit */
+	unsigned	reserved1_6t0	:7;	/* Reserved */
+	unsigned	iso_version	:2;	/* ISO Version */
+	unsigned	ecma_version	:3;	/* ECMA Version */
+	unsigned	ansi_version	:3;	/* ANSI Version */
+	unsigned	reserved3_7	:1;	/* AENC - Reserved */
+	unsigned	reserved3_6	:1;	/* TrmIOP - Reserved */
+	unsigned	reserved3_45	:2;	/* Reserved */
+	unsigned	response_format :4;	/* Response Data Format */
+#else
+#error "Bitfield endianness not defined! Check your byteorder.h"
+#endif
 	u8		additional_length;	/* Additional Length (total_length-4) */
 	u8		rsv5, rsv6, rsv7;	/* Reserved */
 	u8		vendor_id[8];		/* Vendor Identification */
@@ -411,6 +535,7 @@ typedef struct {
  *	REQUEST SENSE packet command result - Data Format.
  */
 typedef struct {
+#if defined(__LITTLE_ENDIAN_BITFIELD)
 	unsigned	error_code	:7;	/* Current error (0x70) */
 	unsigned	valid		:1;	/* The information field conforms to SFF-8070i */
 	u8		reserved1	:8;	/* Reserved */
@@ -418,6 +543,17 @@ typedef struct {
 	unsigned	reserved2_4	:1;	/* Reserved */
 	unsigned	ili		:1;	/* Incorrect Length Indicator */
 	unsigned	reserved2_67	:2;
+#elif defined(__BIG_ENDIAN_BITFIELD)
+	unsigned	valid		:1;	/* The information field conforms to SFF-8070i */
+	unsigned	error_code	:7;	/* Current error (0x70) */
+	u8		reserved1	:8;	/* Reserved */
+	unsigned	reserved2_67	:2;
+	unsigned	ili		:1;	/* Incorrect Length Indicator */
+	unsigned	reserved2_4	:1;	/* Reserved */
+	unsigned	sense_key	:4;	/* Sense Key */
+#else
+#error "Bitfield endianness not defined! Check your byteorder.h"
+#endif
 	u32		information __attribute__ ((packed));
 	u8		asl;			/* Additional sense length (n-7) */
 	u32		command_specific;	/* Additional command specific information */
@@ -440,8 +576,15 @@ typedef struct {
 typedef struct {
 	u16		mode_data_length;	/* Length of the following data transfer */
 	u8		medium_type;		/* Medium Type */
+#if defined(__LITTLE_ENDIAN_BITFIELD)
 	unsigned	reserved3	:7;
 	unsigned	wp		:1;	/* Write protect */
+#elif defined(__BIG_ENDIAN_BITFIELD)
+	unsigned	wp		:1;	/* Write protect */
+	unsigned	reserved3	:7;
+#else
+#error "Bitfield endianness not defined! Check your byteorder.h"
+#endif
 	u8		reserved[4];
 } idefloppy_mode_parameter_header_t;
 
@@ -472,10 +615,10 @@ static void idefloppy_write_zeros (ide_drive_t *drive, unsigned int bcount)
  *	For read/write requests, we will call ide_end_request to pass to the
  *	next buffer.
  */
-void idefloppy_end_request (byte uptodate, ide_hwgroup_t *hwgroup)
+static void idefloppy_end_request (byte uptodate, ide_hwgroup_t *hwgroup)
 {
 	ide_drive_t *drive = hwgroup->drive;
-	idefloppy_floppy_t *floppy = drive->floppy;
+	idefloppy_floppy_t *floppy = drive->driver_data;
 	struct request *rq = hwgroup->rq;
 	int error;
 
@@ -506,6 +649,8 @@ static void idefloppy_input_buffers (ide_drive_t *drive, idefloppy_pc_t *pc, uns
 
 	while (bcount) {
 		if (pc->b_count == bh->b_size) {
+			rq->sector += rq->current_nr_sectors;
+			rq->nr_sectors -= rq->current_nr_sectors;
 			idefloppy_end_request (1, HWGROUP(drive));
 			if ((bh = rq->bh) != NULL)
 				pc->b_count = 0;
@@ -518,10 +663,6 @@ static void idefloppy_input_buffers (ide_drive_t *drive, idefloppy_pc_t *pc, uns
 		count = IDEFLOPPY_MIN (bh->b_size - pc->b_count, bcount);
 		atapi_input_bytes (drive, bh->b_data + pc->b_count, count);
 		bcount -= count; pc->b_count += count;
-		if (pc->b_count == bh->b_size) {
-			rq->sector += rq->current_nr_sectors;
-			rq->nr_sectors -= rq->current_nr_sectors;
-		}
 	}
 }
 
@@ -533,6 +674,8 @@ static void idefloppy_output_buffers (ide_drive_t *drive, idefloppy_pc_t *pc, un
 	
 	while (bcount) {
 		if (!pc->b_count) {
+			rq->sector += rq->current_nr_sectors;
+			rq->nr_sectors -= rq->current_nr_sectors;
 			idefloppy_end_request (1, HWGROUP(drive));
 			if ((bh = rq->bh) != NULL) {
 				pc->b_data = bh->b_data;
@@ -547,14 +690,10 @@ static void idefloppy_output_buffers (ide_drive_t *drive, idefloppy_pc_t *pc, un
 		count = IDEFLOPPY_MIN (pc->b_count, bcount);
 		atapi_output_bytes (drive, pc->b_data, count);
 		bcount -= count; pc->b_data += count; pc->b_count -= count;
-		if (!pc->b_count) {
-			rq->sector += rq->current_nr_sectors;
-			rq->nr_sectors -= rq->current_nr_sectors;
-		}
 	}
 }
 
-#ifdef CONFIG_BLK_DEV_TRITON
+#ifdef CONFIG_BLK_DEV_IDEDMA
 static void idefloppy_update_buffers (ide_drive_t *drive, idefloppy_pc_t *pc)
 {
 	struct request *rq = pc->rq;
@@ -563,7 +702,7 @@ static void idefloppy_update_buffers (ide_drive_t *drive, idefloppy_pc_t *pc)
 	while ((bh = rq->bh) != NULL)
 		idefloppy_end_request (1, HWGROUP(drive));
 }
-#endif /* CONFIG_BLK_DEV_TRITON */
+#endif /* CONFIG_BLK_DEV_IDEDMA */
 
 /*
  *	idefloppy_queue_pc_head generates a new packet command request in front
@@ -580,7 +719,7 @@ static void idefloppy_queue_pc_head (ide_drive_t *drive,idefloppy_pc_t *pc,struc
 
 static idefloppy_pc_t *idefloppy_next_pc_storage (ide_drive_t *drive)
 {
-	idefloppy_floppy_t *floppy = drive->floppy;
+	idefloppy_floppy_t *floppy = drive->driver_data;
 
 	if (floppy->pc_stack_index==IDEFLOPPY_PC_STACK)
 		floppy->pc_stack_index=0;
@@ -589,7 +728,7 @@ static idefloppy_pc_t *idefloppy_next_pc_storage (ide_drive_t *drive)
 
 static struct request *idefloppy_next_rq_storage (ide_drive_t *drive)
 {
-	idefloppy_floppy_t *floppy = drive->floppy;
+	idefloppy_floppy_t *floppy = drive->driver_data;
 
 	if (floppy->rq_stack_index==IDEFLOPPY_PC_STACK)
 		floppy->rq_stack_index=0;
@@ -602,7 +741,7 @@ static struct request *idefloppy_next_rq_storage (ide_drive_t *drive)
  */
 static void idefloppy_analyze_error (ide_drive_t *drive,idefloppy_request_sense_result_t *result)
 {
-	idefloppy_floppy_t *floppy = drive->floppy;
+	idefloppy_floppy_t *floppy = drive->driver_data;
 
 	floppy->sense_key = result->sense_key; floppy->asc = result->asc; floppy->ascq = result->ascq;
 #if IDEFLOPPY_DEBUG_LOG
@@ -615,7 +754,7 @@ static void idefloppy_analyze_error (ide_drive_t *drive,idefloppy_request_sense_
 
 static void idefloppy_request_sense_callback (ide_drive_t *drive)
 {
-	idefloppy_floppy_t *floppy = drive->floppy;
+	idefloppy_floppy_t *floppy = drive->driver_data;
 
 #if IDEFLOPPY_DEBUG_LOG
 	printk (KERN_INFO "ide-floppy: Reached idefloppy_request_sense_callback\n");
@@ -634,7 +773,7 @@ static void idefloppy_request_sense_callback (ide_drive_t *drive)
  */
 static void idefloppy_pc_callback (ide_drive_t *drive)
 {
-	idefloppy_floppy_t *floppy = drive->floppy;
+	idefloppy_floppy_t *floppy = drive->driver_data;
 	
 #if IDEFLOPPY_DEBUG_LOG
 	printk (KERN_INFO "ide-floppy: Reached idefloppy_pc_callback\n");
@@ -691,7 +830,7 @@ static void idefloppy_retry_pc (ide_drive_t *drive)
  */
 static void idefloppy_pc_intr (ide_drive_t *drive)
 {
-	idefloppy_floppy_t *floppy = drive->floppy;
+	idefloppy_floppy_t *floppy = drive->driver_data;
 	idefloppy_status_reg_t status;
 	idefloppy_bcount_reg_t bcount;
 	idefloppy_ireason_reg_t ireason;
@@ -703,20 +842,19 @@ static void idefloppy_pc_intr (ide_drive_t *drive)
 	printk (KERN_INFO "ide-floppy: Reached idefloppy_pc_intr interrupt handler\n");
 #endif /* IDEFLOPPY_DEBUG_LOG */	
 
-#ifdef CONFIG_BLK_DEV_TRITON
+#ifdef CONFIG_BLK_DEV_IDEDMA
 	if (test_bit (PC_DMA_IN_PROGRESS, &pc->flags)) {
-		if (HWIF(drive)->dmaproc(ide_dma_status_bad, drive)) {
+		if (HWIF(drive)->dmaproc(ide_dma_end, drive)) {
 			set_bit (PC_DMA_ERROR, &pc->flags);
 		} else {
 			pc->actually_transferred=pc->request_transfer;
 			idefloppy_update_buffers (drive, pc);
 		}
-		(void) (HWIF(drive)->dmaproc(ide_dma_abort, drive));	/* End DMA */
 #if IDEFLOPPY_DEBUG_LOG
 		printk (KERN_INFO "ide-floppy: DMA finished\n");
 #endif /* IDEFLOPPY_DEBUG_LOG */
 	}
-#endif /* CONFIG_BLK_DEV_TRITON */
+#endif /* CONFIG_BLK_DEV_IDEDMA */
 
 	status.all = GET_STAT();					/* Clear the interrupt */
 
@@ -726,11 +864,11 @@ static void idefloppy_pc_intr (ide_drive_t *drive)
 #endif /* IDEFLOPPY_DEBUG_LOG */
 		clear_bit (PC_DMA_IN_PROGRESS, &pc->flags);
 
-		sti();
+		ide__sti();	/* local CPU only */
 
 		if (status.b.check || test_bit (PC_DMA_ERROR, &pc->flags)) {	/* Error detected */
 #if IDEFLOPPY_DEBUG_LOG
-			printk (KERN_INFO "ide-floppy: %s: I/O error, ",drive->name);
+			printk (KERN_INFO "ide-floppy: %s: I/O error\n",drive->name);
 #endif /* IDEFLOPPY_DEBUG_LOG */
 			rq->errors++;
 			if (pc->c[0] == IDEFLOPPY_REQUEST_SENSE_CMD) {
@@ -747,15 +885,14 @@ static void idefloppy_pc_intr (ide_drive_t *drive)
 		pc->callback(drive);			/* Command finished - Call the callback function */
 		return;
 	}
-#ifdef CONFIG_BLK_DEV_TRITON
-	if (clear_bit (PC_DMA_IN_PROGRESS, &pc->flags)) {
+#ifdef CONFIG_BLK_DEV_IDEDMA
+	if (test_and_clear_bit (PC_DMA_IN_PROGRESS, &pc->flags)) {
 		printk (KERN_ERR "ide-floppy: The floppy wants to issue more interrupts in DMA mode\n");
-		printk (KERN_ERR "ide-floppy: DMA disabled, reverting to PIO\n");
-		drive->using_dma=0;
+		(void) HWIF(drive)->dmaproc(ide_dma_off, drive);
 		ide_do_reset (drive);
 		return;
 	}
-#endif /* CONFIG_BLK_DEV_TRITON */
+#endif /* CONFIG_BLK_DEV_IDEDMA */
 	bcount.b.high=IN_BYTE (IDE_BCOUNTH_REG);			/* Get the number of bytes to transfer */
 	bcount.b.low=IN_BYTE (IDE_BCOUNTL_REG);			/* on this interrupt */
 	ireason.all=IN_BYTE (IDE_IREASON_REG);
@@ -804,7 +941,7 @@ static void idefloppy_pc_intr (ide_drive_t *drive)
 
 static void idefloppy_transfer_pc (ide_drive_t *drive)
 {
-	idefloppy_floppy_t *floppy = drive->floppy;
+	idefloppy_floppy_t *floppy = drive->driver_data;
 	idefloppy_ireason_reg_t ireason;
 
 	if (ide_wait_stat (drive,DRQ_STAT,BUSY_STAT,WAIT_READY)) {
@@ -826,7 +963,7 @@ static void idefloppy_transfer_pc (ide_drive_t *drive)
  */
 static void idefloppy_issue_pc (ide_drive_t *drive, idefloppy_pc_t *pc)
 {
-	idefloppy_floppy_t *floppy = drive->floppy;
+	idefloppy_floppy_t *floppy = drive->driver_data;
 	idefloppy_bcount_reg_t bcount;
 	int dma_ok = 0;
 
@@ -863,14 +1000,13 @@ static void idefloppy_issue_pc (ide_drive_t *drive, idefloppy_pc_t *pc)
 	pc->current_position=pc->buffer;
 	bcount.all=pc->request_transfer;				/* Request to transfer the entire buffer at once */
 
-#ifdef CONFIG_BLK_DEV_TRITON
-	if (clear_bit (PC_DMA_ERROR, &pc->flags)) {
-		printk (KERN_WARNING "ide-floppy: DMA disabled, reverting to PIO\n");
-		drive->using_dma=0;
+#ifdef CONFIG_BLK_DEV_IDEDMA
+	if (test_and_clear_bit (PC_DMA_ERROR, &pc->flags)) {
+		(void) HWIF(drive)->dmaproc(ide_dma_off, drive);
 	}
 	if (test_bit (PC_DMA_RECOMMENDED, &pc->flags) && drive->using_dma)
 		dma_ok=!HWIF(drive)->dmaproc(test_bit (PC_WRITING, &pc->flags) ? ide_dma_write : ide_dma_read, drive);
-#endif /* CONFIG_BLK_DEV_TRITON */
+#endif /* CONFIG_BLK_DEV_IDEDMA */
 
 	OUT_BYTE (drive->ctl,IDE_CONTROL_REG);
 	OUT_BYTE (dma_ok ? 1:0,IDE_FEATURE_REG);			/* Use PIO/DMA */
@@ -878,12 +1014,12 @@ static void idefloppy_issue_pc (ide_drive_t *drive, idefloppy_pc_t *pc)
 	OUT_BYTE (bcount.b.low,IDE_BCOUNTL_REG);
 	OUT_BYTE (drive->select.all,IDE_SELECT_REG);
 
-#ifdef CONFIG_BLK_DEV_TRITON
+#ifdef CONFIG_BLK_DEV_IDEDMA
 	if (dma_ok) {							/* Begin DMA, if necessary */
 		set_bit (PC_DMA_IN_PROGRESS, &pc->flags);
 		(void) (HWIF(drive)->dmaproc(ide_dma_begin, drive));
 	}
-#endif /* CONFIG_BLK_DEV_TRITON */
+#endif /* CONFIG_BLK_DEV_IDEDMA */
 
 	if (test_bit (IDEFLOPPY_DRQ_INTERRUPT, &floppy->flags)) {
 		ide_set_handler (drive, &idefloppy_transfer_pc, IDEFLOPPY_WAIT_CMD);
@@ -921,6 +1057,7 @@ static void idefloppy_create_read_capacity_cmd (idefloppy_pc_t *pc)
 	pc->c[0] = IDEFLOPPY_READ_CAPACITY_CMD;
 	pc->c[7] = 255;
 	pc->c[8] = 255;
+	pc->request_transfer = 255;
 }
 
 /*
@@ -956,17 +1093,17 @@ static void idefloppy_create_start_stop_cmd (idefloppy_pc_t *pc, int start)
 	pc->c[4] = start;
 }
 
-static void idefloppy_create_test_unit_ready_cmd (idefloppy_pc_t *pc)
+static void idefloppy_create_test_unit_ready_cmd(idefloppy_pc_t *pc)
 {
-	idefloppy_init_pc (pc);
+	idefloppy_init_pc(pc);
 	pc->c[0] = IDEFLOPPY_TEST_UNIT_READY_CMD;
 }
 
 static void idefloppy_create_rw_cmd (idefloppy_floppy_t *floppy, idefloppy_pc_t *pc, struct request *rq, unsigned long sector)
 {
 	int block = sector / floppy->bs_factor;
-	int blocks = IDEFLOPPY_MIN(rq->nr_sectors, floppy->max_sectors) / floppy->bs_factor;
-
+	int blocks = rq->nr_sectors / floppy->bs_factor;
+	
 #if IDEFLOPPY_DEBUG_LOG
 	printk ("create_rw1%d_cmd: block == %d, blocks == %d\n",
 		2 * test_bit (IDEFLOPPY_USE_READ12, &floppy->flags), block, blocks);
@@ -995,9 +1132,9 @@ static void idefloppy_create_rw_cmd (idefloppy_floppy_t *floppy, idefloppy_pc_t 
 /*
  *	idefloppy_do_request is our request handling function.	
  */
-void idefloppy_do_request (ide_drive_t *drive, struct request *rq, unsigned long block)
+static void idefloppy_do_request (ide_drive_t *drive, struct request *rq, unsigned long block)
 {
-	idefloppy_floppy_t *floppy = drive->floppy;
+	idefloppy_floppy_t *floppy = drive->driver_data;
 	idefloppy_pc_t *pc;
 
 #if IDEFLOPPY_DEBUG_LOG
@@ -1057,7 +1194,7 @@ static int idefloppy_queue_pc_tail (ide_drive_t *drive,idefloppy_pc_t *pc)
  */
 static int idefloppy_get_flexible_disk_page (ide_drive_t *drive)
 {
-	idefloppy_floppy_t *floppy = drive->floppy;
+	idefloppy_floppy_t *floppy = drive->driver_data;
 	idefloppy_pc_t pc;
 	idefloppy_mode_parameter_header_t *header;
 	idefloppy_flexible_disk_page_t *page;
@@ -1088,10 +1225,8 @@ static int idefloppy_get_flexible_disk_page (ide_drive_t *drive)
 	drive->bios_sect = page->sectors;
 	lba_capacity = floppy->blocks * floppy->block_size;
 	if (capacity != lba_capacity) {
-		if (!lba_capacity)
-			printk(KERN_NOTICE "%s: no media in the drive\n", drive->name);
-		else printk (KERN_NOTICE "%s: The drive reports both %d and %d bytes as its capacity\n",
-			     drive->name, capacity, lba_capacity);
+		printk (KERN_NOTICE "%s: The drive reports both %d and %d bytes as its capacity\n",
+			drive->name, capacity, lba_capacity);
 		capacity = IDEFLOPPY_MIN(capacity, lba_capacity);
 		floppy->blocks = floppy->block_size ? capacity / floppy->block_size : 0;
 	}
@@ -1104,12 +1239,12 @@ static int idefloppy_get_flexible_disk_page (ide_drive_t *drive)
  */
 static int idefloppy_get_capacity (ide_drive_t *drive)
 {
-	idefloppy_floppy_t *floppy = drive->floppy;
+	idefloppy_floppy_t *floppy = drive->driver_data;
 	idefloppy_pc_t pc;
 	idefloppy_capacity_header_t *header;
 	idefloppy_capacity_descriptor_t *descriptor;
 	int i, descriptors, rc = 1, blocks, length;
-
+	
 	drive->bios_cyl = 0;
 	drive->bios_head = drive->bios_sect = 0;
 	floppy->blocks = floppy->bs_factor = 0;
@@ -1155,8 +1290,8 @@ static int idefloppy_get_capacity (ide_drive_t *drive)
  *
  *	Currently there aren't any ioctl's.
  */
-int idefloppy_ioctl (ide_drive_t *drive, struct inode *inode, struct file *file,
-			unsigned int cmd, unsigned long arg)
+static int idefloppy_ioctl (ide_drive_t *drive, struct inode *inode, struct file *file,
+				 unsigned int cmd, unsigned long arg)
 {
 	idefloppy_pc_t pc;
 
@@ -1169,15 +1304,15 @@ int idefloppy_ioctl (ide_drive_t *drive, struct inode *inode, struct file *file,
 		(void) idefloppy_queue_pc_tail (drive, &pc);
 		return 0;
 	}
-	return -EIO;
+ 	return -EIO;
 }
 
 /*
  *	Our open/release functions
  */
-int idefloppy_open (struct inode *inode, struct file *filp, ide_drive_t *drive)
+static int idefloppy_open (struct inode *inode, struct file *filp, ide_drive_t *drive)
 {
-	idefloppy_floppy_t *floppy = drive->floppy;
+	idefloppy_floppy_t *floppy = drive->driver_data;
 	idefloppy_pc_t pc;
 	
 #if IDEFLOPPY_DEBUG_LOG
@@ -1200,7 +1335,7 @@ int idefloppy_open (struct inode *inode, struct file *filp, ide_drive_t *drive)
 			drive->usage--;
 			MOD_DEC_USE_COUNT;
 			return -EROFS;
-		}
+		}		
 		set_bit (IDEFLOPPY_MEDIA_CHANGED, &floppy->flags);
 		idefloppy_create_prevent_cmd (&pc, 1);
 		(void) idefloppy_queue_pc_tail (drive, &pc);
@@ -1209,7 +1344,7 @@ int idefloppy_open (struct inode *inode, struct file *filp, ide_drive_t *drive)
 	return 0;
 }
 
-void idefloppy_release (struct inode *inode, struct file *filp, ide_drive_t *drive)
+static void idefloppy_release (struct inode *inode, struct file *filp, ide_drive_t *drive)
 {
 	idefloppy_pc_t pc;
 	
@@ -1228,19 +1363,19 @@ void idefloppy_release (struct inode *inode, struct file *filp, ide_drive_t *dri
 /*
  *	Check media change. Use a simple algorithm for now.
  */
-int idefloppy_media_change (ide_drive_t *drive)
+static int idefloppy_media_change (ide_drive_t *drive)
 {
-	idefloppy_floppy_t *floppy = drive->floppy;
+	idefloppy_floppy_t *floppy = drive->driver_data;
 	
-	return clear_bit (IDEFLOPPY_MEDIA_CHANGED, &floppy->flags);
+	return test_and_clear_bit (IDEFLOPPY_MEDIA_CHANGED, &floppy->flags);
 }
 
 /*
  *	Return the current floppy capacity to ide.c.
  */
-unsigned long idefloppy_capacity (ide_drive_t *drive)
+static unsigned long idefloppy_capacity (ide_drive_t *drive)
 {
-	idefloppy_floppy_t *floppy = drive->floppy;
+	idefloppy_floppy_t *floppy = drive->driver_data;
 	unsigned long capacity = floppy->blocks * floppy->bs_factor;
 
 	return capacity;
@@ -1250,10 +1385,9 @@ unsigned long idefloppy_capacity (ide_drive_t *drive)
  *	idefloppy_identify_device checks if we can support a drive,
  *	based on the ATAPI IDENTIFY command results.
  */
-int idefloppy_identify_device (ide_drive_t *drive,struct hd_driveid *id)
+static int idefloppy_identify_device (ide_drive_t *drive,struct hd_driveid *id)
 {
 	struct idefloppy_id_gcw gcw;
-	idefloppy_floppy_t *floppy;
 #if IDEFLOPPY_DEBUG_INFO
 	unsigned short mask,i;
 	char buffer[80];
@@ -1294,9 +1428,9 @@ int idefloppy_identify_device (ide_drive_t *drive,struct hd_driveid *id)
 		default: sprintf (buffer, "Reserved");break;
 	}
 	printk (KERN_INFO "Command Packet Size: %s\n", buffer);
-	printk (KERN_INFO "Model: %s\n",id->model);
-	printk (KERN_INFO "Firmware Revision: %s\n",id->fw_rev);
-	printk (KERN_INFO "Serial Number: %s\n",id->serial_no);
+	printk (KERN_INFO "Model: %.40s\n",id->model);
+	printk (KERN_INFO "Firmware Revision: %.8s\n",id->fw_rev);
+	printk (KERN_INFO "Serial Number: %.20s\n",id->serial_no);
 	printk (KERN_INFO "Write buffer size(?): %d bytes\n",id->buf_size*512);
 	printk (KERN_INFO "DMA: %s",id->capability & 0x01 ? "Yes\n":"No\n");
 	printk (KERN_INFO "LBA: %s",id->capability & 0x02 ? "Yes\n":"No\n");
@@ -1347,29 +1481,40 @@ int idefloppy_identify_device (ide_drive_t *drive,struct hd_driveid *id)
 		printk (KERN_ERR "ide-floppy: Device type is not set to floppy\n");
 	else if (!gcw.removable)
 		printk (KERN_ERR "ide-floppy: The removable flag is not set\n");
-	else if (gcw.drq_type == 3)
+	else if (gcw.drq_type == 3) {
 		printk (KERN_ERR "ide-floppy: Sorry, DRQ type %d not supported\n", gcw.drq_type);
-	else if (gcw.packet_size != 0)
+	} else if (gcw.packet_size != 0) {
 		printk (KERN_ERR "ide-floppy: Packet size is not 12 bytes long\n");
-	else if ((floppy = (idefloppy_floppy_t *) kmalloc (sizeof (idefloppy_floppy_t), GFP_KERNEL)) == NULL)
-		printk (KERN_ERR "ide-floppy: %s: Can't allocate a floppy structure\n", drive->name);
-	else {
-		drive->floppy = floppy;	
+	} else
 		return 1;
-	}
-	printk (KERN_ERR "ide-floppy: %s: not supported by this version of ide-floppy\n", drive->name);
 	return 0;
+}
+
+static void idefloppy_add_settings(ide_drive_t *drive)
+{
+	int major = HWIF(drive)->major;
+	int minor = drive->select.b.unit << PARTN_BITS;
+
+	ide_add_setting(drive,	"bios_cyl",		SETTING_RW,					-1,			-1,			TYPE_SHORT,	0,	1023,				1,	1,	&drive->bios_cyl,		NULL);
+	ide_add_setting(drive,	"bios_head",		SETTING_RW,					-1,			-1,			TYPE_BYTE,	0,	255,				1,	1,	&drive->bios_head,		NULL);
+	ide_add_setting(drive,	"bios_sect",		SETTING_RW,					-1,			-1,			TYPE_BYTE,	0,	63,				1,	1,	&drive->bios_sect,		NULL);
+	ide_add_setting(drive,	"breada_readahead",	SETTING_RW,					BLKRAGET,		BLKRASET,		TYPE_INT,	0,	255,				1,	2,	&read_ahead[major],		NULL);
+	ide_add_setting(drive,	"file_readahead",	SETTING_RW,					BLKFRAGET,		BLKFRASET,		TYPE_INTA,	0,	INT_MAX,			1,	1024,	&max_readahead[major][minor],	NULL);
+	ide_add_setting(drive,	"max_kb_per_request",	SETTING_RW,					BLKSECTGET,		BLKSECTSET,		TYPE_INTA,	1,	255,				1,	2,	&max_sectors[major][minor],	NULL);
+
 }
 
 /*
  *	Driver initialization.
  */
-void idefloppy_setup (ide_drive_t *drive)
+static void idefloppy_setup (ide_drive_t *drive, idefloppy_floppy_t *floppy)
 {
-	idefloppy_floppy_t *floppy = drive->floppy;
 	struct idefloppy_id_gcw gcw;
+	int major = HWIF(drive)->major, i;
+	int minor = drive->select.b.unit << PARTN_BITS;
 
 	*((unsigned short *) &gcw) = drive->id->config;
+	drive->driver_data = floppy;
 	drive->ready_stat = 0;
 	memset (floppy, 0, sizeof (idefloppy_floppy_t));
 	floppy->drive = drive;
@@ -1378,9 +1523,118 @@ void idefloppy_setup (ide_drive_t *drive)
 		set_bit (IDEFLOPPY_DRQ_INTERRUPT, &floppy->flags);
 	if (strcmp(drive->id->model, "IOMEGA ZIP 100 ATAPI") == 0 &&
 	    ((strcmp(drive->id->fw_rev, "21.D") == 0) ||
-	     (strcmp(drive->id->fw_rev, "23.D") == 0)))
-		floppy->max_sectors = 64;
-	else
-		floppy->max_sectors = IDEFLOPPY_MAX_SECTORS;
+	     (strcmp(drive->id->fw_rev, "23.D") == 0))) {
+		for (i = 0; i < 1 << PARTN_BITS; i++)
+			max_sectors[major][minor + i] = 64;
+	}
+
 	(void) idefloppy_get_capacity (drive);
+	idefloppy_add_settings(drive);
 }
+
+static int idefloppy_cleanup (ide_drive_t *drive)
+{
+	idefloppy_floppy_t *floppy = drive->driver_data;
+
+	if (ide_unregister_subdriver (drive))
+		return 1;
+	drive->driver_data = NULL;
+	kfree (floppy);
+	return 0;
+}
+
+#ifdef CONFIG_PROC_FS
+
+static ide_proc_entry_t idefloppy_proc[] = {
+	{ "geometry",	S_IFREG|S_IRUGO,	proc_ide_read_geometry,	NULL },
+	{ NULL, 0, NULL, NULL }
+};
+
+#else
+
+#define	idefloppy_proc	NULL
+
+#endif	/* CONFIG_PROC_FS */
+
+/*
+ *	IDE subdriver functions, registered with ide.c
+ */
+static ide_driver_t idefloppy_driver = {
+	"ide-floppy",		/* name */
+	IDEFLOPPY_VERSION,	/* version */
+	ide_floppy,		/* media */
+	0,			/* busy */
+	1,			/* supports_dma */
+	0,			/* supports_dsc_overlap */
+	idefloppy_cleanup,	/* cleanup */
+	idefloppy_do_request,	/* do_request */
+	idefloppy_end_request,	/* end_request */
+	idefloppy_ioctl,	/* ioctl */
+	idefloppy_open,		/* open */
+	idefloppy_release,	/* release */
+	idefloppy_media_change,	/* media_change */
+	NULL,			/* pre_reset */
+	idefloppy_capacity,	/* capacity */
+	NULL,			/* special */
+	idefloppy_proc		/* proc */
+};
+
+int idefloppy_init (void);
+static ide_module_t idefloppy_module = {
+	IDE_DRIVER_MODULE,
+	idefloppy_init,
+	&idefloppy_driver,
+	NULL
+};
+
+/*
+ *	idefloppy_init will register the driver for each floppy.
+ */
+int idefloppy_init (void)
+{
+	ide_drive_t *drive;
+	idefloppy_floppy_t *floppy;
+	int failed = 0;
+
+	MOD_INC_USE_COUNT;
+	while ((drive = ide_scan_devices (ide_floppy, idefloppy_driver.name, NULL, failed++)) != NULL) {
+		if (!idefloppy_identify_device (drive, drive->id)) {
+			printk (KERN_ERR "ide-floppy: %s: not supported by this version of ide-floppy\n", drive->name);
+			continue;
+		}
+		if ((floppy = (idefloppy_floppy_t *) kmalloc (sizeof (idefloppy_floppy_t), GFP_KERNEL)) == NULL) {
+			printk (KERN_ERR "ide-floppy: %s: Can't allocate a floppy structure\n", drive->name);
+			continue;
+		}
+		if (ide_register_subdriver (drive, &idefloppy_driver, IDE_SUBDRIVER_VERSION)) {
+			printk (KERN_ERR "ide-floppy: %s: Failed to register the driver with ide.c\n", drive->name);
+			kfree (floppy);
+			continue;
+		}
+		idefloppy_setup (drive, floppy);
+		failed--;
+	}
+	ide_register_module(&idefloppy_module);
+	MOD_DEC_USE_COUNT;
+	return 0;
+}
+
+#ifdef MODULE
+int init_module (void)
+{
+	return idefloppy_init ();
+}
+
+void cleanup_module (void)
+{
+	ide_drive_t *drive;
+	int failed = 0;
+
+	while ((drive = ide_scan_devices (ide_floppy, idefloppy_driver.name, &idefloppy_driver, failed)) != NULL)
+		if (idefloppy_cleanup (drive)) {
+			printk ("%s: cleanup_module() called while still busy\n", drive->name);
+			failed++;
+		}
+	ide_unregister_module(&idefloppy_module);
+}
+#endif /* MODULE */

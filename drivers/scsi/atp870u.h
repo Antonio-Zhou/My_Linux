@@ -40,25 +40,33 @@ extern const char *atp870u_info(struct Scsi_Host *);
 
 extern int atp870u_proc_info(char *, char **, off_t, int, int, int);
 
-#define ATP870U {  NULL, NULL,                          \
-                     &proc_scsi_atp870u,/* proc_dir_entry */ \
-                     atp870u_proc_info,                 \
-                     NULL,                              \
-                     atp870u_detect,                    \
-                     NULL,                              \
-                     atp870u_info,                      \
-                     atp870u_command,                   \
-                     atp870u_queuecommand,              \
-                     atp870u_abort,                     \
-                     atp870u_reset,                     \
-                     NULL,                              \
-                     atp870u_biosparam,                 \
-                     qcnt,                              \
-                     7,                                 \
-                     ATP870U_SCATTER,                   \
-                     ATP870U_CMDLUN,                    \
-                     0,                                 \
-                     0,                                 \
-                     ENABLE_CLUSTERING}
-
+#define ATP870U {  						\
+	next:				NULL, 			\
+	module:				NULL, 			\
+	proc_dir:			&proc_scsi_atp870u,	\
+	proc_info:			atp870u_proc_info,      \
+	name:				NULL,			\
+	detect:                 	atp870u_detect,		\
+	release:               	 	NULL,                   \
+	info:                   	atp870u_info,           \
+	command:                	atp870u_command,	\
+        queuecommand:           	atp870u_queuecommand,	\
+        eh_strategy_handler: 		NULL,			\
+        eh_abort_handler: 		NULL,			\
+        eh_device_reset_handler:	NULL,			\
+        eh_bus_reset_handler:		NULL,			\
+        eh_host_reset_handler:		NULL,			\
+	abort:				atp870u_abort,          \
+	reset:				atp870u_reset,       	\
+	slave_attach:               	NULL,                   \
+	bios_param:                     atp870u_biosparam,	\
+	can_queue:                     	qcnt,                   \
+	this_id:                     	1,			\
+	sg_tablesize:                   ATP870U_SCATTER,        \
+	cmd_per_lun:                    ATP870U_CMDLUN,         \
+	present:                     	0,                      \
+	unchecked_isa_dma:              0,                      \
+	use_clustering:                 ENABLE_CLUSTERING,	\
+	use_new_eh_code:		0			\
+}
 #endif

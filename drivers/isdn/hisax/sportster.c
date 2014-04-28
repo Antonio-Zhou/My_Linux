@@ -1,4 +1,4 @@
-/* $Id: sportster.c,v 1.1.2.4 1998/04/08 21:58:46 keil Exp $
+/* $Id: sportster.c,v 1.5 1998/02/02 13:29:46 keil Exp $
 
  * sportster.c     low level stuff for USR Sportster internal TA
  *
@@ -7,14 +7,17 @@
  * Thanks to Christian "naddy" Weisgerber (3Com, US Robotics) for documentation
  *
  * $Log: sportster.c,v $
- * Revision 1.1.2.4  1998/04/08 21:58:46  keil
- * New init code
- *
- * Revision 1.1.2.3  1998/01/27 22:37:31  keil
+ * Revision 1.5  1998/02/02 13:29:46  keil
  * fast io
  *
- * Revision 1.1.2.2  1997/11/15 18:50:57  keil
- * new common init function
+ * Revision 1.4  1997/11/08 21:35:52  keil
+ * new l1 init
+ *
+ * Revision 1.3  1997/11/06 17:09:29  keil
+ * New 2.1 init code
+ *
+ * Revision 1.2  1997/10/29 18:51:18  keil
+ * New files
  *
  * Revision 1.1.2.1  1997/10/17 22:10:58  keil
  * new files on 2.0
@@ -27,7 +30,7 @@
 #include "isdnl1.h"
 
 extern const char *CardType[];
-const char *sportster_revision = "$Revision: 1.1.2.4 $";
+const char *sportster_revision = "$Revision: 1.5 $";
 
 #define byteout(addr,val) outb(val,addr)
 #define bytein(addr) inb(addr)
@@ -162,13 +165,11 @@ reset_sportster(struct IsdnCardState *cs)
 	save_flags(flags);
 	sti();
 	current->state = TASK_INTERRUPTIBLE;
-	current->timeout = jiffies + 1;
-	schedule();
+	schedule_timeout(1);
 	cs->hw.spt.res_irq &= ~SPORTSTER_RESET; /* Reset Off */
 	byteout(cs->hw.spt.cfg_reg + SPORTSTER_RES_IRQ, cs->hw.spt.res_irq);
 	current->state = TASK_INTERRUPTIBLE;
-	current->timeout = jiffies + 1;
-	schedule();
+	schedule_timeout(1);
 	restore_flags(flags);
 }
 
@@ -186,10 +187,12 @@ Sportster_card_msg(struct IsdnCardState *cs, int mt, void *arg)
 			return(request_irq(cs->irq, &sportster_interrupt,
 					I4L_IRQ_FLAG, "HiSax", cs));
 		case CARD_INIT:
-			inithscxisac(cs, 1);
+			clear_pending_isac_ints(cs);
+			clear_pending_hscx_ints(cs);
+			initisac(cs);
+			inithscx(cs);
 			cs->hw.spt.res_irq |= SPORTSTER_INTE; /* IRQ On */
 			byteout(cs->hw.spt.cfg_reg + SPORTSTER_RES_IRQ, cs->hw.spt.res_irq);
-			inithscxisac(cs, 2);
 			return(0);
 		case CARD_TEST:
 			return(0);

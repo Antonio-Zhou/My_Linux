@@ -27,7 +27,6 @@
 #include <linux/module.h>
 
 #include <linux/kernel.h>
-#include <linux/head.h>
 #include <linux/types.h>
 #include <linux/string.h>
 #include <linux/ioport.h>
@@ -36,6 +35,7 @@
 #include <linux/proc_fs.h>
 #include <asm/dma.h>
 #include <asm/system.h>
+#include <asm/spinlock.h>
 #include <asm/io.h>
 #include <linux/blk.h>
 #include "scsi.h"
@@ -370,6 +370,14 @@ irqerror:;
 	SCpnt->result = DecodeError (shost, status);
 	SCpnt->scsi_done (SCpnt);
 	}
+static void do_Irq_Handler (int irq, void *dev_id, struct pt_regs *regs)
+	{
+	unsigned long flags;
+
+	spin_lock_irqsave(&io_request_lock, flags);
+	Irq_Handler(irq, dev_id, regs);
+	spin_unlock_irqrestore(&io_request_lock, flags);
+	}
 /****************************************************************
  *	Name:	Psi240i_QueueCommand
  *
@@ -393,7 +401,7 @@ int Psi240i_QueueCommand (Scsi_Cmnd *SCpnt, void (*done)(Scsi_Cmnd *))
 	padapter->buffer = SCpnt->request_buffer;
 	if (done)
 		{
-		if ( !pdev->device || SCpnt->lun )
+		if ( !pdev->device )
 			{
 			SCpnt->result = DID_BAD_TARGET << 16;
 			done (SCpnt);
@@ -595,7 +603,7 @@ int Psi240i_Detect (Scsi_Host_Template *tpnt)
 
 		save_flags (flags);
 		cli ();
-		if ( request_irq (chipConfig.irq, Irq_Handler, 0, "psi240i", NULL) )
+		if ( request_irq (chipConfig.irq, do_Irq_Handler, 0, "psi240i", NULL) )
 			{
 			printk ("Unable to allocate IRQ for PSI-240I controller.\n");
 			restore_flags (flags);

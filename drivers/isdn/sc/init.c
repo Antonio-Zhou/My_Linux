@@ -11,16 +11,16 @@ const char version[] = "2.0b1";
 const char *boardname[] = { "DataCommute/BRI", "DataCommute/PRI", "TeleCommute/BRI" };
 
 /* insmod set parameters */
-unsigned int io[] = {0,0,0,0};
-unsigned char irq[] = {0,0,0,0};
-unsigned long ram[] = {0,0,0,0};
-int do_reset = 0;
+static unsigned int io[] = {0,0,0,0};
+static unsigned char irq[] = {0,0,0,0};
+static unsigned long ram[] = {0,0,0,0};
+static int do_reset = 0;
 
 static int sup_irq[] = { 11, 10, 9, 5, 12, 14, 7, 3, 4, 6 };
 #define MAX_IRQS	10
 
 extern void interrupt_handler(int, void *, struct pt_regs *);
-extern int sndpkt(int, int, struct sk_buff *);
+extern int sndpkt(int, int, int, struct sk_buff *);
 extern int command(isdn_ctrl *);
 extern int indicate_status(int, int, ulong, char*);
 extern int reset(int);
@@ -38,12 +38,10 @@ int irq_supported(int irq_x)
 }
 
 #ifdef MODULE
-#if (LINUX_VERSION_CODE > 0x020111)
 MODULE_PARM(io, "1-4i");
 MODULE_PARM(irq, "1-4i");
 MODULE_PARM(ram, "1-4i");
 MODULE_PARM(do_reset, "i");
-#endif
 #define init_sc init_module
 #else
 /*
@@ -167,8 +165,7 @@ int init_sc(void)
 			pr_debug("Doing a SAFE probe reset\n");
 			outb(0xFF, io[b] + RESET_OFFSET);
 			current->state = TASK_INTERRUPTIBLE;
-			current->timeout = jiffies + milliseconds(10000);
-			schedule();
+			schedule_timeout(milliseconds(10000));
 		}
 		pr_debug("RAM Base for board %d is 0x%x, %s probe\n", b, ram[b],
 			ram[b] == 0 ? "will" : "won't");
@@ -516,8 +513,7 @@ int identify_board(unsigned long rambase, unsigned int iobase)
 	 */
 	outb(PRI_BASEPG_VAL, pgport);
 	current->state = TASK_INTERRUPTIBLE;
-	current->timeout = jiffies + HZ;
-	schedule();
+	schedule_timeout(HZ);
 	sig = readl(rambase + SIG_OFFSET);
 	pr_debug("Looking for a signature, got 0x%x\n", sig);
 #if 0
@@ -537,8 +533,7 @@ int identify_board(unsigned long rambase, unsigned int iobase)
 	 */
 	outb(BRI_BASEPG_VAL, pgport);
 	current->state = TASK_INTERRUPTIBLE;
-	current->timeout = jiffies + HZ;
-	schedule();
+	schedule_timeout(HZ);
 	sig = readl(rambase + SIG_OFFSET);
 	pr_debug("Looking for a signature, got 0x%x\n", sig);
 #if 0
@@ -573,8 +568,7 @@ int identify_board(unsigned long rambase, unsigned int iobase)
 	x = 0;
 	while((inb(iobase + FIFOSTAT_OFFSET) & RF_HAS_DATA) && x < 100) {
 		current->state = TASK_INTERRUPTIBLE;
-		current->timeout = jiffies + 1;
-		schedule();
+		schedule_timeout(1);
 		x++;
 	}
 	if(x == 100) {

@@ -1,4 +1,4 @@
-/* $Id: hfc_2bs0.h,v 1.1.2.1 1997/10/17 22:10:43 keil Exp $
+/* $Id: hfc_2bs0.h,v 1.1 1997/09/11 17:31:34 keil Exp $
 
  *  specific defines for CCD's HFC 2BS0
  *
@@ -6,9 +6,6 @@
  *
  *
  * $Log: hfc_2bs0.h,v $
- * Revision 1.1.2.1  1997/10/17 22:10:43  keil
- * new files on 2.0
- *
  * Revision 1.1  1997/09/11 17:31:34  keil
  * Common part for HFC 2BS0 based cards
  *

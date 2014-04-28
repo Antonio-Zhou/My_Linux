@@ -39,6 +39,13 @@ unsigned long simple_strtoul(const char *cp,char **endp,unsigned int base)
 	return result;
 }
 
+long simple_strtol(const char *cp,char **endp,unsigned int base)
+{
+	if(*cp=='-')
+		return -simple_strtoul(cp+1,endp,base);
+	return simple_strtoul(cp,endp,base);
+}
+
 /* we use this so that we can do without the ctype library */
 #define is_digit(c)	((c) >= '0' && (c) <= '9')
 
@@ -113,9 +120,9 @@ static char * number(char * str, long num, int base, int size, int precision
 	if (sign)
 		*str++ = sign;
 	if (type & SPECIAL) {
-		if (base==8) {
+		if (base==8)
 			*str++ = '0';
-		} else if (base==16) {
+		else if (base==16) {
 			*str++ = '0';
 			*str++ = digits[33];
 		}
@@ -132,7 +139,10 @@ static char * number(char * str, long num, int base, int size, int precision
 	return str;
 }
 
-int _vsnprintf(char *buf, int n, const char *fmt, va_list args)
+/* Forward decl. needed for IP address printing stuff... */
+int sprintf(char * buf, const char *fmt, ...);
+
+int vsprintf(char *buf, const char *fmt, va_list args)
 {
 	int len;
 	unsigned long num;
@@ -147,36 +157,24 @@ int _vsnprintf(char *buf, int n, const char *fmt, va_list args)
 				   number of chars for from string */
 	int qualifier;		/* 'h', 'l', or 'L' for integer fields */
 
-	for (str = buf; *fmt && (n == -1 || str - buf < n); ++fmt) {
+	for (str=buf ; *fmt ; ++fmt) {
 		if (*fmt != '%') {
 			*str++ = *fmt;
 			continue;
 		}
-
+			
 		/* process flags */
 		flags = 0;
-	repeat:
-		++fmt;		/* this also skips first '%' */
-		switch (*fmt) {
-		case '-':
-			flags |= LEFT;
-			goto repeat;
-		case '+':
-			flags |= PLUS;
-			goto repeat;
-		case ' ':
-			flags |= SPACE;
-			goto repeat;
-		case '#':
-			flags |= SPECIAL;
-			goto repeat;
-		case '0':
-			flags |= ZEROPAD;
-			goto repeat;
-		default:
-			break;
-		}
-
+		repeat:
+			++fmt;		/* this also skips first '%' */
+			switch (*fmt) {
+				case '-': flags |= LEFT; goto repeat;
+				case '+': flags |= PLUS; goto repeat;
+				case ' ': flags |= SPACE; goto repeat;
+				case '#': flags |= SPECIAL; goto repeat;
+				case '0': flags |= ZEROPAD; goto repeat;
+				}
+		
 		/* get field width */
 		field_width = -1;
 		if (is_digit(*fmt))
@@ -232,12 +230,6 @@ int _vsnprintf(char *buf, int n, const char *fmt, va_list args)
 				s = "<NULL>";
 
 			len = strnlen(s, precision);
-
-			if (n != -1 && len >= n - (str - buf)) {
-				len = n - 1 - (str - buf);
-				if (len <= 0) break;
-				if (len < field_width) field_width = len;
-			}
 
 			if (!(flags & LEFT))
 				while (len < field_width--)
@@ -297,12 +289,11 @@ int _vsnprintf(char *buf, int n, const char *fmt, va_list args)
 		}
 		if (qualifier == 'l')
 			num = va_arg(args, unsigned long);
-		else if (qualifier == 'h')
+		else if (qualifier == 'h') {
+			num = (unsigned short) va_arg(args, int);
 			if (flags & SIGN)
-				num = va_arg(args, short);
-			else
-				num = va_arg(args, unsigned short);
-		else if (flags & SIGN)
+				num = (short) num;
+		} else if (flags & SIGN)
 			num = va_arg(args, int);
 		else
 			num = va_arg(args, unsigned int);
@@ -310,11 +301,6 @@ int _vsnprintf(char *buf, int n, const char *fmt, va_list args)
 	}
 	*str = '\0';
 	return str-buf;
-}
-
-int vsprintf(char *buf, const char *fmt, va_list args)
-{
-	return _vsnprintf(buf, -1, fmt, args);
 }
 
 int sprintf(char * buf, const char *fmt, ...)

@@ -2,12 +2,12 @@
  * These are the public elements of the Linux kernel AX.25 code. A similar
  * file netrom.h exists for the NET/ROM protocol.
  */
- 
+
 #ifndef	AX25_KERNEL_H
 #define	AX25_KERNEL_H
- 
+
 #define AX25_MTU	256
-#define AX25_MAX_DIGIS	6	/* This is wrong, should be 8 */
+#define AX25_MAX_DIGIS  8
 
 #define AX25_WINDOW	1
 #define AX25_T1		2
@@ -43,7 +43,7 @@ typedef struct {
 } ax25_address;
 
 struct sockaddr_ax25 {
-	unsigned short	sax25_family;
+	sa_family_t	sax25_family;
 	ax25_address	sax25_call;
 	int		sax25_ndigis;
 	/* Digipeater ax25_address sets follow */
@@ -71,11 +71,13 @@ struct ax25_route_opt_struct {
 };
 
 struct ax25_ctl_struct {
-	ax25_address	port_addr;
-	ax25_address	source_addr;
-	ax25_address	dest_addr;
-	unsigned int	cmd;
-	unsigned long	arg;
+        ax25_address            port_addr;
+        ax25_address            source_addr;
+        ax25_address            dest_addr;
+        unsigned int            cmd;
+        unsigned long           arg;
+        unsigned char           digi_count;
+        ax25_address            digi_addr[AX25_MAX_DIGIS];
 };
 
 struct ax25_info_struct {

@@ -1,19 +1,21 @@
 /*
- * $Id: b1pci.c,v 1.2.2.2 1998/01/23 16:49:30 calle Exp $
+ * $Id: b1pci.c,v 1.5 1998/01/31 11:14:43 calle Exp $
  * 
  * Module for AVM B1 PCI-card.
  * 
  * (c) Copyright 1997 by Carsten Paeth (calle@calle.in-berlin.de)
  * 
  * $Log: b1pci.c,v $
- * Revision 1.2.2.2  1998/01/23 16:49:30  calle
- * added functions for pcmcia cards,
- * avmb1_addcard returns now the controller number.
+ * Revision 1.5  1998/01/31 11:14:43  calle
+ * merged changes to 2.0 tree, prepare 2.1.82 to work.
  *
- * Revision 1.2.2.1  1997/11/26 10:46:57  calle
- * prepared for M1 (Mobile) and T1 (PMX) cards.
- * prepared to set configuration after load to support other D-channel
- * protocols, point-to-point and leased lines.
+ * Revision 1.4  1997/12/10 20:00:50  calle
+ * get changes from 2.0 version
+ *
+ * Revision 1.3  1997/10/01 09:21:14  fritz
+ * Removed old compatibility stuff for 2.0.X kernels.
+ * From now on, this code is for 2.1.X ONLY!
+ * Old stuff is still in the separate branch.
  *
  * Revision 1.2  1997/05/18 09:24:13  calle
  * added verbose disconnect reason reporting to avmb1.
@@ -28,7 +30,6 @@
 #include <linux/config.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
-#include <linux/bios32.h>
 #include <linux/pci.h>
 #include <linux/skbuff.h>
 #include "compat.h"
@@ -43,13 +44,11 @@
 #define PCI_DEVICE_ID_AVM_B1	0x700
 #endif
 
-static char *revision = "$Revision: 1.2.2.2 $";
+static char *revision = "$Revision: 1.5 $";
 
 /* ------------------------------------------------------------- */
 
-#ifdef HAS_NEW_SYMTAB
 MODULE_AUTHOR("Carsten Paeth <calle@calle.in-berlin.de>");
-#endif
 
 /* ------------------------------------------------------------- */
 
@@ -70,7 +69,7 @@ int b1pci_init(void)
 	char *p;
 	char rev[10];
 	int rc;
-	int pci_index;
+	struct pci_dev *dev = NULL;
 
 	if ((p = strchr(revision, ':'))) {
 		strcpy(rev, p + 1);
@@ -81,29 +80,16 @@ int b1pci_init(void)
 
 
 #ifdef CONFIG_PCI
-	if (!pcibios_present()) {
-		printk(KERN_ERR "b1pci: no PCI-BIOS present\n");
+	if (!pci_present()) {
+		printk(KERN_ERR "b1pci: no PCI bus present\n");
 		return -EIO;
 	}
 
 	printk(KERN_INFO "b1pci: revision %s\n", rev);
 
-	for (pci_index = 0; pci_index < 8; pci_index++) {
-		unsigned char pci_bus, pci_device_fn;
-		unsigned int ioaddr;
-		unsigned char irq;
-
-		if (pcibios_find_device (PCI_VENDOR_ID_AVM,
-					PCI_DEVICE_ID_AVM_B1, pci_index,
-					&pci_bus, &pci_device_fn) != 0) {
-			continue;
-		}
-		pcibios_read_config_byte(pci_bus, pci_device_fn,
-				PCI_INTERRUPT_LINE, &irq);
-		pcibios_read_config_dword(pci_bus, pci_device_fn,
-				PCI_BASE_ADDRESS_1, &ioaddr);
-		/* Strip the I/O address out of the returned value */
-		ioaddr &= PCI_BASE_ADDRESS_IO_MASK;
+	while ((dev = pci_find_device(PCI_VENDOR_ID_AVM, PCI_DEVICE_ID_AVM_B1, dev))) {
+		unsigned int ioaddr = dev->base_address[1] & PCI_BASE_ADDRESS_IO_MASK;
+		unsigned int irq = dev->irq;
 		printk(KERN_INFO
 			"b1pci: PCI BIOS reports AVM-B1 at i/o %#x, irq %d\n",
 			ioaddr, irq);

@@ -2,7 +2,7 @@
  *		IP_MASQ_FTP ftp masquerading module
  *
  *
- * Version:	@(#)ip_masq_ftp.c 0.01   02/05/96
+ * Version:	@(#)ip_masq_ftp.c 0.04   02/05/96
  *
  * Author:	Wouter Gadeyne
  *		
@@ -12,7 +12,11 @@
  * 	Juan Jose Ciarlante	:	Code moved and adapted from ip_fw.c
  * 	Keith Owens		:	Add keep alive for ftp control channel
  *	Nigel Metheringham	:	Added multiple port support
- *	
+ * 	Juan Jose Ciarlante	:	Use control_add() for ftp control chan
+ * 	Juan Jose Ciarlante	:	Litl bits for 2.1
+ *	Juan Jose Ciarlante	:	use ip_masq_listen() 
+ *	Juan Jose Ciarlante	: 	use private app_data for own flag(s)
+ *
  *
  *
  *	This program is free software; you can redistribute it and/or
@@ -33,6 +37,7 @@
  *	
  */
 
+#include <linux/config.h>
 #include <linux/module.h>
 #include <asm/system.h>
 #include <linux/types.h>
@@ -40,20 +45,33 @@
 #include <linux/skbuff.h>
 #include <linux/in.h>
 #include <linux/ip.h>
+#include <linux/init.h>
 #include <net/protocol.h>
 #include <net/tcp.h>
+
+/* #define IP_MASQ_NDEBUG */
 #include <net/ip_masq.h>
 
-#ifndef DEBUG_CONFIG_IP_MASQ_FTP
-#define DEBUG_CONFIG_IP_MASQ_FTP 0
-#endif
 
 /* 
  * List of ports (up to MAX_MASQ_APP_PORTS) to be handled by helper
  * First port is set to the default port.
  */
-int ports[MAX_MASQ_APP_PORTS] = {21}; /* I rely on the trailing items being set to zero */
+static int ports[MAX_MASQ_APP_PORTS] = {21}; /* I rely on the trailing items being set to zero */
 struct ip_masq_app *masq_incarnations[MAX_MASQ_APP_PORTS];
+
+/*
+ *	Debug level
+ */
+#ifdef CONFIG_IP_MASQ_DEBUG
+static int debug=0;
+MODULE_PARM(debug, "i");
+#endif
+
+MODULE_PARM(ports, "1-" __MODULE_STRING(MAX_MASQ_APP_PORTS) "i");
+
+/*	Dummy variable */
+static int masq_ftp_pasv;
 
 static int
 masq_ftp_init_1 (struct ip_masq_app *mapp, struct ip_masq *ms)
@@ -70,7 +88,7 @@ masq_ftp_done_1 (struct ip_masq_app *mapp, struct ip_masq *ms)
 }
 
 int
-masq_ftp_out (struct ip_masq_app *mapp, struct ip_masq *ms, struct sk_buff **skb_p, struct device *dev)
+masq_ftp_out (struct ip_masq_app *mapp, struct ip_masq *ms, struct sk_buff **skb_p, __u32 maddr)
 {
         struct sk_buff *skb;
 	struct iphdr *iph;
@@ -85,12 +103,13 @@ masq_ftp_out (struct ip_masq_app *mapp, struct ip_masq *ms, struct sk_buff **skb
 	int diff;
 
         skb = *skb_p;
-	iph = skb->h.iph;
+	iph = skb->nh.iph;
         th = (struct tcphdr *)&(((char *)iph)[iph->ihl*4]);
         data = (char *)&th[1];
+
         data_limit = skb->h.raw + skb->len - 18;
         if (skb->len >= 6 && (memcmp(data, "PASV\r\n", 6) == 0 || memcmp(data, "pasv\r\n", 6) == 0))
-        	ms->flags |= IP_MASQ_F_FTP_PASV;
+		ms->app_data = &masq_ftp_pasv;
 
 	while (data < data_limit)
 	{
@@ -121,40 +140,29 @@ masq_ftp_out (struct ip_masq_app *mapp, struct ip_masq *ms, struct sk_buff **skb
 
 		from = (p1<<24) | (p2<<16) | (p3<<8) | p4;
 		port = (p5<<8) | p6;
-#if DEBUG_CONFIG_IP_MASQ_FTP
-		printk("PORT %X:%X detected\n",from,port);
-#endif	
+
+		IP_MASQ_DEBUG(1-debug, "PORT %X:%X detected\n",from,port);
+
 		/*
 		 * Now update or create an masquerade entry for it
 		 */
-#if DEBUG_CONFIG_IP_MASQ_FTP
-		printk("protocol %d %lX:%X %X:%X\n", iph->protocol, htonl(from), htons(port), iph->daddr, 0);
 
-#endif	
-		n_ms = ip_masq_out_get_2(iph->protocol,
+		IP_MASQ_DEBUG(1-debug, "protocol %d %lX:%X %X:%X\n", iph->protocol, htonl(from), htons(port), iph->daddr, 0);
+
+		n_ms = ip_masq_out_get(iph->protocol,
 					 htonl(from), htons(port),
 					 iph->daddr, 0);
-		if (n_ms) {
-			/* existing masquerade, clear timer */
-			ip_masq_set_expire(n_ms,0);
-		}
-		else {
-			n_ms = ip_masq_new(dev, IPPROTO_TCP,
+		if (!n_ms) {
+			n_ms = ip_masq_new(IPPROTO_TCP,
+					   maddr, 0,
 					   htonl(from), htons(port),
 					   iph->daddr, 0,
 					   IP_MASQ_F_NO_DPORT);
-					
+
 			if (n_ms==NULL)
 				return 0;
-			n_ms->control = ms;		/* keepalive from data to the control channel */
-			ms->flags |= IP_MASQ_F_CONTROL;	/* this is a control channel */
+			ip_masq_control_add(n_ms, ms);
 		}
-
-                /*
-                 * keep for a bit longer than tcp_fin, caller may not reissue
-                 * PORT before tcp_fin_timeout.
-                 */
-                ip_masq_set_expire(n_ms, ip_masq_expire->tcp_fin_timeout*3);
 
 		/*
 		 * Replace the old PORT with the new one
@@ -165,9 +173,8 @@ masq_ftp_out (struct ip_masq_app *mapp, struct ip_masq *ms, struct sk_buff **skb
 			from>>24&255,from>>16&255,from>>8&255,from&255,
 			port>>8&255,port&255);
 		buf_len = strlen(buf);
-#if DEBUG_CONFIG_IP_MASQ_FTP
-		printk("new PORT %X:%X\n",from,port);
-#endif	
+
+		IP_MASQ_DEBUG(1-debug, "new PORT %X:%X\n",from,port);
 
 		/*
 		 * Calculate required delta-offset to keep TCP happy
@@ -179,16 +186,21 @@ masq_ftp_out (struct ip_masq_app *mapp, struct ip_masq *ms, struct sk_buff **skb
 		 *	No shift.
 		 */
 		
-		if (diff==0)
-		{
+		if (diff==0) {
 			/*
 			 * simple case, just replace the old PORT cmd
  			 */
  			memcpy(p,buf,buf_len);
- 			return 0;
- 		}
+ 		} else {
 
-                *skb_p = ip_masq_skb_replace(skb, GFP_ATOMIC, p, data-p, buf, buf_len);
+			*skb_p = ip_masq_skb_replace(skb, GFP_ATOMIC, p, data-p, buf, buf_len);
+		}
+                /*
+                 * 	Move tunnel to listen state
+                 */
+		ip_masq_listen(n_ms);
+		ip_masq_put(n_ms);
+
                 return diff;
 
 	}
@@ -215,7 +227,7 @@ masq_ftp_out (struct ip_masq_app *mapp, struct ip_masq *ms, struct sk_buff **skb
  */
 
 int
-masq_ftp_in (struct ip_masq_app *mapp, struct ip_masq *ms, struct sk_buff **skb_p, struct device *dev)
+masq_ftp_in (struct ip_masq_app *mapp, struct ip_masq *ms, struct sk_buff **skb_p, __u32 maddr)
 {
 	struct sk_buff *skb;
 	struct iphdr *iph;
@@ -226,11 +238,11 @@ masq_ftp_in (struct ip_masq_app *mapp, struct ip_masq *ms, struct sk_buff **skb_
 	__u16 port;
 	struct ip_masq *n_ms;
 
-	if (! ms->flags & IP_MASQ_F_FTP_PASV)
+	if (ms->app_data != &masq_ftp_pasv)
 		return 0;	/* quick exit if no outstanding PASV */
 
 	skb = *skb_p;
-	iph = skb->h.iph;
+	iph = skb->nh.iph;
 	th = (struct tcphdr *)&(((char *)iph)[iph->ihl*4]);
 	data = (char *)&th[1];
 	data_limit = skb->h.raw + skb->len;
@@ -267,34 +279,34 @@ masq_ftp_in (struct ip_masq_app *mapp, struct ip_masq *ms, struct sk_buff **skb_
 	/*
 	 * Now update or create an masquerade entry for it
 	 */
-#if DEBUG_CONFIG_IP_MASQ_FTP
-	printk("PASV response %lX:%X %X:%X detected\n", ntohl(ms->saddr), 0, to, port);
-#endif	
-	n_ms = ip_masq_out_get_2(iph->protocol,
+	IP_MASQ_DEBUG(1-debug, "PASV response %lX:%X %X:%X detected\n", ntohl(ms->saddr), 0, to, port);
+
+	n_ms = ip_masq_out_get(iph->protocol,
 				 ms->saddr, 0,
 				 htonl(to), htons(port));
-	if (n_ms) {
-		/* existing masquerade, clear timer */
-		ip_masq_set_expire(n_ms,0);
-	}
-	else {
-		n_ms = ip_masq_new(dev, IPPROTO_TCP,
-				   ms->saddr, 0,
-				   htonl(to), htons(port),
-				   IP_MASQ_F_NO_SPORT);
+	if (!n_ms) {
+		n_ms = ip_masq_new(IPPROTO_TCP,
+					maddr, 0,
+					ms->saddr, 0,
+					htonl(to), htons(port),
+					IP_MASQ_F_NO_SPORT);
 
 		if (n_ms==NULL)
 			return 0;
-		n_ms->control = ms;		/* keepalive from data to the control channel */
-		ms->flags |= IP_MASQ_F_CONTROL;	/* this is a control channel */
+		ip_masq_control_add(n_ms, ms);
 	}
+
+#if 0	/* v0.12 state processing */
 
 	/*
 	 * keep for a bit longer than tcp_fin, client may not issue open
 	 * to server port before tcp_fin_timeout.
 	 */
-	ip_masq_set_expire(n_ms, ip_masq_expire->tcp_fin_timeout*3);
-	ms->flags &= ~IP_MASQ_F_FTP_PASV;
+	n_ms->timeout = ip_masq_expire->tcp_fin_timeout*3;
+#endif
+	ms->app_data = NULL;
+	ip_masq_put(n_ms);
+
 	return 0;	/* no diff required for incoming packets, thank goodness */
 }
 
@@ -313,7 +325,7 @@ struct ip_masq_app ip_masq_ftp = {
  * 	ip_masq_ftp initialization
  */
 
-int ip_masq_ftp_init(void)
+__initfunc(int ip_masq_ftp_init(void))
 {
 	int i, j;
 
@@ -328,10 +340,8 @@ int ip_masq_ftp_init(void)
 						      ports[i]))) {
 				return j;
 			}
-#if DEBUG_CONFIG_IP_MASQ_FTP
-			printk("Ftp: loaded support on port[%d] = %d\n",
+			IP_MASQ_DEBUG(1-debug, "Ftp: loaded support on port[%d] = %d\n",
 			       i, ports[i]);
-#endif
 		} else {
 			/* To be safe, force the incarnation table entry to NULL */
 			masq_incarnations[i] = NULL;
@@ -356,10 +366,8 @@ int ip_masq_ftp_done(void)
 			} else {
 				kfree(masq_incarnations[i]);
 				masq_incarnations[i] = NULL;
-#if DEBUG_CONFIG_IP_MASQ_FTP
-				printk("Ftp: unloaded support on port[%d] = %d\n",
+				IP_MASQ_DEBUG(1-debug, "Ftp: unloaded support on port[%d] = %d\n",
 				       i, ports[i]);
-#endif
 			}
 		}
 	}
@@ -367,19 +375,19 @@ int ip_masq_ftp_done(void)
 }
 
 #ifdef MODULE
+EXPORT_NO_SYMBOLS;
 
 int init_module(void)
 {
         if (ip_masq_ftp_init() != 0)
                 return -EIO;
-        register_symtab(0);
         return 0;
 }
 
 void cleanup_module(void)
 {
         if (ip_masq_ftp_done() != 0)
-                printk("ip_masq_ftp: can't remove module");
+                printk(KERN_INFO "ip_masq_ftp: can't remove module");
 }
 
 #endif /* MODULE */

@@ -1,4 +1,4 @@
-/* $Id: hfc_2bds0.h,v 1.1.2.2 1998/01/27 22:41:36 keil Exp $
+/* $Id: hfc_2bds0.h,v 1.2 1998/02/02 13:26:15 keil Exp $
 
  *  specific defines for CCD's HFC 2BDS0
  *
@@ -6,11 +6,9 @@
  *
  *
  * $Log: hfc_2bds0.h,v $
- * Revision 1.1.2.2  1998/01/27 22:41:36  keil
- * add set_cs_func()
+ * Revision 1.2  1998/02/02 13:26:15  keil
+ * New
  *
- * Revision 1.1.2.1  1998/01/11 22:54:02  keil
- * Teles 16.3c (HFC 2BDS0) first version
  *
  *
  */

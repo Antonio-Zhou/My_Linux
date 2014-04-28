@@ -4,7 +4,7 @@ Written by Gerard Roudier <groudier@club-internet.fr>
 21 Rue Carnot
 95170 DEUIL LA BARRE - FRANCE
 
-13 December 1998
+22 November 1998
 ===============================================================================
 
 1.  Introduction
@@ -114,27 +114,14 @@ following table shows some characteristics of NCR 8xx family chips:
 Chip   SDMS BIOS   Wide   SCSI std.   Max. sync   the driver
 ----   ---------   ----   ---------   ----------  ------------
 810        N         N      FAST10    10 MB/s        Y
-810A       N         N      FAST10    10 MB/s        Y(2)
+810A       N         N      FAST10    10 MB/s        Y
 815        Y         N      FAST10    10 MB/s        Y
 825        Y         Y      FAST10    20 MB/s        Y
-825A       Y         Y      FAST10    20 MB/s        Y(2)
-860        N         N      FAST20    20 MB/s        Y(2)
-875        Y         Y      FAST20    40 MB/s        Y(2)
-876        Y         Y      FAST20    40 MB/s        Y(2)
-895        Y         Y      FAST40    80 MB/s        Y(2)
-896        Y         Y      FAST40    80 MB/s        Y(1)
-
-(1) The ncr53c8xx driver does not support the following features of 
-    the 896:
-    - Hardware phase mismatch.
-    - 8k on-chip RAM.
-    If you have a 896 chip, you may want to use the enhanced sym53c8xx 
-    driver that supports all the features of the 896.
-    The sym53c8xx driver is available at the following URL:
-
-             ftp://ftp.tux.org/pub/roudier/896/
-
-(2) Chip also supported by the sym53c8xx enhanced driver.
+825A       Y         Y      FAST10    20 MB/s        Y
+860        N         N      FAST20    20 MB/s        Y
+875        Y         Y      FAST20    40 MB/s        Y
+876        Y         Y      FAST20    40 MB/s        Y
+895        Y         Y      FAST40    80 MB/s        Y
 
 
 3. Summary of other supported features.
@@ -486,7 +473,7 @@ CONFIG_SCSI_NCR53C8XX_DEFAULT_TAGS    (default answer: 8)
 
 CONFIG_SCSI_NCR53C8XX_MAX_TAGS         (default answer: 8)
     This option allows you to specify the maximum number of tagged commands 
-    that can be queued to a device. The maximum supported value is 64.
+    that can be queued to a device. The maximum supported value is 32.
 
 CONFIG_SCSI_NCR53C8XX_SYNC            (default answer: 5)
     This option allows you to specify the frequency in MHz the driver 

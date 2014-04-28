@@ -1,5 +1,5 @@
-#ifndef _HWRPB_H
-#define _HWRPB_H
+#ifndef __ALPHA_HWRPB_H
+#define __ALPHA_HWRPB_H
 
 #define INIT_HWRPB ((struct hwrpb_struct *) 0x10000000)
 
@@ -34,6 +34,7 @@
 #define ST_DEC_AXPPCI_33	 11	/* NoName system type	*/
 #define ST_DEC_TLASER		 12	/* Turbolaser systype	*/
 #define ST_DEC_2100_A50		 13	/* Avanti systype	*/
+#define ST_DEC_MUSTANG		 14	/* Mustang systype	*/
 #define ST_DEC_ALCOR		 15	/* Alcor (EV5) systype	*/
 #define ST_DEC_1000		 17	/* Mikasa systype	*/
 #define ST_DEC_EB64		 18	/* EB64 systype		*/
@@ -137,9 +138,9 @@ struct memdesc_struct {
 };
 
 struct dsr_struct {
-	long smm;                       /* SMM nubber used by LMF       */
-	unsigned long  lurt_off;        /* offset to LURT table         */
-	unsigned long  sysname_off;     /* offset to sysname char count */
+	long smm;			/* SMM nubber used by LMF       */
+	unsigned long  lurt_off;	/* offset to LURT table         */
+	unsigned long  sysname_off;	/* offset to sysname char count */
 };
 
 struct hwrpb_struct {
@@ -184,4 +185,19 @@ struct hwrpb_struct {
 	unsigned long dsr_offset;	/* "Dynamic System Recognition Data Block Table" */
 };
 
-#endif
+#ifdef __KERNEL__
+
+extern struct hwrpb_struct *hwrpb;
+
+static inline void
+hwrpb_update_checksum(struct hwrpb_struct *h)
+{
+	unsigned long sum = 0, *l;
+        for (l = (unsigned long *) h; l < (unsigned long *) &h->chksum; ++l)
+                sum += *l;
+        h->chksum = sum;
+}
+
+#endif /* __KERNEL__ */
+
+#endif /* __ALPHA_HWRPB_H */

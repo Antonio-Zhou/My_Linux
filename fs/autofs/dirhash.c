@@ -2,7 +2,7 @@
  *
  * linux/fs/autofs/dirhash.c
  *
- *  Copyright 1997 Transmeta Corporation -- All Rights Reserved
+ *  Copyright 1997-1998 Transmeta Corporation -- All Rights Reserved
  *
  * This file is part of the Linux kernel and is made available under
  * the terms of the GNU General Public License, version 2, or at your
@@ -37,27 +37,58 @@ void autofs_update_usage(struct autofs_dirhash *dh,
 	autofs_init_usage(dh,ent);  /* Relink at queue tail */
 }
 
-struct autofs_dir_ent *autofs_expire(struct autofs_dirhash *dh,
-				     unsigned long timeout)
+struct autofs_dir_ent *autofs_expire(struct super_block *sb,
+				     struct autofs_sb_info *sbi)
 {
+	struct autofs_dirhash *dh = &sbi->dirhash;
 	struct autofs_dir_ent *ent;
+	struct dentry *dentry;
+	unsigned long timeout = sbi->exp_timeout;
 
 	ent = dh->expiry_head.exp_next;
 
-	if ( ent == &(dh->expiry_head) ) return NULL;
-	return (jiffies - ent->last_usage >= timeout) ? ent : NULL;
-}
+	if ( ent == &(dh->expiry_head) )
+		return NULL;	/* No entries */
 
-/* Adapted from the Dragon Book, page 436 */
-/* This particular hashing algorithm requires autofs_hash_t == u32 */
-autofs_hash_t autofs_hash(const char *name, int len)
-{
-	autofs_hash_t h = 0;
-	while ( len-- ) {
-		h = (h << 4) + (unsigned char) (*name++);
-		h ^= ((h & 0xf0000000) >> 24);
+	while ( jiffies - ent->last_usage >= timeout ) {
+		/* Move to end of list in case expiry isn't desirable */
+		autofs_update_usage(dh, ent);
+
+		/* Check to see that entry is expirable */
+		if ( ent->ino < AUTOFS_FIRST_DIR_INO )
+			return ent; /* Symlinks are always expirable */
+
+		/* Get the dentry for the autofs subdirectory */
+		dentry = ent->dentry;
+
+		if ( !dentry ) {
+			printk("autofs: dentry == NULL but inode range is directory, entry %s\n", ent->name);
+			autofs_delete_usage(ent);
+		}
+
+		if ( !dentry->d_inode ) {
+			dput(dentry);
+			printk("autofs: negative dentry on expiry queue: %s\n",
+			       ent->name);
+			autofs_delete_usage(ent);
+			continue;
+		}
+
+		/* Make sure entry is mounted and unused; note that dentry will
+		   point to the mounted-on-top root. */
+		if ( !S_ISDIR(dentry->d_inode->i_mode)
+		     || dentry->d_mounts == dentry ) {
+			DPRINTK(("autofs: not expirable (not a mounted directory): %s\n", ent->name));
+			continue;
+		}
+
+		if ( !is_root_busy(dentry->d_mounts) ) {
+			DPRINTK(("autofs: signaling expire on %s\n", ent->name));
+			return ent; /* Expirable! */
+		}
+		DPRINTK(("autofs: didn't expire due to is_root_busy: %s\n", ent->name));
 	}
-	return h;
+	return NULL;		/* No expirable entries */
 }
 
 void autofs_initialize_hash(struct autofs_dirhash *dh) {
@@ -66,17 +97,17 @@ void autofs_initialize_hash(struct autofs_dirhash *dh) {
 		&dh->expiry_head;
 }
 
-struct autofs_dir_ent *autofs_hash_lookup(const struct autofs_dirhash *dh, autofs_hash_t hash, const char *name, int len)
+struct autofs_dir_ent *autofs_hash_lookup(const struct autofs_dirhash *dh, struct qstr *name)
 {
 	struct autofs_dir_ent *dhn;
 
-	DPRINTK(("autofs_hash_lookup: hash = 0x%08x, name = ", hash));
-	autofs_say(name,len);
+	DPRINTK(("autofs_hash_lookup: hash = 0x%08x, name = ", name->hash));
+	autofs_say(name->name,name->len);
 
-	for ( dhn = dh->h[hash % AUTOFS_HASH_SIZE] ; dhn ; dhn = dhn->next ) {
-		if ( hash == dhn->hash &&
-		     len == dhn->len &&
-		     !memcmp(name, dhn->name, len) )
+	for ( dhn = dh->h[(unsigned) name->hash % AUTOFS_HASH_SIZE] ; dhn ; dhn = dhn->next ) {
+		if ( name->hash == dhn->hash &&
+		     name->len == dhn->len &&
+		     !memcmp(name->name, dhn->name, name->len) )
 			break;
 	}
 
@@ -91,19 +122,27 @@ void autofs_hash_insert(struct autofs_dirhash *dh, struct autofs_dir_ent *ent)
 	autofs_say(ent->name,ent->len);
 
 	autofs_init_usage(dh,ent);
+	if ( ent->dentry )
+		ent->dentry->d_count++;
 
-	dhnp = &dh->h[ent->hash % AUTOFS_HASH_SIZE];
+	dhnp = &dh->h[(unsigned) ent->hash % AUTOFS_HASH_SIZE];
 	ent->next = *dhnp;
 	ent->back = dhnp;
 	*dhnp = ent;
+	if ( ent->next )
+		ent->next->back = &(ent->next);
 }
 
 void autofs_hash_delete(struct autofs_dir_ent *ent)
 {
 	*(ent->back) = ent->next;
+	if ( ent->next )
+		ent->next->back = ent->back;
 
 	autofs_delete_usage(ent);
 
+	if ( ent->dentry )
+		dput(ent->dentry);
 	kfree(ent->name);
 	kfree(ent);
 }
@@ -112,8 +151,12 @@ void autofs_hash_delete(struct autofs_dir_ent *ent)
  * Used by readdir().  We must validate "ptr", so we can't simply make it
  * a pointer.  Values below 0xffff are reserved; calling with any value
  * <= 0x10000 will return the first entry found.
+ *
+ * "last" can be NULL or the value returned by the last search *if* we
+ * want the next sequential entry.
  */
-struct autofs_dir_ent *autofs_hash_enum(const struct autofs_dirhash *dh, off_t *ptr)
+struct autofs_dir_ent *autofs_hash_enum(const struct autofs_dirhash *dh,
+					off_t *ptr, struct autofs_dir_ent *last)
 {
 	int bucket, ecount, i;
 	struct autofs_dir_ent *ent;
@@ -127,19 +170,23 @@ struct autofs_dir_ent *autofs_hash_enum(const struct autofs_dirhash *dh, off_t *
 
 	DPRINTK(("autofs_hash_enum: bucket %d, entry %d\n", bucket, ecount));
 
-	ent = NULL;
+	ent = last ? last->next : NULL;
 
-	while  ( bucket < AUTOFS_HASH_SIZE ) {
-		ent = dh->h[bucket];
-		for ( i = ecount ; ent && i ; i-- )
-			ent = ent->next;
-
-		if (ent) {
-			ecount++; /* Point to *next* entry */
-			break;
+	if ( ent ) {
+		ecount++;
+	} else {
+		while  ( bucket < AUTOFS_HASH_SIZE ) {
+			ent = dh->h[bucket];
+			for ( i = ecount ; ent && i ; i-- )
+				ent = ent->next;
+			
+			if (ent) {
+				ecount++; /* Point to *next* entry */
+				break;
+			}
+			
+			bucket++; ecount = 0;
 		}
-
-		bucket++; ecount = 0;
 	}
 
 #ifdef DEBUG
@@ -165,6 +212,8 @@ void autofs_hash_nuke(struct autofs_dirhash *dh)
 	for ( i = 0 ; i < AUTOFS_HASH_SIZE ; i++ ) {
 		for ( ent = dh->h[i] ; ent ; ent = nent ) {
 			nent = ent->next;
+			if ( ent->dentry )
+				dput(ent->dentry);
 			kfree(ent->name);
 			kfree(ent);
 		}

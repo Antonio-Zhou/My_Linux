@@ -26,14 +26,16 @@
 */
 
 
-#define BusLogic_DriverVersion		"2.0.15"
+#define BusLogic_DriverVersion		"2.1.15"
 #define BusLogic_DriverDate		"17 August 1998"
 
 
 #include <linux/version.h>
 #include <linux/module.h>
 #include <linux/config.h>
+#include <linux/init.h>
 #include <linux/types.h>
+#include <linux/blk.h>
 #include <linux/blkdev.h>
 #include <linux/delay.h>
 #include <linux/ioport.h>
@@ -41,10 +43,9 @@
 #include <linux/sched.h>
 #include <linux/stat.h>
 #include <linux/pci.h>
-#include <linux/bios32.h>
 #include <asm/dma.h>
 #include <asm/io.h>
-#include <asm/irq.h>
+#include <asm/spinlock.h>
 #include <asm/system.h>
 #include "scsi.h"
 #include "hosts.h"
@@ -751,12 +752,7 @@ static int BusLogic_InitializeMultiMasterProbeInfo(BusLogic_HostAdapter_T
   boolean ForceBusDeviceScanningOrder = false;
   boolean ForceBusDeviceScanningOrderChecked = false;
   boolean StandardAddressSeen[6];
-  unsigned char Bus, DeviceFunction;
-  unsigned int BaseAddress0, BaseAddress1;
-  unsigned char IRQ_Channel;
-  BusLogic_IO_Address_T IO_Address;
-  BusLogic_PCI_Address_T PCI_Address;
-  unsigned short Index = 0;
+  PCI_Device_T *PCI_Device = NULL;
   int i;
   if (BusLogic_ProbeInfoCount >= BusLogic_MaxHostAdapters) return 0;
   BusLogic_ProbeInfoCount++;
@@ -775,148 +771,148 @@ static int BusLogic_InitializeMultiMasterProbeInfo(BusLogic_HostAdapter_T
     particular standard ISA I/O Address need not be probed.
   */
   PrimaryProbeInfo->IO_Address = 0;
-  while (pcibios_find_device(PCI_VENDOR_ID_BUSLOGIC,
-			     PCI_DEVICE_ID_BUSLOGIC_MULTIMASTER,
-			     Index++, &Bus, &DeviceFunction) == 0)
-    if (pcibios_read_config_dword(Bus, DeviceFunction,
-				  PCI_BASE_ADDRESS_0, &BaseAddress0) == 0 &&
-	pcibios_read_config_dword(Bus, DeviceFunction,
-				  PCI_BASE_ADDRESS_1, &BaseAddress1) == 0 &&
-	pcibios_read_config_byte(Bus, DeviceFunction,
-				 PCI_INTERRUPT_LINE, &IRQ_Channel) == 0)
-      {
-	BusLogic_HostAdapter_T *HostAdapter = PrototypeHostAdapter;
-	BusLogic_PCIHostAdapterInformation_T PCIHostAdapterInformation;
-	BusLogic_ModifyIOAddressRequest_T ModifyIOAddressRequest;
-	unsigned char Device = DeviceFunction >> 3;
-	IO_Address = BaseAddress0 & PCI_BASE_ADDRESS_IO_MASK;
-	PCI_Address = BaseAddress1 & PCI_BASE_ADDRESS_MEM_MASK;
-	if ((BaseAddress0 & PCI_BASE_ADDRESS_SPACE)
-	    != PCI_BASE_ADDRESS_SPACE_IO)
-	  {
-	    BusLogic_Error("BusLogic: Base Address0 0x%X not I/O for "
-			   "MultiMaster Host Adapter\n", NULL, BaseAddress0);
-	    BusLogic_Error("at PCI Bus %d Device %d I/O Address 0x%X\n",
-			   NULL, Bus, Device, IO_Address);
-	    continue;
-	  }
-	if ((BaseAddress1 & PCI_BASE_ADDRESS_SPACE)
-	    != PCI_BASE_ADDRESS_SPACE_MEMORY)
-	  {
-	    BusLogic_Error("BusLogic: Base Address1 0x%X not Memory for "
-			   "MultiMaster Host Adapter\n", NULL, BaseAddress1);
-	    BusLogic_Error("at PCI Bus %d Device %d PCI Address 0x%X\n",
-			   NULL, Bus, Device, PCI_Address);
-	    continue;
-	  }
-	if (IRQ_Channel == 0 || IRQ_Channel >= NR_IRQS)
-	  {
-	    BusLogic_Error("BusLogic: IRQ Channel %d illegal for "
-			   "MultiMaster Host Adapter\n", NULL, IRQ_Channel);
-	    BusLogic_Error("at PCI Bus %d Device %d I/O Address 0x%X\n",
-			   NULL, Bus, Device, IO_Address);
-	    continue;
-	  }
-	if (BusLogic_GlobalOptions.TraceProbe)
-	  {
-	    BusLogic_Notice("BusLogic: PCI MultiMaster Host Adapter "
-			    "detected at\n", NULL);
-	    BusLogic_Notice("BusLogic: PCI Bus %d Device %d I/O Address "
-			    "0x%X PCI Address 0x%X\n", NULL,
-			    Bus, Device, IO_Address, PCI_Address);
-	  }
-	/*
-	  Issue the Inquire PCI Host Adapter Information command to determine
-	  the ISA Compatible I/O Port.  If the ISA Compatible I/O Port is
-	  known and enabled, note that the particular Standard ISA I/O
-	  Address should not be probed.
-	*/
-	HostAdapter->IO_Address = IO_Address;
-	BusLogic_InterruptReset(HostAdapter);
-	if (BusLogic_Command(HostAdapter,
-			     BusLogic_InquirePCIHostAdapterInformation,
-			     NULL, 0, &PCIHostAdapterInformation,
-			     sizeof(PCIHostAdapterInformation))
-	    == sizeof(PCIHostAdapterInformation))
-	  {
-	    if (PCIHostAdapterInformation.ISACompatibleIOPort < 6)
-	      StandardAddressSeen[PCIHostAdapterInformation
-				  .ISACompatibleIOPort] = true;
-	  }
-	else PCIHostAdapterInformation.ISACompatibleIOPort =
-	       BusLogic_IO_Disable;
-	/*
-	  Issue the Modify I/O Address command to disable the ISA Compatible
-	  I/O Port.
-	*/
-	ModifyIOAddressRequest = BusLogic_IO_Disable;
-	BusLogic_Command(HostAdapter, BusLogic_ModifyIOAddress,
-			 &ModifyIOAddressRequest,
-			 sizeof(ModifyIOAddressRequest), NULL, 0);
-	/*
-	  For the first MultiMaster Host Adapter enumerated, issue the Fetch
-	  Host Adapter Local RAM command to read byte 45 of the AutoSCSI area,
-	  for the setting of the "Use Bus And Device # For PCI Scanning Seq."
-	  option.  Issue the Inquire Board ID command since this option is
-	  only valid for the BT-948/958/958D.
-	*/
-	if (!ForceBusDeviceScanningOrderChecked)
-	  {
-	    BusLogic_FetchHostAdapterLocalRAMRequest_T
-	      FetchHostAdapterLocalRAMRequest;
-	    BusLogic_AutoSCSIByte45_T AutoSCSIByte45;
-	    BusLogic_BoardID_T BoardID;
-	    FetchHostAdapterLocalRAMRequest.ByteOffset =
-	      BusLogic_AutoSCSI_BaseOffset + 45;
-	    FetchHostAdapterLocalRAMRequest.ByteCount =
-	      sizeof(AutoSCSIByte45);
-	    BusLogic_Command(HostAdapter,
-			     BusLogic_FetchHostAdapterLocalRAM,
-			     &FetchHostAdapterLocalRAMRequest,
-			     sizeof(FetchHostAdapterLocalRAMRequest),
-			     &AutoSCSIByte45, sizeof(AutoSCSIByte45));
-	    BusLogic_Command(HostAdapter, BusLogic_InquireBoardID,
-			     NULL, 0, &BoardID, sizeof(BoardID));
-	    if (BoardID.FirmwareVersion1stDigit == '5')
-	      ForceBusDeviceScanningOrder =
-		AutoSCSIByte45.ForceBusDeviceScanningOrder;
-	    ForceBusDeviceScanningOrderChecked = true;
-	  }
-	/*
-	  Determine whether this MultiMaster Host Adapter has its ISA
-	  Compatible I/O Port enabled and is assigned the Primary I/O Address.
-	  If it does, then it is the Primary MultiMaster Host Adapter and must
-	  be recognized first.  If it does not, then it is added to the list
-	  for probing after any Primary MultiMaster Host Adapter is probed.
-	*/
-	if (PCIHostAdapterInformation.ISACompatibleIOPort == BusLogic_IO_330)
-	  {
-	    PrimaryProbeInfo->HostAdapterType = BusLogic_MultiMaster;
-	    PrimaryProbeInfo->HostAdapterBusType = BusLogic_PCI_Bus;
-	    PrimaryProbeInfo->IO_Address = IO_Address;
-	    PrimaryProbeInfo->PCI_Address = PCI_Address;
-	    PrimaryProbeInfo->Bus = Bus;
-	    PrimaryProbeInfo->Device = Device;
-	    PrimaryProbeInfo->IRQ_Channel = IRQ_Channel;
-	    PCIMultiMasterCount++;
-	  }
-	else if (BusLogic_ProbeInfoCount < BusLogic_MaxHostAdapters)
-	  {
-	    BusLogic_ProbeInfo_T *ProbeInfo =
-	      &BusLogic_ProbeInfoList[BusLogic_ProbeInfoCount++];
-	    ProbeInfo->HostAdapterType = BusLogic_MultiMaster;
-	    ProbeInfo->HostAdapterBusType = BusLogic_PCI_Bus;
-	    ProbeInfo->IO_Address = IO_Address;
-	    ProbeInfo->PCI_Address = PCI_Address;
-	    ProbeInfo->Bus = Bus;
-	    ProbeInfo->Device = Device;
-	    ProbeInfo->IRQ_Channel = IRQ_Channel;
-	    NonPrimaryPCIMultiMasterCount++;
-	    PCIMultiMasterCount++;
-	  }
-	else BusLogic_Warning("BusLogic: Too many Host Adapters "
-			      "detected\n", NULL);
-      }
+  while ((PCI_Device = pci_find_device(PCI_VENDOR_ID_BUSLOGIC,
+				       PCI_DEVICE_ID_BUSLOGIC_MULTIMASTER,
+				       PCI_Device)) != NULL)
+    {
+      BusLogic_HostAdapter_T *HostAdapter = PrototypeHostAdapter;
+      BusLogic_PCIHostAdapterInformation_T PCIHostAdapterInformation;
+      BusLogic_ModifyIOAddressRequest_T ModifyIOAddressRequest;
+      unsigned char Bus = PCI_Device->bus->number;
+      unsigned char Device = PCI_Device->devfn >> 3;
+      unsigned int IRQ_Channel = PCI_Device->irq;
+      unsigned long BaseAddress0 = PCI_Device->base_address[0];
+      unsigned long BaseAddress1 = PCI_Device->base_address[1];
+      BusLogic_IO_Address_T IO_Address =
+	BaseAddress0 & PCI_BASE_ADDRESS_IO_MASK;
+      BusLogic_PCI_Address_T PCI_Address =
+	BaseAddress1 & PCI_BASE_ADDRESS_MEM_MASK;
+      if ((BaseAddress0 & PCI_BASE_ADDRESS_SPACE)
+	  != PCI_BASE_ADDRESS_SPACE_IO)
+	{
+	  BusLogic_Error("BusLogic: Base Address0 0x%X not I/O for "
+			 "MultiMaster Host Adapter\n", NULL, BaseAddress0);
+	  BusLogic_Error("at PCI Bus %d Device %d I/O Address 0x%X\n",
+			 NULL, Bus, Device, IO_Address);
+	  continue;
+	}
+      if ((BaseAddress1 & PCI_BASE_ADDRESS_SPACE)
+	  != PCI_BASE_ADDRESS_SPACE_MEMORY)
+	{
+	  BusLogic_Error("BusLogic: Base Address1 0x%X not Memory for "
+			 "MultiMaster Host Adapter\n", NULL, BaseAddress1);
+	  BusLogic_Error("at PCI Bus %d Device %d PCI Address 0x%X\n",
+			 NULL, Bus, Device, PCI_Address);
+	  continue;
+	}
+      if (IRQ_Channel == 0)
+	{
+	  BusLogic_Error("BusLogic: IRQ Channel %d illegal for "
+			 "MultiMaster Host Adapter\n", NULL, IRQ_Channel);
+	  BusLogic_Error("at PCI Bus %d Device %d I/O Address 0x%X\n",
+			 NULL, Bus, Device, IO_Address);
+	  continue;
+	}
+      if (BusLogic_GlobalOptions.TraceProbe)
+	{
+	  BusLogic_Notice("BusLogic: PCI MultiMaster Host Adapter "
+			  "detected at\n", NULL);
+	  BusLogic_Notice("BusLogic: PCI Bus %d Device %d I/O Address "
+			  "0x%X PCI Address 0x%X\n", NULL,
+			  Bus, Device, IO_Address, PCI_Address);
+	}
+      /*
+	Issue the Inquire PCI Host Adapter Information command to determine
+	the ISA Compatible I/O Port.  If the ISA Compatible I/O Port is
+	known and enabled, note that the particular Standard ISA I/O
+	Address should not be probed.
+      */
+      HostAdapter->IO_Address = IO_Address;
+      BusLogic_InterruptReset(HostAdapter);
+      if (BusLogic_Command(HostAdapter,
+			   BusLogic_InquirePCIHostAdapterInformation,
+			   NULL, 0, &PCIHostAdapterInformation,
+			   sizeof(PCIHostAdapterInformation))
+	  == sizeof(PCIHostAdapterInformation))
+	{
+	  if (PCIHostAdapterInformation.ISACompatibleIOPort < 6)
+	    StandardAddressSeen[PCIHostAdapterInformation
+				.ISACompatibleIOPort] = true;
+	}
+      else PCIHostAdapterInformation.ISACompatibleIOPort =
+	     BusLogic_IO_Disable;
+      /*
+	Issue the Modify I/O Address command to disable the ISA Compatible
+	I/O Port.
+      */
+      ModifyIOAddressRequest = BusLogic_IO_Disable;
+      BusLogic_Command(HostAdapter, BusLogic_ModifyIOAddress,
+		       &ModifyIOAddressRequest,
+		       sizeof(ModifyIOAddressRequest), NULL, 0);
+      /*
+	For the first MultiMaster Host Adapter enumerated, issue the Fetch
+	Host Adapter Local RAM command to read byte 45 of the AutoSCSI area,
+	for the setting of the "Use Bus And Device # For PCI Scanning Seq."
+	option.  Issue the Inquire Board ID command since this option is
+	only valid for the BT-948/958/958D.
+      */
+      if (!ForceBusDeviceScanningOrderChecked)
+	{
+	  BusLogic_FetchHostAdapterLocalRAMRequest_T
+	    FetchHostAdapterLocalRAMRequest;
+	  BusLogic_AutoSCSIByte45_T AutoSCSIByte45;
+	  BusLogic_BoardID_T BoardID;
+	  FetchHostAdapterLocalRAMRequest.ByteOffset =
+	    BusLogic_AutoSCSI_BaseOffset + 45;
+	  FetchHostAdapterLocalRAMRequest.ByteCount =
+	    sizeof(AutoSCSIByte45);
+	  BusLogic_Command(HostAdapter,
+			   BusLogic_FetchHostAdapterLocalRAM,
+			   &FetchHostAdapterLocalRAMRequest,
+			   sizeof(FetchHostAdapterLocalRAMRequest),
+			   &AutoSCSIByte45, sizeof(AutoSCSIByte45));
+	  BusLogic_Command(HostAdapter, BusLogic_InquireBoardID,
+			   NULL, 0, &BoardID, sizeof(BoardID));
+	  if (BoardID.FirmwareVersion1stDigit == '5')
+	    ForceBusDeviceScanningOrder =
+	      AutoSCSIByte45.ForceBusDeviceScanningOrder;
+	  ForceBusDeviceScanningOrderChecked = true;
+	}
+      /*
+	Determine whether this MultiMaster Host Adapter has its ISA
+	Compatible I/O Port enabled and is assigned the Primary I/O Address.
+	If it does, then it is the Primary MultiMaster Host Adapter and must
+	be recognized first.  If it does not, then it is added to the list
+	for probing after any Primary MultiMaster Host Adapter is probed.
+      */
+      if (PCIHostAdapterInformation.ISACompatibleIOPort == BusLogic_IO_330)
+	{
+	  PrimaryProbeInfo->HostAdapterType = BusLogic_MultiMaster;
+	  PrimaryProbeInfo->HostAdapterBusType = BusLogic_PCI_Bus;
+	  PrimaryProbeInfo->IO_Address = IO_Address;
+	  PrimaryProbeInfo->PCI_Address = PCI_Address;
+	  PrimaryProbeInfo->Bus = Bus;
+	  PrimaryProbeInfo->Device = Device;
+	  PrimaryProbeInfo->IRQ_Channel = IRQ_Channel;
+	  PCIMultiMasterCount++;
+	}
+      else if (BusLogic_ProbeInfoCount < BusLogic_MaxHostAdapters)
+	{
+	  BusLogic_ProbeInfo_T *ProbeInfo =
+	    &BusLogic_ProbeInfoList[BusLogic_ProbeInfoCount++];
+	  ProbeInfo->HostAdapterType = BusLogic_MultiMaster;
+	  ProbeInfo->HostAdapterBusType = BusLogic_PCI_Bus;
+	  ProbeInfo->IO_Address = IO_Address;
+	  ProbeInfo->PCI_Address = PCI_Address;
+	  ProbeInfo->Bus = Bus;
+	  ProbeInfo->Device = Device;
+	  ProbeInfo->IRQ_Channel = IRQ_Channel;
+	  NonPrimaryPCIMultiMasterCount++;
+	  PCIMultiMasterCount++;
+	}
+      else BusLogic_Warning("BusLogic: Too many Host Adapters "
+			    "detected\n", NULL);
+    }
   /*
     If the AutoSCSI "Use Bus And Device # For PCI Scanning Seq." option is ON
     for the first enumerated MultiMaster Host Adapter, and if that host adapter
@@ -982,34 +978,32 @@ static int BusLogic_InitializeMultiMasterProbeInfo(BusLogic_HostAdapter_T
     Iterate over the older non-compliant MultiMaster PCI Host Adapters,
     noting the PCI bus location and assigned IRQ Channel.
   */
-  Index = 0;
-  while (pcibios_find_device(PCI_VENDOR_ID_BUSLOGIC,
-			     PCI_DEVICE_ID_BUSLOGIC_MULTIMASTER_NC,
-			     Index++, &Bus, &DeviceFunction) == 0)
-    if (pcibios_read_config_dword(Bus, DeviceFunction,
-				  PCI_BASE_ADDRESS_0, &BaseAddress0) == 0 &&
-	pcibios_read_config_byte(Bus, DeviceFunction,
-				 PCI_INTERRUPT_LINE, &IRQ_Channel) == 0)
-      {
-	unsigned char Device = DeviceFunction >> 3;
-	IO_Address = BaseAddress0 & PCI_BASE_ADDRESS_IO_MASK;
-	if (IO_Address == 0 || IRQ_Channel == 0 || IRQ_Channel >= NR_IRQS)
-	  continue;
-	for (i = 0; i < BusLogic_ProbeInfoCount; i++)
-	  {
-	    BusLogic_ProbeInfo_T *ProbeInfo = &BusLogic_ProbeInfoList[i];
-	    if (ProbeInfo->IO_Address == IO_Address &&
-		ProbeInfo->HostAdapterType == BusLogic_MultiMaster)
-	      {
-		ProbeInfo->HostAdapterBusType = BusLogic_PCI_Bus;
-		ProbeInfo->PCI_Address = 0;
-		ProbeInfo->Bus = Bus;
-		ProbeInfo->Device = Device;
-		ProbeInfo->IRQ_Channel = IRQ_Channel;
-		break;
-	      }
-	  }
-      }
+  PCI_Device = NULL;
+  while ((PCI_Device = pci_find_device(PCI_VENDOR_ID_BUSLOGIC,
+				       PCI_DEVICE_ID_BUSLOGIC_MULTIMASTER_NC,
+				       PCI_Device)) != NULL)
+    {
+      unsigned char Bus = PCI_Device->bus->number;
+      unsigned char Device = PCI_Device->devfn >> 3;
+      unsigned int IRQ_Channel = PCI_Device->irq;
+      BusLogic_IO_Address_T IO_Address =
+	PCI_Device->base_address[0] & PCI_BASE_ADDRESS_IO_MASK;
+      if (IO_Address == 0 || IRQ_Channel == 0) continue;
+      for (i = 0; i < BusLogic_ProbeInfoCount; i++)
+	{
+	  BusLogic_ProbeInfo_T *ProbeInfo = &BusLogic_ProbeInfoList[i];
+	  if (ProbeInfo->IO_Address == IO_Address &&
+	      ProbeInfo->HostAdapterType == BusLogic_MultiMaster)
+	    {
+	      ProbeInfo->HostAdapterBusType = BusLogic_PCI_Bus;
+	      ProbeInfo->PCI_Address = 0;
+	      ProbeInfo->Bus = Bus;
+	      ProbeInfo->Device = Device;
+	      ProbeInfo->IRQ_Channel = IRQ_Channel;
+	      break;
+	    }
+	}
+    }
   return PCIMultiMasterCount;
 }
 
@@ -1025,87 +1019,82 @@ static int BusLogic_InitializeFlashPointProbeInfo(BusLogic_HostAdapter_T
 						  *PrototypeHostAdapter)
 {
   int FlashPointIndex = BusLogic_ProbeInfoCount, FlashPointCount = 0;
-  unsigned char Bus, DeviceFunction;
-  unsigned int BaseAddress0, BaseAddress1;
-  unsigned char IRQ_Channel;
-  BusLogic_IO_Address_T IO_Address;
-  BusLogic_PCI_Address_T PCI_Address;
-  unsigned short Index = 0;
+  PCI_Device_T *PCI_Device = NULL;
   /*
     Interrogate PCI Configuration Space for any FlashPoint Host Adapters.
   */
-  while (pcibios_find_device(PCI_VENDOR_ID_BUSLOGIC,
-			     PCI_DEVICE_ID_BUSLOGIC_FLASHPOINT,
-			     Index++, &Bus, &DeviceFunction) == 0)
-    if (pcibios_read_config_dword(Bus, DeviceFunction,
-				  PCI_BASE_ADDRESS_0, &BaseAddress0) == 0 &&
-	pcibios_read_config_dword(Bus, DeviceFunction,
-				  PCI_BASE_ADDRESS_1, &BaseAddress1) == 0 &&
-	pcibios_read_config_byte(Bus, DeviceFunction,
-				 PCI_INTERRUPT_LINE, &IRQ_Channel) == 0)
-      {
-	unsigned char Device = DeviceFunction >> 3;
-	IO_Address = BaseAddress0 & PCI_BASE_ADDRESS_IO_MASK;
-	PCI_Address = BaseAddress1 & PCI_BASE_ADDRESS_MEM_MASK;
+  while ((PCI_Device = pci_find_device(PCI_VENDOR_ID_BUSLOGIC,
+				       PCI_DEVICE_ID_BUSLOGIC_FLASHPOINT,
+				       PCI_Device)) != NULL)
+    {
+      unsigned char Bus = PCI_Device->bus->number;
+      unsigned char Device = PCI_Device->devfn >> 3;
+      unsigned int IRQ_Channel = PCI_Device->irq;
+      unsigned long BaseAddress0 = PCI_Device->base_address[0];
+      unsigned long BaseAddress1 = PCI_Device->base_address[1];
+      BusLogic_IO_Address_T IO_Address =
+	BaseAddress0 & PCI_BASE_ADDRESS_IO_MASK;
+      BusLogic_PCI_Address_T PCI_Address =
+	BaseAddress1 & PCI_BASE_ADDRESS_MEM_MASK;
 #ifndef CONFIG_SCSI_OMIT_FLASHPOINT
-	if ((BaseAddress0 & PCI_BASE_ADDRESS_SPACE)
-	    != PCI_BASE_ADDRESS_SPACE_IO)
-	  {
-	    BusLogic_Error("BusLogic: Base Address0 0x%X not I/O for "
-			   "FlashPoint Host Adapter\n", NULL, BaseAddress0);
-	    BusLogic_Error("at PCI Bus %d Device %d I/O Address 0x%X\n",
-			   NULL, Bus, Device, IO_Address);
-	    continue;
-	  }
-	if ((BaseAddress1 & PCI_BASE_ADDRESS_SPACE)
-	    != PCI_BASE_ADDRESS_SPACE_MEMORY)
-	  {
-	    BusLogic_Error("BusLogic: Base Address1 0x%X not Memory for "
-			   "FlashPoint Host Adapter\n", NULL, BaseAddress1);
-	    BusLogic_Error("at PCI Bus %d Device %d PCI Address 0x%X\n",
-			   NULL, Bus, Device, PCI_Address);
-	    continue;
-	  }
-	if (IRQ_Channel == 0 || IRQ_Channel >= NR_IRQS)
-	  {
-	    BusLogic_Error("BusLogic: IRQ Channel %d illegal for "
-			   "FlashPoint Host Adapter\n", NULL, IRQ_Channel);
-	    BusLogic_Error("at PCI Bus %d Device %d I/O Address 0x%X\n",
-			   NULL, Bus, Device, IO_Address);
-	    continue;
-	  }
-	if (BusLogic_GlobalOptions.TraceProbe)
-	  {
-	    BusLogic_Notice("BusLogic: FlashPoint Host Adapter "
-			    "detected at\n", NULL);
-	    BusLogic_Notice("BusLogic: PCI Bus %d Device %d I/O Address "
-			    "0x%X PCI Address 0x%X\n", NULL,
-			    Bus, Device, IO_Address, PCI_Address);
-	  }
-	if (BusLogic_ProbeInfoCount < BusLogic_MaxHostAdapters)
-	  {
-	    BusLogic_ProbeInfo_T *ProbeInfo =
-	      &BusLogic_ProbeInfoList[BusLogic_ProbeInfoCount++];
-	    ProbeInfo->HostAdapterType = BusLogic_FlashPoint;
-	    ProbeInfo->HostAdapterBusType = BusLogic_PCI_Bus;
-	    ProbeInfo->IO_Address = IO_Address;
-	    ProbeInfo->PCI_Address = PCI_Address;
-	    ProbeInfo->Bus = Bus;
-	    ProbeInfo->Device = Device;
-	    ProbeInfo->IRQ_Channel = IRQ_Channel;
-	    FlashPointCount++;
-	  }
-	else BusLogic_Warning("BusLogic: Too many Host Adapters "
-			      "detected\n", NULL);
+      if ((BaseAddress0 & PCI_BASE_ADDRESS_SPACE)
+	  != PCI_BASE_ADDRESS_SPACE_IO)
+	{
+	  BusLogic_Error("BusLogic: Base Address0 0x%X not I/O for "
+			 "FlashPoint Host Adapter\n", NULL, BaseAddress0);
+	  BusLogic_Error("at PCI Bus %d Device %d I/O Address 0x%X\n",
+			 NULL, Bus, Device, IO_Address);
+	  continue;
+	}
+      if ((BaseAddress1 & PCI_BASE_ADDRESS_SPACE)
+	  != PCI_BASE_ADDRESS_SPACE_MEMORY)
+	{
+	  BusLogic_Error("BusLogic: Base Address1 0x%X not Memory for "
+			 "FlashPoint Host Adapter\n", NULL, BaseAddress1);
+	  BusLogic_Error("at PCI Bus %d Device %d PCI Address 0x%X\n",
+			 NULL, Bus, Device, PCI_Address);
+	  continue;
+	}
+      if (IRQ_Channel == 0)
+	{
+	  BusLogic_Error("BusLogic: IRQ Channel %d illegal for "
+			 "FlashPoint Host Adapter\n", NULL, IRQ_Channel);
+	  BusLogic_Error("at PCI Bus %d Device %d I/O Address 0x%X\n",
+			 NULL, Bus, Device, IO_Address);
+	  continue;
+	}
+      if (BusLogic_GlobalOptions.TraceProbe)
+	{
+	  BusLogic_Notice("BusLogic: FlashPoint Host Adapter "
+			  "detected at\n", NULL);
+	  BusLogic_Notice("BusLogic: PCI Bus %d Device %d I/O Address "
+			  "0x%X PCI Address 0x%X\n", NULL,
+			  Bus, Device, IO_Address, PCI_Address);
+	}
+      if (BusLogic_ProbeInfoCount < BusLogic_MaxHostAdapters)
+	{
+	  BusLogic_ProbeInfo_T *ProbeInfo =
+	    &BusLogic_ProbeInfoList[BusLogic_ProbeInfoCount++];
+	  ProbeInfo->HostAdapterType = BusLogic_FlashPoint;
+	  ProbeInfo->HostAdapterBusType = BusLogic_PCI_Bus;
+	  ProbeInfo->IO_Address = IO_Address;
+	  ProbeInfo->PCI_Address = PCI_Address;
+	  ProbeInfo->Bus = Bus;
+	  ProbeInfo->Device = Device;
+	  ProbeInfo->IRQ_Channel = IRQ_Channel;
+	  FlashPointCount++;
+	}
+      else BusLogic_Warning("BusLogic: Too many Host Adapters "
+			    "detected\n", NULL);
 #else
-	BusLogic_Error("BusLogic: FlashPoint Host Adapter detected at "
-		       "PCI Bus %d Device %d\n", NULL, Bus, Device);
-	BusLogic_Error("BusLogic: I/O Address 0x%X PCI Address 0x%X, "
-		       "but FlashPoint\n", NULL, IO_Address, PCI_Address);
-	BusLogic_Error("BusLogic: support was omitted in this kernel "
-		       "configuration.\n", NULL);
+      BusLogic_Error("BusLogic: FlashPoint Host Adapter detected at "
+		     "PCI Bus %d Device %d\n", NULL, Bus, Device);
+      BusLogic_Error("BusLogic: I/O Address 0x%X PCI Address 0x%X, "
+		     "but FlashPoint\n", NULL, IO_Address, PCI_Address);
+      BusLogic_Error("BusLogic: support was omitted in this kernel "
+		     "configuration.\n", NULL);
 #endif
-      }
+    }
   /*
     The FlashPoint BIOS will scan for FlashPoint Host Adapters in the order of
     increasing PCI Bus and Device Number, so sort the probe information into
@@ -1137,7 +1126,7 @@ static void BusLogic_InitializeProbeInfoList(BusLogic_HostAdapter_T
     If a PCI BIOS is present, interrogate it for MultiMaster and FlashPoint
     Host Adapters; otherwise, default to the standard ISA MultiMaster probe.
   */
-  if (!BusLogic_ProbeOptions.NoProbePCI && pcibios_present())
+  if (!BusLogic_ProbeOptions.NoProbePCI && pci_present())
     {
       if (BusLogic_ProbeOptions.MultiMasterFirst)
 	{
@@ -2265,8 +2254,7 @@ static boolean BusLogic_AcquireResources(BusLogic_HostAdapter_T *HostAdapter)
     Acquire shared access to the IRQ Channel.
   */
   if (request_irq(HostAdapter->IRQ_Channel, BusLogic_InterruptHandler,
-		  SA_INTERRUPT | SA_SHIRQ,
-		  HostAdapter->FullModelName, HostAdapter) < 0)
+		  SA_SHIRQ, HostAdapter->FullModelName, HostAdapter) < 0)
     {
       BusLogic_Error("UNABLE TO ACQUIRE IRQ CHANNEL %d - DETACHING\n",
 		     HostAdapter, HostAdapter->IRQ_Channel);
@@ -4995,6 +4983,8 @@ void BusLogic_Setup(char *CommandLineString, int *CommandLineIntegers)
 */
 
 #ifdef MODULE
+
+MODULE_PARM(BusLogic_Options, "s");
 
 SCSI_Host_Template_T driver_template = BUSLOGIC;
 

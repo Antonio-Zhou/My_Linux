@@ -1,16 +1,12 @@
-/*
- * Don't import our own symbols, as this would severely mess up our
- * symbol tables.
- */
-#define _SCSI_SYMS_VER_
 #define __NO_VERSION__
 #include <linux/module.h>
 
 #include <asm/io.h>
-#include <asm/segment.h>
+#include <asm/uaccess.h>
 #include <asm/system.h>
 #include <asm/page.h>
 
+#include <linux/interrupt.h>
 #include <linux/errno.h>
 #include <linux/kernel.h>
 #include <linux/sched.h>
@@ -50,7 +46,7 @@ static int ioctl_probe(struct Scsi_Host * host, void *buffer)
         result = verify_area(VERIFY_READ, buffer, sizeof(long));
         if (result) return result;
 
-	len = get_user ((unsigned int *) buffer);
+	get_user(len, (unsigned int *) buffer);
 	if(host->hostt->info)
 	    string = host->hostt->info(host);
 	else 
@@ -62,7 +58,7 @@ static int ioctl_probe(struct Scsi_Host * host, void *buffer)
             result = verify_area(VERIFY_WRITE, buffer, len);
             if (result) return result;
 
-	    memcpy_tofs (buffer, string, len);
+	    copy_to_user (buffer, string, len);
 	}
     }
     return temp;
@@ -107,17 +103,27 @@ static void scsi_ioctl_done (Scsi_Cmnd * SCpnt)
 static int ioctl_internal_command(Scsi_Device *dev, char * cmd,
 				  int timeout, int retries)
 {
+    unsigned long flags;
     int result;
     Scsi_Cmnd * SCpnt;
-    
-    SCpnt = allocate_device(NULL, dev, 1);
+    Scsi_Device * SDpnt;
+
+    spin_lock_irqsave(&io_request_lock, flags);
+
+    SCSI_LOG_IOCTL(1, printk("Trying ioctl with scsi command %d\n", cmd[0]));
+    SCpnt = scsi_allocate_device(NULL, dev, 1);
     {
 	struct semaphore sem = MUTEX_LOCKED;
 	SCpnt->request.sem = &sem;
 	scsi_do_cmd(SCpnt,  cmd, NULL,  0, scsi_ioctl_done,  timeout, retries);
+	spin_unlock_irqrestore(&io_request_lock, flags);
 	down(&sem);
+        spin_lock_irqsave(&io_request_lock, flags);
+        SCpnt->request.sem = NULL;
     }
     
+    SCSI_LOG_IOCTL(2, printk("Ioctl returned  0x%x\n", SCpnt->result));
+
     if(driver_byte(SCpnt->result) != 0)
 	switch(SCpnt->sense_buffer[2] & 0xf) {
 	case ILLEGAL_REQUEST:
@@ -150,12 +156,17 @@ static int ioctl_internal_command(Scsi_Device *dev, char * cmd,
 	};
     
     result = SCpnt->result;
-    SCpnt->request.rq_status = RQ_INACTIVE;
 
-    if (!SCpnt->device->was_reset && SCpnt->device->scsi_request_fn)
-	(*SCpnt->device->scsi_request_fn)();
+    SCSI_LOG_IOCTL(2, printk("IOCTL Releasing command\n"));
+    SDpnt = SCpnt->device;
+    scsi_release_command(SCpnt);
+    SCpnt = NULL;
 
-    wake_up(&SCpnt->device->device_wait);
+    if (!SDpnt->was_reset && SDpnt->scsi_request_fn)
+	(*SDpnt->scsi_request_fn)();
+
+    wake_up(&SDpnt->device_wait);
+    spin_unlock_irqrestore(&io_request_lock, flags);
     return result;
 }
 
@@ -164,25 +175,27 @@ static int ioctl_internal_command(Scsi_Device *dev, char * cmd,
  * interface instead, as this is a more flexible approach to performing
  * generic SCSI commands on a device.
  */
-int scsi_ioctl_send_command(Scsi_Device *dev, void *buffer)
+int scsi_ioctl_send_command(Scsi_Device *dev, Scsi_Ioctl_Command *sic)
 {
+    unsigned long flags;
     char * buf;
     unsigned char cmd[12]; 
     char * cmd_in;
     Scsi_Cmnd * SCpnt;
+    Scsi_Device * SDpnt;
     unsigned char opcode;
     int inlen, outlen, cmdlen;
     int needed, buf_needed;
     int timeout, retries, result;
     
-    if (!buffer)
+    if (!sic)
 	return -EINVAL;
     
 
     /*
      * Verify that we can read at least this much.
      */
-    result = verify_area(VERIFY_READ, buffer, 2*sizeof(long) + 1);
+    result = verify_area(VERIFY_READ, sic, sizeof (Scsi_Ioctl_Command));
     if (result) return result;
 
     /*
@@ -195,25 +208,27 @@ int scsi_ioctl_send_command(Scsi_Device *dev, void *buffer)
      *	unsigned char  data[];
      * };
      */
-    inlen = get_user((unsigned int *) buffer);
-    outlen = get_user( ((unsigned int *) buffer) + 1);
+    get_user(inlen, &sic->inlen);
+    get_user(outlen, &sic->outlen);
     
     /*
      * We do not transfer more than MAX_BUF with this interface.
      * If the user needs to transfer more data than this, they
      * should use scsi_generics instead.
      */
-    if( inlen > MAX_BUF )  return -EINVAL;
-    if( outlen > MAX_BUF )  return -EINVAL;
+    if( inlen > MAX_BUF ) return -EINVAL;
+    if( outlen > MAX_BUF ) return -EINVAL;
 
-    cmd_in = (char *) ( ((int *)buffer) + 2);
-    opcode = get_user(cmd_in); 
+    cmd_in = sic->data;
+    get_user(opcode, cmd_in); 
     
     needed = buf_needed = (inlen > outlen ? inlen : outlen);
     if(buf_needed){
 	buf_needed = (buf_needed + 511) & ~511;
 	if (buf_needed > MAX_BUF) buf_needed = MAX_BUF;
+        spin_lock_irqsave(&io_request_lock, flags);
 	buf = (char *) scsi_malloc(buf_needed);
+        spin_unlock_irqrestore(&io_request_lock, flags);
 	if (!buf) return -ENOMEM;
 	memset(buf, 0, buf_needed);
     } else
@@ -225,15 +240,15 @@ int scsi_ioctl_send_command(Scsi_Device *dev, void *buffer)
     cmdlen = COMMAND_SIZE(opcode);
 
     result = verify_area(VERIFY_READ, cmd_in, 
-                         cmdlen + inlen > MAX_BUF ? MAX_BUF : inlen);
+                         cmdlen + inlen > MAX_BUF ? MAX_BUF : cmdlen + inlen);
     if (result) return result;
 
-    memcpy_fromfs ((void *) cmd,  cmd_in,  cmdlen);
+    copy_from_user ((void *) cmd,  cmd_in,  cmdlen);
     
     /*
      * Obtain the data to be sent to the device (if any).
      */
-    memcpy_fromfs ((void *) buf,  
+    copy_from_user ((void *) buf,  
                    (void *) (cmd_in + cmdlen), 
                    inlen);
     
@@ -245,37 +260,41 @@ int scsi_ioctl_send_command(Scsi_Device *dev, void *buffer)
     switch (opcode)
       {
       case FORMAT_UNIT:
-	timeout = FORMAT_UNIT_TIMEOUT;
+ 	timeout = FORMAT_UNIT_TIMEOUT;
 	retries = 1;
 	break;
       case START_STOP:
-	timeout = START_STOP_TIMEOUT;
-	retries = NORMAL_RETRIES;
+ 	timeout = START_STOP_TIMEOUT;
+ 	retries = NORMAL_RETRIES;
 	break;
       case MOVE_MEDIUM:
-	timeout = MOVE_MEDIUM_TIMEOUT;
-	retries = NORMAL_RETRIES;
-	break;
+ 	timeout = MOVE_MEDIUM_TIMEOUT;
+ 	retries = NORMAL_RETRIES;
+ 	break;
       case READ_ELEMENT_STATUS:
-	timeout = READ_ELEMENT_STATUS_TIMEOUT;
-	retries = NORMAL_RETRIES;
+ 	timeout = READ_ELEMENT_STATUS_TIMEOUT;
+ 	retries = NORMAL_RETRIES;
 	break;
       default:
-	timeout = NORMAL_TIMEOUT;
-	retries = NORMAL_RETRIES;
+ 	timeout = NORMAL_TIMEOUT;
+ 	retries = NORMAL_RETRIES;
 	break;
       }
 
 #ifndef DEBUG_NO_CMD
+
+    spin_lock_irqsave(&io_request_lock, flags);
     
-    SCpnt = allocate_device(NULL, dev, 1);
+    SCpnt = scsi_allocate_device(NULL, dev, 1);
 
     {
 	struct semaphore sem = MUTEX_LOCKED;
 	SCpnt->request.sem = &sem;
 	scsi_do_cmd(SCpnt,  cmd,  buf, needed,  scsi_ioctl_done,
 		    timeout, retries);
+	spin_unlock_irqrestore(&io_request_lock, flags);
 	down(&sem);
+        SCpnt->request.sem = NULL;
     }
     
     /* 
@@ -286,24 +305,29 @@ int scsi_ioctl_send_command(Scsi_Device *dev, void *buffer)
                              cmd_in, 
                              sizeof(SCpnt->sense_buffer));
         if (result) return result;
-        memcpy_tofs((void *) cmd_in,  
+        copy_to_user((void *) cmd_in,  
                     SCpnt->sense_buffer, 
                     sizeof(SCpnt->sense_buffer));
     } else {
         result = verify_area(VERIFY_WRITE, cmd_in, outlen);
         if (result) return result;
-        memcpy_tofs ((void *) cmd_in,  buf,  outlen);
+        copy_to_user ((void *) cmd_in,  buf,  outlen);
     }
     result = SCpnt->result;
 
-    SCpnt->request.rq_status = RQ_INACTIVE;
+    spin_lock_irqsave(&io_request_lock, flags);
+
+    wake_up(&SCpnt->device->device_wait);
+    SDpnt = SCpnt->device;
+    scsi_release_command(SCpnt);
+    SCpnt = NULL;
 
     if (buf) scsi_free(buf, buf_needed);
     
-    if(SCpnt->device->scsi_request_fn)
-	(*SCpnt->device->scsi_request_fn)();
+    if(SDpnt->scsi_request_fn)
+	(*SDpnt->scsi_request_fn)();
     
-    wake_up(&SCpnt->device->device_wait);
+    spin_unlock_irqrestore(&io_request_lock, flags);
     return result;
 #else
     {
@@ -336,31 +360,42 @@ int scsi_ioctl (Scsi_Device *dev, int cmd, void *arg)
     /* No idea how this happens.... */
     if (!dev) return -ENXIO;
     
+    /*
+     * If we are in the middle of error recovery, don't let anyone
+     * else try and use this device.  Also, if error recovery fails, it
+     * may try and take the device offline, in which case all further
+     * access to the device is prohibited.
+     */
+    if( !scsi_block_when_processing_errors(dev) )
+      {
+        return -ENODEV;
+      }
+    
     switch (cmd) {
     case SCSI_IOCTL_GET_IDLUN:
-        result = verify_area(VERIFY_WRITE, (void *) arg, 2*sizeof(long));
+        result = verify_area(VERIFY_WRITE, arg, sizeof (Scsi_Idlun));
         if (result) return result;
 
 	put_user(dev->id 
                  + (dev->lun << 8) 
                  + (dev->channel << 16)
                  + ((dev->host->hostt->proc_dir->low_ino & 0xff) << 24),
-		    (unsigned long *) arg);
-        put_user( dev->host->unique_id, (unsigned long *) arg+1);
+		    &((Scsi_Idlun *) arg)->dev_id);
+        put_user(dev->host->unique_id, &((Scsi_Idlun *) arg)->host_unique_id);
 	return 0;
     case SCSI_IOCTL_GET_BUS_NUMBER:
         result = verify_area(VERIFY_WRITE, (void *) arg, sizeof(int));
         if (result) return result;
         put_user( dev->host->host_no, (int *) arg);
-        return 0;
+	return 0;
     case SCSI_IOCTL_TAGGED_ENABLE:
-	if(!suser())  return -EACCES;
+	if(!capable(CAP_SYS_ADMIN))  return -EACCES;
 	if(!dev->tagged_supported) return -EINVAL;
 	dev->tagged_queue = 1;
 	dev->current_tag = 1;
 	return 0;
     case SCSI_IOCTL_TAGGED_DISABLE:
-	if(!suser())  return -EACCES;
+	if(!capable(CAP_SYS_ADMIN))  return -EACCES;
 	if(!dev->tagged_supported) return -EINVAL;
 	dev->tagged_queue = 0;
 	dev->current_tag = 0;
@@ -368,8 +403,9 @@ int scsi_ioctl (Scsi_Device *dev, int cmd, void *arg)
     case SCSI_IOCTL_PROBE_HOST:
 	return ioctl_probe(dev->host, arg);
     case SCSI_IOCTL_SEND_COMMAND:
-	if(!suser() || securelevel > 0)  return -EACCES;
-	return scsi_ioctl_send_command((Scsi_Device *) dev, arg);
+	if(!capable(CAP_SYS_ADMIN))  return -EACCES;
+	return scsi_ioctl_send_command((Scsi_Device *) dev,
+				       (Scsi_Ioctl_Command *) arg);
     case SCSI_IOCTL_DOORLOCK:
 	if (!dev->removable || !dev->lockable) return 0;
 	scsi_cmd[0] = ALLOW_MEDIUM_REMOVAL;
@@ -412,6 +448,8 @@ int scsi_ioctl (Scsi_Device *dev, int cmd, void *arg)
 				      START_STOP_TIMEOUT, NORMAL_RETRIES);
 	break;
     default :           
+	if (dev->host->hostt->ioctl)
+		return dev->host->hostt->ioctl(dev, cmd, arg);
 	return -EINVAL;
     }
     return -EINVAL;
@@ -423,7 +461,7 @@ int scsi_ioctl (Scsi_Device *dev, int cmd, void *arg)
  */
 
 int kernel_scsi_ioctl (Scsi_Device *dev, int cmd, void *arg) {
-    unsigned long oldfs;
+    mm_segment_t oldfs;
     int tmp;
     oldfs = get_fs();
     set_fs(get_ds());

@@ -2,10 +2,6 @@
         pf.c    (c) 1997-8  Grant R. Guenther <grant@torque.net>
                             Under the terms of the GNU public license.
 
-
-	Special 2.0.34 version
-
-
         This is the high-level driver for parallel port ATAPI disk
         drives based on chips supported by the paride module.
 
@@ -80,10 +76,11 @@
                         (default 64)
 
             verbose     This parameter controls the amount of logging
-                        that is done while the driver probes for
-                        devices.  Set it to 0 for a quiet load, or 1 to
-                        see all the progress messages.  (default 0)
-
+                        that the driver will do.  Set it to 0 for
+                        normal operation, 1 to see autoprobe progress
+                        messages, or 2 to see additional debugging
+                        output.  (default 0)
+ 
 	    nice        This parameter controls the driver's use of
 			idle CPU time, at the expense of some speed.
 
@@ -111,12 +108,12 @@
 				Small change in pf_completion to round
 				up transfer size.
 	1.02    GRG 1998.06.16  Eliminated an Ugh
-	1.03s   GRG 1998.09.24  Added jumbo support
-				Use HZ in loop timings, extra debugging
+	1.03    GRG 1998.08.16  Use HZ in loop timings, extra debugging
+	1.04    GRG 1998.09.24  Added jumbo support
 
 */
 
-#define PF_VERSION      "1.03s"
+#define PF_VERSION      "1.04"
 #define PF_MAJOR	47
 #define PF_NAME		"pf"
 #define PF_UNITS	4
@@ -163,9 +160,9 @@ static int pf_drive_count;
 #include <linux/genhd.h>
 #include <linux/hdreg.h>
 #include <linux/cdrom.h>
-#include "spinlock.h"
+#include <asm/spinlock.h>
 
-#include <asm/segment.h>
+#include <asm/uaccess.h>
 
 #ifndef MODULE
 
@@ -185,6 +182,16 @@ void pf_setup( char *str, int *ints)
 }
 
 #endif
+
+MODULE_PARM(verbose,"i");
+MODULE_PARM(major,"i");
+MODULE_PARM(name,"s");
+MODULE_PARM(cluster,"i");
+MODULE_PARM(nice,"i");
+MODULE_PARM(drive0,"1-7i");
+MODULE_PARM(drive1,"1-7i");
+MODULE_PARM(drive2,"1-7i");
+MODULE_PARM(drive3,"1-7i");
 
 #include "paride.h"
 
@@ -242,7 +249,7 @@ static void do_pf_request(void);
 static int pf_ioctl(struct inode *inode,struct file *file,
                     unsigned int cmd, unsigned long arg);
 
-static void pf_release (struct inode *inode, struct file *file);
+static int pf_release (struct inode *inode, struct file *file);
 
 static int pf_detect(void);
 static void do_pf_read(void);
@@ -312,6 +319,7 @@ static struct file_operations pf_fops = {
         pf_ioctl,               /* ioctl */
         NULL,                   /* mmap */
         pf_open,                /* open */
+	NULL,			/* flush */
         pf_release,             /* release */
         block_fsync,            /* fsync */
         NULL,                   /* fasync */
@@ -426,7 +434,7 @@ static int pf_ioctl(struct inode *inode,struct file *file,
                 put_user(0,(long *)&geo->start);
                 return 0;
             case BLKRASET:
-                if(!suser()) return -EACCES;
+                if(!capable(CAP_SYS_ADMIN)) return -EACCES;
                 if(!(inode->i_rdev)) return -EINVAL;
                 if(arg > 0xff) return -EINVAL;
                 read_ahead[MAJOR(inode->i_rdev)] = arg;
@@ -444,7 +452,7 @@ static int pf_ioctl(struct inode *inode,struct file *file,
                 put_user(PF.capacity,(long *) arg);
                 return (0);
             case BLKFLSBUF:
-                if(!suser())  return -EACCES;
+                if(!capable(CAP_SYS_ADMIN))  return -EACCES;
                 if(!(inode->i_rdev)) return -EINVAL;
                 fsync_dev(inode->i_rdev);
                 invalidate_buffers(inode->i_rdev);
@@ -456,29 +464,34 @@ static int pf_ioctl(struct inode *inode,struct file *file,
 }
 
 
-static void pf_release (struct inode *inode, struct file *file)
+static int pf_release (struct inode *inode, struct file *file)
 
 {       kdev_t devp;
 	int	unit;
+
+	struct super_block *sb;
 
         devp = inode->i_rdev;
         unit = DEVICE_NR(devp);
 
         if ((unit >= PF_UNITS) || (PF.access <= 0)) 
-                return;
+                return -EINVAL;
 
 	PF.access--;
 
 	if (!PF.access) {
                 fsync_dev(devp);
 
-		invalidate_inodes(devp);
+		sb = get_super(devp);
+		if (sb) invalidate_inodes(sb);
 
                 invalidate_buffers(devp);
 		if (PF.removable) pf_lock(unit,0);
         }
 
         MOD_DEC_USE_COUNT;
+
+	return 0;
 
 }
 
@@ -604,7 +617,7 @@ static void pf_req_sense( int unit, int quiet )
         int     r;
 
         r = pf_command(unit,rs_cmd,16,"Request sense");
-        udelay(1000);
+        mdelay(1);
         if (!r) pf_completion(unit,buf,"Request sense");
 
         if ((!r)&&(!quiet)) 
@@ -617,7 +630,7 @@ static int pf_atapi( int unit, char * cmd, int dlen, char * buf, char * fun )
 {       int r;
 
         r = pf_command(unit,cmd,dlen,fun);
-        udelay(1000);
+        mdelay(1);
         if (!r) r = pf_completion(unit,buf,fun);
         if (r) pf_req_sense(unit,!fun);
         
@@ -647,8 +660,7 @@ static void pf_eject( int unit )
 static void pf_sleep( int cs )
 
 {       current->state = TASK_INTERRUPTIBLE;
-        current->timeout = jiffies + cs;
-        schedule();
+        schedule_timeout(cs);
 }
 
 
@@ -851,7 +863,7 @@ static int pf_start( int unit, int cmd, int b, int c )
 
 	i = pf_command(unit,io_cmd,c*512,"start i/o");
 
-        udelay(1000);
+        mdelay(1);
 
 	return i;	
 }

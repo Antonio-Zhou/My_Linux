@@ -14,21 +14,22 @@
 #include <linux/malloc.h>
 #include <linux/binfmts.h>
 #include <linux/elf.h>
+#include <linux/init.h>
+
 
 #define EM86_INTERP	"/usr/bin/em86"
 #define EM86_I_NAME	"em86"
 
 static int do_load_em86(struct linux_binprm *bprm,struct pt_regs *regs)
 {
-	char *cp, *interp, *i_name, *i_arg;
+	char *interp, *i_name, *i_arg;
+	struct dentry * dentry;
 	int retval;
 	struct elfhdr	elf_ex;
-	uid_t		x86_uid;
-	gid_t		x86_gid;
 
 	/* Make sure this is a Linux/Intel ELF executable... */
 	elf_ex = *((struct elfhdr *)bprm->buf);
-	
+
         if (elf_ex.e_ident[0] != 0x7f ||
             strncmp(&elf_ex.e_ident[1], "ELF",3) != 0) {
                 return  -ENOEXEC;
@@ -39,14 +40,14 @@ static int do_load_em86(struct linux_binprm *bprm,struct pt_regs *regs)
         if ((elf_ex.e_type != ET_EXEC &&
             elf_ex.e_type != ET_DYN) ||
            (!((elf_ex.e_machine == EM_386) || (elf_ex.e_machine == EM_486))) ||
-           (!bprm->inode->i_op || !bprm->inode->i_op->default_file_ops ||
-            !bprm->inode->i_op->default_file_ops->mmap)){
+           (!bprm->dentry->d_inode->i_op || !bprm->dentry->d_inode->i_op->default_file_ops ||
+            !bprm->dentry->d_inode->i_op->default_file_ops->mmap)){
                 return -ENOEXEC;
         }
 
 	bprm->sh_bang++;	/* Well, the bang-shell is implicit... */
-	iput(bprm->inode);
-	bprm->dont_iput = 1;
+	dput(bprm->dentry);
+	bprm->dentry = NULL;
 
 	/* Unlike in the script case, we don't have to do any hairy
 	 * parsing to find our interpreter... it's hardcoded!
@@ -72,30 +73,24 @@ static int do_load_em86(struct linux_binprm *bprm,struct pt_regs *regs)
 	}
 	bprm->p = copy_strings(1, &i_name, bprm->page, bprm->p, 2);
 	bprm->argc++;
-	if ((long)bprm->p < 0)
-		return (long)bprm->p;
+	if (!bprm->p) 
+		return -E2BIG;
 	/*
 	 * OK, now restart the process with the interpreter's inode.
 	 * Note that we use open_namei() as the name is now in kernel
 	 * space, and we don't need to copy it.
 	 */
-	retval = open_namei(interp, 0, 0, &bprm->inode, NULL);
-	if (retval)
-		return retval;
-	bprm->dont_iput=0;
+	dentry = open_namei(interp, 0, 0);
+	if (IS_ERR(dentry))
+		return PTR_ERR(dentry);
 
-	/* Remember the uid/gid that was set by this executable */
-	x86_uid = bprm->e_uid;
-	x86_gid = bprm->e_gid;
-	retval=prepare_binprm(bprm);
-	if(retval<0)
+	bprm->dentry = dentry;
+
+	retval = prepare_binprm(bprm);
+	if (retval < 0)
 		return retval;
 
-	/* ...so that we may propagate them to em86 */
-	bprm->e_uid = x86_uid;
-	bprm->e_gid = x86_gid;
-	current->personality = PER_LINUX_EM86;
-	return search_binary_handler(bprm,regs);
+	return search_binary_handler(bprm, regs);
 }
 
 static int load_em86(struct linux_binprm *bprm,struct pt_regs *regs)
@@ -111,11 +106,12 @@ struct linux_binfmt em86_format = {
 #ifndef MODULE
 	NULL, 0, load_em86, NULL, NULL
 #else
-	NULL, &mod_use_count_, load_em86, NULL, NULL
+	NULL, &__this_module, load_em86, NULL, NULL
 #endif
 };
 
-int init_em86_binfmt(void) {
+int __init init_em86_binfmt(void)
+{
 	return register_binfmt(&em86_format);
 }
 

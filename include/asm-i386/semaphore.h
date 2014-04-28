@@ -2,7 +2,6 @@
 #define _I386_SEMAPHORE_H
 
 #include <linux/linkage.h>
-#include <asm/system.h>
 
 /*
  * SMP- and interrupt-safe semaphores..
@@ -20,21 +19,64 @@
  *
  */
 
+#include <asm/system.h>
+#include <asm/atomic.h>
+#include <asm/spinlock.h>
+
 struct semaphore {
-	int count;
+	atomic_t count;
 	int waking;
-	int lock ;			/* to make waking testing atomic */
 	struct wait_queue * wait;
 };
 
-#define MUTEX ((struct semaphore) { 1, 0, 0, NULL })
-#define MUTEX_LOCKED ((struct semaphore) { 0, 0, 0, NULL })
+#define MUTEX ((struct semaphore) { ATOMIC_INIT(1), 0, NULL })
+#define MUTEX_LOCKED ((struct semaphore) { ATOMIC_INIT(0), 0, NULL })
 
-asmlinkage void down_failed(void /* special register calling convention */);
-asmlinkage void up_wakeup(void /* special register calling convention */);
+asmlinkage void __down_failed(void /* special register calling convention */);
+asmlinkage int  __down_failed_interruptible(void  /* params in registers */);
+asmlinkage void __up_wakeup(void /* special register calling convention */);
 
-extern void __down(struct semaphore * sem);
-extern void __up(struct semaphore * sem);
+asmlinkage void __down(struct semaphore * sem);
+asmlinkage int  __down_interruptible(struct semaphore * sem);
+asmlinkage void __up(struct semaphore * sem);
+
+extern spinlock_t semaphore_wake_lock;
+
+#define sema_init(sem, val)	atomic_set(&((sem)->count), (val))
+
+/*
+ * These two _must_ execute atomically wrt each other.
+ *
+ * This is trivially done with load_locked/store_cond,
+ * but on the x86 we need an external synchronizer.
+ * Currently this is just the global interrupt lock,
+ * bah. Go for a smaller spinlock some day.
+ *
+ * (On the other hand this shouldn't be in any critical
+ * path, so..)
+ */
+static inline void wake_one_more(struct semaphore * sem)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&semaphore_wake_lock, flags);
+	sem->waking++;
+	spin_unlock_irqrestore(&semaphore_wake_lock, flags);
+}
+
+static inline int waking_non_zero(struct semaphore *sem)
+{
+	unsigned long flags;
+	int ret = 0;
+
+	spin_lock_irqsave(&semaphore_wake_lock, flags);
+	if (sem->waking > 0) {
+		sem->waking--;
+		ret = 1;
+	}
+	spin_unlock_irqrestore(&semaphore_wake_lock, flags);
+	return ret;
+}
 
 /*
  * This is ugly, but we want the default case to fall through.
@@ -45,62 +87,44 @@ extern inline void down(struct semaphore * sem)
 {
 	__asm__ __volatile__(
 		"# atomic down operation\n\t"
-		"movl $1f,%%eax\n\t"
 #ifdef __SMP__
 		"lock ; "
 #endif
 		"decl 0(%0)\n\t"
-		"js " SYMBOL_NAME_STR(down_failed) "\n"
+		"js 2f\n"
 		"1:\n"
+		".section .text.lock,\"ax\"\n"
+		"2:\tpushl $1b\n\t"
+		"jmp __down_failed\n"
+		".previous"
 		:/* no outputs */
 		:"c" (sem)
-		:"ax","dx","memory");
+		:"memory");
 }
 
-/*
- * Primitives to spin on a lock.  Needed only for SMP version.
- */
-extern inline void get_buzz_lock(int *lock_ptr)
-{
-#ifdef __SMP__
-        while (xchg(lock_ptr,1) != 0) ;
-#endif
-} /* get_buzz_lock */
-
-extern inline void give_buzz_lock(int *lock_ptr)
-{
-#ifdef __SMP__
-        *lock_ptr = 0 ;
-#endif
-} /* give_buzz_lock */
-
-asmlinkage int down_failed_interruptible(void);  /* params in registers */
-
-/*
- * This version waits in interruptible state so that the waiting
- * process can be killed.  The down_failed_interruptible routine
- * returns negative for signalled and zero for semaphore acquired.
- */
 extern inline int down_interruptible(struct semaphore * sem)
 {
-	int	ret ;
+	int result;
 
-        __asm__ __volatile__(
-                "# atomic interruptible down operation\n\t"
-                "movl $2f,%%eax\n\t"
+	__asm__ __volatile__(
+		"# atomic interruptible down operation\n\t"
 #ifdef __SMP__
-                "lock ; "
+		"lock ; "
 #endif
-                "decl 0(%1)\n\t"
-                "js " SYMBOL_NAME_STR(down_failed_interruptible) "\n\t"
-                "xorl %%eax,%%eax\n"
-                "2:\n"
-                :"=a" (ret)
-                :"c" (sem)
-                :"ax","dx","memory");
-
-	return(ret) ;
+		"decl 0(%1)\n\t"
+		"js 2f\n\t"
+		"xorl %0,%0\n"
+		"1:\n"
+		".section .text.lock,\"ax\"\n"
+		"2:\tpushl $1b\n\t"
+		"jmp __down_failed_interruptible\n"
+		".previous"
+		:"=a" (result)
+		:"c" (sem)
+		:"memory");
+	return result;
 }
+
 
 /*
  * Note! This is subtle. We jump to wake people up only if
@@ -112,16 +136,19 @@ extern inline void up(struct semaphore * sem)
 {
 	__asm__ __volatile__(
 		"# atomic up operation\n\t"
-		"movl $1f,%%eax\n\t"
 #ifdef __SMP__
 		"lock ; "
 #endif
 		"incl 0(%0)\n\t"
-		"jle " SYMBOL_NAME_STR(up_wakeup)
-		"\n1:"
+		"jle 2f\n"
+		"1:\n"
+		".section .text.lock,\"ax\"\n"
+		"2:\tpushl $1b\n\t"
+		"jmp __up_wakeup\n"
+		".previous"
 		:/* no outputs */
 		:"c" (sem)
-		:"ax", "dx", "memory");
+		:"memory");
 }
 
 #endif

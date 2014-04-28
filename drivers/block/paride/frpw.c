@@ -194,7 +194,7 @@ static int frpw_test_pnp ( PIA *pi )
 
 #ifdef FRPW_HARD_RESET
         w0(0); w2(8); udelay(50); w2(0xc);   /* parallel bus reset */
-        udelay(1500000);
+        mdelay(1500);
 #endif
 
 	olddelay = pi->delay;

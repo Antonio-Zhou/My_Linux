@@ -21,13 +21,6 @@
 #include "status_w.h"
 
 
-static void setflags(unsigned char flags)
-{
-  *(unsigned char *)&FPU_EFLAGS &= ~SFLAGS;
-  *(unsigned char *)&FPU_EFLAGS |= (flags & SFLAGS);
-}
-
-
 static int compare(FPU_REG const *b, int tagb)
 {
   int diff, exp0, expb;
@@ -143,7 +136,7 @@ static int compare(FPU_REG const *b, int tagb)
 #ifdef PARANOID
   if (!(st0_ptr->sigh & 0x80000000)) EXCEPTION(EX_Invalid);
   if (!(b->sigh & 0x80000000)) EXCEPTION(EX_Invalid);
-#endif /* PARANOID */
+#endif PARANOID
 
   diff = exp0 - expb;
   if ( diff == 0 )
@@ -210,7 +203,7 @@ int FPU_compare_st_data(FPU_REG const *loaded_data, u_char loaded_tag)
 	EXCEPTION(EX_INTERNAL|0x121);
 	f = SW_C3 | SW_C2 | SW_C0;
 	break;
-#endif /* PARANOID */
+#endif PARANOID
       }
   setcc(f);
   if (c & COMP_Denormal)
@@ -221,14 +214,14 @@ int FPU_compare_st_data(FPU_REG const *loaded_data, u_char loaded_tag)
 }
 
 
-static int compare_st_st(int nr, int ftype)
+static int compare_st_st(int nr)
 {
   int f, c;
   FPU_REG *st_ptr;
 
   if ( !NOT_EMPTY(0) || !NOT_EMPTY(nr) )
     {
-      setccf(ftype, SW_C3 | SW_C2 | SW_C0);
+      setcc(SW_C3 | SW_C2 | SW_C0);
       /* Stack fault */
       EXCEPTION(EX_StackUnder);
       return !(control_word & CW_Invalid);
@@ -238,7 +231,7 @@ static int compare_st_st(int nr, int ftype)
   c = compare(st_ptr, FPU_gettagi(nr));
   if (c & COMP_NaN)
     {
-      setccf(ftype, SW_C3 | SW_C2 | SW_C0);
+      setcc(SW_C3 | SW_C2 | SW_C0);
       EXCEPTION(EX_Invalid);
       return !(control_word & CW_Invalid);
     }
@@ -262,9 +255,9 @@ static int compare_st_st(int nr, int ftype)
 	EXCEPTION(EX_INTERNAL|0x122);
 	f = SW_C3 | SW_C2 | SW_C0;
 	break;
-#endif /* PARANOID */
+#endif PARANOID
       }
-  setccf(ftype, f);
+  setcc(f);
   if (c & COMP_Denormal)
     {
       return denormal_operand() < 0;
@@ -273,14 +266,14 @@ static int compare_st_st(int nr, int ftype)
 }
 
 
-static int compare_u_st_st(int nr, int ftype)
+static int compare_u_st_st(int nr)
 {
   int f, c;
   FPU_REG *st_ptr;
 
   if ( !NOT_EMPTY(0) || !NOT_EMPTY(nr) )
     {
-      setccf(ftype, SW_C3 | SW_C2 | SW_C0);
+      setcc(SW_C3 | SW_C2 | SW_C0);
       /* Stack fault */
       EXCEPTION(EX_StackUnder);
       return !(control_word & CW_Invalid);
@@ -290,7 +283,7 @@ static int compare_u_st_st(int nr, int ftype)
   c = compare(st_ptr, FPU_gettagi(nr));
   if (c & COMP_NaN)
     {
-      setccf(ftype, SW_C3 | SW_C2 | SW_C0);
+      setcc(SW_C3 | SW_C2 | SW_C0);
       if (c & COMP_SNaN)       /* This is the only difference between
 				  un-ordered and ordinary comparisons */
 	{
@@ -319,9 +312,9 @@ static int compare_u_st_st(int nr, int ftype)
 	EXCEPTION(EX_INTERNAL|0x123);
 	f = SW_C3 | SW_C2 | SW_C0;
 	break;
-#endif /* PARANOID */ 
+#endif PARANOID
       }
-  setccf(ftype, f);
+  setcc(f);
   if (c & COMP_Denormal)
     {
       return denormal_operand() < 0;
@@ -334,14 +327,14 @@ static int compare_u_st_st(int nr, int ftype)
 void fcom_st()
 {
   /* fcom st(i) */
-  compare_st_st(FPU_rm, 0);
+  compare_st_st(FPU_rm);
 }
 
 
 void fcompst()
 {
   /* fcomp st(i) */
-  if ( !compare_st_st(FPU_rm, 0) )
+  if ( !compare_st_st(FPU_rm) )
     FPU_pop();
 }
 
@@ -354,7 +347,7 @@ void fcompp()
       FPU_illegal();
       return;
     }
-  if ( !compare_st_st(1, 0) )
+  if ( !compare_st_st(1) )
       poppop();
 }
 
@@ -362,7 +355,7 @@ void fcompp()
 void fucom_()
 {
   /* fucom st(i) */
-  compare_u_st_st(FPU_rm, 0);
+  compare_u_st_st(FPU_rm);
 
 }
 
@@ -370,7 +363,7 @@ void fucom_()
 void fucomp()
 {
   /* fucomp st(i) */
-  if ( !compare_u_st_st(FPU_rm, 0) )
+  if ( !compare_u_st_st(FPU_rm) )
     FPU_pop();
 }
 
@@ -380,27 +373,9 @@ void fucompp()
   /* fucompp */
   if (FPU_rm == 1)
     {
-      if ( !compare_u_st_st(1, 0) )
+      if ( !compare_u_st_st(1) )
 	poppop();
     }
   else
     FPU_illegal();
 }
-
-
-#ifndef ONLY_486_FPU
-void fcomi()
-{
-  /* fcom st(i) */
-  compare_st_st(FPU_rm, 1);
-}
-
-
-void fucomi()
-{
-  /* fucom st(i) */
-  compare_u_st_st(FPU_rm, 1);
-
-}
-#endif /* ONLY_486_FPU */
-

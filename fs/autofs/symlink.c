@@ -2,7 +2,7 @@
  *
  * linux/fs/autofs/symlink.c
  *
- *  Copyright 1997 Transmeta Corporation -- All Rights Reserved
+ *  Copyright 1997-1998 Transmeta Corporation -- All Rights Reserved
  *
  * This file is part of the Linux kernel and is made available under
  * the terms of the GNU General Public License, version 2, or at your
@@ -14,54 +14,26 @@
 #include <linux/sched.h>
 #include "autofs_i.h"
 
-static int autofs_follow_link(struct inode *dir, struct inode *inode,
-			      int flag, int mode, struct inode **res_inode)
-{
-	int error;
-	char *link;
-
-	*res_inode = NULL;
-	if (!dir) {
-		dir = current->fs->root;
-		dir->i_count++;
-	}
-	if (!inode) {
-		iput(dir);
-		return -ENOENT;
-	}
-	if (!S_ISLNK(inode->i_mode)) {
-		iput(dir);
-		*res_inode = inode;
-		return 0;
-	}
-	if (current->link_count > 5) {
-		iput(dir);
-		iput(inode);
-		return -ELOOP;
-	}
-	link = ((struct autofs_symlink *)inode->u.generic_ip)->data;
-	current->link_count++;
-	error = open_namei(link,flag,mode,res_inode,dir);
-	current->link_count--;
-	iput(inode);
-	return error;
-}
-
-static int autofs_readlink(struct inode *inode, char *buffer, int buflen)
+static int autofs_readlink(struct dentry *dentry, char *buffer, int buflen)
 {
 	struct autofs_symlink *sl;
 	int len;
 
-	if (!S_ISLNK(inode->i_mode)) {
-		iput(inode);
-		return -EINVAL;
-	}
-	sl = (struct autofs_symlink *)inode->u.generic_ip;
+	sl = (struct autofs_symlink *)dentry->d_inode->u.generic_ip;
 	len = sl->len;
 	if (len > buflen) len = buflen;
-	copy_to_user(buffer,sl->data,len);
-	iput(inode);
+	copy_to_user(buffer, sl->data, len);
 	return len;
+}
+
+static struct dentry * autofs_follow_link(struct dentry *dentry,
+					struct dentry *base,
+					unsigned int follow)
+{
+	struct autofs_symlink *sl;
+
+	sl = (struct autofs_symlink *)dentry->d_inode->u.generic_ip;
+	return lookup_dentry(sl->data, base, follow);
 }
 
 struct inode_operations autofs_symlink_inode_operations = {
@@ -81,5 +53,8 @@ struct inode_operations autofs_symlink_inode_operations = {
 	NULL,			/* writepage */
 	NULL,			/* bmap */
 	NULL,			/* truncate */
-	NULL			/* permission */
+	NULL,			/* permission */
+	NULL,			/* smap */
+	NULL,			/* updatepage */
+	NULL			/* revalidate */
 };

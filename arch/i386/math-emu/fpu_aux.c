@@ -3,9 +3,9 @@
  |                                                                           |
  | Code to implement some of the FPU auxiliary instructions.                 |
  |                                                                           |
- | Copyright (C) 1992,1993,1994,1997,2001                                    |
+ | Copyright (C) 1992,1993,1994,1997                                         |
  |                  W. Metzenthen, 22 Parker St, Ormond, Vic 3163, Australia |
- |                  E-mail   billm@melbpc.org.au                             |
+ |                  E-mail   billm@suburbia.net                              |
  |                                                                           |
  |                                                                           |
  +---------------------------------------------------------------------------*/
@@ -34,7 +34,7 @@ void finit()
 {
   control_word = 0x037f;
   partial_status = 0;
-  FPU_top = 0;            /* We don't keep top in the status word internally. */
+  top = 0;            /* We don't keep top in the status word internally. */
   fpu_tag_word = 0xffff;
   /* The behaviour is different from that detailed in
      Section 15.1.6 of the Intel manual */
@@ -131,7 +131,7 @@ void fxch_i()
   int i = FPU_rm;
   FPU_REG *st0_ptr = &st(0), *sti_ptr = &st(i);
   long tag_word = fpu_tag_word;
-  int regnr = FPU_top & 7, regnri = ((regnr + i) & 7);
+  int regnr = top & 7, regnri = ((regnr + i) & 7);
   u_char st0_tag = (tag_word >> (regnr*2)) & 3;
   u_char sti_tag = (tag_word >> (regnri*2)) & 3;
 
@@ -202,81 +202,3 @@ void fstp_i()
   FPU_pop();
 }
 
-
-#ifndef ONLY_486_FPU
-static void fmov_i(void)
-{
-  int i;
-  u_char tag;
-
-  /* for the fcmovxx instructions */
-  i = FPU_rm;
-  if ( NOT_EMPTY(i) )
-    {
-      reg_copy(&st(i), &st(0));
-      tag = FPU_gettagi(i);
-      FPU_settag0(tag);
-    }
-  else
-    {
-      if ( control_word & CW_Invalid )
-	{
-	  /* The masked response */
-	  FPU_stack_underflow();
-	}
-      else
-	EXCEPTION(EX_StackUnder);
-    }
-
-}
-
-
-void fcmovnb(void)
-{
-  if ( ! (FPU_EFLAGS & CFLAG) )
-    fmov_i();
-}
-
-void fcmovne(void)
-{
-  if ( ! (FPU_EFLAGS & ZFLAG) )
-    fmov_i();
-}
-
-void fcmovnbe(void)
-{
-  if ( ! (FPU_EFLAGS & (CFLAG | ZFLAG)) )
-    fmov_i();
-}
-
-void fcmovnu(void)
-{
-  if ( ! (FPU_EFLAGS & PFLAG) )
-    fmov_i();
-}
-
-void fcmovb (void)
-{
-  if ( (FPU_EFLAGS & CFLAG) )
-    fmov_i();
-}
-
-void fcmove (void)
-{
-  if ( (FPU_EFLAGS & ZFLAG) )
-    fmov_i();
-}
-
-void fcmovbe(void)
-{
-  if ( (FPU_EFLAGS & (CFLAG | ZFLAG)) )
-    fmov_i();
-}
-
-void fcmovu (void)
-{
-  if ( (FPU_EFLAGS & PFLAG) )
-    fmov_i();
-}
-
-#endif /* ONLY_486_FPU */

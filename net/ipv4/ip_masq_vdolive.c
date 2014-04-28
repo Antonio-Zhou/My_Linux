@@ -2,10 +2,13 @@
  *		IP_MASQ_VDOLIVE  - VDO Live masquerading module
  *
  *
- * Version:	@(#)$Id: ip_masq_vdolive.c,v 1.1.2.1 1997/03/04 12:04:47 davem Exp $
+ * Version:	@(#)$Id: ip_masq_vdolive.c,v 1.4 1998/10/06 04:49:07 davem Exp $
  *
  * Author:	Nigel Metheringham <Nigel.Metheringham@ThePLAnet.net>
  *		PLAnet Online Ltd
+ *
+ * Fixes:	Minor changes for 2.1 by
+ *		Steven Clarke <Steven.Clarke@ThePlanet.Net>, Planet Online Ltd
  *
  *	This program is free software; you can redistribute it and/or
  *	modify it under the terms of the GNU General Public License
@@ -19,20 +22,18 @@
  *	
  */
 
+#include <linux/config.h>
 #include <linux/module.h>
-#include <asm/system.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
+#include <asm/system.h>
 #include <linux/skbuff.h>
 #include <linux/in.h>
 #include <linux/ip.h>
+#include <linux/init.h>
 #include <net/protocol.h>
 #include <net/tcp.h>
 #include <net/ip_masq.h>
-
-#ifndef DEBUG_CONFIG_IP_MASQ_VDOLIVE
-#define DEBUG_CONFIG_IP_MASQ_VDOLIVE 0
-#endif
 
 struct vdolive_priv_data {
 	/* Ports used */
@@ -46,16 +47,26 @@ struct vdolive_priv_data {
  * List of ports (up to MAX_MASQ_APP_PORTS) to be handled by helper
  * First port is set to the default port.
  */
-int ports[MAX_MASQ_APP_PORTS] = {7000}; /* I rely on the trailing items being set to zero */
+static int ports[MAX_MASQ_APP_PORTS] = {7000}; /* I rely on the trailing items being set to zero */
 struct ip_masq_app *masq_incarnations[MAX_MASQ_APP_PORTS];
+
+/*
+ *     Debug level
+ */
+#ifdef CONFIG_IP_MASQ_DEBUG
+static int debug=0;
+MODULE_PARM(debug, "i");
+#endif
+
+MODULE_PARM(ports, "1-" __MODULE_STRING(MAX_MASQ_APP_PORTS) "i");
 
 static int
 masq_vdolive_init_1 (struct ip_masq_app *mapp, struct ip_masq *ms)
 {
-        MOD_INC_USE_COUNT;
+	MOD_INC_USE_COUNT;
 	if ((ms->app_data = kmalloc(sizeof(struct vdolive_priv_data),
 				    GFP_ATOMIC)) == NULL) 
-		printk(KERN_INFO "VDOlive: No memory for application data\n");
+		IP_MASQ_DEBUG(1-debug, "VDOlive: No memory for application data\n");
 	else 
 	{
 		struct vdolive_priv_data *priv = 
@@ -77,7 +88,7 @@ masq_vdolive_done_1 (struct ip_masq_app *mapp, struct ip_masq *ms)
 }
 
 int
-masq_vdolive_out (struct ip_masq_app *mapp, struct ip_masq *ms, struct sk_buff **skb_p, struct device *dev)
+masq_vdolive_out (struct ip_masq_app *mapp, struct ip_masq *ms, struct sk_buff **skb_p, __u32 maddr)
 {
         struct sk_buff *skb;
 	struct iphdr *iph;
@@ -97,47 +108,32 @@ masq_vdolive_out (struct ip_masq_app *mapp, struct ip_masq *ms, struct sk_buff *
 		return 0;
 
         skb = *skb_p;
-	iph = skb->h.iph;
+	iph = skb->nh.iph;
         th = (struct tcphdr *)&(((char *)iph)[iph->ihl*4]);
         data = (char *)&th[1];
 
         data_limit = skb->h.raw + skb->len;
 
 	if (data+8 > data_limit) {
-#if DEBUG_CONFIG_IP_MASQ_VDOLIVE
-		printk("VDOlive: packet too short for ID %lx %lx\n",
-		       data, data_limit);
-#endif
+		IP_MASQ_DEBUG(1-debug, "VDOlive: packet too short for ID %p %p\n", data, data_limit);
 		return 0;
 	}
 	memcpy(&tagval, data+4, 4);
-#if DEBUG_CONFIG_IP_MASQ_VDOLIVE
-	printk("VDOlive: packet seen, tag %ld, in initial state %d\n",
-	       ntohl(tagval), priv->state);
-#endif
+	IP_MASQ_DEBUG(1-debug, "VDOlive: packet seen, tag %ld, in initial state %d\n", ntohl(tagval), priv->state);
 
 	/* Check for leading packet ID */
 	if ((ntohl(tagval) != 6) && (ntohl(tagval) != 1)) {
-#if DEBUG_CONFIG_IP_MASQ_VDOLIVE
-		printk("VDOlive: unrecognised tag %ld, in initial state %d\n",
-		       ntohl(tagval), priv->state);
-#endif
+		IP_MASQ_DEBUG(1-debug, "VDOlive: unrecognised tag %ld, in initial state %d\n", ntohl(tagval), priv->state);
 		return 0;
 	}
 		
 
 	/* Check packet is long enough for data - ignore if not */
 	if ((ntohl(tagval) == 6) && (data+36 > data_limit)) {
-#if DEBUG_CONFIG_IP_MASQ_VDOLIVE
-		printk("VDOlive: initial packet too short %lx %lx\n",
-		       data, data_limit);
-#endif
+		IP_MASQ_DEBUG(1-debug, "VDOlive: initial packet too short %p %p\n", data, data_limit);
 		return 0;
 	} else if ((ntohl(tagval) == 1) && (data+20 > data_limit)) {
-#if DEBUG_CONFIG_IP_MASQ_VDOLIVE
-		printk("VDOlive: secondary packet too short %lx %lx\n",
-		       data, data_limit);
-#endif
+		IP_MASQ_DEBUG(1-debug,"VDOlive: secondary packet too short %p %p\n", data, data_limit);
 		return 0;
 	}
 
@@ -150,20 +146,14 @@ masq_vdolive_out (struct ip_masq_app *mapp, struct ip_masq *ms, struct sk_buff *
 	 */
 	if (ntohl(tagval) == 6) {
 		data += 24;
-#if DEBUG_CONFIG_IP_MASQ_VDOLIVE
-		printk("VDOlive: initial packet found\n");
-#endif
+		IP_MASQ_DEBUG(1-debug, "VDOlive: initial packet found\n");
 	} else {
 		data += 8;
-#if DEBUG_CONFIG_IP_MASQ_VDOLIVE
-		printk("VDOlive: secondary packet found\n");
-#endif
+		IP_MASQ_DEBUG(1-debug, "VDOlive: secondary packet found\n");
 	}
 
 	if (memcmp(data, "VDO Live", 8) != 0) {
-#if DEBUG_CONFIG_IP_MASQ_VDOLIVE
-		printk("VDOlive: did not find tag\n");
-#endif
+		IP_MASQ_DEBUG(1-debug,"VDOlive: did not find tag\n");
 		return 0;
 	}
 	/* 
@@ -181,30 +171,28 @@ masq_vdolive_out (struct ip_masq_app *mapp, struct ip_masq *ms, struct sk_buff *
 	 */
 	if (!priv->origport) {
 		memcpy(&priv->origport, data, 2);
-
-#if DEBUG_CONFIG_IP_MASQ_VDOLIVE
-		printk("VDOlive: found port %d\n",
-		       ntohs(priv->origport));
-#endif
+		IP_MASQ_DEBUG(1-debug, "VDOlive: found port %d\n", ntohs(priv->origport));
 
 		/* Open up a tunnel */
-		n_ms = ip_masq_new(dev, IPPROTO_UDP,
+		n_ms = ip_masq_new(IPPROTO_UDP,
+				   maddr, 0,
 				   ms->saddr, priv->origport,
 				   ms->daddr, 0,
 				   IP_MASQ_F_NO_DPORT);
 					
 		if (n_ms==NULL) {
-			printk("VDOlive: unable to build UDP tunnel for %x:%x\n",
-			       ms->saddr, priv->origport);
+		        ip_masq_put(n_ms);
+			IP_MASQ_DEBUG(1-debug, "VDOlive: unable to build UDP tunnel for %x:%x\n", ms->saddr, priv->origport);
 			/* Leave state as unset */
 			priv->origport = 0;
 			return 0;
 		}
+		ip_masq_listen(n_ms);
 
-		ip_masq_set_expire(n_ms, ip_masq_expire->udp_timeout);
+		ip_masq_put(ms);
 		priv->masqport = n_ms->mport;
 	} else if (memcmp(data, &(priv->origport), 2)) {
-		printk("VDOlive: ports do not match\n");
+		IP_MASQ_DEBUG(1-debug, "VDOlive: ports do not match\n");
 		/* Write the port in anyhow!!! */
 	}
 
@@ -212,10 +200,7 @@ masq_vdolive_out (struct ip_masq_app *mapp, struct ip_masq *ms, struct sk_buff *
 	 * Write masq port into packet
 	 */
 	memcpy(data, &(priv->masqport), 2);
-#if DEBUG_CONFIG_IP_MASQ_VDOLIVE
-	printk("VDOlive: rewrote port %d to %d, server %s\n",
-	       ntohs(priv->origport), ntohs(priv->masqport), in_ntoa(ms->saddr));
-#endif
+	IP_MASQ_DEBUG(1-debug, "VDOlive: rewrote port %d to %d, server %08X\n", ntohs(priv->origport), ntohs(priv->masqport), ms->saddr);
 
 	/*
 	 * Set state bit to make which bit has been done
@@ -242,7 +227,7 @@ struct ip_masq_app ip_masq_vdolive = {
  * 	ip_masq_vdolive initialization
  */
 
-int ip_masq_vdolive_init(void)
+__initfunc(int ip_masq_vdolive_init(void))
 {
 	int i, j;
 
@@ -257,10 +242,7 @@ int ip_masq_vdolive_init(void)
 						      ports[i]))) {
 				return j;
 			}
-#if DEBUG_CONFIG_IP_MASQ_VDOLIVE
-			printk("RealAudio: loaded support on port[%d] = %d\n",
-			       i, ports[i]);
-#endif
+			IP_MASQ_DEBUG(1-debug, "RealAudio: loaded support on port[%d] = %d\n", i, ports[i]);
 		} else {
 			/* To be safe, force the incarnation table entry to NULL */
 			masq_incarnations[i] = NULL;
@@ -285,10 +267,7 @@ int ip_masq_vdolive_done(void)
 			} else {
 				kfree(masq_incarnations[i]);
 				masq_incarnations[i] = NULL;
-#if DEBUG_CONFIG_IP_MASQ_VDOLIVE
-				printk("VDOlive: unloaded support on port[%d] = %d\n",
-				       i, ports[i]);
-#endif
+				IP_MASQ_DEBUG(1-debug,"VDOlive: unloaded support on port[%d] = %d\n", i, ports[i]);
 			}
 		}
 	}
@@ -297,19 +276,19 @@ int ip_masq_vdolive_done(void)
 
 
 #ifdef MODULE
+EXPORT_NO_SYMBOLS;
 
 int init_module(void)
 {
         if (ip_masq_vdolive_init() != 0)
                 return -EIO;
-        register_symtab(0);
         return 0;
 }
 
 void cleanup_module(void)
 {
         if (ip_masq_vdolive_done() != 0)
-                printk("ip_masq_vdolive: can't remove module");
+                IP_MASQ_DEBUG(1-debug, "ip_masq_vdolive: can't remove module");
 }
 
 #endif /* MODULE */

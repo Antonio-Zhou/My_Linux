@@ -2,12 +2,12 @@
 #define _SMBNO_H_
 
 /* these define the attribute byte as seen by DOS */
-#define aRONLY (1L<<0)
-#define aHIDDEN (1L<<1)
-#define aSYSTEM (1L<<2)
-#define aVOLID (1L<<3)
-#define aDIR (1L<<4)
-#define aARCH (1L<<5)
+#define aRONLY	(1L<<0)
+#define aHIDDEN	(1L<<1)
+#define aSYSTEM	(1L<<2)
+#define aVOLID	(1L<<3)
+#define aDIR	(1L<<4)
+#define aARCH	(1L<<5)
 
 /* error classes */
 #define SUCCESS 0  /* The request was successful. */
@@ -39,6 +39,7 @@
 #define ERRbadshare 32          /* Share mode on file conflict with open mode */
 #define ERRlock 33              /* Lock request conflicts with existing lock */
 #define ERRfilexists 80         /* File in operation already exists */
+#define ERRundocumented1 123    /* Invalid name?? e.g. .tmp* */
 #define ERRbadpipe 230          /* Named pipe invalid */
 #define ERRpipebusy 231         /* All instances of pipe are busy */
 #define ERRpipeclosing 232      /* named pipe close in progress */
@@ -99,6 +100,14 @@
 #define ERRFCBunavail 35
 #define ERRsharebufexc 36       /* share buffer exceeded */
 #define ERRdiskfull 39
+
+/*
+ * Access modes when opening a file
+ */
+#define SMB_ACCMASK	0x0003
+#define SMB_O_RDONLY	0x0000
+#define SMB_O_WRONLY	0x0001
+#define SMB_O_RDWR	0x0002
 
 /* offsets into message for common items */
 #define smb_com 8
@@ -265,20 +274,5 @@
 #define TRANSACT2_FINDNOTIFYFIRST 11
 #define TRANSACT2_FINDNOTIFYNEXT  12
 #define TRANSACT2_MKDIR           13
-
-
-/* Capabilities.  See ftp://ftp.microsoft.com/developr/drg/cifs/cifs6.txt */
-#define CAP_RAW_MODE         0x0001
-#define CAP_MPX_MODE         0x0002
-#define CAP_UNICODE          0x0004
-#define CAP_LARGE_FILES      0x0008
-#define CAP_NT_SMBS          0x0010
-#define CAP_RPC_REMOTE_APIS  0x0020
-#define CAP_STATUS32         0x0040
-#define CAP_LEVEL_II_OPLOCKS 0x0080
-#define CAP_LOCK_AND_READ    0x0100
-#define CAP_NT_FIND          0x0200
-#define CAP_DFS              0x1000
-#define CAP_LARGE_READX      0x4000
 
 #endif /* _SMBNO_H_ */

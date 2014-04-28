@@ -121,7 +121,6 @@
 #define DC2114x     DC2114x_DID
 #define DC21142     (DC2114x_DID | 0x0010)
 #define DC21143     (DC2114x_DID | 0x0030)
-#define DC2114x_BRK 0x0020           /* CFRV break between DC21142 & DC21143 */
 
 #define is_DC21040 ((vendor == DC21040_VID) && (device == DC21040_DID))
 #define is_DC21041 ((vendor == DC21041_VID) && (device == DC21041_DID))
@@ -812,7 +811,7 @@
 ** Media / mode state machine definitions
 ** User selectable:
 */
-#define TP              0x0001     /* 10Base-T                             */
+#define TP              0x0040     /* 10Base-T (now equiv to _10Mb)        */
 #define TP_NW           0x0002     /* 10Base-T with Nway                   */
 #define BNC             0x0004     /* Thinwire                             */
 #define AUI             0x0008     /* Thickwire                            */

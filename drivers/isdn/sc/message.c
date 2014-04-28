@@ -1,5 +1,5 @@
 /*
- *  $Id: message.c,v 1.2 1996/11/20 17:49:54 fritz Exp $
+ *  $Id: message.c,v 1.3 1998/01/31 22:10:55 keil Exp $
  *  Copyright (C) 1996  SpellCaster Telecommunications Inc.
  *
  *  message.c - functions for sending and receiving control messages
@@ -202,7 +202,7 @@ int sendmessage(int card,
 	 * wait for an empty slot in the queue
 	 */
 	while (!(inb(adapter[card]->ioport[FIFO_STATUS]) & WF_NOT_FULL))
-		SLOW_DOWN_IO;
+		udelay(1);
 
 	/*
 	 * Disable interrupts and map in shared memory
@@ -267,8 +267,7 @@ int send_and_receive(int card,
 	/* wait for the response */
 	while (tries < timeout) {
 		current->state = TASK_INTERRUPTIBLE;
-		current->timeout = jiffies + 1; 
-		schedule();
+		schedule_timeout(1);
 		
 		pr_debug("SAR waiting..\n");
 

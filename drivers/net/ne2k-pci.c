@@ -34,7 +34,8 @@ static const char *version =
 #include <linux/sched.h>
 #include <linux/errno.h>
 #include <linux/pci.h>
-#include <linux/bios32.h>
+#include <linux/init.h>
+
 #include <asm/system.h>
 #include <asm/io.h>
 #include <asm/irq.h>
@@ -48,10 +49,6 @@ static int debug = 1;
 
 /* Some defines that people can play with if so inclined. */
 
-/* Do #define LOAD_8390_BY_KERNELD to automatically load 8390 support. */
-#ifdef LOAD_8390_BY_KERNELD
-#include <linux/kerneld.h>
-#endif
 /* Use 32 bit data-movement operations instead of 16 bit. */
 #define USE_LONGIO
 
@@ -65,13 +62,14 @@ static struct {
 	unsigned short vendor, dev_id;
 	char *name;
 }
-pci_clone_list[] = {
+pci_clone_list[] __initdata = {
 	{0x10ec, 0x8029, "RealTek RTL-8029"},
 	{0x1050, 0x0940, "Winbond 89C940"},
 	{0x11f6, 0x1401, "Compex RL2000"},
 	{0x8e2e, 0x3000, "KTI ET32P2"},
 	{0x4a14, 0x5000, "NetVin NV5000SC"},
 	{0x1106, 0x0926, "Via 82C926"},
+	{0x10bd, 0x0e34, "SureCom NE34"},
 	{0,}
 };
 
@@ -89,15 +87,15 @@ pci_clone_list[] = {
 int ne2k_pci_probe(struct device *dev);
 static struct device *ne2k_pci_probe1(struct device *dev, int ioaddr, int irq);
 
-static int ne_open(struct device *dev);
-static int ne_close(struct device *dev);
+static int ne2k_pci_open(struct device *dev);
+static int ne2k_pci_close(struct device *dev);
 
-static void ne_reset_8390(struct device *dev);
-static void ne_get_8390_hdr(struct device *dev, struct e8390_pkt_hdr *hdr,
+static void ne2k_pci_reset_8390(struct device *dev);
+static void ne2k_pci_get_8390_hdr(struct device *dev, struct e8390_pkt_hdr *hdr,
 			  int ring_page);
-static void ne_block_input(struct device *dev, int count,
+static void ne2k_pci_block_input(struct device *dev, int count,
 			  struct sk_buff *skb, int ring_offset);
-static void ne_block_output(struct device *dev, const int count,
+static void ne2k_pci_block_output(struct device *dev, const int count,
 		const unsigned char *buf, const int start_page);
 
 
@@ -106,35 +104,30 @@ static void ne_block_output(struct device *dev, const int count,
 struct ne2k_pci_card {
 	struct ne2k_pci_card *next;
 	struct device *dev;
-	unsigned char pci_bus, pci_device_fn;
+	struct pci_dev *pci_dev;
 };
 /* A list of all installed devices, for removing the driver module. */
 static struct ne2k_pci_card *ne2k_card_list = NULL;
-
-#ifdef LOAD_8390_BY_KERNELD
-static int (*Lethdev_init)(struct device *dev);
-static void (*LNS8390_init)(struct device *dev, int startp);
-static int (*Lei_open)(struct device *dev);
-static int (*Lei_close)(struct device *dev);
-static void (*Lei_interrupt)(int irq, void *dev_id, struct pt_regs *regs);
-#else
-#define Lethdev_init ethdev_init
-#define LNS8390_init NS8390_init
-#define Lei_open ei_open
-#define Lei_close ei_close
-#define Lei_interrupt ei_interrupt
-#endif
 
 #ifdef MODULE
 
 int
 init_module(void)
 {
+	int retval;
+
 	/* We must emit version information. */
 	if (debug)
 		printk(KERN_INFO "%s", version);
 
-	return ne2k_pci_probe(0);
+	retval = ne2k_pci_probe(0);
+
+	if (retval) {
+		printk(KERN_NOTICE "ne2k-pci.c: no (useable) cards found, driver NOT installed.\n");
+		return retval;
+	}
+	lock_8390_module();
+	return 0;
 }
 
 void
@@ -153,10 +146,7 @@ cleanup_module(void)
 		ne2k_card_list = ne2k_card_list->next;
 		kfree(this_card);
 	}
-
-#ifdef LOAD_8390_BY_KERNELD
-	release_module("8390", 0);
-#endif
+	unlock_8390_module();
 }
 
 #endif  /* MODULE */
@@ -179,36 +169,34 @@ struct netdev_entry netcard_drv =
 {"ne2k_pci", ne2k_pci_probe1, NE_IO_EXTENT, 0};
 #endif
 
-int ne2k_pci_probe(struct device *dev)
+__initfunc (int ne2k_pci_probe(struct device *dev))
 {
-	static int pci_index = 0;	/* Static, for multiple calls. */
+	struct pci_dev *pdev = NULL;
 	int cards_found = 0;
 	int i;
 
-	if ( ! pcibios_present())
+	if ( ! pci_present())
 		return -ENODEV;
 
-	for (;pci_index < 0xff; pci_index++) {
-		unsigned char pci_bus, pci_device_fn;
+	while ((pdev = pci_find_class(PCI_CLASS_NETWORK_ETHERNET << 8, pdev)) != NULL) {
 		u8 pci_irq_line;
-		u16 pci_command, new_command, vendor, device;
+		u16 pci_command, new_command;
 		u32 pci_ioaddr;
-
-		if (pcibios_find_class (PCI_CLASS_NETWORK_ETHERNET << 8, pci_index,
-								&pci_bus, &pci_device_fn)
-			!= PCIBIOS_SUCCESSFUL)
-			break;
-		pcibios_read_config_word(pci_bus, pci_device_fn,
-								 PCI_VENDOR_ID, &vendor);
-		pcibios_read_config_word(pci_bus, pci_device_fn,
-								 PCI_DEVICE_ID, &device);
 
 		/* Note: some vendor IDs (RealTek) have non-NE2k cards as well. */
 		for (i = 0; pci_clone_list[i].vendor != 0; i++)
-			if (pci_clone_list[i].vendor == vendor
-				&& pci_clone_list[i].dev_id == device)
+			if (pci_clone_list[i].vendor == pdev->vendor
+				&& pci_clone_list[i].dev_id == pdev->device)
 				break;
 		if (pci_clone_list[i].vendor == 0)
+			continue;
+
+		pci_ioaddr = pdev->base_address[0] & PCI_BASE_ADDRESS_IO_MASK;
+		pci_irq_line = pdev->irq;
+		pci_read_config_word(pdev, PCI_COMMAND, &pci_command);
+
+		/* Avoid already found cards from previous calls */
+		if (check_region(pci_ioaddr, NE_IO_EXTENT))
 			continue;
 
 #ifndef MODULE
@@ -219,32 +207,17 @@ int ne2k_pci_probe(struct device *dev)
 		}
 #endif
 
-		pcibios_read_config_dword(pci_bus, pci_device_fn,
-								  PCI_BASE_ADDRESS_0, &pci_ioaddr);
-		pcibios_read_config_byte(pci_bus, pci_device_fn,
-								 PCI_INTERRUPT_LINE, &pci_irq_line);
-		pcibios_read_config_word(pci_bus, pci_device_fn,
-								 PCI_COMMAND, &pci_command);
-
-		/* Remove I/O space marker in bit 0. */
-		pci_ioaddr &= PCI_BASE_ADDRESS_IO_MASK;
-
-		/* Avoid already found cards from previous calls */
-		if (check_region(pci_ioaddr, NE_IO_EXTENT))
-			continue;
-
 		/* Activate the card: fix for brain-damaged Win98 BIOSes. */
 		new_command = pci_command | PCI_COMMAND_IO;
 		if (pci_command != new_command) {
 			printk(KERN_INFO "  The PCI BIOS has not enabled this"
 				   " NE2k clone!  Updating PCI command %4.4x->%4.4x.\n",
 				   pci_command, new_command);
-			pcibios_write_config_word(pci_bus, pci_device_fn,
-									  PCI_COMMAND, new_command);
+			pci_write_config_word(pdev, PCI_COMMAND, new_command);
 		}
 
 		if (pci_irq_line <= 0 || pci_irq_line >= NR_IRQS)
-			printk(KERN_WARNING " WARNING: The PCI BIOS assigned this PCI NE2k"
+			printk(KERN_WARNING "  WARNING: The PCI BIOS assigned this PCI NE2k"
 				   " card to IRQ %d, which is unlikely to work!.\n"
 				   KERN_WARNING " You should use the PCI BIOS setup to assign"
 				   " a valid IRQ line.\n", pci_irq_line);
@@ -263,8 +236,7 @@ int ne2k_pci_probe(struct device *dev)
 			ne2k_card->next = ne2k_card_list;
 			ne2k_card_list = ne2k_card;
 			ne2k_card->dev = dev;
-			ne2k_card->pci_bus = pci_bus;
-			ne2k_card->pci_device_fn = pci_device_fn;
+			ne2k_card->pci_dev = pdev;
 		}
 		dev = 0;
 
@@ -274,7 +246,7 @@ int ne2k_pci_probe(struct device *dev)
 	return cards_found ? 0 : -ENODEV;
 }
 
-static struct device *ne2k_pci_probe1(struct device *dev, int ioaddr, int irq)
+__initfunc (static struct device *ne2k_pci_probe1(struct device *dev, int ioaddr, int irq))
 {
 	int i;
 	unsigned char SA_prom[32];
@@ -300,8 +272,6 @@ static struct device *ne2k_pci_probe1(struct device *dev, int ioaddr, int irq)
 		}
 	}
 
-	dev = init_etherdev(dev, 0);
-
 	/* Reset card. Who knows what dain-bramaged state it was left in. */
 	{
 		unsigned long reset_start_time = jiffies;
@@ -321,22 +291,9 @@ static struct device *ne2k_pci_probe1(struct device *dev, int ioaddr, int irq)
 		outb(0xff, ioaddr + EN0_ISR);		/* Ack all intr. */
 	}
 
-#if defined(LOAD_8390_BY_KERNELD)
-	/* We are now certain the 8390 module is required. */
-	if (request_module("8390")) {
-		printk("ne2k-pci: Failed to load the 8390 core module.\n");
+	if (load_8390_module("ne2k-pci.c")) {
 		return 0;
 	}
-	if ((Lethdev_init = (void*)get_module_symbol(0, "ethdev_init")) == 0 ||
-		(LNS8390_init = (void*)get_module_symbol(0, "NS8390_init")) == 0 ||
-		(Lei_open = (void*)get_module_symbol(0, "ei_open")) == 0 ||
-		(Lei_close = (void*)get_module_symbol(0, "ei_close")) == 0 ||
-		(Lei_interrupt = (void*)get_module_symbol(0, "ei_interrupt")) == 0 ) {
-		printk("ne2k-pci: Failed to resolve an 8390 symbol.\n");
-		release_module("8390", 0);
-		return 0;
-	}
-#endif
 
 	/* Read the 16 bytes of station address PROM.
 	   We must first initialize registers, similar to NS8390_init(eifdev, 0).
@@ -391,12 +348,15 @@ static struct device *ne2k_pci_probe1(struct device *dev, int ioaddr, int irq)
 	/* Set up the rest of the parameters. */
 	name = "PCI NE2000";
 
+	dev = init_etherdev(dev, 0);
+
 	dev->irq = irq;
 	dev->base_addr = ioaddr;
 
 	/* Allocate dev->priv and fill in 8390 specific dev fields. */
-	if (Lethdev_init(dev)) {
+	if (ethdev_init(dev)) {
 		printk ("%s: unable to get memory for dev->priv.\n", dev->name);
+		kfree(dev);
 		return 0;
 	}
 
@@ -420,30 +380,30 @@ static struct device *ne2k_pci_probe1(struct device *dev, int ioaddr, int irq)
 	ei_status.stop_page = ei_status.tx_start_page + PACKETBUF_MEMSIZE;
 #endif
 
-	ei_status.reset_8390 = &ne_reset_8390;
-	ei_status.block_input = &ne_block_input;
-	ei_status.block_output = &ne_block_output;
-	ei_status.get_8390_hdr = &ne_get_8390_hdr;
-	dev->open = &ne_open;
-	dev->stop = &ne_close;
-	LNS8390_init(dev, 0);
+	ei_status.reset_8390 = &ne2k_pci_reset_8390;
+	ei_status.block_input = &ne2k_pci_block_input;
+	ei_status.block_output = &ne2k_pci_block_output;
+	ei_status.get_8390_hdr = &ne2k_pci_get_8390_hdr;
+	dev->open = &ne2k_pci_open;
+	dev->stop = &ne2k_pci_close;
+	NS8390_init(dev, 0);
 	return dev;
 }
 
 static int
-ne_open(struct device *dev)
+ne2k_pci_open(struct device *dev)
 {
-	if (request_irq(dev->irq, Lei_interrupt, SA_SHIRQ, dev->name, dev))
+	if (request_irq(dev->irq, ei_interrupt, SA_SHIRQ, dev->name, dev))
 		return -EAGAIN;
-	Lei_open(dev);
+	ei_open(dev);
 	MOD_INC_USE_COUNT;
 	return 0;
 }
 
 static int
-ne_close(struct device *dev)
+ne2k_pci_close(struct device *dev)
 {
-	Lei_close(dev);
+	ei_close(dev);
 	free_irq(dev->irq, dev);
 	MOD_DEC_USE_COUNT;
 	return 0;
@@ -452,7 +412,7 @@ ne_close(struct device *dev)
 /* Hard reset the card.  This used to pause for the same period that a
    8390 reset command required, but that shouldn't be necessary. */
 static void
-ne_reset_8390(struct device *dev)
+ne2k_pci_reset_8390(struct device *dev)
 {
 	unsigned long reset_start_time = jiffies;
 
@@ -467,7 +427,7 @@ ne_reset_8390(struct device *dev)
 	/* This check _should_not_ be necessary, omit eventually. */
 	while ((inb(NE_BASE+EN0_ISR) & ENISR_RESET) == 0)
 		if (jiffies - reset_start_time > 2) {
-			printk("%s: ne_reset_8390() did not complete.\n", dev->name);
+			printk("%s: ne2k_pci_reset_8390() did not complete.\n", dev->name);
 			break;
 		}
 	outb(ENISR_RESET, NE_BASE + EN0_ISR);	/* Ack intr. */
@@ -478,15 +438,15 @@ ne_reset_8390(struct device *dev)
    the start of a page, so we optimize accordingly. */
 
 static void
-ne_get_8390_hdr(struct device *dev, struct e8390_pkt_hdr *hdr, int ring_page)
+ne2k_pci_get_8390_hdr(struct device *dev, struct e8390_pkt_hdr *hdr, int ring_page)
 {
 
 	int nic_base = dev->base_addr;
 
 	/* This *shouldn't* happen. If it does, it's the last thing you'll see */
 	if (ei_status.dmaing) {
-		printk("%s: DMAing conflict in ne_get_8390_hdr "
-			   "[DMAstat:%d][irqlock:%d][intr:%d].\n",
+		printk("%s: DMAing conflict in ne2k_pci_get_8390_hdr "
+			   "[DMAstat:%d][irqlock:%d][intr:%ld].\n",
 			   dev->name, ei_status.dmaing, ei_status.irqlock,
 			   dev->interrupt);
 		return;
@@ -516,15 +476,15 @@ ne_get_8390_hdr(struct device *dev, struct e8390_pkt_hdr *hdr, int ring_page)
    the packet out through the "remote DMA" dataport using outb. */
 
 static void
-ne_block_input(struct device *dev, int count, struct sk_buff *skb, int ring_offset)
+ne2k_pci_block_input(struct device *dev, int count, struct sk_buff *skb, int ring_offset)
 {
 	int nic_base = dev->base_addr;
 	char *buf = skb->data;
 
 	/* This *shouldn't* happen. If it does, it's the last thing you'll see */
 	if (ei_status.dmaing) {
-		printk("%s: DMAing conflict in ne_block_input "
-			   "[DMAstat:%d][irqlock:%d][intr:%d].\n",
+		printk("%s: DMAing conflict in ne2k_pci_block_input "
+			   "[DMAstat:%d][irqlock:%d][intr:%ld].\n",
 			   dev->name, ei_status.dmaing, ei_status.irqlock,
 			   dev->interrupt);
 		return;
@@ -558,7 +518,7 @@ ne_block_input(struct device *dev, int count, struct sk_buff *skb, int ring_offs
 }
 
 static void
-ne_block_output(struct device *dev, int count,
+ne2k_pci_block_output(struct device *dev, int count,
 		const unsigned char *buf, const int start_page)
 {
 	int nic_base = NE_BASE;
@@ -571,8 +531,8 @@ ne_block_output(struct device *dev, int count,
 
 	/* This *shouldn't* happen. If it does, it's the last thing you'll see */
 	if (ei_status.dmaing) {
-		printk("%s: DMAing conflict in ne_block_output."
-			   "[DMAstat:%d][irqlock:%d][intr:%d]\n",
+		printk("%s: DMAing conflict in ne2k_pci_block_output."
+			   "[DMAstat:%d][irqlock:%d][intr:%ld]\n",
 			   dev->name, ei_status.dmaing, ei_status.irqlock,
 			   dev->interrupt);
 		return;
@@ -616,8 +576,8 @@ ne_block_output(struct device *dev, int count,
 	while ((inb(nic_base + EN0_ISR) & ENISR_RDC) == 0)
 		if (jiffies - dma_start > 2) { 			/* Avoid clock roll-over. */
 			printk("%s: timeout waiting for Tx RDC.\n", dev->name);
-			ne_reset_8390(dev);
-			LNS8390_init(dev,1);
+			ne2k_pci_reset_8390(dev);
+			NS8390_init(dev,1);
 			break;
 		}
 

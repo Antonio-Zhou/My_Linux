@@ -56,18 +56,8 @@ static int full_duplex[MAX_UNITS] = {-1, -1, -1, -1, -1, -1, -1, -1};
 /* Time in jiffies before concluding the transmitter is hung. */
 #define TX_TIMEOUT  (4*HZ)
 
-#include <linux/config.h>
-#ifdef MODULE
-#ifdef MODVERSIONS
-#include <linux/modversions.h>
-#endif
 #include <linux/module.h>
 #include <linux/version.h>
-#else
-#define MOD_INC_USE_COUNT
-#define MOD_DEC_USE_COUNT
-#endif
-
 #include <linux/kernel.h>
 #include <linux/sched.h>
 #include <linux/string.h>
@@ -920,13 +910,6 @@ rtl8129_start_xmit(struct sk_buff *skb, struct device *dev)
 			return 1;
 		rtl8129_tx_timeout(dev);
 		return 1;
-	}
-
-	if (skb->len < ETH_ZLEN) {
-		if (!(skb = skb_padto(skb, ETH_ZLEN))) {
-			clear_bit(0, (void *)&dev->tbusy);
-			return 0;
-		}
 	}
 
 	/* Calculate the next Tx descriptor entry. */

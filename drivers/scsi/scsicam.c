@@ -10,11 +10,6 @@
  * For more information, please consult the SCSI-CAM draft.
  */
 
-/*
- * Don't import our own symbols, as this would severely mess up our
- * symbol tables.
- */
-#define _SCSI_SYMS_VER_
 #define __NO_VERSION__
 #include <linux/module.h>
 
@@ -26,8 +21,9 @@
 #include "scsi.h"
 #include "hosts.h"
 #include "sd.h"
-#include <scsi/scsicam.h>
 
+static int partsize(struct buffer_head *bh, unsigned long capacity,
+    unsigned int  *cyls, unsigned int *hds, unsigned int *secs);
 static int setsize(unsigned long capacity,unsigned int *cyls,unsigned int *hds,
     unsigned int *secs);
 
@@ -55,7 +51,7 @@ int scsicam_bios_param (Disk *disk, /* SCSI disk */
 	return -1;
 
     /* try to infer mapping from partition table */
-    ret_code = scsi_partsize (bh, (unsigned long) size, (unsigned int *) ip + 2, 
+    ret_code = partsize (bh, (unsigned long) size, (unsigned int *) ip + 2, 
 	(unsigned int *) ip + 0, (unsigned int *) ip + 1);
     brelse (bh);
 
@@ -84,7 +80,7 @@ int scsicam_bios_param (Disk *disk, /* SCSI disk */
 }
 
 /*
- * Function : static int scsi_partsize(struct buffer_head *bh, unsigned long 
+ * Function : static int partsize(struct buffer_head *bh, unsigned long 
  *     capacity,unsigned int *cyls, unsigned int *hds, unsigned int *secs);
  *
  * Purpose : to determine the BIOS mapping used to create the partition
@@ -94,7 +90,7 @@ int scsicam_bios_param (Disk *disk, /* SCSI disk */
  *
  */
 
-int scsi_partsize(struct buffer_head *bh, unsigned long capacity,
+static int partsize(struct buffer_head *bh, unsigned long capacity,
     unsigned int  *cyls, unsigned int *hds, unsigned int *secs) {
     struct partition *p, *largest = NULL;
     int i, largest_cyl;

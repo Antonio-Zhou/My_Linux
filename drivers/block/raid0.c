@@ -20,7 +20,7 @@
 #include <linux/module.h>
 #include <linux/md.h>
 #include <linux/raid0.h>
-#include <linux/malloc.h>
+#include <linux/vmalloc.h>
 
 #define MAJOR_NR MD_MAJOR
 #define MD_DRIVER
@@ -94,16 +94,23 @@ static int raid0_run (int minor, struct md_dev *mddev)
   if ((mddev->private=vmalloc (sizeof (struct raid0_data))) == NULL) return 1;
   data=(struct raid0_data *) mddev->private;
   
-  if (create_strip_zones (minor, mddev)) return 1;
+  if (create_strip_zones (minor, mddev)) 
+  {
+  	vfree(data);
+  	return 1;
+  }
 
   nb_zone=data->nr_zones=
     md_size[minor]/data->smallest->size +
     (md_size[minor]%data->smallest->size ? 1 : 0);
 
-  printk ("raid0 : Allocating %d bytes for hash.\n",sizeof(struct raid0_hash)*nb_zone);
+  printk ("raid0 : Allocating %ld bytes for hash.\n",(long)sizeof(struct raid0_hash)*nb_zone);
   if ((data->hash_table=vmalloc (sizeof (struct raid0_hash)*nb_zone)) == NULL)
+  {
+    vfree(data->strip_zone);
+    vfree(data);
     return 1;
-
+  }
   size=data->strip_zone[cur].size;
 
   i=0;
@@ -260,6 +267,9 @@ static struct md_personality raid0_personality=
   NULL,				/* no ioctls */
   0,
   NULL,				/* no error_handler */
+  NULL,				/* hot_add_disk */
+  NULL,				/* hot_remove_disk */
+  NULL				/* mark_spare */
 };
 
 

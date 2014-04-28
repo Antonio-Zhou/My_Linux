@@ -1,3 +1,12 @@
+/*
+ * Linux ioctl() stuff.
+ *
+ * This file is subject to the terms and conditions of the GNU General Public
+ * License.  See the file "COPYING" in the main directory of this archive
+ * for more details.
+ *
+ * Copyright (C) 1995, 1996 by Ralf Baechle
+ */
 #ifndef __ASM_MIPS_IOCTL_H
 #define __ASM_MIPS_IOCTL_H
 
@@ -11,7 +20,7 @@
  * the process. I'd like to clean it up for the i386 as well, but
  * it's so painful recognizing both the new and the old numbers..
  *
- * The same applies for the MIPS ABI; in fact even the macros
+ * The same applies for for the MIPS ABI; in fact even the macros
  * from Linux/Alpha fit almost perfectly.
  */
 

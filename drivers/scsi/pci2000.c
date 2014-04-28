@@ -1,7 +1,7 @@
 /*+M*************************************************************************
  * Perceptive Solutions, Inc. PCI-2000 device driver proc support for Linux.
  *
- * Copyright (c) 1999 Perceptive Solutions, Inc.
+ * Copyright (c) 1997 Perceptive Solutions, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,24 +20,13 @@
  *
  *	File Name:		pci2000i.c
  *
- *	Revisions	1.10	Jan-21-1999
- *		- Fixed sign on message to reflect proper controller name.
- *		- Added support for RAID status monitoring and control.
- *
- *  Revisions	1.11	Mar-22-1999
- *		- Fixed control timeout to not lock up the entire system if
- *		  controller goes offline completely.
- *
  *-M*************************************************************************/
-#define PCI2000_VERSION		"1.11"
 
 #include <linux/module.h>
 
 #include <linux/kernel.h>
-#include <linux/head.h>
 #include <linux/types.h>
 #include <linux/string.h>
-#include <linux/bios32.h>
 #include <linux/pci.h>
 #include <linux/ioport.h>
 #include <linux/delay.h>
@@ -45,6 +34,7 @@
 #include <linux/proc_fs.h>
 #include <asm/dma.h>
 #include <asm/system.h>
+#include <asm/spinlock.h>
 #include <asm/io.h>
 #include <linux/blk.h>
 #include "scsi.h"
@@ -53,9 +43,7 @@
 #include "pci2000.h"
 #include "psi_roy.h"
 
-#include "pci2220i.h"
-
-#include <linux/stat.h>
+#include<linux/stat.h>
 
 struct proc_dir_entry Proc_Scsi_Pci2000 =
 	{ PROC_SCSI_PCI2000, 7, "pci2000", S_IFDIR | S_IRUGO | S_IXUGO, 2 };
@@ -101,6 +89,7 @@ typedef struct
 
 static struct	Scsi_Host 	   *PsiHost[MAXADAPTER] = {NULL,};  // One for each adapter
 static			int				NumAdapters = 0;
+
 /****************************************************************
  *	Name:			WaitReady	:LOCAL
  *
@@ -113,14 +102,13 @@ static			int				NumAdapters = 0;
  ****************************************************************/
 static int WaitReady (PADAPTER2000 padapter)
 	{
-	ULONG	z;
+	ULONG	timer;
 
-	for ( z = 0;  z < (TIMEOUT_COMMAND * 4);  z++ )
-		{
+	timer = jiffies + TIMEOUT_COMMAND;								// calculate the timeout value
+	do	{
 		if ( !inb_p (padapter->cmd) )
 			return FALSE;
-		udelay (250);
-		};								
+		}	while ( timer > jiffies );									// test for timeout
 	return TRUE;
 	}
 /****************************************************************
@@ -191,26 +179,6 @@ static int BuildSgList (Scsi_Cmnd *SCpnt, PADAPTER2000 padapter, PDEV2000 pdev)
 	outl (virt_to_bus (SCpnt->request_buffer), padapter->mb2);
 	outl (SCpnt->request_bufflen, padapter->mb3);
 	return TRUE;
-	}
-/*********************************************************************
- *	Name:	PsiRaidCmd
- *
- *	Description:	Execute a simple command.
- *
- *	Parameters:		padapter - Pointer to adapter control structure.
- *					cmd		 - Roy command byte.
- *
- *	Returns:		Return error status.
- *
- ********************************************************************/
-static int PsiRaidCmd (PADAPTER2000 padapter, char cmd)
-	{
-	if ( WaitReady (padapter) )						// test for command register ready
-		return DID_TIME_OUT;
-	outb_p (cmd, padapter->cmd);					// issue command
-	if ( WaitReady (padapter) )						// wait for adapter ready
-		return DID_TIME_OUT;
-	return DID_OK;
 	}
 /****************************************************************
  *	Name:	Irq_Handler	:LOCAL
@@ -324,7 +292,7 @@ irqProceed:;
 	OpDone (SCpnt, DID_OK << 16);
 	}
 /****************************************************************
- *	Name:	Pci2000_QueueCommand
+ *	Name:	Pci2220i_QueueCommand
  *
  *	Description:	Process a queued command from the SCSI manager.
  *
@@ -398,35 +366,7 @@ int Pci2000_QueueCommand (Scsi_Cmnd *SCpnt, void (*done)(Scsi_Cmnd *))
 	switch ( *cdb )
 		{
 		case SCSIOP_INQUIRY:   					// inquiry CDB
-			if ( cdb[2] == SC_MY_RAID )
-				{
-				switch ( cdb[3] ) 
-					{
-					case MY_SCSI_REBUILD:
-						OpDone (SCpnt, PsiRaidCmd (padapter, CMD_RAID_REBUILD) << 16);
-						return 0;
-					case MY_SCSI_ALARMMUTE:
-						OpDone (SCpnt, PsiRaidCmd (padapter, CMD_RAID_MUTE) << 16);
-						return 0;
-					case MY_SCSI_DEMOFAIL:
-						OpDone (SCpnt, PsiRaidCmd (padapter, CMD_RAID_FAIL) << 16);
-						return 0;
-					default:
-						if ( SCpnt->use_sg )
-							{
-							rc = DID_ERROR;
-							goto finished;
-							}
-						else
-							outl (virt_to_bus (SCpnt->request_buffer), padapter->mb2);
-						outl (cdb[5], padapter->mb0);
-						outl (cdb[3], padapter->mb3);
-						cmd = CMD_DASD_RAID_RQ;
-						break;
-					}
-				break;
-				}
-			
+			{
 			if ( SCpnt->use_sg )
 				{
 				outl (virt_to_bus (((struct scatterlist *)(SCpnt->request_buffer))->address), padapter->mb2);
@@ -438,6 +378,7 @@ int Pci2000_QueueCommand (Scsi_Cmnd *SCpnt, void (*done)(Scsi_Cmnd *))
 			outl (SCpnt->request_bufflen, padapter->mb3);
 			cmd = CMD_DASD_SCSI_INQ;
 			break;
+			}
 
 		case SCSIOP_TEST_UNIT_READY:			// test unit ready CDB
 			outl (virt_to_bus (SCpnt->sense_buffer), padapter->mb2);
@@ -513,7 +454,7 @@ int Pci2000_QueueCommand (Scsi_Cmnd *SCpnt, void (*done)(Scsi_Cmnd *))
 			if ( cmd )
 				break;
 		default:
-			DEB (printk ("pci2000_queuecommand: Unsupported command %02X\n", *cdb));
+			DEB (printk ("pci2220i_queuecommand: Unsupported command %02X\n", *cdb));
 			OpDone (SCpnt, DID_ERROR << 16);
 			return 0;
 		}
@@ -524,6 +465,14 @@ finished:;
 	if ( rc != -1 )
 		OpDone (SCpnt, rc << 16);
 	return 0;
+	}
+static void do_Irq_Handler (int irq, void *dev_id, struct pt_regs *regs)
+	{
+	unsigned long flags;
+
+	spin_lock_irqsave(&io_request_lock, flags);
+	Irq_Handler(irq, dev_id, regs);
+	spin_unlock_irqrestore(&io_request_lock, flags);
 	}
 /****************************************************************
  *	Name:	internal_done :LOCAL
@@ -540,7 +489,7 @@ static void internal_done (Scsi_Cmnd * SCpnt)
 	SCpnt->SCp.Status++;
 	}
 /****************************************************************
- *	Name:	Pci2000_Command
+ *	Name:	Pci2220i_Command
  *
  *	Description:	Process a command from the SCSI manager.
  *
@@ -561,7 +510,7 @@ int Pci2000_Command (Scsi_Cmnd *SCpnt)
 	return SCpnt->result;
 	}
 /****************************************************************
- *	Name:	Pci2000_Detect
+ *	Name:	Pci2220i_Detect
  *
  *	Description:	Detect and initialize our boards.
  *
@@ -575,23 +524,17 @@ int Pci2000_Detect (Scsi_Host_Template *tpnt)
 	int					pci_index = 0;
 	struct Scsi_Host   *pshost;
 	PADAPTER2000	    padapter;
-	int					z, zz;
+	int					z;
 	int					setirq;
+	struct pci_dev	   *pdev = NULL;
 
-	if ( pcibios_present () )
-		{
-		for ( pci_index = 0;  pci_index <= MAXADAPTER;  ++pci_index )
+	if ( pci_present () )
+		while ((pdev = pci_find_device(VENDOR_PSI, DEVICE_ROY_1, pdev)))
 			{
-			UCHAR	pci_bus, pci_device_fn;
-
-			if ( pcibios_find_device (VENDOR_PSI, DEVICE_ROY_1, pci_index, &pci_bus, &pci_device_fn) != 0 )
-				break;
-
 			pshost = scsi_register (tpnt, sizeof(ADAPTER2000));
 			padapter = HOSTDATA(pshost);
 
-			pcibios_read_config_word (pci_bus, pci_device_fn, PCI_BASE_ADDRESS_1, &padapter->basePort);
-			padapter->basePort &= 0xFFFE;
+			padapter->basePort = pdev->base_address[1] & PCI_BASE_ADDRESS_IO_MASK;
 			DEB (printk ("\nBase Regs = %#04X", padapter->basePort));			// get the base I/O port address
 			padapter->mb0	= padapter->basePort + RTR_MAILBOX;		   			// get the 32 bit mail boxes
 			padapter->mb1	= padapter->basePort + RTR_MAILBOX + 4;
@@ -608,43 +551,38 @@ int Pci2000_Detect (Scsi_Host_Template *tpnt)
 			if ( WaitReady (padapter) )
 				goto unregister;
 
-			pcibios_read_config_byte (pci_bus, pci_device_fn, PCI_INTERRUPT_LINE, &pshost->irq);
+			pshost->irq = pdev->irq;
 			setirq = 1;
-			for ( z = 0;  z < pci_index;  z++ )									// scan for shared interrupts
+			for ( z = 0;  z < pci_index;  z++ )											// scan for shared interrupts
 				{
-				if ( PsiHost[z]->irq == pshost->irq )							// if shared then, don't posses
+				if ( PsiHost[z]->irq == pshost->irq )						// if shared then, don't posses
 					setirq = 0;
 				}
-			if ( setirq )														// if not shared, posses
+			if ( setirq )																// if not shared, posses
 				{
-				if ( request_irq (pshost->irq, Irq_Handler, 0, "pci2000", NULL) )
+				if ( request_irq (pshost->irq, do_Irq_Handler, 0, "pci2000", NULL) )
 					{
 					printk ("Unable to allocate IRQ for PSI-2000 controller.\n");
 					goto unregister;
 					}
 				}
-			PsiHost[pci_index]	= pshost;										// save SCSI_HOST pointer
+			PsiHost[pci_index]	= pshost;												// save SCSI_HOST pointer
 
 			pshost->unique_id	= padapter->basePort;
 			pshost->max_id		= 16;
 			pshost->max_channel	= 1;
 
-			for ( zz = 0;  zz < MAX_BUS;  zz++ )
-				for ( z = 0; z < MAX_UNITS;  z++ )
-					padapter->dev[zz][z].tag = 0;
-			
-			printk("\nPSI-2000 Intelligent Storage SCSI CONTROLLER: at I/O = %X  IRQ = %d\n", padapter->basePort, pshost->irq);
-			printk("Version %s, Compiled %s %s\n\n", PCI2000_VERSION,  __DATE__, __TIME__);
+			printk("\nPSI-2000 EIDE CONTROLLER: at I/O = %X  IRQ = %d\n", padapter->basePort, pshost->irq);
+			printk("(C) 1997 Perceptive Solutions, Inc. All rights reserved\n\n");
+			NumAdapters++;
 			continue;
 unregister:;
 			scsi_unregister (pshost);
 			}
-		}
-	NumAdapters = pci_index;
-	return pci_index;
+	return NumAdapters;
 	}
 /****************************************************************
- *	Name:	Pci2000_Abort
+ *	Name:	Pci2220i_Abort
  *
  *	Description:	Process the Abort command from the SCSI manager.
  *
@@ -659,7 +597,7 @@ int Pci2000_Abort (Scsi_Cmnd *SCpnt)
 	return SCSI_ABORT_SNOOZE;
 	}
 /****************************************************************
- *	Name:	Pci2000_Reset
+ *	Name:	Pci2220i_Reset
  *
  *	Description:	Process the Reset command from the SCSI manager.
  *
@@ -681,7 +619,7 @@ int Pci2000_Reset (Scsi_Cmnd *SCpnt, unsigned int reset_flags)
 #include "sd.h"
 
 /****************************************************************
- *	Name:	Pci2000_BiosParam
+ *	Name:	Pci2220i_BiosParam
  *
  *	Description:	Process the biosparam request from the SCSI manager to
  *					return C/H/S data.
@@ -715,7 +653,7 @@ int Pci2000_BiosParam (Scsi_Disk *disk, kdev_t dev, int geom[])
 
 #ifdef MODULE
 /* Eventually this will go into an include file, but this will be later */
-Scsi_Host_Template driver_template = PCI2220I;
+Scsi_Host_Template driver_template = PCI2000;
 
 #include "scsi_module.c"
 #endif

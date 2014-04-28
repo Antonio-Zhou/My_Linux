@@ -12,7 +12,7 @@
  *		fddidevice.h is based on previous trdevice.h work by
  *			Ross Biro, <bir7@leland.Stanford.Edu>
  *			Fred N. van Kempen, <waltje@uWalt.NL.Mugnet.ORG>
- *			Alan Cox, <alan@lxorguk.ukuu.org.uk>
+ *			Alan Cox, <gw4pts@gw4pts.ampr.org>
  *
  *		This program is free software; you can redistribute it and/or
  *		modify it under the terms of the GNU General Public License
@@ -25,18 +25,15 @@
 #include <linux/if_fddi.h>
 
 #ifdef __KERNEL__
-extern int				fddi_header(struct sk_buff *skb,
-									struct device *dev,
-									unsigned short type,
-									void *daddr,
-									void *saddr,
-									unsigned len);
-extern int				fddi_rebuild_header(void *buff,
-											struct device *dev,
-											unsigned long dest,
-											struct sk_buff *skb);
+extern int		fddi_header(struct sk_buff *skb,
+				    struct device *dev,
+				    unsigned short type,
+				    void *daddr,
+				    void *saddr,
+				    unsigned len);
+extern int		fddi_rebuild_header(struct sk_buff *skb);
 extern unsigned short	fddi_type_trans(struct sk_buff *skb,
-										struct device *dev);
+				struct device *dev);
 #endif
 
 #endif	/* _LINUX_FDDIDEVICE_H */

@@ -12,15 +12,9 @@
  *					Loader switched to a misc device
  *					(fixed range check bug as a side effect)
  *					Printk clean up
+ *	9/12/98	alan@redhat.com		Rough port to 2.1.x
  */
 
-/*
- *		Currently ISICOM_BH is hard coded to 16 in isicom.h, cannot
- *		ask the kernel for a free slot as of 2.0.x - sameer
- */
-
-
-#include <linux/config.h> 
 #include <linux/module.h>
 #include <linux/version.h>
 #include <linux/kernel.h>
@@ -34,9 +28,12 @@
 #include <linux/interrupt.h>
 #include <linux/timer.h>
 #include <linux/ioport.h>
+
 #include <asm/segment.h>
-#include <asm/system.h>
+#include <asm/uaccess.h>
 #include <asm/io.h>
+#include <asm/system.h>
+
 #include <linux/isicom.h>
 
 static int isicom_refcount = 0;
@@ -55,11 +52,11 @@ DECLARE_TASK_QUEUE(tq_isicom);
 static struct timer_list tx;
 static char re_schedule = 1;
 #ifdef ISICOM_DEBUG
-unsigned long tx_count = 0;
+static unsigned long tx_count = 0;
 #endif
 
 static int ISILoad_open(struct inode *inode, struct file *filp);
-static void ISILoad_release(struct inode *inode, struct file *filp);
+static int ISILoad_release(struct inode *inode, struct file *filp);
 static int ISILoad_ioctl(struct inode *inode, struct file *filp, unsigned  int cmd, unsigned long arg);
 
 static void isicom_tx(unsigned long _data);
@@ -89,6 +86,7 @@ static struct file_operations ISILoad_fops = {
 	ISILoad_ioctl,
 	NULL,	/*	mmap	*/
 	ISILoad_open,
+	NULL,	/*	flush	*/
 	ISILoad_release,
 	NULL,	/*	fsync	*/
 	NULL,	/*	fasync	*/
@@ -116,33 +114,28 @@ static int ISILoad_open(struct inode *inode, struct file *filp)
 #ifdef ISICOM_DEBUG	
 	printk(KERN_DEBUG "ISILoad:Firmware loader Opened!!!\n");
 #endif	
-	MOD_INC_USE_COUNT;
 	return 0;
 }
 
-static void ISILoad_release(struct inode *inode, struct file *filp)
+static int ISILoad_release(struct inode *inode, struct file *filp)
 {
 #ifdef ISICOM_DEBUG
 	printk(KERN_DEBUG "ISILoad:Firmware loader Close(Release)d\n",);
 #endif	
-	MOD_DEC_USE_COUNT;
+	return 0;
 }
 
 static int ISILoad_ioctl(struct inode *inode, struct file *filp,
 		         unsigned int cmd, unsigned long arg)
 {
 	unsigned int card, i, j, signature, status;
-	unsigned short error, word_count, base;
+	unsigned short word_count, base;
 	bin_frame frame;
 	/* exec_record exec_rec; */
 	
-	/*	Added this check to avoid oopses on an ioctl with no
-	 *	args - sameer
-	 */ 
-	error=verify_area(VERIFY_READ, (void *) arg, sizeof(int));
-	if (error)
-		return error;
-	card=get_user((int *)arg);
+	if(get_user(card, (int *)arg))
+		return -EFAULT;
+		
 	if(card < 0 || card >= BOARD_COUNT)
 		return -ENXIO;
 		
@@ -153,12 +146,8 @@ static int ISILoad_ioctl(struct inode *inode, struct file *filp,
 	
 	switch(cmd) {
 		case MIOCTL_RESET_CARD:
-			if (!suser())
+			if (!capable(CAP_SYS_ADMIN))
 				return -EPERM;
-			error=verify_area(VERIFY_WRITE, (void *) arg, sizeof(int));
-			if (error)
-				return error;
-				
 			printk(KERN_DEBUG "ISILoad:Resetting Card%d at 0x%x ",card+1,base);
 								
 			inw(base+0x8);
@@ -199,17 +188,14 @@ static int ISILoad_ioctl(struct inode *inode, struct file *filp,
 				 return -EIO;
 			}
 			printk("-Done\n");
-			put_user(signature,(unsigned int*)arg);
-			return 0;
+			return put_user(signature,(unsigned int*)arg);
 						
 	case	MIOCTL_LOAD_FIRMWARE:
-			if (!suser())
+			if (!capable(CAP_SYS_ADMIN))
 				return -EPERM;
-			error=verify_area(VERIFY_READ, (void *) arg, sizeof(bin_frame));
-			if (error)
-				return error;
 				
-			memcpy_fromfs(&frame, (void *) arg, sizeof(bin_frame));
+			if(copy_from_user(&frame, (void *) arg, sizeof(bin_frame)))
+				return -EFAULT;
 			
 			if (WaitTillCardIsFree(base))
 				return -EIO;
@@ -248,13 +234,11 @@ static int ISILoad_ioctl(struct inode *inode, struct file *filp,
 			return 0;
 						
 	case	MIOCTL_READ_FIRMWARE:
-			if (!suser())
+			if (!capable(CAP_SYS_ADMIN))
 				return -EPERM;
-			error=verify_area(VERIFY_READ, (void *) arg, sizeof(bin_header));
-			if (error)
-				return error;
 				
-			memcpy_fromfs(&frame, (void *) arg, sizeof(bin_header));
+			if(copy_from_user(&frame, (void *) arg, sizeof(bin_header)))
+				return -EFAULT;
 			
 			if (WaitTillCardIsFree(base))
 				return -EIO;
@@ -291,15 +275,13 @@ static int ISILoad_ioctl(struct inode *inode, struct file *filp,
 				printk(KERN_ERR "ISILoad:Card%d verify got out of sync.Card Status:0x%x\n",card+1, status);
 				return -EIO;
 			}	
-			error=verify_area(VERIFY_WRITE, (void *) arg, sizeof(bin_frame));
-			if (error)
-				return error;
-			memcpy_tofs((void *) arg, &frame, sizeof(bin_frame));	
 			
+			if(copy_to_user((void *) arg, &frame, sizeof(bin_frame)))
+				return -EFAULT;
 			return 0;
 	
 	case	MIOCTL_XFER_CTRL:
-			if (!suser())
+			if (!capable(CAP_SYS_ADMIN))
 				return -EPERM;
 			if (WaitTillCardIsFree(base)) 
 				return -EIO;
@@ -351,7 +333,7 @@ static inline int isicom_paranoia_check(struct isi_port const * port, kdev_t dev
 			
 extern inline void schedule_bh(struct isi_port * port)
 {
-	queue_task_irq_off(&port->bh_tqueue, &tq_isicom);
+	queue_task(&port->bh_tqueue, &tq_isicom);
 	mark_bh(ISICOM_BH);
 } 
 
@@ -497,7 +479,8 @@ sched_again:
 	return;	
 }		
  
- 		/* 	Interrupt handlers 	*/
+/* 	Interrupt handlers 	*/
+
 static void do_isicom_bh(void)
 {
 	run_task_queue(&tq_isicom);
@@ -572,7 +555,7 @@ static void isicom_interrupt(int irq, void * dev_id, struct pt_regs * regs)
 							port->status &= ~ISI_DCD;
 							if (!((port->flags & ASYNC_CALLOUT_ACTIVE) &&
 								(port->flags & ASYNC_CALLOUT_NOHUP)))
-								queue_task_irq_off(&port->hangup_tq,
+								queue_task(&port->hangup_tq,
 									&tq_scheduler);
 						}
 					}
@@ -639,7 +622,7 @@ static void isicom_interrupt(int irq, void * dev_id, struct pt_regs * regs)
 				tty->flip.count++;
 				if (port->flags & ASYNC_SAK)
 					do_SAK(tty);
-				queue_task_irq_off(&tty->flip.tqueue, &tq_timer);
+				queue_task(&tty->flip.tqueue, &tq_timer);
 				break;
 				
 			case 2:	/* Statistics		 */
@@ -677,7 +660,7 @@ static void isicom_interrupt(int irq, void * dev_id, struct pt_regs * regs)
 				byte_count -= 2;
 			}
 		}
-		queue_task_irq_off(&tty->flip.tqueue, &tq_timer);
+		queue_task(&tty->flip.tqueue, &tq_timer);
 	}
 	ClearInterrupt(base);
 	return;
@@ -968,7 +951,7 @@ static int block_til_ready(struct tty_struct * tty, struct file * filp, struct i
 #endif		 	
 			break;
 		}	
-		if (current->signal & ~current->blocked) {
+		if (signal_pending(current)) {
 #ifdef ISICOM_DEBUG		
 			printk(KERN_DEBUG "ISICOM: block_til_ready: sig blocked.\n");
 #endif			
@@ -1184,11 +1167,10 @@ static void isicom_close(struct tty_struct * tty, struct file * filp)
 	if (port->blocked_open) {
 		if (port->close_delay) {
 			current->state = TASK_INTERRUPTIBLE;
-			current->timeout = jiffies + port->close_delay;
 #ifdef ISICOM_DEBUG			
 			printk(KERN_DEBUG "ISICOM: scheduling until time out.\n");
 #endif			
-			schedule();
+			schedule_timeout(port->close_delay);
 		}
 		wake_up_interruptible(&port->open_wait);
 	}	
@@ -1232,10 +1214,10 @@ static int isicom_write(struct tty_struct * tty, int from_user,
 			/* the following may block for paging... hence 
 			   enabling interrupts but tx routine may have 
 			   created more space in xmit_buf when the ctrl 
-			   gets back here 
-			sti(); */
-			memcpy_fromfs(tmp_buf, buf, cnt);
-/*			cli();*/
+			   gets back here  */
+			sti(); 
+			copy_from_user(tmp_buf, buf, cnt);
+			cli();
 			cnt = MIN(cnt, MIN(SERIAL_XMIT_SIZE - port->xmit_cnt - 1,
 			SERIAL_XMIT_SIZE - port->xmit_head));
 			memcpy(port->xmit_buf + port->xmit_head, tmp_buf, cnt);
@@ -1371,8 +1353,11 @@ static int isicom_set_modem_info(struct isi_port * port, unsigned int cmd,
 	unsigned int arg;
 	unsigned long flags;
 	
-	arg = get_user(value);
+	if(get_user(arg, value))
+		return -EFAULT;
+	
 	save_flags(flags); cli();
+	
 	switch(cmd) {
 		case TIOCMBIS:
 			if (arg & TIOCM_RTS) 
@@ -1415,7 +1400,9 @@ static int isicom_set_serial_info(struct isi_port * port,
 	unsigned long flags;
 	int reconfig_port;
 
-	memcpy_fromfs(&newinfo, info, sizeof(newinfo));
+	if(copy_from_user(&newinfo, info, sizeof(newinfo)))
+		return -EFAULT;
+		
 	reconfig_port = ((port->flags & ASYNC_SPD_MASK) != 
 			 (newinfo.flags & ASYNC_SPD_MASK));
 	
@@ -1456,7 +1443,8 @@ static int isicom_get_serial_info(struct isi_port * port,
 /*	out_info.baud_base = ? */
 	out_info.close_delay = port->close_delay;
 	out_info.closing_wait = port->closing_wait;
-	memcpy_tofs(info, &out_info, sizeof(out_info));
+	if(copy_to_user(info, &out_info, sizeof(out_info)))
+		return -EFAULT;
 	return 0;
 }					
 
@@ -1464,7 +1452,7 @@ static int isicom_ioctl(struct tty_struct * tty, struct file * filp,
 			unsigned int cmd, unsigned long arg) 
 {
 	struct isi_port * port = (struct isi_port *) tty->driver_data;
-	int retval, error;
+	int retval;
 
 	if (isicom_paranoia_check(port, tty->device, "isicom_ioctl"))
 		return -ENODEV;
@@ -1488,52 +1476,30 @@ static int isicom_ioctl(struct tty_struct * tty, struct file * filp,
 			return 0;
 			
 		case TIOCGSOFTCAR:
-			error = verify_area(VERIFY_WRITE, (void *) arg, sizeof(long)); 
-			if (error)
-				return error;
-			put_user(C_CLOCAL(tty) ? 1 : 0, (unsigned long *) arg);
-			return 0;
+			return put_user(C_CLOCAL(tty) ? 1 : 0, (unsigned long *) arg);
 			
 		case TIOCSSOFTCAR:
-			error = verify_area(VERIFY_READ, (void *) arg, sizeof(long)); 	
-			if (error)
-				return error;
-			arg = get_user((unsigned long *) arg);
+			if(get_user(arg, (unsigned long *) arg))
+				return -EFAULT;
 			tty->termios->c_cflag =
 				((tty->termios->c_cflag & ~CLOCAL) |
 				(arg ? CLOCAL : 0));
 			return 0;	
 			
 		case TIOCMGET:
-			error = verify_area(VERIFY_WRITE, (void *) arg, 
-					sizeof(unsigned int)); 		   
-			if (error)
-				return error;
 			return isicom_get_modem_info(port, (unsigned int*) arg);
 			
 		case TIOCMBIS:
 		case TIOCMBIC:
 		case TIOCMSET: 	
-			error = verify_area(VERIFY_READ, (void *) arg, 
-					sizeof(unsigned int)); 		   
-			if (error)
-				return error;
 			return isicom_set_modem_info(port, cmd, 
 					(unsigned int *) arg);
 		
 		case TIOCGSERIAL:
-			error = verify_area(VERIFY_WRITE, (void *) arg, 
-					sizeof(struct serial_struct));
-			if (error)
-				return error;		
 			return isicom_get_serial_info(port, 
 					(struct serial_struct *) arg);
 		
 		case TIOCSSERIAL:
-			error = verify_area(VERIFY_READ, (void *) arg,
-					sizeof(struct serial_struct));			
-			if (error)
-				return error;
 			return isicom_set_serial_info(port,
 					(struct serial_struct *) arg);
 					
@@ -1885,22 +1851,25 @@ static int isicom_init(void)
  *	Insmod can set static symbols so keep these static
  */
  
-static int ISIBase1=0, ISIBase2=0, ISIBase3=0, ISIBase4=0; 
-static int Irq1=0, Irq2=0, Irq3=0, Irq4=0;
+static int io[4];
+static int irq[4];
+
+MODULE_AUTHOR("MultiTech");
+MODULE_DESCRIPTION("Driver for the ISI series of cards by MultiTech");
+MODULE_PARM(io, "1-4i");
+MODULE_PARM_DESC(io, "I/O ports for the cards");
+MODULE_PARM(irq, "1-4i");
+MODULE_PARM_DESC(irq, "Interrupts for the cards");
 
 int init_module(void)
 {
 	int retval, card;
-	
-	isi_card[0].base=ISIBase1;
-	isi_card[1].base=ISIBase2;
-	isi_card[2].base=ISIBase3;
-	isi_card[3].base=ISIBase4;
-			
-	isi_card[0].irq=Irq1;
-	isi_card[1].irq=Irq2;
-	isi_card[2].irq=Irq3;
-	isi_card[3].irq=Irq4;
+
+	for(card=0; card < BOARD_COUNT; card++)
+	{	
+		isi_card[card].base=io[card];
+		isi_card[card].irq=irq[card];
+	}
 	
 	for (card=0 ;card < BOARD_COUNT; card++) {
 		if (!((isi_card[card].irq==2)||(isi_card[card].irq==3)||
@@ -1947,8 +1916,7 @@ void cleanup_module(void)
 {
 	re_schedule = 0;
 	current->state = TASK_INTERRUPTIBLE;
-	current->timeout = jiffies + HZ;
-	schedule();
+	schedule_timeout(HZ);
 	disable_bh(ISICOM_BH);
 	
 #ifdef ISICOM_DEBUG	

@@ -220,16 +220,17 @@
       0.45     3-Nov-98   Added support for MCA EtherWORKS (DE210/DE212) cards
                            by <tymm@computer.org> 
       0.451    5-Nov-98   Fixed mca stuff cuz I'm a dummy. <tymm@computer.org>
+      0.5     14-Nov-98   Re-spin for 2.1.x kernels.
 
     =========================================================================
 */
 
-static const char *version = "depca.c:v0.451 1998/11/14 davies@maniac.ultranet.com\n";
+static const char *version = "depca.c:v0.5 1998/11/14 davies@maniac.ultranet.com\n";
 
+#include <linux/config.h>
 #include <linux/module.h>
 
 #include <linux/kernel.h>
-#include <linux/config.h>
 #include <linux/sched.h>
 #include <linux/string.h>
 #include <linux/ptrace.h>
@@ -238,7 +239,8 @@ static const char *version = "depca.c:v0.451 1998/11/14 davies@maniac.ultranet.c
 #include <linux/malloc.h>
 #include <linux/interrupt.h>
 #include <linux/delay.h>
-#include <asm/segment.h>
+#include <linux/init.h>
+#include <asm/uaccess.h>
 #include <asm/bitops.h>
 #include <asm/io.h>
 #include <asm/dma.h>
@@ -316,7 +318,9 @@ static short mem_chkd = 0;
 			 "DE210","DE212",\
                          "DE422",\
                          ""}
-static enum {DEPCA, de100, de101, de200, de201, de202, de210, de212, de422, unknown} adapter;
+static enum {
+  DEPCA, de100, de101, de200, de201, de202, de210, de212, de422, unknown
+} adapter;
 
 /*
 ** Miscellaneous info...
@@ -380,7 +384,7 @@ struct depca_private {
     u_long dma_buffs;		   /* LANCE Rx and Tx buffers start address. */
     int	rx_new, tx_new;		   /* The next free ring entry               */
     int rx_old, tx_old;	           /* The ring entries to be free()ed.       */
-    struct enet_statistics stats;
+    struct net_device_stats stats;
     struct {                       /* Private stats counters                 */
 	u32 bins[DEPCA_PKT_STAT_SZ];
 	u32 unicast;
@@ -412,10 +416,10 @@ struct depca_private {
 */
 static int    depca_open(struct device *dev);
 static int    depca_start_xmit(struct sk_buff *skb, struct device *dev);
-static void   depca_interrupt(int irq, void *dev_id, struct pt_regs * regs);
+static void   depca_interrupt(int irq, void *dev_id, struct pt_regs *regs);
 static int    depca_close(struct device *dev);
 static int    depca_ioctl(struct device *dev, struct ifreq *rq, int cmd);
-static struct enet_statistics *depca_get_stats(struct device *dev);
+static struct net_device_stats *depca_get_stats(struct device *dev);
 static void   set_multicast_list(struct device *dev);
 
 /*
@@ -449,9 +453,9 @@ int           init_module(void);
 void          cleanup_module(void);
 static int    autoprobed = 1, loading_module = 1;
 # else
-static u_char de1xx_irq[] = {2,3,4,5,7,9,0};
-static u_char de2xx_irq[] = {5,9,10,11,15,0};
-static u_char de422_irq[] = {5,9,10,11,0};
+static u_char de1xx_irq[] __initdata = {2,3,4,5,7,9,0};
+static u_char de2xx_irq[] __initdata = {5,9,10,11,15,0};
+static u_char de422_irq[] __initdata = {5,9,10,11,0};
 static u_char *depca_irq;
 static int    autoprobed = 0, loading_module = 0;
 #endif /* MODULE */
@@ -472,8 +476,8 @@ static char   *adapter_name = '\0';        /* If no PROM when loadable module
 
 
 
-int
-depca_probe(struct device *dev)
+__initfunc(int
+depca_probe(struct device *dev))
 {
   int tmp = num_depcas, status = -ENODEV;
   u_long iobase = dev->base_addr;
@@ -506,8 +510,8 @@ depca_probe(struct device *dev)
   return status;
 }
 
-static int
-depca_hw_init(struct device *dev, u_long ioaddr, int mca_slot)
+__initfunc(static int
+depca_hw_init(struct device *dev, u_long ioaddr, int mca_slot))
 {
   struct depca_private *lp;
   int i, j, offset, netRAM, mem_len, status=0;
@@ -726,7 +730,6 @@ depca_open(struct device *dev)
   s16 nicsr;
   int status = 0;
 
-  irq2dev_map[dev->irq] = dev;
   STOP_DEPCA;
   nicsr = inb(DEPCA_NICSR);
 
@@ -742,7 +745,7 @@ depca_open(struct device *dev)
 
   depca_dbg_open(dev);
 
-  if (request_irq(dev->irq, &depca_interrupt, 0, lp->adapter_name, NULL)) {
+  if (request_irq(dev->irq, &depca_interrupt, 0, lp->adapter_name, dev)) {
     printk("depca_open(): Requested IRQ%d is busy\n",dev->irq);
     status = -EAGAIN;
   } else {
@@ -778,7 +781,7 @@ depca_init_ring(struct device *dev)
   u_long p;
 
   /* Lock out other processes whilst setting up the hardware */
-  set_bit(0, (void *)&dev->tbusy);
+  test_and_set_bit(0, (void *)&dev->tbusy);
 
   lp->rx_new = lp->tx_new = 0;
   lp->rx_old = lp->tx_old = 0;
@@ -837,18 +840,11 @@ depca_start_xmit(struct sk_buff *skb, struct device *dev)
       dev->tbusy=0;
       dev->trans_start = jiffies;
       InitRestartDepca(dev);
-      dev_kfree_skb(skb, FREE_WRITE);
     }
     return status;
-  } else if (skb == NULL) {
-    dev_tint(dev);
   } else if (skb->len > 0) {
-    if (skb->len < ETH_ZLEN) {
-	    if (!(skb = skb_padto(skb, ETH_ZLEN)))
-		    return 0;
-    }
     /* Enforce 1 process per h/w access */
-    if (set_bit(0, (void*)&dev->tbusy) != 0) {
+    if (test_and_set_bit(0, (void*)&dev->tbusy) != 0) {
       printk("%s: Transmitter access conflict.\n", dev->name);
       status = -1;
     } else {
@@ -861,7 +857,7 @@ depca_start_xmit(struct sk_buff *skb, struct device *dev)
 	  outw(INEA | TDMD, DEPCA_DATA);
 	  
 	  dev->trans_start = jiffies;
-	  dev_kfree_skb(skb, FREE_WRITE);
+	  dev_kfree_skb(skb);
 	}
 	if (TX_BUFFS_AVAIL) {
 	  dev->tbusy=0;
@@ -879,9 +875,9 @@ depca_start_xmit(struct sk_buff *skb, struct device *dev)
 ** The DEPCA interrupt handler. 
 */
 static void
-depca_interrupt(int irq, void *dev_id, struct pt_regs * regs)
+depca_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 {
-  struct device *dev = (struct device *)(irq2dev_map[irq]);
+  struct device *dev = dev_id;
   struct depca_private *lp;
   s16 csr0, nicsr;
   u_long ioaddr;
@@ -1102,8 +1098,7 @@ depca_close(struct device *dev)
   /*
   ** Free the associated irq
   */
-  free_irq(dev->irq, NULL);
-  irq2dev_map[dev->irq] = NULL;
+  free_irq(dev->irq, dev);
 
   MOD_DEC_USE_COUNT;
 
@@ -1158,7 +1153,7 @@ static int InitRestartDepca(struct device *dev)
   return status;
 }
 
-static struct enet_statistics *
+static struct net_device_stats *
 depca_get_stats(struct device *dev)
 {
     struct depca_private *lp = (struct depca_private *)dev->priv;
@@ -1177,8 +1172,8 @@ set_multicast_list(struct device *dev)
   struct depca_private *lp = (struct depca_private *)dev->priv;
   u_long ioaddr = dev->base_addr;
   
-  if (irq2dev_map[dev->irq] != NULL) {
-    while(dev->tbusy);                /* Stop ring access */
+  if (dev) {
+    while(dev->tbusy) barrier();      /* Stop ring access */
     set_bit(0, (void*)&dev->tbusy);
     while(lp->tx_old != lp->tx_new);  /* Wait for the ring to empty */
 
@@ -1253,8 +1248,8 @@ static void SetMulticastFilter(struct device *dev)
 /*
 ** Microchannel bus I/O device probe
 */
-static void
-mca_probe(struct device *dev, u_long ioaddr)
+__initfunc(static void
+mca_probe(struct device *dev, u_long ioaddr))
 {
     unsigned char pos[2];
     unsigned char where;
@@ -1402,8 +1397,8 @@ responding.\n", dev->name, iobase);
 /*
 ** ISA bus I/O device probe
 */
-static void
-isa_probe(struct device *dev, u_long ioaddr)
+__initfunc(static void
+isa_probe(struct device *dev, u_long ioaddr))
 {
   int i = num_depcas, maxSlots;
   s32 ports[] = DEPCA_IO_PORTS;
@@ -1430,7 +1425,7 @@ isa_probe(struct device *dev, u_long ioaddr)
 	}
       }
     } else if (autoprobed) {
-      printk("%s: region already allocated at 0x%04x.\n", dev->name,ports[i]);
+      printk("%s: region already allocated at 0x%04x.\n", dev->name, ports[i]);
     }
   }
 
@@ -1441,8 +1436,8 @@ isa_probe(struct device *dev, u_long ioaddr)
 ** EISA bus I/O device probe. Probe from slot 1 since slot 0 is usually
 ** the motherboard. Upto 15 EISA devices are supported.
 */
-static void
-eisa_probe(struct device *dev, u_long ioaddr)
+__initfunc(static void
+eisa_probe(struct device *dev, u_long ioaddr))
 {
   int i, maxSlots;
   u_long iobase;
@@ -1475,7 +1470,7 @@ eisa_probe(struct device *dev, u_long ioaddr)
 	}
       }
     } else if (autoprobed) {
-      printk("%s: region already allocated at 0x%04lx.\n",dev->name,iobase);
+      printk("%s: region already allocated at 0x%04lx.\n", dev->name, iobase);
     }
   }
 
@@ -1488,8 +1483,8 @@ eisa_probe(struct device *dev, u_long ioaddr)
 ** are not available then insert a new device structure at the end of
 ** the current list.
 */
-static struct device *
-alloc_device(struct device *dev, u_long iobase)
+__initfunc(static struct device *
+alloc_device(struct device *dev, u_long iobase))
 {
     struct device *adev = NULL;
     int fixed = 0, new_dev = 0;
@@ -1533,8 +1528,8 @@ alloc_device(struct device *dev, u_long iobase)
 ** If at end of eth device list and can't use current entry, malloc
 ** one up. If memory could not be allocated, print an error message.
 */
-static struct device *
-insert_device(struct device *dev, u_long iobase, int (*init)(struct device *))
+__initfunc(static struct device *
+insert_device(struct device *dev, u_long iobase, int (*init)(struct device *)))
 {
     struct device *new;
 
@@ -1559,8 +1554,8 @@ insert_device(struct device *dev, u_long iobase, int (*init)(struct device *))
     return dev;
 }
 
-static int
-depca_dev_index(char *s)
+__initfunc(static int
+depca_dev_index(char *s))
 {
     int i=0, j=0;
 
@@ -1579,7 +1574,8 @@ depca_dev_index(char *s)
 ** and Boot (readb) ROM. This will also give us a clue to the network RAM
 ** base address.
 */
-static void DepcaSignature(char *name, u_long paddr)
+__initfunc(static void
+DepcaSignature(char *name, u_long paddr))
 {
   u_int i,j,k;
   const char *signatures[] = DEPCA_SIGNATURE;
@@ -1631,7 +1627,8 @@ static void DepcaSignature(char *name, u_long paddr)
 ** PROM address counter is correctly positioned at the start of the
 ** ethernet address for later read out.
 */
-static int DevicePresent(u_long ioaddr)
+__initfunc(static int
+DevicePresent(u_long ioaddr))
 {
   union {
     struct {
@@ -1683,7 +1680,8 @@ static int DevicePresent(u_long ioaddr)
 ** reason: access the upper half of the PROM with x=0; access the lower half
 ** with x=1.
 */
-static int get_hw_addr(struct device *dev)
+__initfunc(static int
+get_hw_addr(struct device *dev))
 {
   u_long ioaddr = dev->base_addr;
   int i, k, tmp, status = 0;
@@ -1771,7 +1769,8 @@ static int load_packet(struct device *dev, struct sk_buff *skb)
 /*
 ** Look for a particular board name in the EISA configuration space
 */
-static int EISA_signature(char *name, s32 eisa_id)
+__initfunc(static int
+EISA_signature(char *name, s32 eisa_id))
 {
   u_int i;
   const char *signatures[] = DEPCA_SIGNATURE;
@@ -1900,18 +1899,18 @@ static int depca_ioctl(struct device *dev, struct ifreq *rq, int cmd)
     }
     ioc->len = ETH_ALEN;
     if (verify_area(VERIFY_WRITE, (void *)ioc->data, ioc->len)) return -EFAULT;
-    memcpy_tofs(ioc->data, tmp.addr, ioc->len);
+    copy_to_user(ioc->data, tmp.addr, ioc->len);
     break;
 
   case DEPCA_SET_HWADDR:             /* Set the hardware address */
-    if (!suser()) return -EPERM;
+    if (!capable(CAP_NET_ADMIN)) return -EPERM;
     if (verify_area(VERIFY_READ, (void *)ioc->data, ETH_ALEN)) return -EFAULT;
-    memcpy_fromfs(tmp.addr,ioc->data,ETH_ALEN);
+    copy_from_user(tmp.addr,ioc->data,ETH_ALEN);
     for (i=0; i<ETH_ALEN; i++) {
       dev->dev_addr[i] = tmp.addr[i];
     }
     while(dev->tbusy) barrier();        /* Stop ring access */
-    set_bit(0, (void*)&dev->tbusy);
+    test_and_set_bit(0, (void*)&dev->tbusy);
     while(lp->tx_old != lp->tx_new);    /* Wait for the ring to empty */
 
     STOP_DEPCA;                         /* Temporarily stop the depca.  */
@@ -1922,9 +1921,9 @@ static int depca_ioctl(struct device *dev, struct ifreq *rq, int cmd)
     break;
 
   case DEPCA_SET_PROM:               /* Set Promiscuous Mode */
-    if (!suser()) return -EPERM;
+    if (!capable(CAP_NET_ADMIN)) return -EPERM;
     while(dev->tbusy) barrier();        /* Stop ring access */
-    set_bit(0, (void*)&dev->tbusy);
+    test_and_set_bit(0, (void*)&dev->tbusy);
     while(lp->tx_old != lp->tx_new);    /* Wait for the ring to empty */
 
     STOP_DEPCA;                         /* Temporarily stop the depca.  */
@@ -1937,9 +1936,9 @@ static int depca_ioctl(struct device *dev, struct ifreq *rq, int cmd)
     break;
 
   case DEPCA_CLR_PROM:               /* Clear Promiscuous Mode */
-    if (!suser()) return -EPERM;
+    if (!capable(CAP_NET_ADMIN)) return -EPERM;
     while(dev->tbusy) barrier();        /* Stop ring access */
-    set_bit(0, (void*)&dev->tbusy);
+    test_and_set_bit(0, (void*)&dev->tbusy);
     while(lp->tx_old != lp->tx_new);    /* Wait for the ring to empty */
 
     STOP_DEPCA;                         /* Temporarily stop the depca.  */
@@ -1958,23 +1957,23 @@ static int depca_ioctl(struct device *dev, struct ifreq *rq, int cmd)
   case DEPCA_GET_MCA:                /* Get the multicast address table */
     ioc->len = (HASH_TABLE_LEN >> 3);
     if (verify_area(VERIFY_WRITE, ioc->data, ioc->len)) return -EFAULT;
-    memcpy_tofs(ioc->data, lp->init_block.mcast_table, ioc->len); 
+    copy_to_user(ioc->data, lp->init_block.mcast_table, ioc->len); 
     break;
 
   case DEPCA_SET_MCA:                /* Set a multicast address */
-    if (!suser()) return -EPERM;
+    if (!capable(CAP_NET_ADMIN)) return -EPERM;
     if (verify_area(VERIFY_READ, ioc->data, ETH_ALEN*ioc->len)) return -EFAULT;
-    memcpy_fromfs(tmp.addr, ioc->data, ETH_ALEN * ioc->len);
+    copy_from_user(tmp.addr, ioc->data, ETH_ALEN * ioc->len);
     set_multicast_list(dev);
     break;
 
   case DEPCA_CLR_MCA:                /* Clear all multicast addresses */
-    if (!suser()) return -EPERM;
+    if (!capable(CAP_NET_ADMIN)) return -EPERM;
     set_multicast_list(dev);
     break;
 
   case DEPCA_MCA_EN:                 /* Enable pass all multicast addressing */
-    if (!suser()) return -EPERM;
+    if (!capable(CAP_NET_ADMIN)) return -EPERM;
       set_multicast_list(dev);
     break;
 
@@ -1984,13 +1983,13 @@ static int depca_ioctl(struct device *dev, struct ifreq *rq, int cmd)
     if (verify_area(VERIFY_WRITE, ioc->data, ioc->len)) {
 	status = -EFAULT;
     } else {
-	memcpy_tofs(ioc->data, &lp->pktStats, ioc->len); 
+	copy_to_user(ioc->data, &lp->pktStats, ioc->len); 
     }
     sti();
     break;
 
   case DEPCA_CLR_STATS:              /* Zero out the driver statistics */
-    if (!suser()) return -EPERM;
+    if (!capable(CAP_NET_ADMIN)) return -EPERM;
     cli();
     memset(&lp->pktStats, 0, sizeof(lp->pktStats));
     sti();
@@ -2004,7 +2003,7 @@ static int depca_ioctl(struct device *dev, struct ifreq *rq, int cmd)
     memcpy(&tmp.sval[i], &lp->init_block, sizeof(struct depca_init));
     ioc->len = i+sizeof(struct depca_init);
     if (verify_area(VERIFY_WRITE, ioc->data, ioc->len)) return -EFAULT;
-    memcpy_tofs(ioc->data, tmp.addr, ioc->len);
+    copy_to_user(ioc->data, tmp.addr, ioc->len);
     break;
 
   default:
@@ -2025,6 +2024,8 @@ static struct device thisDepca = {
 
 static int irq=7;	/* EDIT THESE LINE FOR YOUR CONFIGURATION */
 static int io=0x200;    /* Or use the irq= io= options to insmod */
+MODULE_PARM(irq, "i");
+MODULE_PARM(io, "i");
 
 /* See depca_probe() for autoprobe messages when a module */	
 int

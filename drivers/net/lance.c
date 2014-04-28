@@ -40,22 +40,15 @@
     8/20/96 Fixed 7990 autoIRQ failure and reversed unneeded alignment -djb
     v1.12 10/27/97 Module support -djb
     v1.14  2/3/98 Module support modified, made PCI support optional -djb
+    
+    Forward ported v1.14 to 2.1.129, merged the PCI and misc changes from
+    the 2.1 version of the old driver - Alan Cox
 */
 
-static const char *version = "lance.c:v1.14 2/3/1998 dplatt@3do.com, becker@cesdis.gsfc.nasa.gov\n";
-
-#ifdef MODULE
-#ifdef MODVERSIONS
-#include <linux/modversions.h>
-#endif
-#include <linux/module.h>
-#include <linux/version.h>
-#else
-#define MOD_INC_USE_COUNT
-#define MOD_DEC_USE_COUNT
-#endif
+static const char *version = "lance.c:v1.14ac 1998/11/20 dplatt@3do.com, becker@cesdis.gsfc.nasa.gov\n";
 
 #include <linux/config.h>
+#include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/sched.h>
 #include <linux/string.h>
@@ -65,7 +58,7 @@ static const char *version = "lance.c:v1.14 2/3/1998 dplatt@3do.com, becker@cesd
 #include <linux/malloc.h>
 #include <linux/interrupt.h>
 #include <linux/pci.h>
-#include <linux/bios32.h>
+#include <linux/init.h>
 #include <asm/bitops.h>
 #include <asm/io.h>
 #include <asm/dma.h>
@@ -74,14 +67,9 @@ static const char *version = "lance.c:v1.14 2/3/1998 dplatt@3do.com, becker@cesd
 #include <linux/etherdevice.h>
 #include <linux/skbuff.h>
 
-static unsigned int lance_portlist[] = { 0x300, 0x320, 0x340, 0x360, 0};
+static unsigned int lance_portlist[] __initdata = { 0x300, 0x320, 0x340, 0x360, 0};
 int lance_probe(struct device *dev);
 int lance_probe1(struct device *dev, int ioaddr, int irq, int options);
-
-#ifdef HAVE_DEVLIST
-struct netdev_entry lance_drv =
-{"lance", lance_probe1, LANCE_TOTAL_SIZE, lance_portlist};
-#endif
 
 #ifdef LANCE_DEBUG
 int lance_debug = LANCE_DEBUG;
@@ -168,10 +156,10 @@ queue slot is empty, it clears the tbusy flag when finished otherwise it sets
 the 'lp->tx_full' flag.
 
 The interrupt handler has exclusive control over the Rx ring and records stats
-from the Tx ring.  (The Tx-done interrupt can't be selectively turned off, so
+from the Tx ring. (The Tx-done interrupt can't be selectively turned off, so
 we can't avoid the interrupt overhead by having the Tx routine reap the Tx
 stats.)	 After reaping the stats, it marks the queue entry as empty by setting
-the 'base' to zero.	 Iff the 'lp->tx_full' flag is set, it clears both the
+the 'base' to zero. Iff the 'lp->tx_full' flag is set, it clears both the
 tx_full and tbusy flags.
 
 */
@@ -242,7 +230,7 @@ struct lance_private {
 	int cur_rx, cur_tx;			/* The next free ring entry */
 	int dirty_rx, dirty_tx;		/* The ring entries to be free()ed. */
 	int dma;
-	struct enet_statistics stats;
+	struct net_device_stats stats;
 	unsigned char chip_version;	/* See lance_chip_type. */
 	char tx_full;
 	unsigned long lock;
@@ -289,7 +277,7 @@ static struct lance_chip_type {
 enum {OLD_LANCE = 0, PCNET_ISA=1, PCNET_ISAP=2, PCNET_PCI=3, PCNET_VLB=4, PCNET_PCI_II=5, LANCE_UNKNOWN=6};
 
 /* Non-zero only if the current card is a PCI with BIOS-set IRQ. */
-static unsigned char pci_irq_line = 0;
+static unsigned int pci_irq_line = 0;
 
 /* Non-zero if lance_probe1() needs to allocate low-memory bounce buffers.
    Assume yes until we know the memory size. */
@@ -302,7 +290,7 @@ static int lance_start_xmit(struct sk_buff *skb, struct device *dev);
 static int lance_rx(struct device *dev);
 static void lance_interrupt(int irq, void *dev_id, struct pt_regs *regs);
 static int lance_close(struct device *dev);
-static struct enet_statistics *lance_get_stats(struct device *dev);
+static struct net_device_stats *lance_get_stats(struct device *dev);
 static void set_multicast_list(struct device *dev);
 
 
@@ -334,17 +322,14 @@ int init_module(void)
 		dev->base_addr = io[this_dev];
 		dev->dma = dma[this_dev];
 		dev->init = lance_probe;
-#if NO_AUTOPROBE_MODULE
 		if (io[this_dev] == 0)  {
 			if (this_dev != 0) break; /* only complain once */
 			printk(KERN_NOTICE "lance.c: Module autoprobing not allowed. Append \"io=0xNNN\" value(s).\n");
 			return -EPERM;
 		}
-#endif
 		if (register_netdev(dev) != 0) {
-			if (found != 0)
-				return 0;	/* Got at least one. */
-			printk(KERN_WARNING "lance.c: No PCnet/LANCE card found\n");
+			printk(KERN_WARNING "lance.c: No PCnet/LANCE card found (i/o = 0x%x).\n", io[this_dev]);
+			if (found != 0) return 0;	/* Got at least one. */
 			return -ENXIO;
 		}
 		found++;
@@ -382,42 +367,26 @@ int lance_probe(struct device *dev)
 		lance_need_isa_bounce_buffers = 0;
 
 #if defined(CONFIG_PCI)
-    if (pcibios_present()) {
-	    int pci_index;
+    if (pci_present()) {
+		struct pci_dev *pdev = NULL;
 		if (lance_debug > 1)
 			printk("lance.c: PCI bios is present, checking for devices...\n");
-		for (pci_index = 0; pci_index < 8; pci_index++) {
-			unsigned char pci_bus, pci_device_fn;
+
+		while ((pdev = pci_find_device(PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_AMD_LANCE, pdev))) {
 			unsigned int pci_ioaddr;
 			unsigned short pci_command;
 
-			if (pcibios_find_device (PCI_VENDOR_ID_AMD,
-						 PCI_DEVICE_ID_AMD_LANCE, pci_index,
-						 &pci_bus, &pci_device_fn) != 0)
-				break;
-			pcibios_read_config_byte(pci_bus, pci_device_fn,
-						 PCI_INTERRUPT_LINE, &pci_irq_line);
-			pcibios_read_config_dword(pci_bus, pci_device_fn,
-						  PCI_BASE_ADDRESS_0, &pci_ioaddr);
-			/* Remove I/O space marker in bit 0. */
-			pci_ioaddr &= ~3;
-	    
-			/* Avoid already found cards from previous calls
-			 */
-			if (check_region(pci_ioaddr, LANCE_TOTAL_SIZE))
-				continue;
-	    
+			pci_irq_line = pdev->irq;
+			pci_ioaddr = pdev->base_address[0] & PCI_BASE_ADDRESS_IO_MASK;
 			/* PCI Spec 2.1 states that it is either the driver or PCI card's
 	 		 * responsibility to set the PCI Master Enable Bit if needed.
 			 *	(From Mark Stockton <marks@schooner.sys.hou.compaq.com>)
 			 */
-			pcibios_read_config_word(pci_bus, pci_device_fn,
-									 PCI_COMMAND, &pci_command);
+			pci_read_config_word(pdev, PCI_COMMAND, &pci_command);
 			if ( ! (pci_command & PCI_COMMAND_MASTER)) {
 				printk("PCI Master Bit has not been set. Setting...\n");
 				pci_command |= PCI_COMMAND_MASTER;
-				pcibios_write_config_word(pci_bus, pci_device_fn,
-										  PCI_COMMAND, pci_command);
+				pci_write_config_word(pdev, PCI_COMMAND, pci_command);
 			}
 			printk("Found PCnet/PCI at %#x, irq %d.\n",
 				   pci_ioaddr, pci_irq_line);
@@ -446,7 +415,7 @@ int lance_probe(struct device *dev)
 	return -ENODEV;
 }
 
-int lance_probe1(struct device *dev, int ioaddr, int irq, int options)
+__initfunc(int lance_probe1(struct device *dev, int ioaddr, int irq, int options))
 {
 	struct lance_private *lp;
 	short dma_channels;					/* Mark spuriously-busy DMA channels */
@@ -456,6 +425,7 @@ int lance_probe1(struct device *dev, int ioaddr, int irq, int options)
 	unsigned char hpJ2405A = 0;			/* HP ISA adaptor */
 	int hp_builtin = 0;					/* HP on-board ethernet. */
 	static int did_version = 0;			/* Already printed version info. */
+	unsigned long flags;
 
 	/* First we look for special cases.
 	   Check for HP's on-board ethernet by looking for 'HP' in the BIOS.
@@ -636,8 +606,11 @@ int lance_probe1(struct device *dev, int ioaddr, int irq, int options)
 			outw(0x7f04, ioaddr+LANCE_DATA); /* Clear the memory error bits. */
 			if (request_dma(dma, chipname))
 				continue;
+				
+			flags=claim_dma_lock();
 			set_dma_mode(dma, DMA_MODE_CASCADE);
 			enable_dma(dma);
+			release_dma_lock(flags);
 
 			/* Trigger an initialization. */
 			outw(0x0001, ioaddr+LANCE_DATA);
@@ -649,7 +622,9 @@ int lance_probe1(struct device *dev, int ioaddr, int irq, int options)
 				printk(", DMA %d.\n", dev->dma);
 				break;
 			} else {
+				flags=claim_dma_lock();
 				disable_dma(dma);
+				release_dma_lock(flags);
 				free_dma(dma);
 			}
 		}
@@ -724,8 +699,10 @@ lance_open(struct device *dev)
 
 	/* The DMA controller is used as a no-operation slave, "cascade mode". */
 	if (dev->dma != 4) {
+		unsigned long flags=claim_dma_lock();
 		enable_dma(dev->dma);
 		set_dma_mode(dev->dma, DMA_MODE_CASCADE);
+		release_dma_lock(flags);
 	}
 
 	/* Un-Reset the LANCE, needed only for the NE2100. */
@@ -799,7 +776,7 @@ lance_purge_tx_ring(struct device *dev)
 
 	for (i = 0; i < TX_RING_SIZE; i++) {
 		if (lp->tx_skbuff[i]) {
-			dev_kfree_skb(lp->tx_skbuff[i],FREE_WRITE);
+			dev_kfree_skb(lp->tx_skbuff[i]);
 			lp->tx_skbuff[i] = NULL;
 		}
 	}
@@ -864,8 +841,7 @@ lance_restart(struct device *dev, unsigned int csr0_bits, int must_reinit)
 	outw(csr0_bits, dev->base_addr + LANCE_DATA);
 }
 
-static int
-lance_start_xmit(struct sk_buff *skb, struct device *dev)
+static int lance_start_xmit(struct sk_buff *skb, struct device *dev)
 {
 	struct lance_private *lp = (struct lance_private *)dev->priv;
 	int ioaddr = dev->base_addr;
@@ -916,12 +892,12 @@ lance_start_xmit(struct sk_buff *skb, struct device *dev)
 
 	/* Block a timer-based transmit from overlapping.  This could better be
 	   done with atomic_swap(1, dev->tbusy), but set_bit() works as well. */
-	if (set_bit(0, (void*)&dev->tbusy) != 0) {
+	if (test_and_set_bit(0, (void*)&dev->tbusy) != 0) {
 		printk("%s: Transmitter access conflict.\n", dev->name);
 		return 1;
 	}
 
-	if (set_bit(0, (void*)&lp->lock) != 0) {
+	if (test_and_set_bit(0, (void*)&lp->lock) != 0) {
 		if (lance_debug > 0)
 			printk("%s: tx queue lock!.\n", dev->name);
 		/* don't clear dev->tbusy flag. */
@@ -954,12 +930,13 @@ lance_start_xmit(struct sk_buff *skb, struct device *dev)
 		memcpy(&lp->tx_bounce_buffs[entry], skb->data, skb->len);
 		lp->tx_ring[entry].base =
 			((u32)virt_to_bus((lp->tx_bounce_buffs + entry)) & 0xffffff) | 0x83000000;
-		dev_kfree_skb (skb, FREE_WRITE);
+		dev_kfree_skb(skb);
 	} else {
 		lp->tx_skbuff[entry] = skb;
 		lp->tx_ring[entry].base = ((u32)virt_to_bus(skb->data) & 0xffffff) | 0x83000000;
 	}
 	lp->cur_tx++;
+	lp->stats.tx_bytes += skb->len;
 
 	/* Trigger an immediate send poll. */
 	outw(0x0000, ioaddr+LANCE_ADDR);
@@ -983,7 +960,7 @@ lance_start_xmit(struct sk_buff *skb, struct device *dev)
 static void
 lance_interrupt(int irq, void *dev_id, struct pt_regs * regs)
 {
-	struct device *dev = (struct device *)dev_id;
+	struct device *dev = dev_id;
 	struct lance_private *lp;
 	int csr0, ioaddr, boguscnt=10;
 	int must_restart;
@@ -996,7 +973,7 @@ lance_interrupt(int irq, void *dev_id, struct pt_regs * regs)
 	ioaddr = dev->base_addr;
 	lp = (struct lance_private *)dev->priv;
 	if (dev->interrupt)
-		printk("%s: Re-entering the interrupt handler.\n", dev->name);
+		printk(KERN_WARNING "%s: Re-entering the interrupt handler.\n", dev->name);
 
 	dev->interrupt = 1;
 
@@ -1052,7 +1029,7 @@ lance_interrupt(int irq, void *dev_id, struct pt_regs * regs)
 				/* We must free the original skb if it's not a data-only copy
 				   in the bounce buffer. */
 				if (lp->tx_skbuff[entry]) {
-					dev_kfree_skb(lp->tx_skbuff[entry],FREE_WRITE);
+					dev_kfree_skb(lp->tx_skbuff[entry]);
 					lp->tx_skbuff[entry] = 0;
 				}
 				dirty_tx++;
@@ -1167,9 +1144,10 @@ lance_rx(struct device *dev)
 				eth_copy_and_sum(skb,
 					(unsigned char *)bus_to_virt((lp->rx_ring[entry].base & 0x00ffffff)),
 					pkt_len,0);
+				lp->stats.rx_bytes+=skb->len;
 				skb->protocol=eth_type_trans(skb,dev);
-				netif_rx(skb);
 				lp->stats.rx_packets++;
+				netif_rx(skb);
 			}
 		}
 		/* The docs say that the buffer length isn't touched, but Andrew Boyd
@@ -1210,8 +1188,11 @@ lance_close(struct device *dev)
 	outw(0x0004, ioaddr+LANCE_DATA);
 
 	if (dev->dma != 4)
+	{
+		unsigned long flags=claim_dma_lock();
 		disable_dma(dev->dma);
-
+		release_dma_lock(flags);
+	}
 	free_irq(dev->irq, dev);
 
 	/* Free all the skbuffs in the Rx and Tx queues. */
@@ -1219,14 +1200,12 @@ lance_close(struct device *dev)
 		struct sk_buff *skb = lp->rx_skbuff[i];
 		lp->rx_skbuff[i] = 0;
 		lp->rx_ring[i].base = 0;		/* Not owned by LANCE chip. */
-		if (skb) {
-			skb->free = 1;
-			dev_kfree_skb(skb, FREE_WRITE);
-		}
+		if (skb)
+			dev_kfree_skb(skb);
 	}
 	for (i = 0; i < TX_RING_SIZE; i++) {
 		if (lp->tx_skbuff[i])
-			dev_kfree_skb(lp->tx_skbuff[i], FREE_WRITE);
+			dev_kfree_skb(lp->tx_skbuff[i]);
 		lp->tx_skbuff[i] = 0;
 	}
 
@@ -1234,8 +1213,7 @@ lance_close(struct device *dev)
 	return 0;
 }
 
-static struct enet_statistics *
-lance_get_stats(struct device *dev)
+static struct net_device_stats *lance_get_stats(struct device *dev)
 {
 	struct lance_private *lp = (struct lance_private *)dev->priv;
 	short ioaddr = dev->base_addr;
@@ -1290,12 +1268,3 @@ static void set_multicast_list(struct device *dev)
 
 }
 
-
-/*
- * Local variables:
- *  compile-command: "gcc -DMODULE -D__KERNEL__ -I/usr/src/linux/net/inet -Wall -Wstrict-prototypes -O6 -m486 -c lance.c"
- *  c-indent-level: 4
- *  c-basic-offset: 4
- *  tab-width: 4
- * End:
- */

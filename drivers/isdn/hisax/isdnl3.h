@@ -1,16 +1,6 @@
-/* $Id: isdnl3.h,v 1.3.2.3 1998/11/03 00:07:08 keil Exp $
+/* $Id: isdnl3.h,v 2.0 1997/07/27 21:15:42 keil Exp $
 
  * $Log: isdnl3.h,v $
- * Revision 1.3.2.3  1998/11/03 00:07:08  keil
- * certification related changes
- * fixed logging for smaller stack use
- *
- * Revision 1.3.2.2  1998/05/27 18:06:02  keil
- * HiSax 3.0
- *
- * Revision 1.3.2.1  1997/10/17 22:14:08  keil
- * update to last hisax version
- *
  * Revision 2.0  1997/07/27 21:15:42  keil
  * New Callref based layer3
  *
@@ -41,12 +31,11 @@
 
 struct stateentry {
 	int state;
-	int primitive;
+	u_char primitive;
 	void (*rout) (struct l3_process *, u_char, void *);
 };
 
-#define l3_debug(st, fmt, args...) HiSax_putstatus(st->l1.hardware, "l3 ", fmt, ## args)
-
+extern void l3_debug(struct PStack *st, char *s);
 extern void newl3state(struct l3_process *pc, int state);
 extern void L3InitTimer(struct l3_process *pc, struct L3Timer *t);
 extern void L3DelTimer(struct L3Timer *t);
@@ -56,4 +45,3 @@ extern struct sk_buff *l3_alloc_skb(int len);
 extern struct l3_process *new_l3_process(struct PStack *st, int cr);
 extern void release_l3_process(struct l3_process *p);
 extern struct l3_process *getl3proc(struct PStack *st, int cr);
-extern void l3_msg(struct PStack *st, int pr, void *arg);

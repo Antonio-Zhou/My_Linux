@@ -2,11 +2,6 @@
         pd.c    (c) 1997-8  Grant R. Guenther <grant@torque.net>
                             Under the terms of the GNU public license.
 
-
-	Special 2.0.34 version.
-
-
-
         This is the high-level driver for parallel port IDE hard
         drives based on chips supported by the paride module.
 
@@ -83,9 +78,10 @@
 			(default 64)
 
 	    verbose	This parameter controls the amount of logging
-			that is done while the driver probes for
-			devices.  Set it to 0 for a quiet load, or to 1
-			see all the progress messages.  (default 0)
+			that the driver will do.  Set it to 0 for 
+			normal operation, 1 to see autoprobe progress
+			messages, or 2 to see additional debugging
+			output.  (default 0)
 
             nice        This parameter controls the driver's use of
                         idle CPU time, at the expense of some speed.
@@ -113,12 +109,12 @@
 	1.02    GRG 1998.05.06  SMP spinlock changes, 
 				Added slave support
 	1.03    GRG 1998.06.16  Eliminate an Ugh.
-	1.04s   GRG 1998.09.24  Added jumbo support
-				Use HZ in loop timings, extra debugging
+	1.04	GRG 1998.08.15  Extra debugging, use HZ in loop timing
+	1.05    GRG 1998.09.24  Added jumbo support
 
 */
 
-#define PD_VERSION      "1.04s"
+#define PD_VERSION      "1.05"
 #define PD_MAJOR	45
 #define PD_NAME		"pd"
 #define PD_UNITS	4
@@ -166,8 +162,8 @@ static int pd_drive_count;
 #include <linux/hdreg.h>
 #include <linux/cdrom.h>	/* for the eject ioctl */
 
-#include "spinlock.h"
-#include <asm/segment.h>
+#include <asm/spinlock.h>
+#include <asm/uaccess.h>
 
 #ifndef MODULE
 
@@ -187,6 +183,16 @@ void pd_setup( char *str, int *ints)
 }
 
 #endif
+
+MODULE_PARM(verbose,"i");
+MODULE_PARM(major,"i");
+MODULE_PARM(name,"s");
+MODULE_PARM(cluster,"i");
+MODULE_PARM(nice,"i");
+MODULE_PARM(drive0,"1-8i");
+MODULE_PARM(drive1,"1-8i");
+MODULE_PARM(drive2,"1-8i");
+MODULE_PARM(drive3,"1-8i");
 
 #include "paride.h"
 
@@ -220,7 +226,7 @@ void pd_setup( char *str, int *ints)
 #define PD_TMO          800             /* interrupt timeout in jiffies */
 #define PD_SPIN_DEL     50              /* spin delay in micro-seconds  */
 
-#define PD_SPIN         (1000000*PD_TMO)/(HZ*PD_SPIN_DEL)
+#define PD_SPIN         (1000000*PD_TMO)/(HZ*PD_SPIN_DEL)  
 
 #define STAT_ERR        0x00001
 #define STAT_INDEX      0x00002
@@ -261,7 +267,7 @@ static int pd_open(struct inode *inode, struct file *file);
 static void do_pd_request(void);
 static int pd_ioctl(struct inode *inode,struct file *file,
                     unsigned int cmd, unsigned long arg);
-static void pd_release (struct inode *inode, struct file *file);
+static int pd_release (struct inode *inode, struct file *file);
 static int pd_revalidate(kdev_t dev);
 static int pd_detect(void);
 static void do_pd_read(void);
@@ -356,6 +362,7 @@ static struct file_operations pd_fops = {
         pd_ioctl,               /* ioctl */
         NULL,                   /* mmap */
         pd_open,                /* open */
+	NULL,			/* flush */
         pd_release,             /* release */
         block_fsync,            /* fsync */
         NULL,                   /* fasync */
@@ -477,7 +484,7 @@ static int pd_ioctl(struct inode *inode,struct file *file,
                 put_user(pd_hd[dev].start_sect,(long *)&geo->start);
                 return 0;
             case BLKRASET:
-                if(!suser()) return -EACCES;
+                if(!capable(CAP_SYS_ADMIN)) return -EACCES;
                 if(!(inode->i_rdev)) return -EINVAL;
                 if(arg > 0xff) return -EINVAL;
                 read_ahead[MAJOR(inode->i_rdev)] = arg;
@@ -495,13 +502,14 @@ static int pd_ioctl(struct inode *inode,struct file *file,
                 put_user(pd_hd[dev].nr_sects,(long *) arg);
                 return (0);
             case BLKFLSBUF:
-                if(!suser())  return -EACCES;
+                if(!capable(CAP_SYS_ADMIN))  return -EACCES;
                 if(!(inode->i_rdev)) return -EINVAL;
                 fsync_dev(inode->i_rdev);
                 invalidate_buffers(inode->i_rdev);
                 return 0;
             case BLKRRPART:
-		if (!suser()) return -EACCES;
+		if (!capable(CAP_SYS_ADMIN))
+			return -EACCES;
                 return pd_revalidate(inode->i_rdev);
             RO_IOCTLS(inode->i_rdev,arg);
             default:
@@ -509,23 +517,26 @@ static int pd_ioctl(struct inode *inode,struct file *file,
         }
 }
 
-static void pd_release (struct inode *inode, struct file *file)
+static int pd_release (struct inode *inode, struct file *file)
 
 {       kdev_t devp;
 	int	unit;
+
+	struct super_block *sb;
 
         devp = inode->i_rdev;
 	unit = DEVICE_NR(devp);
 
 	if ((unit >= PD_UNITS) || (PD.access <= 0)) 
-		return;
+		return -EINVAL;
 
 	PD.access--;
 
         if (!PD.access)  {
                 fsync_dev(devp);
 
-		invalidate_inodes(devp);
+		sb = get_super(devp);
+		if (sb) invalidate_inodes(sb);
 
                 invalidate_buffers(devp);
 		if (PD.removable) pd_doorlock(unit,IDE_DOORUNLOCK);
@@ -533,6 +544,7 @@ static void pd_release (struct inode *inode, struct file *file)
 
         MOD_DEC_USE_COUNT;
 
+	return 0;
 }
 
 static int pd_check_media( kdev_t dev)
@@ -554,6 +566,8 @@ static int pd_revalidate(kdev_t dev)
         long flags;
         kdev_t devp;
 
+	struct super_block *sb;
+
         unit = DEVICE_NR(dev);
         if ((unit >= PD_UNITS) || (!PD.present)) return -ENODEV;
 
@@ -571,7 +585,8 @@ static int pd_revalidate(kdev_t dev)
                 devp = MKDEV(MAJOR_NR, minor);
                 fsync_dev(devp);
 
-                invalidate_inodes(devp);
+                sb = get_super(devp);
+                if (sb) invalidate_inodes(sb);
 
                 invalidate_buffers(devp);
                 pd_hd[minor].start_sect = 0;
@@ -661,7 +676,7 @@ static void pd_reset( int unit )    /* called only for MASTER drive */
 	udelay(250);
 }
 
-#define DBMSG(msg)    ((verbose>1)?(msg):NULL)
+#define DBMSG(msg)	((verbose>1)?(msg):NULL)
 
 static int pd_wait_for( int unit, int w, char * msg )    /* polled wait */
 

@@ -46,7 +46,6 @@ static int max_interrupt_work = 10;
 #define TX_FIFO_THRESH 256		/* Rounded down to 4 byte units. */
 #define RX_FIFO_THRESH 1		/* 0-3, 0==32, 64,96, or 3==128 bytes  */
 
-#include <linux/config.h>
 #include <linux/version.h>		/* Evil, but neccessary */
 #ifdef MODULE
 #ifdef MODVERSIONS
@@ -864,11 +863,6 @@ epic_start_xmit(struct sk_buff *skb, struct device *dev)
 	struct epic_private *ep = (struct epic_private *)dev->priv;
 	int entry;
 	u32 flag;
-
-	if (skb->len < ETH_ZLEN) {
-		if (!(skb = skb_padto(skb, ETH_ZLEN)))
-			return 0;
-	}
 
 	/* Block a timer-based transmit from overlapping.  This could better be
 	   done with atomic_swap(1, dev->tbusy), but set_bit() works as well. */

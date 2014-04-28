@@ -5,7 +5,6 @@
  *  VFAT extensions by Gordon Chaffee, merged with msdos fs by Henrik Storner
  */
 
-#define ASC_LINUX_VERSION(V, P, S)	(((V) * 65536) + ((P) * 256) + (S))
 #include <linux/version.h>
 #define __NO_VERSION__
 #include <linux/module.h>
@@ -21,73 +20,62 @@
 #include <linux/fs.h>
 #include <linux/stat.h>
 #include <linux/locks.h>
+#include <linux/fat_cvf.h>
 #include <linux/malloc.h>
 
 #include "msbuffer.h"
 
-#if LINUX_VERSION_CODE >= ASC_LINUX_VERSION(2,1,0)
 #include <asm/uaccess.h>
-#define FAT_COPY_TO_USER(uaddr, kaddr, len) copy_to_user(uaddr, kaddr, len)
-#else
-#include <asm/segment.h>
-#define FAT_COPY_TO_USER(uaddr, kaddr, len) memcpy_tofs(uaddr, kaddr, len)
-#endif
 #include <asm/unaligned.h>
 
-#if 0
+/* #define FAT_PARANOIA 1 */
+#define DEBUG_LEVEL 0
+#ifdef FAT_DEBUG
 #  define PRINTK(x) printk x
 #else
 #  define PRINTK(x)
 #endif
+#if (DEBUG_LEVEL >= 1)
+#  define PRINTK1(x) printk x
+#else
+#  define PRINTK1(x)
+#endif
 
 void fat_put_inode(struct inode *inode)
 {
-	struct inode *depend, *linked;
-	struct super_block *sb;
-
-	depend = MSDOS_I(inode)->i_depend;
-	linked = MSDOS_I(inode)->i_linked;
-	sb = inode->i_sb;
-	if (inode->i_nlink) {
-		if (depend) {
-			iput(depend);
+	/*
+	 * Check whether we're a dependent of other inodes ...
+	 */ 
+	if (inode->i_count <= 1) {
+#ifdef FAT_PARANOIA
+printk("fat_put_inode: last use for (%p,%ld), i_count=%d\n",
+inode, inode->i_ino, inode->i_count); 
+#endif
+		if (inode->i_nlink) {
+			if (MSDOS_I(inode)->i_busy)
+				fat_cache_inval_inode(inode);
 		}
-		if (linked) {
-			iput(linked);
-			MSDOS_I(inode)->i_linked = NULL;
-		}
-		if (MSDOS_I(inode)->i_busy) fat_cache_inval_inode(inode);
-		return;
 	}
+}
+
+void fat_delete_inode(struct inode *inode)
+{
+	/*
+	 * Make sure there are no active dependencies ...
+	 */
+	fat_cache_inval_inode(inode);
 	inode->i_size = 0;
 	fat_truncate(inode);
-	if (depend) {
-		if (MSDOS_I(depend)->i_old != inode) {
-			printk("Invalid link (0x%p): expected 0x%p, got 0x%p\n",
-			    depend, inode, MSDOS_I(depend)->i_old);
-			fat_fs_panic(sb,"...");
-			goto done;
-		}
-		MSDOS_I(depend)->i_old = NULL;
-		iput(depend);
-	}
-	if (linked) {
-		if (MSDOS_I(linked)->i_oldlink != inode) {
-			printk("Invalid link (0x%p): expected 0x%p, got 0x%p\n",
-			    linked, inode, MSDOS_I(linked)->i_oldlink);
-			fat_fs_panic(sb,"...");
-			goto done;
-		}
-		MSDOS_I(linked)->i_oldlink = NULL;
-		iput(linked);
-	}
-done:
 	clear_inode(inode);
 }
 
 
 void fat_put_super(struct super_block *sb)
 {
+	if (MSDOS_SB(sb)->cvf_format) {
+		dec_cvf_format_use_count_by_version(MSDOS_SB(sb)->cvf_format->cvf_version);
+		MSDOS_SB(sb)->cvf_format->unmount_cvf(sb);
+	}
 	if (MSDOS_SB(sb)->fat_bits == 32) {
 		fat_clusters_flush(sb);
 	}
@@ -101,23 +89,28 @@ void fat_put_super(struct super_block *sb)
 	if (MSDOS_SB(sb)->nls_io) {
 		unload_nls(MSDOS_SB(sb)->nls_io);
 		MSDOS_SB(sb)->nls_io = NULL;
+	}
+	/*
+	 * Note: the iocharset option might have been specified
+	 * without enabling nls_io, so check for it here.
+	 */
+	if (MSDOS_SB(sb)->options.iocharset) {
 		kfree(MSDOS_SB(sb)->options.iocharset);
 		MSDOS_SB(sb)->options.iocharset = NULL;
 	}
-	lock_super(sb);
-	sb->s_dev = 0;
-	unlock_super(sb);
+
 	MOD_DEC_USE_COUNT;
 	return;
 }
 
 
 static int parse_options(char *options,int *fat, int *blksize, int *debug,
-			 struct fat_mount_options *opts)
+			 struct fat_mount_options *opts,
+			 char *cvf_format, char *cvf_options)
 {
 	char *this_char,*value,save,*savep;
 	char *p;
-	int ret, len;
+	int ret = 1, len;
 
 	opts->name_check = 'n';
 	opts->conversion = 'b';
@@ -130,11 +123,12 @@ static int parse_options(char *options,int *fat, int *blksize, int *debug,
 	opts->iocharset = NULL;
 	*debug = *fat = 0;
 
-	if (!options) return 1;
+	if (!options)
+		goto out;
 	save = 0;
 	savep = NULL;
-	ret = 1;
-	for (this_char = strtok(options,","); this_char; this_char = strtok(NULL,",")) {
+	for (this_char = strtok(options,","); this_char;
+	     this_char = strtok(NULL,",")) {
 		if ((value = strchr(this_char,'=')) != NULL) {
 			save = *value;
 			savep = value;
@@ -143,17 +137,23 @@ static int parse_options(char *options,int *fat, int *blksize, int *debug,
 		if (!strcmp(this_char,"check") && value) {
 			if (value[0] && !value[1] && strchr("rns",*value))
 				opts->name_check = *value;
-			else if (!strcmp(value,"relaxed")) opts->name_check = 'r';
-			else if (!strcmp(value,"normal")) opts->name_check = 'n';
-			else if (!strcmp(value,"strict")) opts->name_check = 's';
+			else if (!strcmp(value,"relaxed"))
+				opts->name_check = 'r';
+			else if (!strcmp(value,"normal"))
+				opts->name_check = 'n';
+			else if (!strcmp(value,"strict"))
+				opts->name_check = 's';
 			else ret = 0;
 		}
 		else if (!strcmp(this_char,"conv") && value) {
 			if (value[0] && !value[1] && strchr("bta",*value))
 				opts->conversion = *value;
-			else if (!strcmp(value,"binary")) opts->conversion = 'b';
-			else if (!strcmp(value,"text")) opts->conversion = 't';
-			else if (!strcmp(value,"auto")) opts->conversion = 'a';
+			else if (!strcmp(value,"binary"))
+				opts->conversion = 'b';
+			else if (!strcmp(value,"text"))
+				opts->conversion = 't';
+			else if (!strcmp(value,"auto"))
+				opts->conversion = 'a';
 			else ret = 0;
 		}
 		else if (!strcmp(this_char,"dots")) {
@@ -209,58 +209,87 @@ static int parse_options(char *options,int *fat, int *blksize, int *debug,
 			else opts->quiet = 1;
 		}
 		else if (!strcmp(this_char,"blocksize")) {
-			*blksize = simple_strtoul(value,&value,0);
 			if (*value) ret = 0;
-			else if (*blksize != 512 && *blksize != 1024){
-				printk ("MSDOS FS: Invalid blocksize (512 or 1024)\n");
+			else if (*blksize != 512  &&
+				 *blksize != 1024 &&
+				 *blksize != 2048) {
+				printk ("MSDOS FS: Invalid blocksize "
+					"(512, 1024, or 2048)\n");
 			}
 		}
 		else if (!strcmp(this_char,"sys_immutable")) {
 			if (value) ret = 0;
 			else opts->sys_immutable = 1;
 		}
-		else if (!strcmp(this_char,"codepage")) {
+		else if (!strcmp(this_char,"codepage") && value) {
 			opts->codepage = simple_strtoul(value,&value,0);
 			if (*value) ret = 0;
-			else printk ("MSDOS FS: Using codepage %d\n", opts->codepage);
+			else printk ("MSDOS FS: Using codepage %d\n",
+					opts->codepage);
 		}
-		else if (!strcmp(this_char,"iocharset")) {
+		else if (!strcmp(this_char,"iocharset") && value) {
 			p = value;
 			while (*value && *value != ',') value++;
 			len = value - p;
-			if (len) {
-				opts->iocharset = kmalloc(len+1, GFP_KERNEL);
-				memcpy(opts->iocharset, p, len);
-				opts->iocharset[len] = 0;
-				printk ("MSDOS FS: Using IO charset %s\n",
-					opts->iocharset);
-			} else {
-				opts->iocharset = NULL;
-				ret = 0;
+			if (len) { 
+				char * buffer = kmalloc(len+1, GFP_KERNEL);
+				if (buffer) {
+					opts->iocharset = buffer;
+					memcpy(buffer, p, len);
+					buffer[len] = 0;
+					printk("MSDOS FS: IO charset %s\n",
+						buffer);
+				} else
+					ret = 0;
 			}
 		}
+                else if (!strcmp(this_char,"cvf_format")) {
+                        if (!value)
+                                return 0;
+                        strncpy(cvf_format,value,20);
+                }
+                else if (!strcmp(this_char,"cvf_options")) {
+                        if (!value)
+                                return 0;
+                        strncpy(cvf_options,value,100);
+                }
 
 		if (this_char != options) *(this_char-1) = ',';
 		if (value) *savep = save;
-		if (ret == 0) return 0;
+		if (ret == 0)
+			break;
 	}
-	return 1;
+out:
+	return ret;
 }
 
-
-/* Read the super block of an MS-DOS FS. */
-/* XXX: Make sure we handle the case of no codepage (unable to load) */
-struct super_block *fat_read_super(struct super_block *sb,void *data, int silent)
+/*
+ * Read the super block of an MS-DOS FS.
+ *
+ * Note that this may be called from vfat_read_super
+ * with some fields already initialized.
+ */
+struct super_block *
+fat_read_super(struct super_block *sb, void *data, int silent)
 {
+	struct inode *root_inode;
 	struct buffer_head *bh;
 	struct fat_boot_sector *b;
+	char *p;
 	int data_sectors,logical_sector_size,sector_mult,fat_clusters=0;
 	int debug,error,fat,cp;
 	int blksize = 512;
 	int fat32;
 	struct fat_mount_options opts;
 	char buf[50];
-	char *p;
+	int i;
+	char cvf_format[21];
+	char cvf_options[101];
+
+	cvf_format[0] = '\0';
+	cvf_options[0] = '\0';
+	MSDOS_SB(sb)->cvf_format = NULL;
+	MSDOS_SB(sb)->private_data = NULL;
 
 	MOD_INC_USE_COUNT;
 	if (hardsect_size[MAJOR(sb->s_dev)] != NULL){
@@ -268,27 +297,36 @@ struct super_block *fat_read_super(struct super_block *sb,void *data, int silent
 		if (blksize != 512){
 			printk ("MSDOS: Hardware sector size is %d\n",blksize);
 		}
+
 	}
+
 	opts.isvfat = MSDOS_SB(sb)->options.isvfat;
-	if (!parse_options((char *) data, &fat, &blksize, &debug, &opts)
-		|| (blksize != 512 && blksize != 1024)) {
-		sb->s_dev = 0;
-		MOD_DEC_USE_COUNT;
-		return NULL;
-	}
-	cache_init();
+	if (!parse_options((char *) data, &fat, &blksize, &debug, &opts, 
+	                   cvf_format, cvf_options)
+	    || (blksize != 512 && blksize != 1024 && blksize != 2048))
+		goto out_fail;
+	/* N.B. we should parse directly into the sb structure */
+	memcpy(&(MSDOS_SB(sb)->options), &opts, sizeof(struct fat_mount_options));
+
+	fat_cache_init();
 	lock_super(sb);
-	/* The first read is always 1024 bytes */
-	sb->s_blocksize = 1024;
-	set_blocksize(sb->s_dev, 1024);
+	if( blksize > 1024 )
+	  {
+	    /* Force the superblock to a larger size here. */
+	    sb->s_blocksize = blksize;
+	    set_blocksize(sb->s_dev, blksize);
+	  }
+	else
+	  {
+	    /* The first read is always 1024 bytes */
+	    sb->s_blocksize = 1024;
+	    set_blocksize(sb->s_dev, 1024);
+	  }
 	bh = fat_bread(sb, 0);
 	unlock_super(sb);
 	if (bh == NULL || !fat_is_uptodate(sb,bh)) {
 		fat_brelse (sb, bh);
-		sb->s_dev = 0;
-		printk("FAT bread failed\n");
-		MOD_DEC_USE_COUNT;
-		return NULL;
+		goto out_no_bread;
 	}
 	set_blocksize(sb->s_dev, blksize);
 
@@ -329,7 +367,9 @@ struct super_block *fat_read_super(struct super_block *sb,void *data, int silent
 		fsinfo = (struct fat_boot_fsinfo *)
 			&bh->b_data[MSDOS_SB(sb)->fsinfo_offset];
 		if (CF_LE_L(fsinfo->signature) != 0x61417272) {
-			printk("fat_read_super: Did not find valid FSINFO signature. Found 0x%x\n", CF_LE_L(fsinfo->signature));
+			printk("fat_read_super: Did not find valid FSINFO "
+				"signature. Found 0x%x\n",
+				CF_LE_L(fsinfo->signature));
 		} else {
 			MSDOS_SB(sb)->free_clusters = CF_LE_L(fsinfo->free_clusters);
 		}
@@ -374,7 +414,13 @@ struct super_block *fat_read_super(struct super_block *sb,void *data, int silent
 				/* the misfit with buffer cache and cluster */
 				/* because clusters (DOS) are often aligned */
 				/* on odd sectors. */
-	sb->s_blocksize_bits = blksize == 512 ? 9 : 10;
+	sb->s_blocksize_bits = blksize == 512 ? 9 : (blksize == 1024 ? 10 : 11);
+	if (!strcmp(cvf_format,"none"))
+		i = -1;
+	else
+		i = detect_cvf(sb,cvf_format);
+	if (i >= 0)
+		error = cvf_formats[i]->mount_cvf(sb,cvf_options);
 	if (error || debug) {
 		/* The MSDOS_CAN_BMAP is obsolete, but left just to remember */
 		printk("[MS-DOS FS Rel. 12,FAT %d,check=%c,conv=%c,"
@@ -383,8 +429,10 @@ struct super_block *fat_read_super(struct super_block *sb,void *data, int silent
 		       opts.conversion,opts.fs_uid,opts.fs_gid,opts.fs_umask,
 		       MSDOS_CAN_BMAP(MSDOS_SB(sb)) ? ",bmap" : "");
 		printk("[me=0x%x,cs=%d,#f=%d,fs=%d,fl=%d,ds=%d,de=%d,data=%d,"
-		       "se=%d,ts=%ld,ls=%d,rc=%ld,fc=%u]\n",b->media,MSDOS_SB(sb)->cluster_size,
-		       MSDOS_SB(sb)->fats,MSDOS_SB(sb)->fat_start,MSDOS_SB(sb)->fat_length,
+		       "se=%d,ts=%ld,ls=%d,rc=%ld,fc=%u]\n",
+			b->media,MSDOS_SB(sb)->cluster_size,
+			MSDOS_SB(sb)->fats,MSDOS_SB(sb)->fat_start,
+			MSDOS_SB(sb)->fat_length,
 		       MSDOS_SB(sb)->dir_start,MSDOS_SB(sb)->dir_entries,
 		       MSDOS_SB(sb)->data_start,
 		       CF_LE_W(*(unsigned short *) &b->sectors),
@@ -392,75 +440,89 @@ struct super_block *fat_read_super(struct super_block *sb,void *data, int silent
 		       MSDOS_SB(sb)->root_cluster,MSDOS_SB(sb)->free_clusters);
 		printk ("Transaction block size = %d\n",blksize);
 	}
-	if (MSDOS_SB(sb)->clusters+2 > fat_clusters)
+	if (i<0) if (MSDOS_SB(sb)->clusters+2 > fat_clusters)
 		MSDOS_SB(sb)->clusters = fat_clusters-2;
-	if (error) {
-		if (!silent)
-			printk("VFS: Can't find a valid MSDOS filesystem on dev "
-			       "%s.\n", kdevname(sb->s_dev));
-		sb->s_dev = 0;
-		MOD_DEC_USE_COUNT;
-		return NULL;
-	}
+	if (error)
+		goto out_invalid;
+
 	sb->s_magic = MSDOS_SUPER_MAGIC;
 	/* set up enough so that it can read an inode */
 	MSDOS_SB(sb)->fat_wait = NULL;
 	MSDOS_SB(sb)->fat_lock = 0;
 	MSDOS_SB(sb)->prev_free = 0;
-	memcpy(&(MSDOS_SB(sb)->options), &opts, sizeof(struct fat_mount_options));
 
 	cp = opts.codepage ? opts.codepage : 437;
 	sprintf(buf, "cp%d", cp);
 	MSDOS_SB(sb)->nls_disk = load_nls(buf);
 	if (! MSDOS_SB(sb)->nls_disk) {
 		/* Fail only if explicit charset specified */
-		if (opts.codepage == 0) {
-			MSDOS_SB(sb)->options.codepage = 0;
-			MSDOS_SB(sb)->nls_disk = load_nls_default();
-		} else {
-			sb->s_dev = 0;
-			MOD_DEC_USE_COUNT;
-			return NULL;
-		}
+		if (opts.codepage != 0)
+			goto out_fail;
+		MSDOS_SB(sb)->options.codepage = 0; /* already 0?? */
+		MSDOS_SB(sb)->nls_disk = load_nls_default();
 	}
 
-	p = opts.iocharset ? opts.iocharset : "iso8859-1";
 	MSDOS_SB(sb)->nls_io = NULL;
 	if (MSDOS_SB(sb)->options.isvfat && !opts.utf8) {
+		p = opts.iocharset ? opts.iocharset : "iso8859-1";
 		MSDOS_SB(sb)->nls_io = load_nls(p);
 		if (! MSDOS_SB(sb)->nls_io) {
 			/* Fail only if explicit charset specified */
-			if (opts.iocharset) {
-				kfree(opts.iocharset);
-				unload_nls(MSDOS_SB(sb)->nls_disk);
-				sb->s_dev = 0;
-				MOD_DEC_USE_COUNT;
-				return NULL;
-			} else {
-				MSDOS_SB(sb)->nls_io = load_nls_default();
-			}
+			if (opts.iocharset)
+				goto out_unload_nls;
+			MSDOS_SB(sb)->nls_io = load_nls_default();
 		}
 	}
 
-	if (!(sb->s_mounted = iget(sb,MSDOS_ROOT_INO))) {
-		sb->s_dev = 0;
-		printk("get root inode failed\n");
-		unload_nls(MSDOS_SB(sb)->nls_disk);
-		if (MSDOS_SB(sb)->nls_io) unload_nls(MSDOS_SB(sb)->nls_io);
-		if (opts.iocharset) kfree(opts.iocharset);
-		MOD_DEC_USE_COUNT;
-		return NULL;
+	root_inode = iget(sb, MSDOS_ROOT_INO);
+	if (!root_inode)
+		goto out_no_root;
+	sb->s_root = d_alloc_root(root_inode, NULL);
+	if (!sb->s_root)
+		goto out_no_root;
+	if(i>=0) {
+		MSDOS_SB(sb)->cvf_format = cvf_formats[i];
+		++cvf_format_use_count[i];
 	}
-
 	return sb;
+
+out_no_root:
+	printk("get root inode failed\n");
+	iput(root_inode);
+	if (MSDOS_SB(sb)->nls_io)
+		unload_nls(MSDOS_SB(sb)->nls_io);
+out_unload_nls:
+	unload_nls(MSDOS_SB(sb)->nls_disk);
+	goto out_fail;
+out_invalid:
+	if (!silent)
+		printk("VFS: Can't find a valid MSDOS filesystem on dev %s.\n",
+			kdevname(sb->s_dev));
+	goto out_fail;
+out_no_bread:
+	printk("FAT bread failed\n");
+out_fail:
+	if (opts.iocharset) {
+		printk("VFS: freeing iocharset=%s\n", opts.iocharset);
+		kfree(opts.iocharset);
+	}
+	sb->s_dev = 0;
+	if(MSDOS_SB(sb)->private_data)kfree(MSDOS_SB(sb)->private_data);
+	MSDOS_SB(sb)->private_data=NULL;
+ 
+	MOD_DEC_USE_COUNT;
+	return NULL;
 }
 
-
-void fat_statfs(struct super_block *sb,struct statfs *buf, int bufsiz)
+int fat_statfs(struct super_block *sb,struct statfs *buf, int bufsiz)
 {
 	int free,nr;
 	struct statfs tmp;
-
+       
+        if (MSDOS_SB(sb)->cvf_format &&
+	    MSDOS_SB(sb)->cvf_format->cvf_statfs)
+		return MSDOS_SB(sb)->cvf_format->cvf_statfs(sb,buf,bufsiz);
+          
 	lock_fat(sb);
 	if (MSDOS_SB(sb)->free_clusters != -1)
 		free = MSDOS_SB(sb)->free_clusters;
@@ -478,8 +540,8 @@ void fat_statfs(struct super_block *sb,struct statfs *buf, int bufsiz)
 	tmp.f_bavail = free;
 	tmp.f_files = 0;
 	tmp.f_ffree = 0;
-	tmp.f_namelen = 12;
-	FAT_COPY_TO_USER(buf, &tmp, bufsiz);
+	tmp.f_namelen = MSDOS_SB(sb)->options.isvfat ? 260 : 12;
+	return copy_to_user(buf, &tmp, bufsiz) ? -EFAULT : 0;
 }
 
 
@@ -489,12 +551,15 @@ int fat_bmap(struct inode *inode,int block)
 	int cluster,offset;
 
 	sb = MSDOS_SB(inode->i_sb);
+	if (sb->cvf_format &&
+	    sb->cvf_format->cvf_bmap)
+		return sb->cvf_format->cvf_bmap(inode,block);
 	if ((inode->i_ino == MSDOS_ROOT_INO) && (sb->fat_bits != 32)) {
 		return sb->dir_start + block;
 	}
 	cluster = block/sb->cluster_size;
 	offset = block % sb->cluster_size;
-	if (!(cluster = get_cluster(inode,cluster))) return 0;
+	if (!(cluster = fat_get_cluster(inode,cluster))) return 0;
 	return (cluster-2)*sb->cluster_size+sb->data_start+offset;
 }
 
@@ -515,11 +580,9 @@ void fat_read_inode(struct inode *inode, struct inode_operations *fs_dir_inode_o
 	struct msdos_dir_entry *raw_entry;
 	int nr;
 
-	PRINTK(("fat_read_inode: inode=%p, sb->dir_start=0x%x\n",
-		inode, MSDOS_SB(sb)->dir_start));
+	PRINTK1(("fat_read_inode: inode=%p, ino=%ld, sb->dir_start=0x%x\n",
+		 inode, inode->i_ino, MSDOS_SB(sb)->dir_start));
 	MSDOS_I(inode)->i_busy = 0;
-	MSDOS_I(inode)->i_depend = MSDOS_I(inode)->i_old = NULL;
-	MSDOS_I(inode)->i_linked = MSDOS_I(inode)->i_oldlink = NULL;
 	MSDOS_I(inode)->i_binary = 1;
 	inode->i_uid = MSDOS_SB(sb)->options.fs_uid;
 	inode->i_gid = MSDOS_SB(sb)->options.fs_gid;
@@ -553,6 +616,7 @@ void fat_read_inode(struct inode *inode, struct inode_operations *fs_dir_inode_o
 
 		MSDOS_I(inode)->i_attrs = 0;
 		inode->i_mtime = inode->i_atime = inode->i_ctime = 0;
+		MSDOS_I(inode)->i_ctime_ms = 0;
 		inode->i_nlink = fat_subdirs(inode)+2;
 		    /* subdirs (neither . nor ..) plus . and "self" */
 		return;
@@ -560,7 +624,8 @@ void fat_read_inode(struct inode *inode, struct inode_operations *fs_dir_inode_o
 	if (!(bh = fat_bread(sb, inode->i_ino >> MSDOS_DPB_BITS))) {
 		printk("dev = %s, ino = %ld\n",
 		       kdevname(inode->i_dev), inode->i_ino);
-		panic("fat_read_inode: unable to read i-node block");
+		fat_fs_panic(sb, "fat_read_inode: unable to read i-node block");
+		return;
 	}
 	raw_entry = &((struct msdos_dir_entry *) (bh->b_data))
 	    [inode->i_ino & (MSDOS_DPB-1)];
@@ -601,7 +666,12 @@ void fat_read_inode(struct inode *inode, struct inode_operations *fs_dir_inode_o
 		       !is_exec(raw_entry->ext)))
 		    	? S_IRUGO|S_IWUGO : S_IRWXUGO)
 		    & ~MSDOS_SB(sb)->options.fs_umask) | S_IFREG;
-		inode->i_op = (sb->s_blocksize == 1024)
+		if (MSDOS_SB(sb)->cvf_format)
+			inode->i_op = (MSDOS_SB(sb)->cvf_format->flags & CVF_USE_READPAGE)
+				? &fat_file_inode_operations_readpage
+				: &fat_file_inode_operations_1024;
+		else
+		  inode->i_op = (sb->s_blocksize == 1024 || sb->s_blocksize == 2048)
 			? &fat_file_inode_operations_1024
 			: &fat_file_inode_operations;
 		MSDOS_I(inode)->i_start = CF_LE_W(raw_entry->start);
@@ -629,6 +699,7 @@ void fat_read_inode(struct inode *inode, struct inode_operations *fs_dir_inode_o
 		MSDOS_SB(sb)->options.isvfat
 		? date_dos2unix(CF_LE_W(raw_entry->ctime),CF_LE_W(raw_entry->cdate))
 		: inode->i_mtime;
+	MSDOS_I(inode)->i_ctime_ms = raw_entry->ctime_ms;
 	fat_brelse(sb, bh);
 }
 
@@ -638,36 +709,13 @@ void fat_write_inode(struct inode *inode)
 	struct super_block *sb = inode->i_sb;
 	struct buffer_head *bh;
 	struct msdos_dir_entry *raw_entry;
-	struct inode *linked;
 
-	linked = MSDOS_I(inode)->i_linked;
-	if (linked) {
-		if (MSDOS_I(linked)->i_oldlink != inode) {
-			printk("Invalid link (0x%p): expected 0x%p, got 0x%p\n",
-			       linked, inode, MSDOS_I(linked)->i_oldlink);
-			fat_fs_panic(sb,"...");
-			return;
-		}
-		linked->i_version = ++event;
-		linked->i_mode = inode->i_mode;
-		linked->i_uid = inode->i_uid;
-		linked->i_gid = inode->i_gid;
-		linked->i_size = inode->i_size;
-		linked->i_atime = inode->i_atime;
-		linked->i_mtime = inode->i_mtime;
-		linked->i_ctime = inode->i_ctime;
-		linked->i_blocks = inode->i_blocks;
-		linked->i_atime = inode->i_atime;
-		MSDOS_I(linked)->i_attrs = MSDOS_I(inode)->i_attrs;
-		linked->i_dirt = 1;
-	}
-
-	inode->i_dirt = 0;
 	if (inode->i_ino == MSDOS_ROOT_INO || !inode->i_nlink) return;
 	if (!(bh = fat_bread(sb, inode->i_ino >> MSDOS_DPB_BITS))) {
 		printk("dev = %s, ino = %ld\n",
 		       kdevname(inode->i_dev), inode->i_ino);
-		panic("msdos_write_inode: unable to read i-node block");
+		fat_fs_panic(sb, "msdos_write_inode: unable to read i-node block");
+		return;
 	}
 	raw_entry = &((struct msdos_dir_entry *) (bh->b_data))
 	    [inode->i_ino & (MSDOS_DPB-1)];
@@ -688,6 +736,7 @@ void fat_write_inode(struct inode *inode)
 	raw_entry->date = CT_LE_W(raw_entry->date);
 	if (MSDOS_SB(sb)->options.isvfat) {
 		fat_date_unix2dos(inode->i_ctime,&raw_entry->ctime,&raw_entry->cdate);
+		raw_entry->ctime_ms = MSDOS_I(inode)->i_ctime_ms;
 		raw_entry->ctime = CT_LE_W(raw_entry->ctime);
 		raw_entry->cdate = CT_LE_W(raw_entry->cdate);
 	}
@@ -696,9 +745,10 @@ void fat_write_inode(struct inode *inode)
 }
 
 
-int fat_notify_change(struct inode * inode,struct iattr * attr)
+int fat_notify_change(struct dentry * dentry, struct iattr * attr)
 {
-	struct super_block *sb = inode->i_sb;
+	struct super_block *sb = dentry->d_sb;
+	struct inode *inode = dentry->d_inode;
 	int error;
 
 	error = inode_change_ok(inode, attr);

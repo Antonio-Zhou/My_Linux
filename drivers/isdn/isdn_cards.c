@@ -1,8 +1,8 @@
-/* $Id: isdn_cards.c,v 1.6.2.1 1998/11/05 22:11:40 fritz Exp $
+/* $Id: isdn_cards.c,v 1.7 1998/02/20 17:24:28 fritz Exp $
 
  * Linux ISDN subsystem, initialization for non-modularized drivers.
  *
- * Copyright 1994-1998 by Fritz Elfert (fritz@isdn4linux.de)
+ * Copyright 1994,95,96 by Fritz Elfert (fritz@wuemaus.franken.de)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,8 +19,8 @@
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
  * $Log: isdn_cards.c,v $
- * Revision 1.6.2.1  1998/11/05 22:11:40  fritz
- * Changed mail-address.
+ * Revision 1.7  1998/02/20 17:24:28  fritz
+ * Added ACT2000 init.
  *
  * Revision 1.6  1997/04/23 18:56:03  fritz
  * Old Teles driver removed, Changed doc and scripts accordingly.
@@ -84,5 +84,8 @@ isdn_cards_init(void)
 #endif
 	capi_init();
 	capidrv_init();
+#endif
+#if CONFIG_ISDN_DRV_ACT2000
+	act2000_init();
 #endif
 }

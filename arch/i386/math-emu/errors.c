@@ -3,9 +3,9 @@
  |                                                                           |
  |  The error handling functions for wm-FPU-emu                              |
  |                                                                           |
- | Copyright (C) 1992,1993,1994,1996,2001                                    |
+ | Copyright (C) 1992,1993,1994,1996                                         |
  |                  W. Metzenthen, 22 Parker St, Ormond, Vic 3163, Australia |
- |                  E-mail   billm@melbpc.org.au                             |
+ |                  E-mail   billm@jacobi.maths.monash.edu.au                |
  |                                                                           |
  |                                                                           |
  +---------------------------------------------------------------------------*/
@@ -18,6 +18,8 @@
  +---------------------------------------------------------------------------*/
 
 #include <linux/signal.h>
+
+#include <asm/uaccess.h>
 
 #include "fpu_emu.h"
 #include "fpu_system.h"
@@ -40,7 +42,7 @@ void Un_impl(void)
   RE_ENTRANT_CHECK_OFF;
   /* No need to verify_area(), we have previously fetched these bytes. */
   printk("Unimplemented FPU Opcode at eip=%p : ", (void *) address);
-  if ( FPU_CS == FPU_USER_CS )
+  if ( FPU_CS == __USER_CS )
     {
       while ( 1 )
 	{
@@ -75,7 +77,7 @@ void Un_impl(void)
    */
 void FPU_illegal(void)
 {
-  math_abort(SIGILL);
+  math_abort(FPU_info,SIGILL);
 }
 
 
@@ -91,7 +93,7 @@ void FPU_printall(void)
   RE_ENTRANT_CHECK_OFF;
   /* No need to verify_area(), we have previously fetched these bytes. */
   printk("At %p:", (void *) address);
-  if ( FPU_CS == FPU_USER_CS )
+  if ( FPU_CS == __USER_CS )
     {
 #define MAX_PRINTED_BYTES 20
       for ( i = 0; i < MAX_PRINTED_BYTES; i++ )
@@ -120,7 +122,7 @@ void FPU_printall(void)
     }
   else
     {
-      printk("%04x (Not USER_CS)\n", FPU_CS);
+      printk("%04x\n", FPU_CS);
     }
 
   partial_status = status_word();
@@ -139,7 +141,7 @@ if ( partial_status & SW_Overflow )    printk("SW: overflow\n");
 if ( partial_status & SW_Zero_Div )    printk("SW: divide by zero\n");
 if ( partial_status & SW_Denorm_Op )   printk("SW: denormalized operand\n");
 if ( partial_status & SW_Invalid )     printk("SW: invalid operation\n");
-#endif /* DEBUGGING */
+#endif DEBUGGING
 
   printk(" SW: b=%d st=%ld es=%d sf=%d cc=%d%d%d%d ef=%d%d%d%d%d%d\n",
 	 partial_status & 0x8000 ? 1 : 0,   /* busy */
@@ -325,7 +327,7 @@ void FPU_exception(int n)
 #ifdef PRINT_MESSAGES
       /* My message from the sponsor */
       printk(FPU_VERSION" "__DATE__" (C) W. Metzenthen.\n");
-#endif /* PRINT_MESSAGES */
+#endif PRINT_MESSAGES
       
       /* Get a name string for error reporting */
       for (i=0; exception_names[i].type; i++)
@@ -336,7 +338,7 @@ void FPU_exception(int n)
 	{
 #ifdef PRINT_MESSAGES
 	  printk("FP Exception: %s!\n", exception_names[i].name);
-#endif /* PRINT_MESSAGES */
+#endif PRINT_MESSAGES
 	}
       else
 	printk("FPU emulator: Unknown Exception: 0x%04x!\n", n);
@@ -349,7 +351,7 @@ void FPU_exception(int n)
 #ifdef PRINT_MESSAGES
       else
 	FPU_printall();
-#endif /* PRINT_MESSAGES */
+#endif PRINT_MESSAGES
 
       /*
        * The 80486 generates an interrupt on the next non-control FPU
@@ -360,8 +362,8 @@ void FPU_exception(int n)
   RE_ENTRANT_CHECK_ON;
 
 #ifdef __DEBUG__
-  math_abort(SIGFPE);
-#endif /* __DEBUG__ */
+  math_abort(FPU_info,SIGFPE);
+#endif __DEBUG__
 
 }
 
@@ -467,7 +469,7 @@ int real_2op_NaN(FPU_REG const *b, u_char tagb,
   else
 #ifdef PARANOID
     if (tagb == TW_NaN)
-#endif /* PARANOID */
+#endif PARANOID
     {
       signalling = !(b->sigh & 0x40000000);
       x = b;
@@ -479,7 +481,7 @@ int real_2op_NaN(FPU_REG const *b, u_char tagb,
       EXCEPTION(EX_INTERNAL|0x113);
       x = &CONST_QNaN;
     }
-#endif /* PARANOID */
+#endif PARANOID
 
   if ( (!signalling) || (control_word & CW_Invalid) )
     {
@@ -598,54 +600,16 @@ asmlinkage int denormal_operand(void)
 }
 
 
-asmlinkage int arith_overflow(FPU_REG *dest, int negative)
+asmlinkage int arith_overflow(FPU_REG *dest)
 {
   int tag = TAG_Valid;
-  int big_real = 0;
 
   if ( control_word & CW_Overflow )
     {
       /* The masked response */
-      /* The response here depends upon the rounding mode */
-      switch ( control_word & CW_RC )
-	{
-	case RC_UP:
-	  big_real = negative;
-	  break;
-	case RC_DOWN:
-	  big_real = ! negative;
-	  break;
-	case RC_CHOP:
-	  big_real = 1;
-	  break;
-	default:
-	}
-      if ( big_real )
-	{
-	  switch ( control_word & CW_PC )
-	    {
-	    case PR_24_BITS:
-	      significand(dest) = 0xffffff0000000000LL;
-	      exponent16(dest) = 0x7ffe;
-	      break;
-	    case PR_53_BITS:
-	      significand(dest) = 0xfffffffffffff800LL;
-	      exponent16(dest) = 0x7ffe;
-	      break;
-	    case PR_64_BITS:
-	      significand(dest) = 0xffffffffffffffffLL;
-	      exponent16(dest) = 0x7ffe;
-	      break;
-	    }
-	  EXCEPTION(EX_Overflow);
-	  EXCEPTION(EX_Precision);
-	  return tag;
-	}
-      else
-	{
-	  reg_copy(&CONST_INF, dest);
-	  tag = TAG_Special;
-	}
+/* ###### The response here depends upon the rounding mode */
+      reg_copy(&CONST_INF, dest);
+      tag = TAG_Special;
     }
   else
     {
@@ -712,7 +676,7 @@ void FPU_stack_overflow(void)
  if ( control_word & CW_Invalid )
     {
       /* The masked response */
-      FPU_top--;
+      top--;
       FPU_copy_to_reg0(&CONST_QNaN, TAG_Special);
     }
 

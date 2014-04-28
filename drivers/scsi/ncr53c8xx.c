@@ -73,7 +73,7 @@
 */
 
 /*
-**	December 14 1998, version 3.1e
+**	November 26 1998, version 3.1d
 **
 **	Supported SCSI-II features:
 **	    Synchronous negotiation
@@ -6182,14 +6182,10 @@ void ncr_init (ncb_p np, int reset, char * msg, u_long code)
 	/*
 	**	DEL 441 - 53C876 Rev 5 - Part Number 609-0392787/2788 - ITEM 2.
 	**	Disable overlapped arbitration.
-	**	The 896 Rev 1 is also affected by this errata.
 	*/
 	if (np->device_id == PCI_DEVICE_ID_NCR_53C875 &&
 	    np->revision_id >= 0x10 && np->revision_id <= 0x15)
 		OUTB (nc_ctest0, (1<<5));
-	else if (np->device_id == PCI_DEVICE_ID_NCR_53C896 &&
-	         np->revision_id <= 0x1)
-		OUTB (nc_ccntl0, DPR);
 
 	/*
 	**	Fill in target structure.

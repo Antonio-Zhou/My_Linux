@@ -1,20 +1,14 @@
-/* $Id: teles3c.c,v 1.1.2.3 1998/11/03 00:07:40 keil Exp $
+/* $Id: teles3c.c,v 1.2 1998/02/02 13:27:07 keil Exp $
 
  * teles3c.c     low level stuff for teles 16.3c
  *
- * Author     Karsten Keil (keil@isdn4linux.de)
+ * Author     Karsten Keil (keil@temic-ech.spacenet.de)
  *
  *
  * $Log: teles3c.c,v $
- * Revision 1.1.2.3  1998/11/03 00:07:40  keil
- * certification related changes
- * fixed logging for smaller stack use
+ * Revision 1.2  1998/02/02 13:27:07  keil
+ * New
  *
- * Revision 1.1.2.2  1998/01/27 22:40:37  keil
- * fixed IRQ latency, B-channel selection and more
- *
- * Revision 1.1.2.1  1998/01/11 22:54:04  keil
- * Teles 16.3c (HFC 2BDS0) first version
  *
  *
  */
@@ -26,13 +20,14 @@
 
 extern const char *CardType[];
 
-const char *teles163c_revision = "$Revision: 1.1.2.3 $";
+const char *teles163c_revision = "$Revision: 1.2 $";
 
 static void
 t163c_interrupt(int intno, void *dev_id, struct pt_regs *regs)
 {
 	struct IsdnCardState *cs = dev_id;
 	u_char val, stat;
+	char tmp[32];
 
 	if (!cs) {
 		printk(KERN_WARNING "teles3c: Spurious interrupt!\n");
@@ -41,12 +36,16 @@ t163c_interrupt(int intno, void *dev_id, struct pt_regs *regs)
 	if ((HFCD_ANYINT | HFCD_BUSY_NBUSY) & 
 		(stat = cs->BC_Read_Reg(cs, HFCD_DATA, HFCD_STAT))) {
 		val = cs->BC_Read_Reg(cs, HFCD_DATA, HFCD_INT_S1);
-		if (cs->debug & L1_DEB_ISAC)
-			debugl1(cs, "teles3c: stat(%02x) s1(%02x)", stat, val);
+		if (cs->debug & L1_DEB_ISAC) {
+			sprintf(tmp, "teles3c: stat(%02x) s1(%02x)", stat, val);
+			debugl1(cs, tmp);
+		}
 		hfc2bds0_interrupt(cs, val);
 	} else {
-		if (cs->debug & L1_DEB_ISAC)
-			debugl1(cs, "teles3c: irq_no_irq stat(%02x)", stat);
+		if (cs->debug & L1_DEB_ISAC) {
+			sprintf(tmp, "teles3c: irq_no_irq stat(%02x)", stat);
+			debugl1(cs, tmp);
+		}
 	}
 }
 
@@ -80,13 +79,11 @@ reset_t163c(struct IsdnCardState *cs)
 	save_flags(flags);
 	sti();
 	current->state = TASK_INTERRUPTIBLE;
-	current->timeout = jiffies + 3;
-	schedule();
+	schedule_timeout(3);
 	cs->hw.hfcD.cirm = HFCD_MEM8K;
 	cs->BC_Write_Reg(cs, HFCD_DATA, HFCD_CIRM, cs->hw.hfcD.cirm);	/* Reset Off */
 	current->state = TASK_INTERRUPTIBLE;
-	current->timeout = jiffies + 1;
-	schedule();
+	schedule_timeout(1);
 	cs->hw.hfcD.cirm |= HFCD_INTB;
 	cs->BC_Write_Reg(cs, HFCD_DATA, HFCD_CIRM, cs->hw.hfcD.cirm);	/* INT B */
 	cs->BC_Write_Reg(cs, HFCD_DATA, HFCD_CLKDEL, 0x0e);
@@ -113,9 +110,13 @@ static int
 t163c_card_msg(struct IsdnCardState *cs, int mt, void *arg)
 {
 	long flags;
+	char tmp[32];
 
-	if (cs->debug & L1_DEB_ISAC)
-		debugl1(cs, "teles3c: card_msg %x", mt);
+	if (cs->debug & L1_DEB_ISAC) {
+		
+		sprintf(tmp, "teles3c: card_msg %x", mt);
+		debugl1(cs, tmp);
+	}
 	switch (mt) {
 		case CARD_RESET:
 			reset_t163c(cs);
@@ -133,8 +134,7 @@ t163c_card_msg(struct IsdnCardState *cs, int mt, void *arg)
 			save_flags(flags);
 			sti();
 			current->state = TASK_INTERRUPTIBLE;
-			current->timeout = jiffies + (80*HZ)/1000;
-			schedule();
+			schedule_timeout((80*HZ)/1000);
 			cs->hw.hfcD.ctmt |= HFCD_TIM800;
 			cs->BC_Write_Reg(cs, HFCD_DATA, HFCD_CTMT, cs->hw.hfcD.ctmt); 
 			cs->BC_Write_Reg(cs, HFCD_DATA, HFCD_MST_MODE, cs->hw.hfcD.mst_m);

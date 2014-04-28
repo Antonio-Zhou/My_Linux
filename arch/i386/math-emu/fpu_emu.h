@@ -1,9 +1,9 @@
 /*---------------------------------------------------------------------------+
  |  fpu_emu.h                                                                |
  |                                                                           |
- | Copyright (C) 1992,1993,1994,1997,2001                                    |
+ | Copyright (C) 1992,1993,1994,1997                                         |
  |                       W. Metzenthen, 22 Parker St, Ormond, Vic 3163,      |
- |                       Australia.  E-mail   billm@melbpc.org.au            |
+ |                       Australia.  E-mail   billm@suburbia.net             |
  |                                                                           |
  +---------------------------------------------------------------------------*/
 
@@ -88,7 +88,7 @@ extern u_char emulating;
 #else
 #  define RE_ENTRANT_CHECK_OFF
 #  define RE_ENTRANT_CHECK_ON
-#endif /* RE_ENTRANT_CHECKING */
+#endif RE_ENTRANT_CHECKING
 
 #define FWAIT_OPCODE 0x9b
 #define OP_SIZE_PREFIX 0x66
@@ -142,7 +142,7 @@ extern u_char const data_sizes_16[32];
 
 #define register_base ((u_char *) registers )
 #define fpu_register(x)  ( * ((FPU_REG *)( register_base + 10 * (x & 7) )) )
-#define	st(x)      ( * ((FPU_REG *)( register_base + 10 * ((FPU_top+x) & 7) )) )
+#define	st(x)      ( * ((FPU_REG *)( register_base + 10 * ((top+x) & 7) )) )
 
 #define	STACK_OVERFLOW	(FPU_stackoverflow(&st_new_ptr))
 #define	NOT_EMPTY(i)	(!FPU_empty_i(i))
@@ -152,7 +152,7 @@ extern u_char const data_sizes_16[32];
 #define poppop() { FPU_pop(); FPU_pop(); }
 
 /* push() does not affect the tags */
-#define push()	{ FPU_top--; }
+#define push()	{ top--; }
 
 #define signbyte(a) (((u_char *)(a))[9])
 #define getsign(a) (signbyte(a) & 0x80)
@@ -164,6 +164,8 @@ extern u_char const data_sizes_16[32];
 #define setnegative(a) { signbyte(a) |= 0x80; }
 #define signpositive(a) ( (signbyte(a) & 0x80) == 0 )
 #define signnegative(a) (signbyte(a) & 0x80)
+
+#include "fpu_proto.h"
 
 static inline void reg_copy(FPU_REG const *x, FPU_REG *y)
 {
@@ -187,7 +189,7 @@ static inline void reg_copy(FPU_REG const *x, FPU_REG *y)
 /*----- Prototypes for functions written in assembler -----*/
 /* extern void reg_move(FPU_REG *a, FPU_REG *b); */
 
-asmlinkage int FPU_normalize(FPU_REG *x, int sign);
+asmlinkage int FPU_normalize(FPU_REG *x);
 asmlinkage int FPU_normalize_nuo(FPU_REG *x);
 asmlinkage int FPU_u_sub(FPU_REG const *arg1, FPU_REG const *arg2,
 			 FPU_REG *answ, unsigned int control_w, u_char sign,
@@ -212,6 +214,6 @@ asmlinkage int FPU_round(FPU_REG *arg, unsigned int extent, int dummy,
 #include "fpu_proto.h"
 #endif
 
-#endif /* __ASSEMBLY__ */
+#endif __ASSEMBLY__
 
-#endif /* _FPU_EMU_H_ */
+#endif _FPU_EMU_H_

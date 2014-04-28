@@ -1,5 +1,5 @@
 /* gdth_proc.c 
- * $Id: gdth_proc.c,v 1.10 1998/06/03 14:53:49 achim Exp $
+ * $Id: gdth_proc.c,v 1.6 1997/10/31 10:36:24 achim Exp $
  */
 
 #include "gdth_ioctl.h"
@@ -10,7 +10,7 @@ int gdth_proc_info(char *buffer,char **start,off_t offset,int length,
     int hanum,busnum,i;
 
     TRACE2(("gdth_proc_info() length %d ha %d offs %d inout %d\n",
-            length,hostno,(int)offset,inout));
+            length,hostno,offset,inout));
 
     for (i=0; i<gdth_ctr_vcount; ++i) {
         if (gdth_ctr_vtab[i]->host_no == hostno)
@@ -113,7 +113,6 @@ static int gdth_set_asc_info(char *buffer,int length,int hanum,Scsi_Cmnd scp)
                         struct semaphore sem = MUTEX_LOCKED;
                         scp.request.rq_status = RQ_SCSI_BUSY;
                         scp.request.sem = &sem;
-                        scp.SCp.this_residual = IOCTL_PRI;
                         scsi_do_cmd(&scp, cmnd, &gdtcmd,
                                     sizeof(gdth_cmd_str), gdth_scsi_done,
                                     30*HZ, 1);
@@ -180,7 +179,6 @@ static int gdth_set_asc_info(char *buffer,int length,int hanum,Scsi_Cmnd scp)
             struct semaphore sem = MUTEX_LOCKED;
             scp.request.rq_status = RQ_SCSI_BUSY;
             scp.request.sem = &sem;
-            scp.SCp.this_residual = IOCTL_PRI;
             scsi_do_cmd(&scp, cmnd, &gdtcmd, sizeof(gdth_cmd_str),
                         gdth_scsi_done, 30*HZ, 1);
             down(&sem);
@@ -293,7 +291,7 @@ static int gdth_set_bin_info(char *buffer,int length,int hanum,Scsi_Cmnd scp)
         piord->size = sizeof(gdth_iord_str);
         piord->status = S_OK;
         if (ha->type == GDT_ISA || ha->type == GDT_EISA) {
-            piord->iu.ctrtype.type = (unchar)((ha->stype>>20) - 0x10);
+            piord->iu.ctrtype.type = (unchar)((ha->stype>>20) - 10);
         } else if (ha->type != GDT_PCIMPR) {
             piord->iu.ctrtype.type = (unchar)((ha->stype<<8) + 6);
         } else {
@@ -438,11 +436,11 @@ static int gdth_get_info(char *buffer,char **start,off_t offset,
 #if LINUX_VERSION_CODE >= 0x020000
         size = sprintf(buffer+len,
                        "%s SCSI Disk Array Controller\n",
-                       ha->ctr_name);
+                       gdth_ctr_name(hanum));
 #else
         size = sprintf(buffer+len,
                        "%s SCSI Disk Array Controller (SCSI Bus %d)\n",
-                       ha->ctr_name,busnum);
+                       gdth_ctr_name(hanum),busnum);
 #endif
         len += size;  pos = begin + len;
         size = sprintf(buffer+len,
@@ -481,7 +479,7 @@ stop_output:
     if (len > length)
         len = length;
     TRACE2(("get_info() len %d pos %d begin %d offset %d length %d size %d\n",
-            len,(int)pos,(int)begin,(int)offset,length,size));
+            len,pos,begin,offset,length,size));
     return(len);
 }
 
@@ -544,19 +542,16 @@ static void gdth_wait_completion(int hanum, int busnum, int id)
 
     for (i = 0; i < GDTH_MAXCMDS; ++i) {
         scp = gdth_cmd_tab[i][hanum].cmnd;
-#if LINUX_VERSION_CODE >= 0x020000
         if (!SPECIAL_SCP(scp) && scp->target == (unchar)id &&
+#if LINUX_VERSION_CODE >= 0x020000
             scp->channel == (unchar)busnum)
 #else
-        if (!SPECIAL_SCP(scp) && scp->target == (unchar)id &&
             NUMDATA(scp->host)->busnum == (unchar)busnum)
 #endif
         {
-	    scp->SCp.have_data_in = 0;
             restore_flags(flags);
             while (!scp->SCp.have_data_in)
                 barrier();
-	    scp->scsi_done(scp);
             save_flags(flags);
             cli();
         }
@@ -575,16 +570,15 @@ static void gdth_stop_timeout(int hanum, int busnum, int id)
     ha = HADATA(gdth_ctr_tab[hanum]);
 
     for (scp = ha->req_first; scp; scp = (Scsi_Cmnd *)scp->SCp.ptr) {
-#if LINUX_VERSION_CODE >= 0x020000
         if (scp->target == (unchar)id &&
+#if LINUX_VERSION_CODE >= 0x020000
             scp->channel == (unchar)busnum)
 #else
-        if (scp->target == (unchar)id &&
             NUMDATA(scp->host)->busnum == (unchar)busnum)
 #endif
         {
             TRACE2(("gdth_stop_timeout(): update_timeout()\n"));
-            scp->SCp.buffers_residual = gdth_update_timeout(hanum, scp, 0);
+            scp->SCp.buffers_residual = gdth_update_timeout(scp, 0);
         }
     }
     restore_flags(flags);
@@ -601,54 +595,39 @@ static void gdth_start_timeout(int hanum, int busnum, int id)
     ha = HADATA(gdth_ctr_tab[hanum]);
 
     for (scp = ha->req_first; scp; scp = (Scsi_Cmnd *)scp->SCp.ptr) {
-#if LINUX_VERSION_CODE >= 0x020000
         if (scp->target == (unchar)id &&
+#if LINUX_VERSION_CODE >= 0x020000
             scp->channel == (unchar)busnum)
 #else
-        if (scp->target == (unchar)id &&
             NUMDATA(scp->host)->busnum == (unchar)busnum)
 #endif
         {
             TRACE2(("gdth_start_timeout(): update_timeout()\n"));
-            gdth_update_timeout(hanum, scp, scp->SCp.buffers_residual);
+            gdth_update_timeout(scp, scp->SCp.buffers_residual);
         }
     }
     restore_flags(flags);
 }
 
-static int gdth_update_timeout(int hanum, Scsi_Cmnd *scp, int timeout)
+static int gdth_update_timeout(Scsi_Cmnd *scp, int timeout)
 {
     ulong flags;
     int oldto;
 
     save_flags(flags);
     cli();
-    oldto = scp->timeout_per_command;
-    scp->timeout_per_command = timeout;
 
-#if LINUX_VERSION_CODE >= 0x02014B
-    if (timeout == 0) {
-	del_timer(&scp->eh_timeout);
-	scp->eh_timeout.data = (unsigned long) NULL;
-	scp->eh_timeout.expires = 0;
-    } else {
-	if (scp->eh_timeout.data != (unsigned long) NULL) 
-	    del_timer(&scp->eh_timeout);
-	scp->eh_timeout.data = (unsigned long) scp;
-	scp->eh_timeout.expires = jiffies + timeout;
-	add_timer(&scp->eh_timeout);
-    }
-#else
+    oldto = scp->timeout;
+    scp->timeout = timeout;
     if (timeout > 0) {
-        if (timer_table[SCSI_TIMER].expires == 0) {
-            timer_table[SCSI_TIMER].expires = jiffies + timeout;
-            timer_active |= 1 << SCSI_TIMER;
+        if (timer_table[GDTH_TIMER].expires == 0) {
+            timer_table[GDTH_TIMER].expires = jiffies + timeout;
+            timer_active |= 1 << GDTH_TIMER;
         } else {
-            if (jiffies + timeout < timer_table[SCSI_TIMER].expires)
-                timer_table[SCSI_TIMER].expires = jiffies + timeout;
+            if (jiffies + timeout < timer_table[GDTH_TIMER].expires)
+                timer_table[GDTH_TIMER].expires = jiffies + timeout;
         }
     }
-#endif
 
     restore_flags(flags);
     return oldto;

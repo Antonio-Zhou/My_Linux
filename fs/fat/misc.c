@@ -23,13 +23,14 @@
 
 /* Well-known binary file extensions - of course there are many more */
 
-static char bin_extensions[] =
-  "EXE" "COM" "BIN" "APP" "SYS" "DRV" "OVL" "OVR" "OBJ" "LIB" "DLL" "PIF" /* program code */
-  "ARC" "ZIP" "LHA" "LZH" "ZOO" "TAR" "Z  " "ARJ"	/* common archivers */
-  "TZ " "TAZ" "TZP" "TPZ"		/* abbreviations of tar.Z and tar.zip */
-  "GZ " "TGZ" "DEB" "RPM"		/* .gz, .tar.gz and Debian packages   */
-  "GIF" "BMP" "TIF" "GL " "JPG" "PCX"	/* graphics */
-  "TFM" "VF " "GF " "PK " "PXL" "DVI";	/* TeX */
+static char ascii_extensions[] =
+  "TXT" "ME " "HTM" "1ST" "LOG" "   " 	/* text files */
+  "C  " "H  " "CPP" "LIS" "PAS" "FOR"  /* programming languages */
+  "F  " "MAK" "INC" "BAS" 		/* programming languages */
+  "BAT" "SH "				/* program code :) */
+  "INI"					/* config files */
+  "PBM" "PGM" "DXF"			/* graphics */
+  "TEX";				/* TeX */
 
 
 /*
@@ -43,9 +44,7 @@ void fat_fs_panic(struct super_block *s,const char *msg)
 
 	not_ro = !(s->s_flags & MS_RDONLY);
 	if (not_ro) s->s_flags |= MS_RDONLY;
-	printk("Filesystem panic (dev %s, ", kdevname(s->s_dev));
-	printk("mounted on %s:%ld)\n  %s\n", /* note: kdevname returns & static char[] */
-	       kdevname(s->s_covered->i_dev), s->s_covered->i_ino, msg);
+	printk("Filesystem panic (dev %s).\n  %s\n", kdevname(s->s_dev), msg);
 	if (not_ro)
 		printk("  File system has been set read-only\n");
 }
@@ -66,9 +65,9 @@ int is_binary(char conversion,char *extension)
 		case 't':
 			return 0;
 		case 'a':
-			for (walk = bin_extensions; *walk; walk += 3)
-				if (!strncmp(extension,walk,3)) return 1;
-			return 0;
+			for (walk = ascii_extensions; *walk; walk += 3)
+				if (!strncmp(extension,walk,3)) return 0;
+			return 1;	/* default binary conversion */
 		default:
 			printk("Invalid conversion mode - defaulting to "
 			    "binary.\n");
@@ -173,14 +172,11 @@ printk("free cluster: %d\n",nr);
 		unlock_fat(sb);
 		return -ENOSPC;
 	}
-	fat_access(sb,nr,MSDOS_SB(sb)->fat_bits == 12 ? EOF_FAT12 :
-		   MSDOS_SB(sb)->fat_bits == 16 ? EOF_FAT16 : EOF_FAT32);
-	if (MSDOS_SB(sb)->free_clusters != -1) {
+	fat_access(sb,nr,EOF_FAT(sb));
+	if (MSDOS_SB(sb)->free_clusters != -1)
 		MSDOS_SB(sb)->free_clusters--;
-	}
-	if (MSDOS_SB(sb)->fat_bits == 32) {
+	if (MSDOS_SB(sb)->fat_bits == 32)
 		fat_clusters_flush(sb);
-	}
 	unlock_fat(sb);
 #ifdef DEBUG
 printk("set to %x\n",fat_access(sb,nr,-1));
@@ -198,7 +194,7 @@ printk("set to %x\n",fat_access(sb,nr,-1));
 	*/
 	file_cluster = 0;
 	if ((curr = MSDOS_I(inode)->i_start) != 0) {
-		cache_lookup(inode,INT_MAX,&last,&curr);
+		fat_cache_lookup(inode,INT_MAX,&last,&curr);
 		file_cluster = last;
 		while (curr && curr != -1){
 			PRINTK (("."));
@@ -218,13 +214,17 @@ printk("last = %d\n",last);
 	else {
 		MSDOS_I(inode)->i_start = nr;
 		MSDOS_I(inode)->i_logstart = nr;
-		inode->i_dirt = 1;
+		mark_inode_dirty(inode);
 	}
 #ifdef DEBUG
 if (last) printk("next set to %d\n",fat_access(sb,last,-1));
 #endif
 	sector = MSDOS_SB(sb)->data_start+(nr-2)*cluster_size;
 	last_sector = sector + cluster_size;
+	if (MSDOS_SB(sb)->cvf_format &&
+	    MSDOS_SB(sb)->cvf_format->zero_out_cluster)
+		MSDOS_SB(sb)->cvf_format->zero_out_cluster(inode,nr);
+	else
 	for ( ; sector < last_sector; sector++) {
 		#ifdef DEBUG
 			printk("zeroing sector %d\n",sector);
@@ -242,7 +242,7 @@ if (last) printk("next set to %d\n",fat_access(sb,last,-1));
 		printk ("file_cluster badly computed!!! %d <> %ld\n"
 			,file_cluster,inode->i_blocks/cluster_size);
 	}else{
-		cache_add(inode,file_cluster,nr);
+		fat_cache_add(inode,file_cluster,nr);
 	}
 	inode->i_blocks += cluster_size;
 	if (S_ISDIR(inode->i_mode)) {
@@ -255,7 +255,7 @@ if (last) printk("next set to %d\n",fat_access(sb,last,-1));
 #ifdef DEBUG
 printk("size is %d now (%x)\n",inode->i_size,inode);
 #endif
-		inode->i_dirt = 1;
+		mark_inode_dirty(inode);
 	}
 	return 0;
 }
@@ -283,9 +283,7 @@ int date_dos2unix(unsigned short time,unsigned short date)
 	    month < 2 ? 1 : 0)+3653);
 			/* days since 1.1.70 plus 80's leap day */
 	secs += sys_tz.tz_minuteswest*60;
-	if (sys_tz.tz_dsttime) {
-	    secs -= 3600;
-	}
+	if (sys_tz.tz_dsttime) secs -= 3600;
 	return secs;
 }
 
@@ -515,7 +513,7 @@ static int raw_scan_nonroot(struct super_block *sb,int start,const char *name,
 /*
  * raw_scan performs raw_scan_sector on any sector.
  *
- * NOTE: raw_scan must not be used on a directory that is the process of
+ * NOTE: raw_scan must not be used on a directory that is is the process of
  *       being created.
  */
 

@@ -3,9 +3,9 @@
  |                                                                           |
  | Implementation of the FPU "transcendental" functions.                     |
  |                                                                           |
- | Copyright (C) 1992,1993,1994,1997,1999,2001                               |
+ | Copyright (C) 1992,1993,1994,1997                                         |
  |                       W. Metzenthen, 22 Parker St, Ormond, Vic 3163,      |
- |                       Australia.  E-mail   billm@melbpc.org.au            |
+ |                       Australia.  E-mail   billm@suburbia.net             |
  |                                                                           |
  |                                                                           |
  +---------------------------------------------------------------------------*/
@@ -62,7 +62,7 @@ static int trig_arg(FPU_REG *st0_ptr, int even)
 		 significand(&CONST_PI2),
 		 q, exponent(st0_ptr) - exponent(&CONST_PI2));
       setexponent16(&tmp, exponent(&CONST_PI2));
-      st0_tag = FPU_normalize(&tmp, 0);  /* Can't overflow */
+      st0_tag = FPU_normalize(&tmp);
       FPU_copy_to_reg0(&tmp, st0_tag);
     }
 
@@ -82,11 +82,10 @@ static int trig_arg(FPU_REG *st0_ptr, int even)
 
 	  significand(&tmp) = q + 1;
 	  setexponent16(&tmp, 63);
-	  FPU_normalize(&tmp, 0);   /* Can't overflow */
+	  FPU_normalize(&tmp);
 	  tmptag =
 	    FPU_u_mul(&CONST_PI2extra, &tmp, &tmp, FULL_PRECISION, SIGN_POS,
-		      exponent(&CONST_PI2extra) + exponent(&tmp));
-	  setsign(&tmp, getsign(&CONST_PI2extra));
+		      exponent16(&CONST_PI2extra) + exponent16(&tmp));
 	  st0_tag = FPU_add(&tmp, tmptag, 0, FULL_PRECISION);
 	  if ( signnegative(st0_ptr) )
 	    {
@@ -98,7 +97,7 @@ static int trig_arg(FPU_REG *st0_ptr, int even)
 	      q++;
 	    }
 	}
-#endif /* BETTER_THAN_486 */
+#endif BETTER_THAN_486
     }
 #ifdef BETTER_THAN_486
   else
@@ -115,11 +114,10 @@ static int trig_arg(FPU_REG *st0_ptr, int even)
 
 	  significand(&tmp) = q;
 	  setexponent16(&tmp, 63);
-	  FPU_normalize(&tmp, 0);         /* This must return TAG_Valid */
+	  FPU_normalize(&tmp);         /* This must return TAG_Valid */
 	  tmptag = FPU_u_mul(&CONST_PI2extra, &tmp, &tmp, FULL_PRECISION,
 			     SIGN_POS,
-			     exponent(&CONST_PI2extra) + exponent(&tmp));
-	  setsign(&tmp, getsign(&CONST_PI2extra));
+			     exponent16(&CONST_PI2extra) + exponent16(&tmp));
 	  st0_tag = FPU_sub(LOADED|(tmptag & 0x0f), (int)&tmp,
 			    FULL_PRECISION);
 	  if ( (exponent(st0_ptr) == exponent(&CONST_PI2)) &&
@@ -138,7 +136,7 @@ static int trig_arg(FPU_REG *st0_ptr, int even)
 	    }
 	}
     }
-#endif /* BETTER_THAN_486 */
+#endif BETTER_THAN_486
 
   FPU_settag0(st0_tag);
   control_word = old_cw;
@@ -170,7 +168,7 @@ static void convert_l2reg(long const *arg, int deststnr)
   dest->sigh = num;
   dest->sigl = 0;
   setexponent16(dest, 31);
-  tag = FPU_normalize(dest, sign);
+  tag = FPU_normalize(dest);
   FPU_settagi(deststnr, tag);
   setsign(dest, sign);
   return;
@@ -186,7 +184,7 @@ static void single_arg_error(FPU_REG *st0_ptr, u_char st0_tag)
 #ifdef PARANOID
   else
     EXCEPTION(EX_INTERNAL|0x0112);
-#endif /* PARANOID */
+#endif PARANOID
 }
 
 
@@ -232,7 +230,7 @@ static void single_arg_2_error(FPU_REG *st0_ptr, u_char st0_tag)
 #ifdef PARANOID
     default:
       EXCEPTION(EX_INTERNAL|0x0112);
-#endif /* PARANOID */
+#endif PARANOID
     }
 }
 
@@ -463,20 +461,20 @@ static void fxtract(FPU_REG *st0_ptr, u_char st0_tag)
 #ifdef PARANOID
   else
     EXCEPTION(EX_INTERNAL | 0x119);
-#endif /* PARANOID */
+#endif PARANOID
 }
 
 
 static void fdecstp(void)
 {
   clear_C1();
-  FPU_top--;
+  top--;
 }
 
 static void fincstp(void)
 {
   clear_C1();
-  FPU_top++;
+  top++;
 }
 
 
@@ -571,7 +569,7 @@ static void frndint_(FPU_REG *st0_ptr, u_char st0_tag)
 	set_precision_flag(flags);
 
       setexponent16(st0_ptr, 63);
-      tag = FPU_normalize(st0_ptr, sign);
+      tag = FPU_normalize(st0_ptr);
       setsign(st0_ptr, sign);
       FPU_settag0(tag);
       return;
@@ -716,7 +714,7 @@ static int f_cos(FPU_REG *st0_ptr, u_char tag)
 	  set_precision_flag_down();  /* 80486 appears to do this. */
 #else
 	  set_precision_flag_up();  /* Must be up. */
-#endif /* PECULIAR_486 */
+#endif PECULIAR_486
 	  return 0;
 	}
     }
@@ -829,29 +827,18 @@ static void rem_kernel(unsigned long long st0, unsigned long long *y,
 		       unsigned long long st1,
 		       unsigned long long q, int n)
 {
-  int dummy;
   unsigned long long x;
 
   x = st0 << n;
 
   /* Do the required multiplication and subtraction in the one operation */
-
-  /* lsw x -= lsw st1 * lsw q */
-  asm volatile ("mull %4; subl %%eax,%0; sbbl %%edx,%1"
-		:"=m" (((unsigned *)&x)[0]), "=m" (((unsigned *)&x)[1]),
-		"=a" (dummy)
-		:"2" (((unsigned *)&st1)[0]), "m" (((unsigned *)&q)[0])
-		:"%dx");
-  /* msw x -= msw st1 * lsw q */
-  asm volatile ("mull %3; subl %%eax,%0"
-		:"=m" (((unsigned *)&x)[1]), "=a" (dummy)
-		:"1" (((unsigned *)&st1)[1]), "m" (((unsigned *)&q)[0])
-		:"%dx");
-  /* msw x -= lsw st1 * msw q */
-  asm volatile ("mull %3; subl %%eax,%0"
-		:"=m" (((unsigned *)&x)[1]), "=a" (dummy)
-		:"1" (((unsigned *)&st1)[0]), "m" (((unsigned *)&q)[1])
-		:"%dx");
+  asm volatile ("movl %2,%%eax; mull %4; subl %%eax,%0; sbbl %%edx,%1;
+                 movl %3,%%eax; mull %4; subl %%eax,%1;
+                 movl %2,%%eax; mull %5; subl %%eax,%1;"
+		:"=m" (x), "=m" (((unsigned *)&x)[1])
+		:"m" (st1),"m" (((unsigned *)&st1)[1]),
+		 "m" (q),"m" (((unsigned *)&q)[1])
+		:"%ax","%dx");
 
   *y = x;
 }
@@ -1008,7 +995,7 @@ static void do_fprem(FPU_REG *st0_ptr, u_char st0_tag, int round)
 	      setcc(SW_C2);
 #else
 	      setcc(0);
-#endif /* PECULIAR_486 */
+#endif PECULIAR_486
 	      return;
 	    }
 	  cc = SW_C2;
@@ -1114,7 +1101,7 @@ static void do_fprem(FPU_REG *st0_ptr, u_char st0_tag, int round)
 #ifdef PARANOID
   if ( (st0_tag != TW_NaN) && (st1_tag != TW_NaN) )
       EXCEPTION(EX_INTERNAL | 0x118);
-#endif /* PARANOID */
+#endif PARANOID
 
   real_2op_NaN(st1_ptr, st1_tag, 0, st1_ptr);
 
@@ -1315,7 +1302,7 @@ static void fyl2x(FPU_REG *st0_ptr, u_char st0_tag)
 	  sign = getsign(st1_ptr);
 	  if ( FPU_divide_by_zero(1, sign) < 0 )
 	    return;
-#endif /* PECULIAR_486 */
+#endif PECULIAR_486
 
 	  changesign(st1_ptr);
 	}
@@ -1451,7 +1438,7 @@ static void fpatan(FPU_REG *st0_ptr, u_char st0_tag)
 #ifdef PARANOID
   else
     EXCEPTION(EX_INTERNAL | 0x125);
-#endif /* PARANOID */
+#endif PARANOID
 
   FPU_pop();
   set_precision_flag_up();  /* We do not really know if up or down */
@@ -1542,8 +1529,7 @@ static void fyl2xp1(FPU_REG *st0_ptr, u_char st0_tag)
 #ifdef PARANOID
 	  EXCEPTION(EX_INTERNAL | 0x116);
 	  return;
-#endif /* PARANOID */
-	  break;
+#endif PARANOID
 	}
     }
   else if ( (st0_tag == TAG_Valid) || (st0_tag == TW_Denormal) )
@@ -1561,7 +1547,7 @@ static void fyl2xp1(FPU_REG *st0_ptr, u_char st0_tag)
 #else
 		  if ( arith_invalid(1) < 0 )
 		    return;
-#endif /* PECULIAR_486 */
+#endif PECULIAR_486
 		}
 	      else if ( (st0_tag == TW_Denormal) && (denormal_operand() < 0) )
 		return;
@@ -1584,7 +1570,7 @@ static void fyl2xp1(FPU_REG *st0_ptr, u_char st0_tag)
 		  changesign(st1_ptr);
 #else
 		  if ( arith_invalid(1) < 0 ) return;
-#endif /* PECULIAR_486 */
+#endif PECULIAR_486
 		}
 	      else if ( (st0_tag == TW_Denormal) && (denormal_operand() < 0) )
 		return;
@@ -1619,14 +1605,14 @@ static void fyl2xp1(FPU_REG *st0_ptr, u_char st0_tag)
 	  /* This should have higher priority than denormals, but... */
 	  if ( arith_invalid(1) < 0 )  /* log(-infinity) */
 	    return;
-#endif /* PECULIAR_486 */
+#endif PECULIAR_486
 	  if ( (st1_tag == TW_Denormal) && (denormal_operand() < 0) )
 	    return;
 #ifdef PECULIAR_486
 	  /* Denormal operands actually get higher priority */
 	  if ( arith_invalid(1) < 0 )  /* log(-infinity) */
 	    return;
-#endif /* PECULIAR_486 */
+#endif PECULIAR_486
 	}
       else if ( st1_tag == TAG_Zero )
 	{
@@ -1655,7 +1641,7 @@ static void fyl2xp1(FPU_REG *st0_ptr, u_char st0_tag)
       EXCEPTION(EX_INTERNAL | 0x117);
       return;
     }
-#endif /* PARANOID */
+#endif PARANOID
 
   FPU_pop();
   return;
@@ -1681,11 +1667,10 @@ static void fscale(FPU_REG *st0_ptr, u_char st0_tag)
 
     valid_scale:
 
-      if ( exponent(st1_ptr) > 18 )
+      if ( exponent(st1_ptr) > 30 )
 	{
-	  /* 2^18 is far too large, would require 2^(2^17) or 2^(-2^17) */
+	  /* 2^31 is far too large, would require 2^(2^30) or 2^(-2^30) */
 
-	outrange_scale:
 	  if ( signpositive(st1_ptr) )
 	    {
 	      EXCEPTION(EX_Overflow);
@@ -1707,13 +1692,10 @@ static void fscale(FPU_REG *st0_ptr, u_char st0_tag)
       control_word = old_cw;
       scale = signnegative(st1_ptr) ? -tmp.sigl : tmp.sigl;
       scale += exponent16(st0_ptr);
-      if ( (scale > 0x7000) || (scale < -0x7000) )
-	goto outrange_scale;
 
       setexponent16(st0_ptr, scale);
 
-      /* Use FPU_round() to properly detect remaining cases of
-	 under/overflow etc */
+      /* Use FPU_round() to properly detect under/overflow etc */
       FPU_round(st0_ptr, 0, 0, control_word, sign);
 
       return;

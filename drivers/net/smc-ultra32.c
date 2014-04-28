@@ -51,6 +51,7 @@ static const char *version = "smc-ultra32.c: 06/97 v1.00\n";
 #include <linux/sched.h>
 #include <linux/errno.h>
 #include <linux/string.h>
+#include <linux/init.h>
 
 #include <asm/io.h>
 #include <asm/system.h>
@@ -68,7 +69,8 @@ static void ultra32_get_8390_hdr(struct device *dev, struct e8390_pkt_hdr *hdr,
 static void ultra32_block_input(struct device *dev, int count,
 				struct sk_buff *skb, int ring_offset);
 static void ultra32_block_output(struct device *dev, int count,
-				 const unsigned char *buf, const int start_page);
+				 const unsigned char *buf,
+				 const int start_page);
 static int ultra32_close(struct device *dev);
 
 #define ULTRA32_CMDREG	0	/* Offset to ASIC command register. */
@@ -101,7 +103,7 @@ static int ultra32_close(struct device *dev);
 	following.
 */
 
-int ultra32_probe(struct device *dev)
+__initfunc(int ultra32_probe(struct device *dev))
 {
 	const char *ifmap[] = {"UTP No Link", "", "UTP/AUI", "UTP/BNC"};
 	int ioaddr, edge, media;
@@ -124,7 +126,7 @@ int ultra32_probe(struct device *dev)
 	return ENODEV;
 }
 
-int ultra32_probe1(struct device *dev, int ioaddr)
+__initfunc(int ultra32_probe1(struct device *dev, int ioaddr))
 {
 	int i;
 	int checksum = 0;
@@ -145,6 +147,9 @@ int ultra32_probe1(struct device *dev, int ioaddr)
 		checksum += inb(ioaddr + 8 + i);
 	if ((checksum & 0xff) != 0xff)
 		return ENODEV;
+
+	if (load_8390_module("smc-ultra32.c"))
+		return -ENOSYS;
 
 	/* We should have a "dev" from Space.c or the static module table. */
 	if (dev == NULL) {
@@ -238,8 +243,9 @@ int ultra32_probe1(struct device *dev, int ioaddr)
 static int ultra32_open(struct device *dev)
 {
 	int ioaddr = dev->base_addr - ULTRA32_NIC_OFFSET; /* ASIC addr */
+	int irq_flags = (inb(ioaddr + ULTRA32_CFG5) & 0x08) ? 0 : SA_SHIRQ;
 
-	if (request_irq(dev->irq, ei_interrupt, 0, ei_status.name, dev))
+	if (request_irq(dev->irq, ei_interrupt, irq_flags, ei_status.name, dev))
 		return -EAGAIN;
 
 	outb(ULTRA32_MEMENB, ioaddr); /* Enable Shared Memory. */
@@ -268,7 +274,6 @@ static int ultra32_close(struct device *dev)
 	outb(0x00, ioaddr + ULTRA32_CFG6); /* Disable Interrupts. */
 	outb(0x00, ioaddr + 6);		/* Disable interrupts. */
 	free_irq(dev->irq, dev);
-	irq2dev_map[dev->irq] = 0;
 
 	NS8390_init(dev, 0);
 
@@ -384,13 +389,16 @@ int init_module(void)
 		dev->name = namelist+(NAMELEN*this_dev);
 		dev->init = ultra32_probe;
 		if (register_netdev(dev) != 0) {
-			if (found > 0) return 0; /* Got at least one. */
+			if (found > 0) { /* Got at least one. */
+				lock_8390_module();
+				return 0;
+			}
 			printk(KERN_WARNING "smc-ultra32.c: No SMC Ultra32 found.\n");
 			return -ENXIO;
 		}
 		found++;
 	}
-
+	lock_8390_module();
 	return 0;
 }
 
@@ -401,13 +409,14 @@ void cleanup_module(void)
 	for (this_dev = 0; this_dev < MAX_ULTRA32_CARDS; this_dev++) {
 		struct device *dev = &dev_ultra[this_dev];
 		if (dev->priv != NULL) {
-			/* NB: ultra32_close_card() does free_irq + irq2dev */
 			int ioaddr = dev->base_addr - ULTRA32_NIC_OFFSET;
-			kfree(dev->priv);
-			dev->priv = NULL;
+			void *priv = dev->priv;
+			/* NB: ultra32_close_card() does free_irq */
 			release_region(ioaddr, ULTRA32_IO_EXTENT);
 			unregister_netdev(dev);
+			kfree(priv);
 		}
 	}
+	unlock_8390_module();
 }
 #endif /* MODULE */

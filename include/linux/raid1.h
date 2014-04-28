@@ -7,9 +7,15 @@ struct mirror_info {
 	int		number;
 	int		raid_disk;
 	kdev_t		dev;
-	int		operational;
 	int		next;
 	int		sect_limit;
+
+	/*
+	 * State bits:
+	 */
+	int		operational;
+	int		write_only;
+	int		spare;
 };
 
 struct raid1_data {
@@ -20,6 +26,7 @@ struct raid1_data {
 	int last_used;
 	unsigned long	next_sect;
 	int		sect_count;
+	int resync_running;
 };
 
 /*
@@ -29,13 +36,14 @@ struct raid1_data {
  */
 
 struct raid1_bh {
-	unsigned int remaining;
-	unsigned int state;
-	int cmd;
-	struct md_dev *mddev;                    /* we could use bh->personality? */
-	struct buffer_head *master_bh;
-	struct buffer_head *mirror_bh [MD_SB_DISKS];
-	struct buffer_head *next_retry;
+	unsigned int		remaining;
+	int			cmd;
+	unsigned long		state;
+	struct md_dev		*mddev;
+	struct buffer_head	*master_bh;
+	struct buffer_head	*mirror_bh [MD_SB_DISKS];
+	struct buffer_head	bh_req;
+	struct buffer_head	*next_retry;
 };
 
 #endif

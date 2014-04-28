@@ -10,58 +10,52 @@
 
 #include <linux/mm.h>
 #include <linux/msdos_fs.h>
+#include <linux/fat_cvf.h>
 
 #include "msbuffer.h"
+#include "tables.h"
 
 extern struct file_operations fat_dir_operations;
 
-#if LINUX_VERSION_CODE >= ASC_LINUX_VERSION(2,1,0)
-#define X(sym) EXPORT_SYMBOL(sym);
-#define X_PUNCT ;
-#else
-#define X_PUNCT ,
-static struct symbol_table fat_syms = {
-#include <linux/symtab_begin.h>
-#endif
-X(fat_add_cluster) X_PUNCT
-X(fat_bmap) X_PUNCT
-X(fat_brelse) X_PUNCT
-X(fat_cache_inval_inode) X_PUNCT
-X(fat_esc2uni) X_PUNCT
-X(fat_date_unix2dos) X_PUNCT
-X(fat_dir_operations) X_PUNCT
-X(fat_file_read) X_PUNCT
-X(fat_file_write) X_PUNCT
-X(fat_fs_panic) X_PUNCT
-X(fat_get_entry) X_PUNCT
-X(fat_lock_creation) X_PUNCT
-X(fat_mark_buffer_dirty) X_PUNCT
-X(fat_mmap) X_PUNCT
-X(fat_notify_change) X_PUNCT
-X(fat_parent_ino) X_PUNCT
-X(fat_put_inode) X_PUNCT
-X(fat_put_super) X_PUNCT
-X(fat_read_inode) X_PUNCT
-X(fat_read_super) X_PUNCT
-X(fat_readdirx) X_PUNCT
-X(fat_readdir) X_PUNCT
-X(fat_scan) X_PUNCT
-X(fat_smap) X_PUNCT
-X(fat_statfs) X_PUNCT
-X(fat_truncate) X_PUNCT
-X(fat_uni2esc) X_PUNCT
-X(fat_unlock_creation) X_PUNCT
-X(fat_write_inode) X_PUNCT
-#if LINUX_VERSION_CODE < ASC_LINUX_VERSION(2,1,0)
-#include <linux/symtab_end.h>
-};                                           
-#endif
+EXPORT_SYMBOL(fat_add_cluster);
+EXPORT_SYMBOL(fat_bmap);
+EXPORT_SYMBOL(fat_brelse);
+EXPORT_SYMBOL(fat_cache_inval_inode);
+EXPORT_SYMBOL(fat_date_unix2dos);
+EXPORT_SYMBOL(fat_delete_inode);
+EXPORT_SYMBOL(fat_dir_operations);
+EXPORT_SYMBOL(fat_esc2uni);
+EXPORT_SYMBOL(fat_file_read);
+EXPORT_SYMBOL(fat_file_write);
+EXPORT_SYMBOL(fat_fs_panic);
+EXPORT_SYMBOL(fat_get_entry);
+EXPORT_SYMBOL(fat_lock_creation);
+EXPORT_SYMBOL(fat_mark_buffer_dirty);
+EXPORT_SYMBOL(fat_mmap);
+EXPORT_SYMBOL(fat_notify_change);
+EXPORT_SYMBOL(fat_parent_ino);
+EXPORT_SYMBOL(fat_put_inode);
+EXPORT_SYMBOL(fat_put_super);
+EXPORT_SYMBOL(fat_read_inode);
+EXPORT_SYMBOL(fat_read_super);
+EXPORT_SYMBOL(fat_readdirx);
+EXPORT_SYMBOL(fat_readdir);
+EXPORT_SYMBOL(fat_scan);
+EXPORT_SYMBOL(fat_smap);
+EXPORT_SYMBOL(fat_statfs);
+EXPORT_SYMBOL(fat_truncate);
+EXPORT_SYMBOL(fat_uni2esc);
+EXPORT_SYMBOL(fat_unlock_creation);
+EXPORT_SYMBOL(fat_write_inode);
+EXPORT_SYMBOL(register_cvf_format);
+EXPORT_SYMBOL(unregister_cvf_format);
+EXPORT_SYMBOL(fat_get_cluster);
+EXPORT_SYMBOL(lock_fat);
+EXPORT_SYMBOL(unlock_fat);
+EXPORT_SYMBOL(fat_dir_ioctl);
+EXPORT_SYMBOL(fat_readpage);
 
 int init_fat_fs(void)
 {
-#if LINUX_VERSION_CODE >= ASC_LINUX_VERSION(2,1,0)
 	return 0;
-#else
-	return register_symtab(&fat_syms);
-#endif
 }

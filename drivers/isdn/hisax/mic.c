@@ -1,4 +1,4 @@
-/* $Id: mic.c,v 1.1.2.5 1998/04/08 21:58:43 keil Exp $
+/* $Id: mic.c,v 1.6 1998/02/17 15:39:57 keil Exp $
 
  * mic.c  low level stuff for mic cards
  *
@@ -8,17 +8,20 @@
  *
  *
  * $Log: mic.c,v $
- * Revision 1.1.2.5  1998/04/08 21:58:43  keil
- * New init code
- *
- * Revision 1.1.2.4  1998/02/17 15:39:20  keil
+ * Revision 1.6  1998/02/17 15:39:57  keil
  * fix reset problem
  *
- * Revision 1.1.2.3  1998/01/27 22:37:25  keil
+ * Revision 1.5  1998/02/02 13:29:43  keil
  * fast io
  *
- * Revision 1.1.2.2  1997/11/15 18:50:54  keil
- * new common init function
+ * Revision 1.4  1997/11/08 21:35:51  keil
+ * new l1 init
+ *
+ * Revision 1.3  1997/11/06 17:09:11  keil
+ * New 2.1 init code
+ *
+ * Revision 1.2  1997/10/29 18:51:17  keil
+ * New files
  *
  * Revision 1.1.2.1  1997/10/17 22:10:54  keil
  * new files on 2.0
@@ -34,7 +37,7 @@
 
 extern const char *CardType[];
 
-const char *mic_revision = "$Revision: 1.1.2.5 $";
+const char *mic_revision = "$Revision: 1.6 $";
 
 #define byteout(addr,val) outb(val,addr)
 #define bytein(addr) inb(addr)
@@ -217,7 +220,10 @@ mic_card_msg(struct IsdnCardState *cs, int mt, void *arg)
 					I4L_IRQ_FLAG, "HiSax", cs));
 		case CARD_INIT:
 			inithscx(cs); /* /RTSA := ISAC RST */
-			inithscxisac(cs, 3);
+			clear_pending_isac_ints(cs);
+			clear_pending_hscx_ints(cs);
+			initisac(cs);
+			inithscx(cs);
 			return(0);
 		case CARD_TEST:
 			return(0);

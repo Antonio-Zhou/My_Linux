@@ -4,9 +4,9 @@
  | This file contains most of the code to interpret the FPU instructions     |
  | which load and store from user memory.                                    |
  |                                                                           |
- | Copyright (C) 1992,1993,1994,1997,2001                                    |
+ | Copyright (C) 1992,1993,1994,1997                                         |
  |                       W. Metzenthen, 22 Parker St, Ormond, Vic 3163,      |
- |                       Australia.  E-mail   billm@melbpc.org.au            |
+ |                       Australia.  E-mail   billm@suburbia.net             |
  |                                                                           |
  |                                                                           |
  +---------------------------------------------------------------------------*/
@@ -17,6 +17,8 @@
  |    Emulator static data may change when user memory is accessed, due to   |
  |    other processes using the emulator while swapping is in progress.      |
  +---------------------------------------------------------------------------*/
+
+#include <asm/uaccess.h>
 
 #include "fpu_system.h"
 #include "exception.h"
@@ -30,7 +32,7 @@
 #define _PUSH_ 3   /* Need to check for space to push onto stack */
 #define _null_ 4   /* Function illegal or not implemented */
 
-#define pop_0()	{ FPU_settag0(TAG_Empty); FPU_top++; }
+#define pop_0()	{ FPU_settag0(TAG_Empty); top++; }
 
 
 static u_char const type_table[32] = {
@@ -73,17 +75,17 @@ int FPU_load_store(u_char type, fpu_addr_modes addr_modes,
       if ( addr_modes.default_mode == SEG32 )
 	{
 	  if ( access_limit < data_sizes_32[type] )
-	    math_abort(SIGSEGV);
+	    math_abort(FPU_info,SIGSEGV);
 	}
       else if ( addr_modes.default_mode == PM16 )
 	{
 	  if ( access_limit < data_sizes_16[type] )
-	    math_abort(SIGSEGV);
+	    math_abort(FPU_info,SIGSEGV);
 	}
 #ifdef PARANOID
       else
 	EXCEPTION(EX_INTERNAL|0x140);
-#endif /* PARANOID */
+#endif PARANOID
     }
 
   switch ( type_table[type] )
@@ -99,7 +101,7 @@ int FPU_load_store(u_char type, fpu_addr_modes addr_modes,
       {
 	if ( FPU_gettagi(-1) != TAG_Empty )
 	  { FPU_stack_overflow(); return 0; }
-	FPU_top--;
+	top--;
 	st0_ptr = &st(0);
       }
       break;
@@ -110,7 +112,7 @@ int FPU_load_store(u_char type, fpu_addr_modes addr_modes,
     default:
       EXCEPTION(EX_INTERNAL|0x141);
       return 0;
-#endif /* PARANOID */
+#endif PARANOID
     }
 
   switch ( type )
@@ -122,7 +124,7 @@ int FPU_load_store(u_char type, fpu_addr_modes addr_modes,
 	   && isNaN(&loaded_data)
 	   && (real_1op_NaN(&loaded_data) < 0) )
 	{
-	  FPU_top++;
+	  top++;
 	  break;
 	}
       FPU_copy_to_reg0(&loaded_data, loaded_tag);
@@ -139,7 +141,7 @@ int FPU_load_store(u_char type, fpu_addr_modes addr_modes,
 	   && isNaN(&loaded_data)
 	   && (real_1op_NaN(&loaded_data) < 0) )
 	{
-	  FPU_top++;
+	  top++;
 	  break;
 	}
       FPU_copy_to_reg0(&loaded_data, loaded_tag);
@@ -215,7 +217,7 @@ int FPU_load_store(u_char type, fpu_addr_modes addr_modes,
 	partial_status &= ~(SW_Summary | SW_Backward);
 #ifdef PECULIAR_486
       control_word |= 0x40;  /* An 80486 appears to always set this bit */
-#endif /* PECULIAR_486 */
+#endif PECULIAR_486
       return 1;
     case 025:      /* fld m80real */
       clear_C1();

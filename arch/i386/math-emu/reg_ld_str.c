@@ -3,9 +3,9 @@
  |                                                                           |
  | All of the functions which transfer data between user memory and FPU_REGs.|
  |                                                                           |
- | Copyright (C) 1992,1993,1994,1996,1997,2001                               |
+ | Copyright (C) 1992,1993,1994,1996,1997                                    |
  |                  W. Metzenthen, 22 Parker St, Ormond, Vic 3163, Australia |
- |                  E-mail   billm@melbpc.org.au                             |
+ |                  E-mail   billm@suburbia.net                              |
  |                                                                           |
  |                                                                           |
  +---------------------------------------------------------------------------*/
@@ -18,6 +18,9 @@
  +---------------------------------------------------------------------------*/
 
 #include "fpu_emu.h"
+
+#include <asm/uaccess.h>
+
 #include "fpu_system.h"
 #include "exception.h"
 #include "reg_constant.h"
@@ -89,7 +92,7 @@ int FPU_load_extended(long double *s, int stnr)
 
   RE_ENTRANT_CHECK_OFF;
   FPU_verify_area(VERIFY_READ, s, 10);
-  FPU_copy_from_user(sti_ptr, s, 10);
+  __copy_from_user(sti_ptr, s, 10);
   RE_ENTRANT_CHECK_ON;
 
   return FPU_tagof(sti_ptr);
@@ -436,7 +439,7 @@ int FPU_store_double(FPU_REG *st0_ptr, u_char st0_tag, double *dfloat)
 		 converts to decide underflow. */
 	      if ( !((tmp.sigh == 0x00100000) && (tmp.sigl == 0) &&
 		  (st0_ptr->sigl & 0x000007ff)) )
-#endif /* PECULIAR_486 */
+#endif PECULIAR_486
 		{
 		  EXCEPTION(EX_Underflow);
 		  /* This is a special case: see sec 16.2.5.1 of
@@ -556,7 +559,7 @@ int FPU_store_double(FPU_REG *st0_ptr, u_char st0_tag, double *dfloat)
 	  /* Underflow has priority. */
 	  if ( control_word & CW_Underflow )
 	    denormal_operand();
-#endif /* PECULIAR_486 */
+#endif PECULIAR_486
 	  reg_copy(st0_ptr, &tmp);
 	  goto denormal_arg;
 	}
@@ -656,7 +659,7 @@ int FPU_store_single(FPU_REG *st0_ptr, u_char st0_tag, float *single)
 		 converts to decide underflow. */
 	      if ( !((tmp.sigl == 0x00800000) &&
 		  ((st0_ptr->sigh & 0x000000ff) || st0_ptr->sigl)) )
-#endif /* PECULIAR_486 */
+#endif PECULIAR_486
 		{
 		  EXCEPTION(EX_Underflow);
 		  /* This is a special case: see sec 16.2.5.1 of
@@ -773,7 +776,7 @@ int FPU_store_single(FPU_REG *st0_ptr, u_char st0_tag, float *single)
 	  /* Underflow has priority. */
 	  if ( control_word & CW_Underflow )
 	    denormal_operand();
-#endif /* PECULIAR_486 */ 
+#endif PECULIAR_486
 	  goto denormal_arg;
 	}
       else if (st0_tag == TW_Infinity)
@@ -1218,9 +1221,9 @@ u_char *fldenv(fpu_addr_modes addr_modes, u_char *s)
 
 #ifdef PECULIAR_486
   control_word &= ~0xe080;
-#endif /* PECULIAR_486 */ 
+#endif PECULIAR_486
 
-  FPU_top = (partial_status >> SW_Top_Shift) & 7;
+  top = (partial_status >> SW_Top_Shift) & 7;
 
   if ( partial_status & ~control_word & CW_Exceptions )
     partial_status |= (SW_Summary | SW_Backward);
@@ -1267,19 +1270,19 @@ void frstor(fpu_addr_modes addr_modes, u_char *data_address)
 {
   int i, regnr;
   u_char *s = fldenv(addr_modes, data_address);
-  int offset = (FPU_top & 7) * 10, other = 80 - offset;
+  int offset = (top & 7) * 10, other = 80 - offset;
 
   /* Copy all registers in stack order. */
   RE_ENTRANT_CHECK_OFF;
   FPU_verify_area(VERIFY_READ,s,80);
-  FPU_copy_from_user(register_base+offset, s, other);
+  __copy_from_user(register_base+offset, s, other);
   if ( offset )
-    FPU_copy_from_user(register_base, s+other, offset);
+    __copy_from_user(register_base, s+other, offset);
   RE_ENTRANT_CHECK_ON;
 
   for ( i = 0; i < 8; i++ )
     {
-      regnr = (i+FPU_top) & 7;
+      regnr = (i+top) & 7;
       if ( FPU_gettag(regnr) != TAG_Empty )
 	/* The loaded data over-rides all other cases. */
 	FPU_settag(regnr, FPU_tagof(&st(i)));
@@ -1300,7 +1303,7 @@ u_char *fstenv(fpu_addr_modes addr_modes, u_char *d)
       FPU_put_user(control_word & ~0xe080, (unsigned long *) d);
 #else
       FPU_put_user(control_word, (unsigned short *) d);
-#endif /* PECULIAR_486 */
+#endif PECULIAR_486
       FPU_put_user(status_word(), (unsigned short *) (d+2));
       FPU_put_user(fpu_tag_word, (unsigned short *) (d+4));
       FPU_put_user(instruction_address.offset, (unsigned short *) (d+6));
@@ -1332,8 +1335,8 @@ u_char *fstenv(fpu_addr_modes addr_modes, u_char *d)
       fpu_tag_word |= 0xffff0000;
       I387.soft.fcs &= ~0xf8000000;
       I387.soft.fos |= 0xffff0000;
-#endif /* PECULIAR_486 */
-      FPU_copy_to_user(d, &control_word, 7*4);
+#endif PECULIAR_486
+      __copy_to_user(d, &control_word, 7*4);
       RE_ENTRANT_CHECK_ON;
       d += 0x1c;
     }
@@ -1348,7 +1351,7 @@ u_char *fstenv(fpu_addr_modes addr_modes, u_char *d)
 void fsave(fpu_addr_modes addr_modes, u_char *data_address)
 {
   u_char *d;
-  int offset = (FPU_top & 7) * 10, other = 80 - offset;
+  int offset = (top & 7) * 10, other = 80 - offset;
 
   d = fstenv(addr_modes, data_address);
 
@@ -1356,9 +1359,9 @@ void fsave(fpu_addr_modes addr_modes, u_char *data_address)
   FPU_verify_area(VERIFY_WRITE,d,80);
 
   /* Copy all registers in stack order. */
-  FPU_copy_to_user(d, register_base+offset, other);
+  __copy_to_user(d, register_base+offset, other);
   if ( offset )
-    FPU_copy_to_user(d+other, register_base, offset);
+    __copy_to_user(d+other, register_base, offset);
   RE_ENTRANT_CHECK_ON;
 
   finit();

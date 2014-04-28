@@ -50,20 +50,6 @@ omitted the scan 5 line, since it is also used as a block-graphics
 character, and hence has been coded as U+2500 FORMS LIGHT HORIZONTAL.
 However, I left U+F802 blank should the need arise.  
 
-<<Update: Unicode 3.2.0, released March 2002, introduced official
-characters for this purpose:
-
-U+23BA	HORIZONTAL SCAN LINE-1
-U+23BB	HORIZONTAL SCAN LINE-3
-U+23BC	HORIZONTAL SCAN LINE-7
-U+23BD	HORIZONTAL SCAN LINE-9
-
-However, to preserve backwards compatibility, the built-in VT100 mapping
-will not be changed in Linux 2.0.  It still uses the F80x codepoints.
-
----- Michael Deutschmann <michael@talamasca.ocis.net>
->>
-
 Klingon language support
 ------------------------
 
@@ -76,14 +62,14 @@ being a hacker-driven OS it seems this is a brilliant linguistic hack
 worth supporting.  Hence I have chosen to add it to the list in the
 Linux Zone.
 
-Several glyph forms for the Klingon alphabet has been proposed.
+Several glyph forms for the Klingon alphabet have been proposed.
 However, since the set of symbols appear to be consistent throughout,
 with only the actual shapes being different, in keeping with standard
 Unicode practice these differences are considered font variants.
 
 Klingon has an alphabet of 26 characters, a positional numeric writing
 system with 10 digits, and is written left-to-right, top-to-bottom.
-Punctuation appears to be only used in Latin transliteration; it is
+Punctuation appears to be only used in Latin transliteration; it
 appears customary to write each sentence on its own line, and
 centered.  Space has been reserved for punctuation should it prove
 necessary.

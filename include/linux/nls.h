@@ -1,9 +1,3 @@
-/*
- * Native language support structures and functions
- */
-#ifndef _LINUX_NLS_H
-#define _LINUX_NLS_H
-
 struct nls_unicode {
 	unsigned char uni1;
 	unsigned char uni2;
@@ -42,7 +36,6 @@ extern int init_nls_iso8859_6(void);
 extern int init_nls_iso8859_7(void);
 extern int init_nls_iso8859_8(void);
 extern int init_nls_iso8859_9(void);
-extern int init_nls_iso8859_15(void);
 extern int init_nls_cp437(void);
 extern int init_nls_cp737(void);
 extern int init_nls_cp775(void);
@@ -60,5 +53,3 @@ extern int init_nls_cp866(void);
 extern int init_nls_cp869(void);
 extern int init_nls_cp874(void);
 extern int init_nls_koi8_r(void);
-
-#endif /* _LINUX_NLS_H */

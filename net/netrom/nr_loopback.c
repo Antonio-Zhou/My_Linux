@@ -1,7 +1,7 @@
 /*
- *	NET/ROM release 006
+ *	NET/ROM release 007
  *
- *	This code REQUIRES 1.2.1 or higher/ NET3.029
+ *	This code REQUIRES 2.1.15 or higher/ NET3.038
  *
  *	This module:
  *		This module is free software; you can redistribute it and/or
@@ -10,15 +10,14 @@
  *		2 of the License, or (at your option) any later version.
  *
  *	History
- *	NET/ROM 006	Tomi(OH2BNS)	Created this file.
- *					Changed the way the loopback
- *					queue is consumed.
+ *	NET/ROM 007	Tomi(OH2BNS)	Created this file.
  *
  */
 
 #include <linux/config.h>
 #if defined(CONFIG_NETROM) || defined(CONFIG_NETROM_MODULE)
 #include <linux/types.h>
+#include <linux/socket.h>
 #include <linux/timer.h>
 #include <net/ax25.h>
 #include <linux/skbuff.h>
@@ -36,16 +35,6 @@ void nr_loopback_init(void)
 	init_timer(&loopback_timer);
 }
 
-void nr_loopback_clear(void)
-{
-	struct sk_buff *skb;
-
-	del_timer(&loopback_timer);
-
-	while ((skb = skb_dequeue(&loopback_queue)) != NULL)
-		kfree_skb(skb, FREE_READ);
-}
-
 static int nr_loopback_running(void)
 {
 	return (loopback_timer.prev != NULL || loopback_timer.next != NULL);
@@ -57,7 +46,7 @@ int nr_loopback_queue(struct sk_buff *skb)
 
 	skbn = skb_clone(skb, GFP_ATOMIC);
 
-	kfree_skb(skb, FREE_WRITE);
+	kfree_skb(skb);
 
 	if (skbn != NULL) {
 		skb_queue_tail(&loopback_queue, skbn);
@@ -94,11 +83,25 @@ static void nr_loopback_timer(unsigned long param)
 		dev = nr_dev_get(nr_dest);
 
 		if (dev == NULL || nr_rx_frame(skb, dev) == 0)
-			kfree_skb(skb, FREE_READ);
+			kfree_skb(skb);
 
 		if (!skb_queue_empty(&loopback_queue) && !nr_loopback_running())
 			nr_set_loopback_timer();
 	}
 }
+
+#ifdef MODULE
+
+void nr_loopback_clear(void)
+{
+	struct sk_buff *skb;
+
+	del_timer(&loopback_timer);
+
+	while ((skb = skb_dequeue(&loopback_queue)) != NULL)
+		kfree_skb(skb);
+}
+
+#endif
 
 #endif

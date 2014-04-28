@@ -1,5 +1,6 @@
 #ifndef _MSDOS_FS_SB
 #define _MSDOS_FS_SB
+#include<linux/fat_cvf.h>
 
 /*
  * MS-DOS file system in-core superblock data
@@ -22,6 +23,7 @@ struct fat_mount_options {
 		 unicode_xlate:1, /* create escape sequences for unhandled Unicode */
 		 posixfs:1,       /* Allow names like makefile and Makefile to coexist */
 		 numtail:1,       /* Does first alias have a numeric '~1' type tail? */
+		 atari:1,         /* Use Atari GEMDOS variation of MS-DOS fs */
 		 fat32:1;	  /* Is this a FAT32 partition? */
 };
 
@@ -46,6 +48,8 @@ struct msdos_sb_info {
 	struct fat_mount_options options;
 	struct nls_table *nls_disk;  /* Codepage used on disk */
 	struct nls_table *nls_io;    /* Charset used for input and display */
+	struct cvf_format* cvf_format;
+	void* private_data;	
 };
 
 #endif

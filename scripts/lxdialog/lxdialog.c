@@ -122,8 +122,7 @@ main (int argc, const char * const * argv)
     if (modePtr->argmax && argc - offset > modePtr->argmax)
 	Usage (argv[0]);
 
-    if (title && strlen(title) > atoi(argv[offset+4])-4)
-	title[atoi(argv[offset+4])-4] = 0;
+
 
     init_dialog ();
     retval = (*(modePtr->jumper)) (title, argc - offset, argv + offset);
@@ -162,7 +161,7 @@ Usage (const char *name)
 \n  --textbox   <file> <height> <width>\
 \n  --inputbox  <text> <height> <width> [<init>]\
 \n  --yesno     <text> <height> <width>\
-", name, name);
+\n", name, name);
     exit (-1);
 }
 

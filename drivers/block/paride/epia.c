@@ -244,9 +244,9 @@ static int epia_test_proto( PIA *pi, char * scratch, int verbose )
                 WR(2,k^0xaa);
                 WR(3,k^0x55);
                 if (RR(2) != (k^0xaa)) e[j]++;
-            }
+                }
 	    WR(2,1); WR(3,1);
-        }
+            }
         epia_disconnect(pi);
 
         f = 0;

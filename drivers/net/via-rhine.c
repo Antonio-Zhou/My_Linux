@@ -64,19 +64,7 @@ static const int multicast_filter_limit = 32;
 
 #define PKT_BUF_SZ		1536			/* Size of each temporary Rx buffer.*/
 
-/* Include files, designed to support most kernel versions 2.0.0 and later. */
-#include <linux/config.h>
-#include <linux/version.h>
-#ifdef MODULE
-#ifdef MODVERSIONS
-#include <linux/modversions.h>
-#endif
 #include <linux/module.h>
-#else
-#define MOD_INC_USE_COUNT
-#define MOD_DEC_USE_COUNT
-#endif
-
 #include <linux/kernel.h>
 #include <linux/string.h>
 #include <linux/timer.h>
@@ -116,7 +104,6 @@ static const int multicast_filter_limit = 32;
 #define RUN_AT(x) (jiffies + (x))
 
 #if (LINUX_VERSION_CODE >= 0x20100)
-char kernel_version[] = UTS_RELEASE;
 #else
 #ifndef __alpha__
 #define ioremap vremap
@@ -847,13 +834,6 @@ static int start_tx(struct sk_buff *skb, struct device *dev)
 
 	/* Calculate the next Tx descriptor entry. */
 	entry = np->cur_tx % TX_RING_SIZE;
-
-	if (skb->len < ETH_ZLEN) {
-		if (!(skb = skb_padto(skb,ETH_ZLEN))) {
-			dev->tbusy = 0;
-			return 0;
-		}
-	}
 
 	np->tx_skbuff[entry] = skb;
 

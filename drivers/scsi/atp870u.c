@@ -2,13 +2,13 @@
  *  linux/kernel/atp870u.c
  *
  *  Copyright (C) 1997	Wu Ching Chen
+ *  2.1.x update (C) 1998  Krzysztof G. Baranowski
  *
  */
 
 #include <linux/module.h>
 
 #include <linux/kernel.h>
-#include <linux/head.h>
 #include <linux/types.h>
 #include <linux/string.h>
 #include <linux/ioport.h>
@@ -17,7 +17,6 @@
 #include <linux/proc_fs.h>
 #include <asm/system.h>
 #include <asm/io.h>
-#include <linux/bios32.h>
 #include <linux/pci.h>
 #include <linux/blk.h>
 #include "scsi.h"
@@ -25,7 +24,6 @@
 
 
 #include "atp870u.h"
-#include <linux/config.h>	/* for CONFIG_PCI */
 
 #include<linux/stat.h>
 
@@ -1686,9 +1684,10 @@ int atp870u_detect(Scsi_Host_Template * tpnt)
     struct Scsi_Host * shpnt = NULL;
     int count = 0;
     static unsigned short devid[7]={0x8002,0x8010,0x8020,0x8030,0x8040,0x8050,0};
+	static struct pci_dev *pdev = NULL;
 
     printk("aec671x_detect: \n");
-    if (!pcibios_present())
+    if (!pci_present())
     {
        printk("   NO BIOS32 SUPPORT.\n");
        return count;
@@ -1721,16 +1720,21 @@ int atp870u_detect(Scsi_Host_Template * tpnt)
     h=0;
     while ( devid[h] != 0 )
     {
-       if (pcibios_find_device(0x1191,devid[h],index,&pci_bus[2],&pci_device_fn[2]))
-       {
+      pci_find_device(0x1191,devid[h],pdev);
+      if (pdev == NULL); {
 	  h++;
 	  index=0;
 	  continue;
        }
        chip_ver[2]=0;
+	   
+       /* To avoid messing with the things below...  */
+       pci_device_fn[2] =  pdev->devfn;
+       pci_bus[2] = pdev->bus->number;
+
        if ( devid[h] == 0x8002 )
        {
-	  error = pcibios_read_config_byte(pci_bus[2],pci_device_fn[2],0x08,&chip_ver[2]);
+	  error = pci_read_config_byte(pdev,0x08,&chip_ver[2]);
 	  if ( chip_ver[2] < 2 )
 	  {
 	     goto nxt_devfn;
@@ -1769,10 +1773,14 @@ nxt_devfn:
     {
        return count;
     }
+
+    pdev->devfn = pci_device_fn[h];
+    pdev->bus->number = pci_bus[h];
+
     /* Found an atp870u/w. */
-    error = pcibios_read_config_dword(pci_bus[h],pci_device_fn[h],0x10,&base_io);
-    error += pcibios_read_config_byte(pci_bus[h],pci_device_fn[h],0x3c,&irq);
-    error += pcibios_read_config_byte(pci_bus[h],pci_device_fn[h],0x49,&host_id);
+    error = pci_read_config_dword(pdev,0x10,&base_io);
+    error += pci_read_config_byte(pdev,0x3c,&irq);
+    error += pci_read_config_byte(pdev,0x49,&host_id);
 
     base_io &= 0xfffffff8;
     printk("   ACARD AEC-671X PCI Ultra/W SCSI-3 Host Adapter: %d    IO:%x, IRQ:%d.\n"
@@ -1982,7 +1990,7 @@ atp870u_proc_info(char *buffer, char **start, off_t offset, int length,
 
   size += sprintf(BLS, "\n");
   size += sprintf(BLS, "Adapter Configuration:\n");
-  size += sprintf(BLS, "               Base IO: %#.4x\n", HBAptr->io_port);
+  size += sprintf(BLS, "               Base IO: %#.4lx\n", HBAptr->io_port);
   size += sprintf(BLS, "                   IRQ: %d\n", HBAptr->irq);
   len += size; pos = begin + len; size = 0;
 

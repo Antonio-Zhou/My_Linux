@@ -21,7 +21,7 @@
  *	When compiled as a loadable module, this driver can operate
  *	the board as either a 4/6 port switch with a 5th or 7th port
  *	that is a conventional NIC interface as far as the host is
- *	concerned, OR as 4/6 independant NICs.  To select multi-NIC
+ *	concerned, OR as 4/6 independent NICs.  To select multi-NIC
  *	mode, add "nicmode=1" on the insmod load line for the driver.
  *
  *	This driver uses the "dev" common ethernet device structure
@@ -87,7 +87,7 @@ static char *version = "$Id: dgrs.c,v 1.12 1996/12/21 13:43:58 rick Exp $";
 #include <linux/malloc.h>
 #include <linux/interrupt.h>
 #include <linux/pci.h>
-#include <linux/bios32.h>
+#include <linux/init.h>
 #include <asm/bitops.h>
 #include <asm/io.h>
 #include <asm/byteorder.h>
@@ -108,6 +108,7 @@ static char *version = "$Id: dgrs.c,v 1.12 1996/12/21 13:43:58 rick Exp $";
 	#define COPY_FROM_USER(DST,SRC,LEN)	copy_from_user(DST,SRC,LEN)
 	#define COPY_TO_USER(DST,SRC,LEN)	copy_to_user(DST,SRC,LEN)
 #else
+	#include <linux/bios32.h>
 	#define IOREMAP(ADDR, LEN)		vremap(ADDR, LEN)
 	#define IOUNMAP(ADDR)			vfree(ADDR)
 	#define COPY_FROM_USER(DST,SRC,LEN)	memcpy_fromfs(DST,SRC,LEN)
@@ -175,7 +176,7 @@ int	dgrs_spantree = -1;
 int	dgrs_hashexpire = -1;
 uchar	dgrs_ipaddr[4] = { 0xff, 0xff, 0xff, 0xff};
 uchar	dgrs_iptrap[4] = { 0xff, 0xff, 0xff, 0xff};
-long	dgrs_ipxnet = -1;
+__u32	dgrs_ipxnet = -1;
 int	dgrs_nicmode = 0;
 
 /*
@@ -195,7 +196,7 @@ typedef struct
 	 */
 	char			devname[8];	/* "ethN" string */
 	struct device		*next_dev;
-	struct enet_statistics	stats;
+	struct net_device_stats	stats;
 
 	/*
 	 *	DGRS specific data
@@ -405,7 +406,7 @@ do_plx_dma(
 		 */
 		udelay(1);
 
-		csr = (volatile int) priv->vplxdma[PLX_DMA_CSR/4];
+		csr = (volatile unsigned long) priv->vplxdma[PLX_DMA_CSR/4];
 
                 if (csr & PLX_DMA_CSR_0_DONE)
                         break;
@@ -509,7 +510,7 @@ again:
 	/*
 	 *	There are three modes here for doing the packet copy.
 	 *	If we have DMA, and the packet is "long", we use the
-	 *	chaining mode of DMA.  If its shorter, we use single
+	 *	chaining mode of DMA.  If it's shorter, we use single
 	 *	DMA's.  Otherwise, we use memcpy().
 	 */
 	if (priv0->use_dma && priv0->dmadesc_h && len > 64)
@@ -687,8 +688,8 @@ out:
  *	output port by setting the special "dstchan" member at the
  *	end of the traditional 82596 RFD structure.
  */
-static int
-dgrs_start_xmit(struct sk_buff *skb, struct device *devN)
+
+static int dgrs_start_xmit(struct sk_buff *skb, struct device *devN)
 {
 	DGRS_PRIV	*privN = (DGRS_PRIV *) devN->priv;
 	struct device	*dev0;
@@ -775,7 +776,7 @@ frame_done:
 
 	++privN->stats.tx_packets;
 
-	dev_kfree_skb (skb, FREE_WRITE);
+	dev_kfree_skb (skb);
 	return (0);
 
 no_resources:
@@ -793,9 +794,9 @@ dgrs_open( struct device *dev )
 	dev->interrupt = 0;
 	dev->start = 1;
 
-	#ifdef MODULE
-		MOD_INC_USE_COUNT;
-	#endif
+#ifdef MODULE
+	MOD_INC_USE_COUNT;
+#endif
 
 	return (0);
 }
@@ -803,15 +804,14 @@ dgrs_open( struct device *dev )
 /*
  *	Close the interface
  */
-static int
-dgrs_close( struct device *dev )
+static int dgrs_close( struct device *dev )
 {
 	dev->start = 0;
 	dev->tbusy = 1;
 
-	#ifdef MODULE
-		MOD_DEC_USE_COUNT;
-	#endif
+#ifdef MODULE
+	MOD_DEC_USE_COUNT;
+#endif
 
 	return (0);
 }
@@ -819,8 +819,7 @@ dgrs_close( struct device *dev )
 /*
  *	Get statistics
  */
-static struct enet_statistics *
-dgrs_get_stats( struct device *dev )
+static struct net_device_stats *dgrs_get_stats( struct device *dev )
 {
 	DGRS_PRIV	*priv = (DGRS_PRIV *) dev->priv;
 
@@ -830,8 +829,8 @@ dgrs_get_stats( struct device *dev )
 /*
  *	Set multicast list and/or promiscuous mode
  */
-static void
-dgrs_set_multicast_list( struct device *dev)
+
+static void dgrs_set_multicast_list( struct device *dev)
 {
 	DGRS_PRIV	*priv = (DGRS_PRIV *) dev->priv;
 
@@ -841,63 +840,60 @@ dgrs_set_multicast_list( struct device *dev)
 /*
  *	Unique ioctl's
  */
-static int
-dgrs_ioctl(struct device *devN, struct ifreq *ifr, int cmd)
+static int dgrs_ioctl(struct device *devN, struct ifreq *ifr, int cmd)
 {
 	DGRS_PRIV	*privN = (DGRS_PRIV *) devN->priv;
 	DGRS_IOCTL	ioc;
-	int		i, rc;
+	int		i;
 
-	rc = verify_area(VERIFY_WRITE, ifr->ifr_data, sizeof(DGRS_IOCTL));
-	if (rc) return (rc);
-	if (cmd != DGRSIOCTL) return -EINVAL;
+	if (cmd != DGRSIOCTL)
+		return -EINVAL;
 
-	COPY_FROM_USER(&ioc, ifr->ifr_data, sizeof(DGRS_IOCTL));
+	if(COPY_FROM_USER(&ioc, ifr->ifr_data, sizeof(DGRS_IOCTL)))
+		return -EFAULT;
 
 	switch (ioc.cmd)
 	{
-	case DGRS_GETMEM:
-		if (ioc.len != sizeof(ulong))
-			return -EINVAL;
-		rc = verify_area(VERIFY_WRITE, (void *) ioc.data, ioc.len);
-		if (rc) return (rc);
-		COPY_TO_USER(ioc.data, &devN->mem_start, ioc.len);
-		return (0);
-	case DGRS_SETFILTER:
-		rc = verify_area(VERIFY_READ, (void *) ioc.data, ioc.len);
-		if (rc) return (rc);
-		if (ioc.port > privN->bcomm->bc_nports)
-			return -EINVAL;
-		if (ioc.filter >= NFILTERS)
-			return -EINVAL;
-		if (ioc.len > privN->bcomm->bc_filter_area_len)
-			return -EINVAL;
+		case DGRS_GETMEM:
+			if (ioc.len != sizeof(ulong))
+				return -EINVAL;
+			if(COPY_TO_USER(ioc.data, &devN->mem_start, ioc.len))
+				return -EFAULT;
+			return (0);
+		case DGRS_SETFILTER:
+			if (ioc.port > privN->bcomm->bc_nports)
+				return -EINVAL;
+			if (ioc.filter >= NFILTERS)
+				return -EINVAL;
+			if (ioc.len > privN->bcomm->bc_filter_area_len)
+				return -EINVAL;
 
-		/* Wait for old command to finish */
-		for (i = 0; i < 1000; ++i)
-		{
-			if ( (volatile int) privN->bcomm->bc_filter_cmd <= 0 )
-				break;
-			udelay(1);
-		}
-		if (i >= 1000)
-			return -EIO;
+			/* Wait for old command to finish */
+			for (i = 0; i < 1000; ++i)
+			{
+				if ( (volatile long) privN->bcomm->bc_filter_cmd <= 0 )
+					break;
+				udelay(1);
+			}
+			if (i >= 1000)
+				return -EIO;
 
-		privN->bcomm->bc_filter_port = ioc.port;
-		privN->bcomm->bc_filter_num = ioc.filter;
-		privN->bcomm->bc_filter_len = ioc.len;
-		
-		if (ioc.len)
-		{
-			COPY_FROM_USER(S2HN(privN->bcomm->bc_filter_area),
-					ioc.data, ioc.len);
-			privN->bcomm->bc_filter_cmd = BC_FILTER_SET;
-		}
-		else
-			privN->bcomm->bc_filter_cmd = BC_FILTER_CLR;
-		return(0);
-	default:
-		return -EOPNOTSUPP;
+			privN->bcomm->bc_filter_port = ioc.port;
+			privN->bcomm->bc_filter_num = ioc.filter;
+			privN->bcomm->bc_filter_len = ioc.len;
+	
+			if (ioc.len)
+			{
+				if(COPY_FROM_USER(S2HN(privN->bcomm->bc_filter_area),
+					ioc.data, ioc.len))
+					return -EFAULT;
+				privN->bcomm->bc_filter_cmd = BC_FILTER_SET;
+			}
+			else
+				privN->bcomm->bc_filter_cmd = BC_FILTER_CLR;
+			return(0);
+		default:
+			return -EOPNOTSUPP;
 	}
 }
 
@@ -906,15 +902,15 @@ dgrs_ioctl(struct device *devN, struct ifreq *ifr, int cmd)
  *
  *	dev, priv will always refer to the 0th device in Multi-NIC mode.
  */
-static void
-dgrs_intr(int irq, void *dev_id, struct pt_regs *regs)
+
+static void dgrs_intr(int irq, void *dev_id, struct pt_regs *regs)
 {
 	struct device	*dev0 = (struct device *) dev_id;
 	DGRS_PRIV	*priv0 = (DGRS_PRIV *) dev0->priv;
 	I596_CB		*cbp;
 	int		cmd;
 	int		i;
-	
+
 	++priv0->intrcnt;
 	if (1) ++priv0->bcomm->bc_cnt[4];
 	if (0)
@@ -995,8 +991,8 @@ ack_intr:
 /*
  *	Download the board firmware
  */
-static int
-dgrs_download(struct device *dev0)
+__initfunc(static int
+dgrs_download(struct device *dev0))
 {
 	DGRS_PRIV	*priv0 = (DGRS_PRIV *) dev0->priv;
 	int		is;
@@ -1154,8 +1150,8 @@ dgrs_download(struct device *dev0)
 /*
  *	Probe (init) a board
  */
-int
-dgrs_probe1(struct device *dev)
+__initfunc(int
+dgrs_probe1(struct device *dev))
 {
 	DGRS_PRIV	*priv = (DGRS_PRIV *) dev->priv;
 	int		i;
@@ -1228,8 +1224,8 @@ dgrs_probe1(struct device *dev)
 	return (0);
 }
 
-int
-dgrs_initclone(struct device *dev)
+__initfunc(int
+dgrs_initclone(struct device *dev))
 {
 	DGRS_PRIV	*priv = (DGRS_PRIV *) dev->priv;
 	int		i;
@@ -1243,7 +1239,7 @@ dgrs_initclone(struct device *dev)
 	return (0);
 }
 
-static int
+__initfunc(static int
 dgrs_found_device(
 	struct device	*dev,
 	int		io,
@@ -1251,16 +1247,15 @@ dgrs_found_device(
 	int		irq,
 	ulong		plxreg,
 	ulong		plxdma
-)
+))
 {
 	DGRS_PRIV	*priv;
 
 	#ifdef MODULE
 	{
-		int		i;
-
 		/* Allocate and fill new device structure. */
 		int dev_size = sizeof(struct device) + sizeof(DGRS_PRIV);
+		int i;
 
 		dev = (struct device *) kmalloc(dev_size, GFP_KERNEL);
 		memset(dev, 0, dev_size);
@@ -1363,8 +1358,10 @@ dgrs_found_device(
 /*
  *	Scan for all boards
  */
-static int
-dgrs_scan(struct device *dev)
+static int is2iv[8] __initdata = { 0, 3, 5, 7, 10, 11, 12, 15 };
+
+__initfunc(static int
+dgrs_scan(struct device *dev))
 {
 	int	cards_found = 0;
 	uint	io;
@@ -1376,14 +1373,19 @@ dgrs_scan(struct device *dev)
 	/*
 	 *	First, check for PCI boards
 	 */
-	if (pcibios_present())
+	if (pci_present())
 	{
 		int pci_index = 0;
 
 		for (; pci_index < 8; pci_index++)
 		{
 			uchar	pci_bus, pci_device_fn;
+#if LINUX_VERSION_CODE < 0x20100
 			uchar	pci_irq;
+#else
+			uint	pci_irq;
+			struct pci_dev *pdev;
+#endif
 			uchar	pci_latency;
 			ushort	pci_command;
 
@@ -1393,6 +1395,7 @@ dgrs_scan(struct device *dev)
 							&pci_device_fn))
 					break;
 
+#if LINUX_VERSION_CODE < 0x20100
 			pcibios_read_config_byte(pci_bus, pci_device_fn,
 					PCI_INTERRUPT_LINE, &pci_irq);
 			pcibios_read_config_dword(pci_bus, pci_device_fn,
@@ -1401,6 +1404,13 @@ dgrs_scan(struct device *dev)
 					PCI_BASE_ADDRESS_1, &io);
 			pcibios_read_config_dword(pci_bus, pci_device_fn,
 					PCI_BASE_ADDRESS_2, &mem);
+#else
+			pdev = pci_find_slot(pci_bus, pci_device_fn);
+			pci_irq = pdev->irq;
+			plxreg = pdev->base_address[0];
+			io = pdev->base_address[1];
+			mem = pdev->base_address[2];
+#endif
 			pcibios_read_config_dword(pci_bus, pci_device_fn,
 					0x30, &plxdma);
 			irq = pci_irq;
@@ -1468,8 +1478,6 @@ dgrs_scan(struct device *dev)
 	 */
 	if (EISA_bus)
 	{
-		static int      is2iv[8] = { 0, 3, 5, 7, 10, 11, 12, 15 };
-
 		for (io = 0x1000; io < 0x9000; io += 0x1000)
 		{
 			if (inb(io+ES4H_MANUFmsb) != 0x10
@@ -1484,7 +1492,7 @@ dgrs_scan(struct device *dev)
 				+ (inb(io+ES4H_AS_23_16) << 16);
 
 			irq = is2iv[ inb(io+ES4H_IS) & ES4H_IS_INTMASK ];
-			
+
 			dgrs_found_device(dev, io, mem, irq, 0L, 0L);
 
 			dev = 0;
@@ -1512,8 +1520,17 @@ static int	hashexpire = -1;
 static int	spantree = -1;
 static int	ipaddr[4] = { -1 };
 static int	iptrap[4] = { -1 };
-static long	ipxnet = -1;
+static __u32	ipxnet = -1;
 static int	nicmode = -1;
+
+MODULE_PARM(debug, "i");
+MODULE_PARM(dma, "i");
+MODULE_PARM(hashexpire, "i");
+MODULE_PARM(spantree, "i");
+MODULE_PARM(ipaddr, "1-4i");
+MODULE_PARM(iptrap, "1-4i");
+MODULE_PARM(ipxnet, "i");
+MODULE_PARM(nicmode, "i");
 
 int
 init_module(void)
@@ -1550,13 +1567,13 @@ init_module(void)
 			dgrs_iptrap[i] = iptrap[i];
 	if (ipxnet != -1)
 		dgrs_ipxnet = htonl( ipxnet );
-		
+
 	if (dgrs_debug)
 	{
 		printk("dgrs: SW=%s FW=Build %d %s\n",
 			version, dgrs_firmnum, dgrs_firmdate);
 	}
-	
+
 	/*
 	 *	Find and configure all the cards
 	 */
@@ -1597,8 +1614,8 @@ cleanup_module(void)
 
 #else
 
-int
-dgrs_probe(struct device *dev)
+__initfunc(int
+dgrs_probe(struct device *dev))
 {
 	int	cards_found;
 

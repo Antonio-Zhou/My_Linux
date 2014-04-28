@@ -3,7 +3,7 @@
  |                                                                           |
  | The entry functions for wm-FPU-emu                                        |
  |                                                                           |
- | Copyright (C) 1992,1993,1994,1996,1997,2001                               |
+ | Copyright (C) 1992,1993,1994,1996,1997                                    |
  |                  W. Metzenthen, 22 Parker St, Ormond, Vic 3163, Australia |
  |                  E-mail   billm@suburbia.net                              |
  |                                                                           |
@@ -26,6 +26,9 @@
 
 #include <linux/signal.h>
 
+#include <asm/uaccess.h>
+#include <asm/desc.h>
+
 #include "fpu_system.h"
 #include "fpu_emu.h"
 #include "exception.h"
@@ -33,19 +36,6 @@
 #include "status_w.h"
 
 #define __BAD__ FPU_illegal   /* Illegal on an 80486, causes SIGILL */
-
-#ifdef ONLY_486_FPU
-#define fcmovnb  __BAD__   /* Not present on 80486 */
-#define fcmovne  __BAD__   /* Not present on 80486 */
-#define fcmovnbe __BAD__   /* Not present on 80486 */
-#define fcmovnu  __BAD__   /* Not present on 80486 */
-#define fcmovb   __BAD__   /* Not present on 80486 */
-#define fcmove   __BAD__   /* Not present on 80486 */
-#define fcmovbe  __BAD__   /* Not present on 80486 */
-#define fcmovu   __BAD__   /* Not present on 80486 */
-#define fucomi   __BAD__   /* Not present on 80486 */
-#define fcomi    __BAD__   /* Not present on 80486 */
-#endif
 
 #ifndef NO_UNDOC_CODE    /* Un-documented FPU op-codes supported by default. */
 
@@ -65,30 +55,30 @@
 #define _df_d8_ fstp_i    /* unofficial code (1f) */
 
 static FUNC const st_instr_table[64] = {
-  fadd__,   fld_i_,     fcmovb,  fcmovnb,  fadd_i,  ffree_,  faddp_,  _df_c0_,
-  fmul__,   fxch_i,     fcmove,  fcmovne,  fmul_i,  _dd_c8_, fmulp_,  _df_c8_,
-  fcom_st,  fp_nop,     fcmovbe, fcmovnbe, _dc_d0_, fst_i_,  _de_d0_, _df_d0_,
-  fcompst,  _d9_d8_,    fcmovu,  fcmovnu,  _dc_d8_, fstp_i,  fcompp,  _df_d8_,
-  fsub__,   FPU_etc,    __BAD__, finit_,   fsubri,  fucom_,  fsubrp,  fstsw_,
-  fsubr_,   fconst,     fucompp, fucomi,   fsub_i,  fucomp,  fsubp_,  __BAD__,
-  fdiv__,   FPU_triga,  __BAD__, fcomi,    fdivri,  __BAD__, fdivrp,  __BAD__,
-  fdivr_,   FPU_trigb,  __BAD__, __BAD__,  fdiv_i,  __BAD__, fdivp_,  __BAD__,
+  fadd__,   fld_i_,     __BAD__, __BAD__, fadd_i,  ffree_,  faddp_,  _df_c0_,
+  fmul__,   fxch_i,     __BAD__, __BAD__, fmul_i,  _dd_c8_, fmulp_,  _df_c8_,
+  fcom_st,  fp_nop,     __BAD__, __BAD__, _dc_d0_, fst_i_,  _de_d0_, _df_d0_,
+  fcompst,  _d9_d8_,    __BAD__, __BAD__, _dc_d8_, fstp_i,  fcompp,  _df_d8_,
+  fsub__,   FPU_etc,    __BAD__, finit_,  fsubri,  fucom_,  fsubrp,  fstsw_,
+  fsubr_,   fconst,     fucompp, __BAD__, fsub_i,  fucomp,  fsubp_,  __BAD__,
+  fdiv__,   FPU_triga,  __BAD__, __BAD__, fdivri,  __BAD__, fdivrp,  __BAD__,
+  fdivr_,   FPU_trigb,  __BAD__, __BAD__, fdiv_i,  __BAD__, fdivp_,  __BAD__,
 };
 
 #else     /* Support only documented FPU op-codes */
 
 static FUNC const st_instr_table[64] = {
-  fadd__,   fld_i_,     fcmovb,  fcmovnb,  fadd_i,  ffree_,  faddp_,  __BAD__,
-  fmul__,   fxch_i,     fcmove,  fcmovne,  fmul_i,  __BAD__, fmulp_,  __BAD__,
-  fcom_st,  fp_nop,     fcmovbe, fcmovnbe, __BAD__, fst_i_,  __BAD__, __BAD__,
-  fcompst,  __BAD__,    fcmovu,  fcmovnu,  __BAD__, fstp_i,  fcompp,  __BAD__,
-  fsub__,   FPU_etc,    __BAD__, finit_,   fsubri,  fucom_,  fsubrp,  fstsw_,
-  fsubr_,   fconst,     fucompp, fucomi,   fsub_i,  fucomp,  fsubp_,  __BAD__,
-  fdiv__,   FPU_triga,  __BAD__, fcomi,    fdivri,  __BAD__, fdivrp,  __BAD__,
-  fdivr_,   FPU_trigb,  __BAD__, __BAD__,  fdiv_i,  __BAD__, fdivp_,  __BAD__,
+  fadd__,   fld_i_,     __BAD__, __BAD__, fadd_i,  ffree_,  faddp_,  __BAD__,
+  fmul__,   fxch_i,     __BAD__, __BAD__, fmul_i,  __BAD__, fmulp_,  __BAD__,
+  fcom_st,  fp_nop,     __BAD__, __BAD__, __BAD__, fst_i_,  __BAD__, __BAD__,
+  fcompst,  __BAD__,    __BAD__, __BAD__, __BAD__, fstp_i,  fcompp,  __BAD__,
+  fsub__,   FPU_etc,    __BAD__, finit_,  fsubri,  fucom_,  fsubrp,  fstsw_,
+  fsubr_,   fconst,     fucompp, __BAD__, fsub_i,  fucomp,  fsubp_,  __BAD__,
+  fdiv__,   FPU_triga,  __BAD__, __BAD__, fdivri,  __BAD__, fdivrp,  __BAD__,
+  fdivr_,   FPU_trigb,  __BAD__, __BAD__, fdiv_i,  __BAD__, fdivp_,  __BAD__,
 };
 
-#endif /* NO_UNDOC_CODE */
+#endif NO_UNDOC_CODE
 
 
 #define _NONE_ 0   /* Take no special action */
@@ -107,35 +97,35 @@ static FUNC const st_instr_table[64] = {
 /* Un-documented FPU op-codes supported by default. (see above) */
 
 static u_char const type_table[64] = {
-  _REGI_, _NONE_, _REGi_, _REGi_, _REGIi, _REGi_, _REGIp, _REGi_,
-  _REGI_, _REGIn, _REGi_, _REGi_, _REGIi, _REGI_, _REGIp, _REGI_,
-  _REGIc, _NONE_, _REGi_, _REGi_, _REGIc, _REG0_, _REGIc, _REG0_,
-  _REGIc, _REG0_, _REGi_, _REGi_, _REGIc, _REG0_, _REGIc, _REG0_,
+  _REGI_, _NONE_, _null_, _null_, _REGIi, _REGi_, _REGIp, _REGi_,
+  _REGI_, _REGIn, _null_, _null_, _REGIi, _REGI_, _REGIp, _REGI_,
+  _REGIc, _NONE_, _null_, _null_, _REGIc, _REG0_, _REGIc, _REG0_,
+  _REGIc, _REG0_, _null_, _null_, _REGIc, _REG0_, _REGIc, _REG0_,
   _REGI_, _NONE_, _null_, _NONE_, _REGIi, _REGIc, _REGIp, _NONE_,
-  _REGI_, _NONE_, _REGIc, _REGIc, _REGIi, _REGIc, _REGIp, _null_,
-  _REGI_, _NONE_, _null_, _REGIc, _REGIi, _null_, _REGIp, _null_,
+  _REGI_, _NONE_, _REGIc, _null_, _REGIi, _REGIc, _REGIp, _null_,
+  _REGI_, _NONE_, _null_, _null_, _REGIi, _null_, _REGIp, _null_,
   _REGI_, _NONE_, _null_, _null_, _REGIi, _null_, _REGIp, _null_
 };
 
 #else     /* Support only documented FPU op-codes */
 
 static u_char const type_table[64] = {
-  _REGI_, _NONE_, _REGi_, _REGi_, _REGIi, _REGi_, _REGIp, _null_,
-  _REGI_, _REGIn, _REGi_, _REGi_, _REGIi, _null_, _REGIp, _null_,
-  _REGIc, _NONE_, _REGi_, _REGi_, _null_, _REG0_, _null_, _null_,
-  _REGIc, _null_, _REGi_, _REGi_, _null_, _REG0_, _REGIc, _null_,
+  _REGI_, _NONE_, _null_, _null_, _REGIi, _REGi_, _REGIp, _null_,
+  _REGI_, _REGIn, _null_, _null_, _REGIi, _null_, _REGIp, _null_,
+  _REGIc, _NONE_, _null_, _null_, _null_, _REG0_, _null_, _null_,
+  _REGIc, _null_, _null_, _null_, _null_, _REG0_, _REGIc, _null_,
   _REGI_, _NONE_, _null_, _NONE_, _REGIi, _REGIc, _REGIp, _NONE_,
-  _REGI_, _NONE_, _REGIc, _REGIc, _REGIi, _REGIc, _REGIp, _null_,
-  _REGI_, _NONE_, _null_, _REGIc, _REGIi, _null_, _REGIp, _null_,
+  _REGI_, _NONE_, _REGIc, _null_, _REGIi, _REGIc, _REGIp, _null_,
+  _REGI_, _NONE_, _null_, _null_, _REGIi, _null_, _REGIp, _null_,
   _REGI_, _NONE_, _null_, _null_, _REGIi, _null_, _REGIp, _null_
 };
 
-#endif /* NO_UNDOC_CODE */
+#endif NO_UNDOC_CODE
 
 
 #ifdef RE_ENTRANT_CHECKING
 u_char emulating=0;
-#endif /* RE_ENTRANT_CHECKING */
+#endif RE_ENTRANT_CHECKING
 
 static int valid_prefix(u_char *Byte, u_char **fpu_eip,
 			overrides *override);
@@ -162,12 +152,12 @@ asmlinkage void math_emulate(long arg)
       printk("ERROR: wm-FPU-emu is not RE-ENTRANT!\n");
     }
   RE_ENTRANT_CHECK_ON;
-#endif /* RE_ENTRANT_CHECKING */
+#endif RE_ENTRANT_CHECKING
 
-  if (!FPU_current->used_math)
+  if (!current->used_math)
     {
       finit();
-      FPU_current->used_math = 1;
+      current->used_math = 1;
     }
 
   SETUP_DATA_AREA(arg);
@@ -181,11 +171,11 @@ asmlinkage void math_emulate(long arg)
       FPU_EIP += code_base = FPU_CS << 4;
       code_limit = code_base + 0xffff;  /* Assumes code_base <= 0xffff0000 */
     }
-  else if ( FPU_CS == FPU_USER_CS && FPU_DS == FPU_USER_DS )
+  else if ( FPU_CS == __USER_CS && FPU_DS == __USER_DS )
     {
       addr_modes.default_mode = 0;
     }
-  else if ( FPU_CS == FPU_KERNEL_CS )
+  else if ( FPU_CS == __KERNEL_CS )
     {
       printk("math_emulate: %04x:%08lx\n",FPU_CS,FPU_EIP);
       panic("Math emulation needed in kernel");
@@ -198,7 +188,7 @@ asmlinkage void math_emulate(long arg)
 	  /* Can only handle segmented addressing via the LDT
 	     for now, and it must be 16 bit */
 	  printk("FPU emulator: Unsupported addressing mode\n");
-	  math_abort(SIGILL);
+	  math_abort(FPU_info, SIGILL);
 	}
 
       if ( SEG_D_SIZE(code_descriptor = LDT_DESCRIPTOR(FPU_CS)) )
@@ -220,7 +210,7 @@ asmlinkage void math_emulate(long arg)
     }
 
   FPU_lookahead = 1;
-  if ( FPU_TRACING )
+  if (current->flags & PF_PTRACED)
     FPU_lookahead = 0;
 
   if ( !valid_prefix(&byte1, (u_char **)&FPU_EIP,
@@ -232,7 +222,7 @@ asmlinkage void math_emulate(long arg)
 	     byte1);
       RE_ENTRANT_CHECK_ON;
       EXCEPTION(EX_INTERNAL|0x126);
-      math_abort(SIGILL);
+      math_abort(FPU_info,SIGILL);
     }
 
 do_another_FPU_instruction:
@@ -246,7 +236,7 @@ do_another_FPU_instruction:
       /* This checks for the minimum instruction bytes.
 	 We also need to check any extra (address mode) code access. */
       if ( FPU_EIP > code_limit )
-	math_abort(SIGSEGV);
+	math_abort(FPU_info,SIGSEGV);
     }
 
   if ( (byte1 & 0xf8) != 0xd8 )
@@ -260,8 +250,8 @@ do_another_FPU_instruction:
 	}
 #ifdef PARANOID
       EXCEPTION(EX_INTERNAL|0x128);
-      math_abort(SIGILL);
-#endif /* PARANOID */
+      math_abort(FPU_info,SIGILL);
+#endif PARANOID
     }
 
   RE_ENTRANT_CHECK_OFF;
@@ -293,7 +283,9 @@ do_another_FPU_instruction:
 	  FPU_EIP = FPU_ORIG_EIP;	/* Point to current FPU instruction. */
 
 	  RE_ENTRANT_CHECK_OFF;
-	  FPU_SEND_SIGNAL(SIGFPE);
+	  current->tss.trap_no = 16;
+	  current->tss.error_code = 0;
+	  send_sig(SIGFPE, current, 1);
 	  return;
 	}
     }
@@ -319,7 +311,7 @@ do_another_FPU_instruction:
       if ( addr_modes.default_mode )
 	{
 	  if ( FPU_EIP-1 > code_limit )
-	    math_abort(SIGSEGV);
+	    math_abort(FPU_info,SIGSEGV);
 	}
 
       if ( !(byte1 & 1) )
@@ -336,7 +328,7 @@ do_another_FPU_instruction:
 		{
 		  /* This table works for 16 and 32 bit protected mode */
 		  if ( access_limit < data_sizes_16[(byte1 >> 1) & 3] )
-		    math_abort(SIGSEGV);
+		    math_abort(FPU_info,SIGSEGV);
 		}
 
 	      unmasked = 0;  /* Do this here to stop compiler warnings. */
@@ -394,7 +386,7 @@ do_another_FPU_instruction:
 			/* fdiv or fsub */
 			real_2op_NaN(&loaded_data, loaded_tag, 0, &loaded_data);
 		      else
-#endif /* PECULIAR_486 */ 
+#endif PECULIAR_486
 			/* fadd, fdivr, fmul, or fsubr */
 			real_2op_NaN(&loaded_data, loaded_tag, 0, st0_ptr);
 		    }
@@ -505,7 +497,7 @@ do_another_FPU_instruction:
 	 to do this: */
       operand_address.offset = 0;
       operand_address.selector = FPU_DS;
-#endif /* PECULIAR_486 */
+#endif PECULIAR_486
 
       st0_ptr = &st(0);
       st0_tag = FPU_gettag0();
@@ -565,9 +557,9 @@ FPU_fwait_done:
   RE_ENTRANT_CHECK_OFF;
   FPU_printall();
   RE_ENTRANT_CHECK_ON;
-#endif /* DEBUG */
+#endif DEBUG
 
-  if (FPU_lookahead && !FPU_need_resched)
+  if (FPU_lookahead && !current->need_resched)
     {
       FPU_ORIG_EIP = FPU_EIP - code_base;
       if ( valid_prefix(&byte1, (u_char **)&FPU_EIP,
@@ -595,7 +587,7 @@ static int valid_prefix(u_char *Byte, u_char **fpu_eip,
   *override = (overrides) { 0, 0, PREFIX_DEFAULT };       /* defaults */
 
   RE_ENTRANT_CHECK_OFF;
-  FPU_verify_area(VERIFY_READ,ip,1);
+  FPU_code_verify_area(1);
   FPU_get_user(byte, ip);
   RE_ENTRANT_CHECK_ON;
 
@@ -641,7 +633,7 @@ static int valid_prefix(u_char *Byte, u_char **fpu_eip,
 	do_next_byte:
 	  ip++;
 	  RE_ENTRANT_CHECK_OFF;
-	  FPU_verify_area(VERIFY_READ,ip,1);
+	  FPU_code_verify_area(1);
 	  FPU_get_user(byte, ip);
 	  RE_ENTRANT_CHECK_ON;
 	  break;
@@ -667,24 +659,24 @@ static int valid_prefix(u_char *Byte, u_char **fpu_eip,
 }
 
 
-void math_abort(unsigned int signal)
+void math_abort(struct info * info, unsigned int signal)
 {
-  FPU_EIP = FPU_ORIG_EIP;
-  FPU_SEND_SIGNAL(signal);
-  RE_ENTRANT_CHECK_OFF;
-  FPU_EXIT;
+	FPU_EIP = FPU_ORIG_EIP;
+	current->tss.trap_no = 16;
+	current->tss.error_code = 0;
+	send_sig(signal,current,1);
+	RE_ENTRANT_CHECK_OFF;
+	__asm__("movl %0,%%esp ; ret": :"g" (((long) info)-4));
 #ifdef PARANOID
-  printk("ERROR: wm-FPU-emu math_abort failed!\n");
-#endif /* PARANOID */
+      printk("ERROR: wm-FPU-emu math_abort failed!\n");
+#endif PARANOID
 }
 
 
 
 #define S387 ((struct i387_soft_struct *)s387)
-#define FPU_s_top	S387->ftop
-#define FPU_s_regs	S387->st_space
 #define sstatus_word() \
-  ((S387->swd & ~SW_Top & 0xffff) | ((FPU_s_top << SW_Top_Shift) & SW_Top))
+  ((S387->swd & ~SW_Top & 0xffff) | ((S387->ftop << SW_Top_Shift) & SW_Top))
 
 int restore_i387_soft(void *s387, struct _fpstate *buf)
 {
@@ -693,35 +685,35 @@ int restore_i387_soft(void *s387, struct _fpstate *buf)
 
   RE_ENTRANT_CHECK_OFF;
   FPU_verify_area(VERIFY_READ, d, 7*4 + 8*10);
-  if (FPU_copy_from_user(&S387->cwd, d, 7*4))
+  if (__copy_from_user(&S387->cwd, d, 7*4))
     return -1;
   RE_ENTRANT_CHECK_ON;
 
   d += 7*4;
 
-  FPU_s_top = (S387->swd >> SW_Top_Shift) & 7;
-  offset = (FPU_s_top & 7) * 10;
+  S387->ftop = (S387->swd >> SW_Top_Shift) & 7;
+  offset = (S387->ftop & 7) * 10;
   other = 80 - offset;
 
   RE_ENTRANT_CHECK_OFF;
   /* Copy all registers in stack order. */
-  if (FPU_copy_from_user(((u_char *)&FPU_s_regs)+offset, d, other))
+  if (__copy_from_user(((u_char *)&S387->st_space)+offset, d, other))
     return -1;
   if ( offset )
-    if (FPU_copy_from_user((u_char *)&FPU_s_regs, d+other, offset))
+    if (__copy_from_user((u_char *)&S387->st_space, d+other, offset))
       return -1;
   RE_ENTRANT_CHECK_ON;
 
   /* The tags may need to be corrected now. */
   tags = S387->twd;
-  newtop = FPU_s_top;
+  newtop = S387->ftop;
   for ( i = 0; i < 8; i++ )
     {
       regnr = (i+newtop) & 7;
       if ( ((tags >> ((regnr & 7)*2)) & 3) != TAG_Empty )
 	{
 	  /* The loaded data over-rides all other cases. */
-	  tag = FPU_tagof((FPU_REG *)((u_char *)FPU_s_regs + 10*regnr));
+	  tag = FPU_tagof((FPU_REG *)((u_char *)S387->st_space + 10*regnr));
 	  tags &= ~(3 << (regnr*2));
 	  tags |= (tag & 3) << (regnr*2);
 	}
@@ -735,7 +727,7 @@ int restore_i387_soft(void *s387, struct _fpstate *buf)
 int save_i387_soft(void *s387, struct _fpstate * buf)
 {
   u_char *d = (u_char *)buf;
-  int offset = (FPU_s_top & 7) * 10, other = 80 - offset;
+  int offset = (S387->ftop & 7) * 10, other = 80 - offset;
 
   RE_ENTRANT_CHECK_OFF;
   FPU_verify_area(VERIFY_WRITE, d, 7*4 + 8*10);
@@ -747,18 +739,18 @@ int save_i387_soft(void *s387, struct _fpstate * buf)
   S387->twd |= 0xffff0000;
   S387->fcs &= ~0xf8000000;
   S387->fos |= 0xffff0000;
-#endif /* PECULIAR_486 */
-  FPU_copy_to_user(d, &S387->cwd, 7*4);
+#endif PECULIAR_486
+  __copy_to_user(d, &S387->cwd, 7*4);
   RE_ENTRANT_CHECK_ON;
 
   d += 7*4;
 
   RE_ENTRANT_CHECK_OFF;
   /* Copy all registers in stack order. */
-  if (FPU_copy_to_user(d, ((u_char *)&FPU_s_regs)+offset, other))
+  if (__copy_to_user(d, ((u_char *)&S387->st_space)+offset, other))
     return -1;
   if ( offset )
-    if (FPU_copy_to_user(d+other, (u_char *)&FPU_s_regs, offset))
+    if (__copy_to_user(d+other, (u_char *)&S387->st_space, offset))
       return -1
   RE_ENTRANT_CHECK_ON;
 

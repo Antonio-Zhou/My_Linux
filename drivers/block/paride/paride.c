@@ -11,8 +11,8 @@
 
 	1.01	GRG 1998.05.03	Use spinlocks
 	1.02	GRG 1998.05.05  init_proto, release_proto, ktti
-	1.03    GRG 1998.08.15  eliminate compiler warning
-	1.04    GRG 1998.11.28  added support for FRIQ
+	1.03	GRG 1998.08.15  eliminate compiler warning
+	1.04    GRG 1998.11.28  added support for FRIQ 
 
 */
 
@@ -24,7 +24,7 @@
 #include <linux/kernel.h>
 #include <linux/ioport.h>
 #include <linux/string.h>
-#include "spinlock.h"
+#include <asm/spinlock.h>
 
 #ifdef CONFIG_PARPORT_MODULE
 #define CONFIG_PARPORT
@@ -40,7 +40,7 @@
 
 static struct pi_protocol	*protocols[MAX_PROTOS];
 
-/* spinlock_t	pi_spinlock = SPIN_LOCK_UNLOCKED; */
+spinlock_t	pi_spinlock = SPIN_LOCK_UNLOCKED;
 
 void pi_write_regr( PIA *pi, int cont, int regr, int val)
 
@@ -251,7 +251,7 @@ static void pi_register_parport( PIA *pi, int verbose)
 
 	if (verbose) printk("%s: 0x%x is %s\n",pi->device,pi->port,pp->name);
 	
-	pi->parname = pp->name;
+	pi->parname = (char *)pp->name;
 
 #endif
 }

@@ -3,9 +3,9 @@
  |                                                                           |
  |  Set FPU register tags.                                                   |
  |                                                                           |
- | Copyright (C) 1997,2001                                                   |
+ | Copyright (C) 1997                                                        |
  |                  W. Metzenthen, 22 Parker St, Ormond, Vic 3163, Australia |
- |                  E-mail   billm@melbpc.org.au                             |
+ |                  E-mail   billm@jacobi.maths.monash.edu.au                |
  |                                                                           |
  |                                                                           |
  +---------------------------------------------------------------------------*/
@@ -17,20 +17,20 @@
 
 void FPU_pop(void)
 {
-  fpu_tag_word |= 3 << ((FPU_top & 7)*2);
-  FPU_top++;
+  fpu_tag_word |= 3 << ((top & 7)*2);
+  top++;
 }
 
 
 int FPU_gettag0(void)
 {
-  return (fpu_tag_word >> ((FPU_top & 7)*2)) & 3;
+  return (fpu_tag_word >> ((top & 7)*2)) & 3;
 }
 
 
 int FPU_gettagi(int stnr)
 {
-  return (fpu_tag_word >> (((FPU_top+stnr) & 7)*2)) & 3;
+  return (fpu_tag_word >> (((top+stnr) & 7)*2)) & 3;
 }
 
 
@@ -42,7 +42,7 @@ int FPU_gettag(int regnr)
 
 void FPU_settag0(int tag)
 {
-  int regnr = FPU_top;
+  int regnr = top;
   regnr &= 7;
   fpu_tag_word &= ~(3 << (regnr*2));
   fpu_tag_word |= (tag & 3) << (regnr*2);
@@ -51,7 +51,7 @@ void FPU_settag0(int tag)
 
 void FPU_settagi(int stnr, int tag)
 {
-  int regnr = stnr+FPU_top;
+  int regnr = stnr+top;
   regnr &= 7;
   fpu_tag_word &= ~(3 << (regnr*2));
   fpu_tag_word |= (tag & 3) << (regnr*2);
@@ -89,7 +89,7 @@ int isNaN(FPU_REG const *ptr)
 
 int FPU_empty_i(int stnr)
 {
-  int regnr = (FPU_top+stnr) & 7;
+  int regnr = (top+stnr) & 7;
 
   return ((fpu_tag_word >> (regnr*2)) & 3) == TAG_Empty;
 }
@@ -99,7 +99,7 @@ int FPU_stackoverflow(FPU_REG **st_new_ptr)
 {
   *st_new_ptr = &st(-1);
 
-  return ((fpu_tag_word >> (((FPU_top - 1) & 7)*2)) & 3) != TAG_Empty;
+  return ((fpu_tag_word >> (((top - 1) & 7)*2)) & 3) != TAG_Empty;
 }
 
 
@@ -117,7 +117,7 @@ void FPU_copy_to_reg1(FPU_REG const *r, u_char tag)
 
 void FPU_copy_to_reg0(FPU_REG const *r, u_char tag)
 {
-  int regnr = FPU_top;
+  int regnr = top;
   regnr &= 7;
 
   reg_copy(r, &st(0));

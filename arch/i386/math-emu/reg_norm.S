@@ -90,17 +90,9 @@ L_underflow:
 L_overflow:
 	/* Convert the exponent to 80x87 form. */
 	addw	EXTENDED_Ebias,EXP(%ebx)
-	cmpb	SIGN_POS,PARAM2
-	jne	L_ovfl_neg
-	push	$0
-	jmp	L_ovfl_signed
-L_ovfl_neg:
-	push	$1
-L_ovfl_signed:
 	push	%ebx
 	call	SYMBOL_NAME(arith_overflow)
 	pop	%ebx
-	addl	$4,%esp
 	jmp	L_exit
 
 

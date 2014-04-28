@@ -11,7 +11,6 @@
 
 #include <asm/segment.h>
 #include <asm/io.h>
-#include <linux/types.h>
 
 /*
  * gzip declarations
@@ -20,12 +19,9 @@
 #define OF(args)  args
 #define STATIC static
 
-void* memset(void* s, int c, size_t n);
-void* memcpy(void* __dest, __const void* __src,
-	     size_t __n);
-
+#undef memset
+#undef memcpy
 #define memzero(s, n)     memset ((s), 0, (n))
-
 
 typedef unsigned char  uch;
 typedef unsigned short ush;
@@ -42,7 +38,7 @@ static unsigned inptr = 0;   /* index of next byte to be processed in inbuf */
 static unsigned outcnt = 0;  /* bytes in output buffer */
 
 /* gzip flag byte */
-#define ASCII_FLAG   0x01 /* bit 0 set: file probably ascii text */
+#define ASCII_FLAG   0x01 /* bit 0 set: file probably ASCII text */
 #define CONTINUATION 0x02 /* bit 1 set: continuation of multi-part gzip file */
 #define EXTRA_FIELD  0x04 /* bit 2 set: extra field present */
 #define ORIG_NAME    0x08 /* bit 3 set: original file name present */
@@ -76,35 +72,13 @@ static void gzip_mark(void **);
 static void gzip_release(void **);
   
 /*
- * These are set up by the setup-routine at boot-time:
- */
-
-struct screen_info {
-	unsigned char  orig_x;
-	unsigned char  orig_y;
-	unsigned char  unused1[2];
-	unsigned short orig_video_page;
-	unsigned char  orig_video_mode;
-	unsigned char  orig_video_cols;
-	unsigned short unused2;
-	unsigned short orig_video_ega_bx;
-	unsigned short unused3;
-	unsigned char  orig_video_lines;
-	unsigned char  orig_video_isVGA;
-};
-
-/*
  * This is set up by the setup-routine at boot-time
  */
 #define EXT_MEM_K (*(unsigned short *)0x90002)
 #ifndef STANDARD_MEMORY_BIOS_CALL
 #define ALT_MEM_K (*(unsigned long *) 0x901e0)
 #endif
-#define DRIVE_INFO (*(struct drive_info *)0x90080)
 #define SCREEN_INFO (*(struct screen_info *)0x90000)
-#define RAMDISK_SIZE (*(unsigned short *)0x901F8)
-#define ORIG_ROOT_DEV (*(unsigned short *)0x901FC)
-#define AUX_DEVICE_INFO (*(unsigned char *)0x901FF)
 
 extern char input_data[];
 extern int input_len;
@@ -311,8 +285,7 @@ long user_stack [STACK_SIZE];
 struct {
 	long * a;
 	short b;
-	} stack_start = { & user_stack [STACK_SIZE] , KERNEL_DS };
-
+	} stack_start = { & user_stack [STACK_SIZE] , __KERNEL_DS };
 
 void setup_normal_output_buffer()
 {
@@ -336,7 +309,7 @@ void setup_output_buffer_if_we_run_high(struct moveparams *mv)
 	if (EXT_MEM_K < (3*1024)) error("Less than 4MB of memory.\n");
 #else
 	if ((ALT_MEM_K > EXT_MEM_K ? ALT_MEM_K : EXT_MEM_K) < (3*1024)) error("Less than 4MB of memory.\n");
-#endif
+#endif	
 	mv->low_buffer_start = output_data = (char *)LOW_BUFFER_START;
 	high_loaded = 1;
 	free_mem_end_ptr = (long)high_buffer_start;
@@ -376,9 +349,10 @@ int decompress_kernel(struct moveparams *mv)
 	else setup_output_buffer_if_we_run_high(mv);
 
 	makecrc();
-	puts("Uncompressing Linux...");
+	puts("Uncompressing Linux... ");
 	gunzip();
-	puts("done.\nNow booting the kernel\n");
+	puts("Ok, booting the kernel.\n");
 	if (high_loaded) close_output_buffer_if_we_run_high(mv);
 	return high_loaded;
 }
+

@@ -1,7 +1,7 @@
 /*
- *	NET/ROM release 006
+ *	NET/ROM release 007
  *
- *	This code REQUIRES 1.2.1 or higher/ NET3.029
+ *	This code REQUIRES 2.1.15 or higher/ NET3.038
  *
  *	This module:
  *		This module is free software; you can redistribute it and/or
@@ -17,6 +17,7 @@
  *					Change default quality for new neighbour when same
  *					as node callsign.
  *			Alan Cox(GW4PTS) Added the firewall hooks.
+ *	NET/ROM 006	Jonathan(G4KLX)	Added the setting of digipeated neighbours.
  *			Tomi(OH2BNS)	Routing quality and link failure changes.
  */
 
@@ -39,7 +40,7 @@
 #include <linux/if_arp.h>
 #include <linux/skbuff.h>
 #include <net/sock.h>
-#include <asm/segment.h>
+#include <asm/uaccess.h>
 #include <asm/system.h>
 #include <linux/fcntl.h>
 #include <linux/termios.h>	/* For TIOCINQ/OUTQ */
@@ -81,8 +82,10 @@ static int nr_add_node(ax25_address *nr, const char *mnemonic, ax25_address *ax2
 			break;
 
 	/*
-	 * If the L2 link to a neighbour has failed in the past
-	 * and now a frame comes from this neighbour then reset the routes.
+	 * The L2 link to a neighbour has failed in the past
+	 * and now a frame comes from this neighbour. We assume
+	 * it was a temporary trouble with the link and reset the
+	 * routes now (and not wait for a node broadcast).
 	 */
 	if (nr_neigh != NULL && nr_neigh->failed != 0 && quality == 0) {
 		struct nr_node *node;
@@ -101,7 +104,7 @@ static int nr_add_node(ax25_address *nr, const char *mnemonic, ax25_address *ax2
 		return 0;
 
 	if (nr_neigh == NULL) {
-		if ((nr_neigh = (struct nr_neigh *)kmalloc(sizeof(*nr_neigh), GFP_ATOMIC)) == NULL)
+		if ((nr_neigh = kmalloc(sizeof(*nr_neigh), GFP_ATOMIC)) == NULL)
 			return -ENOMEM;
 
 		nr_neigh->callsign = *ax25;
@@ -116,7 +119,7 @@ static int nr_add_node(ax25_address *nr, const char *mnemonic, ax25_address *ax2
 
 		if (ax25_digi != NULL && ax25_digi->ndigi > 0) {
 			if ((nr_neigh->digipeat = kmalloc(sizeof(*ax25_digi), GFP_KERNEL)) == NULL) {
-				kfree_s(nr_neigh, sizeof(*nr_neigh));
+				kfree(nr_neigh);
 				return -ENOMEM;
 			}
 			*nr_neigh->digipeat = *ax25_digi;
@@ -135,7 +138,7 @@ static int nr_add_node(ax25_address *nr, const char *mnemonic, ax25_address *ax2
 		nr_neigh->quality = quality;
 
 	if (nr_node == NULL) {
-		if ((nr_node = (struct nr_node *)kmalloc(sizeof(*nr_node), GFP_ATOMIC)) == NULL)
+		if ((nr_node = kmalloc(sizeof(*nr_node), GFP_ATOMIC)) == NULL)
 			return -ENOMEM;
 
 		nr_node->callsign = *nr;
@@ -263,7 +266,7 @@ static void nr_remove_node(struct nr_node *nr_node)
 	if ((s = nr_node_list) == nr_node) {
 		nr_node_list = nr_node->next;
 		restore_flags(flags);
-		kfree_s(nr_node, sizeof(struct nr_node));
+		kfree(nr_node);
 		return;
 	}
 
@@ -271,7 +274,7 @@ static void nr_remove_node(struct nr_node *nr_node)
 		if (s->next == nr_node) {
 			s->next = nr_node->next;
 			restore_flags(flags);
-			kfree_s(nr_node, sizeof(struct nr_node));
+			kfree(nr_node);
 			return;
 		}
 
@@ -293,8 +296,8 @@ static void nr_remove_neigh(struct nr_neigh *nr_neigh)
 		nr_neigh_list = nr_neigh->next;
 		restore_flags(flags);
 		if (nr_neigh->digipeat != NULL)
-			kfree_s(nr_neigh->digipeat, sizeof(ax25_digi));
-		kfree_s(nr_neigh, sizeof(struct nr_neigh));
+			kfree(nr_neigh->digipeat);
+		kfree(nr_neigh);
 		return;
 	}
 
@@ -303,8 +306,8 @@ static void nr_remove_neigh(struct nr_neigh *nr_neigh)
 			s->next = nr_neigh->next;
 			restore_flags(flags);
 			if (nr_neigh->digipeat != NULL)
-				kfree_s(nr_neigh->digipeat, sizeof(ax25_digi));
-			kfree_s(nr_neigh, sizeof(struct nr_neigh));
+				kfree(nr_neigh->digipeat);
+			kfree(nr_neigh);
 			return;
 		}
 
@@ -381,7 +384,7 @@ static int nr_add_neigh(ax25_address *callsign, ax25_digi *ax25_digi, struct dev
 		}
 	}
 
-	if ((nr_neigh = (struct nr_neigh *)kmalloc(sizeof(*nr_neigh), GFP_ATOMIC)) == NULL)
+	if ((nr_neigh = kmalloc(sizeof(*nr_neigh), GFP_ATOMIC)) == NULL)
 		return -ENOMEM;
 
 	nr_neigh->callsign = *callsign;
@@ -396,7 +399,7 @@ static int nr_add_neigh(ax25_address *callsign, ax25_digi *ax25_digi, struct dev
 
 	if (ax25_digi != NULL && ax25_digi->ndigi > 0) {
 		if ((nr_neigh->digipeat = kmalloc(sizeof(*ax25_digi), GFP_KERNEL)) == NULL) {
-			kfree_s(nr_neigh, sizeof(*nr_neigh));
+			kfree(nr_neigh);
 			return -ENOMEM;
 		}
 		*nr_neigh->digipeat = *ax25_digi;
@@ -609,14 +612,12 @@ int nr_rt_ioctl(unsigned int cmd, void *arg)
 {
 	struct nr_route_struct nr_route;
 	struct device *dev;
-	int err;
 
 	switch (cmd) {
 
 		case SIOCADDRT:
-			if ((err = verify_area(VERIFY_READ, arg, sizeof(struct nr_route_struct))) != 0)
-				return err;
-			memcpy_fromfs(&nr_route, arg, sizeof(struct nr_route_struct));
+			if (copy_from_user(&nr_route, arg, sizeof(struct nr_route_struct)))
+				return -EFAULT;
 			if ((dev = nr_ax25_dev_get(nr_route.device)) == NULL)
 				return -EINVAL;
 			if (nr_route.ndigis < 0 || nr_route.ndigis > AX25_MAX_DIGIS)
@@ -638,9 +639,8 @@ int nr_rt_ioctl(unsigned int cmd, void *arg)
 			}
 
 		case SIOCDELRT:
-			if ((err = verify_area(VERIFY_READ, arg, sizeof(struct nr_route_struct))) != 0)
-				return err;
-			memcpy_fromfs(&nr_route, arg, sizeof(struct nr_route_struct));
+			if (copy_from_user(&nr_route, arg, sizeof(struct nr_route_struct)))
+				return -EFAULT;
 			if ((dev = nr_ax25_dev_get(nr_route.device)) == NULL)
 				return -EINVAL;
 			switch (nr_route.type) {
@@ -700,19 +700,18 @@ int nr_route_frame(struct sk_buff *skb, ax25_cb *ax25)
 	struct device *dev;
 	unsigned char *dptr;
 
-#ifdef CONFIG_FIREWALL
-	if (ax25 != NULL && call_in_firewall(PF_NETROM, skb->dev, skb->data, NULL) != FW_ACCEPT)
+	if (ax25 != NULL && call_in_firewall(PF_NETROM, skb->dev, skb->data, NULL, &skb) != FW_ACCEPT)
 		return 0;
-	if (ax25 == NULL && call_out_firewall(PF_NETROM, skb->dev, skb->data, NULL) != FW_ACCEPT)
+
+	if (ax25 == NULL && call_out_firewall(PF_NETROM, skb->dev, skb->data, NULL, &skb) != FW_ACCEPT)
 		return 0;
-#endif
 
 	nr_src  = (ax25_address *)(skb->data + 0);
 	nr_dest = (ax25_address *)(skb->data + 7);
 
 	if (ax25 != NULL)
 		nr_add_node(nr_src, "", &ax25->dest_addr, ax25->digipeat,
-			    ax25->device, 0, sysctl_netrom_obsolescence_count_initialiser);
+			    ax25->ax25_dev->dev, 0, sysctl_netrom_obsolescence_count_initialiser);
 
 	if ((dev = nr_dev_get(nr_dest)) != NULL) {	/* Its for me */
 		if (ax25 == NULL)			/* Its from me */
@@ -740,10 +739,8 @@ int nr_route_frame(struct sk_buff *skb, ax25_cb *ax25)
 	if ((dev = nr_dev_first()) == NULL)
 		return 0;
 
-#ifdef CONFIG_FIREWALL
-	if (ax25 != NULL && call_fw_firewall(PF_NETROM, skb->dev, skb->data, NULL) != FW_ACCEPT)
+	if (ax25 != NULL && call_fw_firewall(PF_NETROM, skb->dev, skb->data, NULL, &skb) != FW_ACCEPT)
 		return 0;
-#endif
 
 	dptr  = skb_push(skb, 1);
 	*dptr = AX25_P_NETROM;

@@ -1,5 +1,5 @@
 /*
- * $Id: capiutil.c,v 1.3.2.1 1998/08/03 15:52:21 paul Exp $
+ * $Id: capiutil.c,v 1.6 1997/11/04 06:12:12 calle Exp $
  *
  * CAPI 2.0 convert capi message to capi message struct
  *
@@ -7,9 +7,19 @@
  * Rewritten for Linux 1996 by Carsten Paeth (calle@calle.in-berlin.de)
  *
  * $Log: capiutil.c,v $
- * Revision 1.3.2.1  1998/08/03 15:52:21  paul
- * various changes from 2.0.3[45] kernel sources, as suggested by
- * Oliver.Lauer@coburg.baynet.de
+ * Revision 1.6  1997/11/04 06:12:12  calle
+ * capi.c: new read/write in file_ops since 2.1.60
+ * capidrv.c: prepared isdnlog interface for d2-trace in newer firmware.
+ * capiutil.c: needs config.h (CONFIG_ISDN_DRV_AVMB1_VERBOSE_REASON)
+ * compat.h: added #define LinuxVersionCode
+ *
+ * Revision 1.5  1997/10/01 09:21:19  fritz
+ * Removed old compatibility stuff for 2.0.X kernels.
+ * From now on, this code is for 2.1.X ONLY!
+ * Old stuff is still in the separate branch.
+ *
+ * Revision 1.4  1997/08/10 07:43:55  calle
+ * forgot to export symbol capi_info2str for 2.1.x
  *
  * Revision 1.3  1997/05/18 09:24:18  calle
  * added verbose disconnect reason reporting to avmb1.
@@ -29,7 +39,6 @@
  * Initial revision
  *
  */
-#include <linux/config.h> /* CONFIG_ISDN_DRV_AVMB1_VERBOSE_REASON */
 #include <linux/module.h>
 #include <linux/string.h>
 #include <linux/ctype.h>
@@ -37,6 +46,7 @@
 #include <linux/kernel.h>
 #include <linux/mm.h>
 #include <asm/segment.h>
+#include <linux/config.h>
 
 #include "compat.h"
 #include "capiutil.h"
@@ -940,35 +950,18 @@ char *capi_cmsg2str(_cmsg * cmsg)
 }
 
 
-#ifdef HAS_NEW_SYMTAB
 EXPORT_SYMBOL(capi_cmsg2message);
 EXPORT_SYMBOL(capi_message2cmsg);
 EXPORT_SYMBOL(capi_cmsg_header);
 EXPORT_SYMBOL(capi_cmd2str);
 EXPORT_SYMBOL(capi_cmsg2str);
 EXPORT_SYMBOL(capi_message2str);
-#else
-static struct symbol_table capifunc_syms =
-{
-#include <linux/symtab_begin.h>
-	X(capi_cmsg2message),
-	X(capi_message2cmsg),
-	X(capi_cmsg_header),
-	X(capi_cmd2str),
-	X(capi_cmsg2str),
-	X(capi_message2str),
-	X(capi_info2str),
-#include <linux/symtab_end.h>
-};
-#endif
+EXPORT_SYMBOL(capi_info2str);
 
 #ifdef MODULE
 
 int init_module(void)
 {
-#ifndef HAS_NEW_SYMTAB
-	register_symtab(&capifunc_syms);
-#endif
 	return 0;
 }
 

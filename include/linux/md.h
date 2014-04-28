@@ -3,21 +3,20 @@
           Copyright (C) 1994-96 Marc ZYNGIER
 	  <zyngier@ufr-info-p7.ibp.fr> or
 	  <maz@gloups.fdn.fr>
-
+	  
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
    the Free Software Foundation; either version 2, or (at your option)
    any later version.
-
+   
    You should have received a copy of the GNU General Public License
    (for example /usr/src/linux/COPYING); if not, write to the Free
-   Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+   Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.  
 */
 
 #ifndef _MD_H
 #define _MD_H
 
-#include <asm/segment.h>
 #include <linux/major.h>
 #include <linux/ioctl.h>
 #include <linux/types.h>
@@ -29,12 +28,15 @@
  */
 #define MD_MAJOR_VERSION		0
 #define MD_MINOR_VERSION		36
-#define MD_PATCHLEVEL_VERSION		3
+#define MD_PATCHLEVEL_VERSION		6
+
+#define MD_DEFAULT_DISK_READAHEAD	(256 * 1024)
 
 /* ioctls */
-#define REGISTER_DEV _IO (MD_MAJOR, 1)
-#define START_MD     _IO (MD_MAJOR, 2)
-#define STOP_MD      _IO (MD_MAJOR, 3)
+#define REGISTER_DEV 		_IO (MD_MAJOR, 1)
+#define START_MD     		_IO (MD_MAJOR, 2)
+#define STOP_MD      		_IO (MD_MAJOR, 3)
+#define REGISTER_DEV_NEW	_IO (MD_MAJOR, 4)
 
 /*
    personalities :
@@ -198,10 +200,16 @@ typedef struct md_superblock_s {
 #include <linux/mm.h>
 #include <linux/fs.h>
 #include <linux/blkdev.h>
+#include <asm/semaphore.h>
+
+/*
+ * Kernel-based reconstruction is mostly working, but still requires
+ * some additional work.
+ */
+#define SUPPORT_RECONSTRUCTION	0
 
 #define MAX_REAL     8		/* Max number of physical dev per md dev */
 #define MAX_MD_DEV   4		/* Max number of md dev */
-#define MAX_MD_THREADS 2	/* Max number of kernel threads */
 
 #define FACTOR(a)         ((a)->repartition & FACTOR_MASK)
 #define MAX_FAULT(a)      (((a)->repartition & FAULT_MASK)>>8)
@@ -222,45 +230,61 @@ struct real_dev
 
 struct md_dev;
 
+#define SPARE_INACTIVE	0
+#define SPARE_WRITE	1
+#define SPARE_ACTIVE	2
+
 struct md_personality
 {
   char *name;
-  int (*map)(struct md_dev *md_dev, kdev_t *rdev,
+  int (*map)(struct md_dev *mddev, kdev_t *rdev,
 	              unsigned long *rsector, unsigned long size);
-  int (*make_request)(struct md_dev *md_dev, int rw, struct buffer_head * bh);
+  int (*make_request)(struct md_dev *mddev, int rw, struct buffer_head * bh);
   void (*end_request)(struct buffer_head * bh, int uptodate);
-  int (*run)(int minor, struct md_dev *md_dev);
-  int (*stop)(int minor, struct md_dev *md_dev);
-  int (*status)(char *page, int minor, struct md_dev *md_dev);
+  int (*run)(int minor, struct md_dev *mddev);
+  int (*stop)(int minor, struct md_dev *mddev);
+  int (*status)(char *page, int minor, struct md_dev *mddev);
   int (*ioctl)(struct inode *inode, struct file *file,
 	       unsigned int cmd, unsigned long arg);
   int max_invalid_dev;
-  int (*error_handler)(struct md_dev *md_dev, kdev_t dev);
+  int (*error_handler)(struct md_dev *mddev, kdev_t dev);
+
+/*
+ * Some personalities (RAID-1, RAID-5) can get disks hot-added and
+ * hot-removed. Hot removal is different from failure. (failure marks
+ * a disk inactive, but the disk is still part of the array)
+ */
+  int (*hot_add_disk) (struct md_dev *mddev, kdev_t dev);
+  int (*hot_remove_disk) (struct md_dev *mddev, kdev_t dev);
+  int (*mark_spare) (struct md_dev *mddev, md_descriptor_t *descriptor, int state);
 };
 
 struct md_dev
 {
-  struct real_dev devices[MAX_REAL];
-  struct md_personality *pers;
-  md_superblock_t *sb;
-  int sb_dirty;
-  int repartition;
-  int busy;
-  int nb_dev;
-  void *private;
+  struct real_dev	devices[MAX_REAL];
+  struct md_personality	*pers;
+  md_superblock_t	*sb;
+  int			sb_dirty;
+  int			repartition;
+  int			busy;
+  int			nb_dev;
+  void			*private;
 };
 
 struct md_thread {
 	void			(*run) (void *data);
 	void			*data;
 	struct wait_queue	*wqueue;
-	__u32			flags;
+	unsigned long           flags;
+	struct semaphore	*sem;
+	struct task_struct	*tsk;
 };
 
-#define THREAD_WAKEUP	0
+#define THREAD_WAKEUP  0
 
 extern struct md_dev md_dev[MAX_MD_DEV];
 extern int md_size[MAX_MD_DEV];
+extern int md_maxreadahead[MAX_MD_DEV];
 
 extern char *partition_name (kdev_t dev);
 
@@ -270,6 +294,7 @@ extern struct md_thread *md_register_thread (void (*run) (void *data), void *dat
 extern void md_unregister_thread (struct md_thread *thread);
 extern void md_wakeup_thread(struct md_thread *thread);
 extern int md_update_sb (int minor);
+extern int md_do_sync(struct md_dev *mddev);
 
-#endif /* __KERNEL__ */
-#endif /* _MD_H */
+#endif __KERNEL__
+#endif _MD_H

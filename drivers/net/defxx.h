@@ -1754,8 +1754,7 @@ typedef struct DFX_board_tag
 	struct device			*dev;							/* pointer to device structure */
 	u32						bus_type;						/* bus type (0 == PCI, 1 == EISA) */
 	u16						base_addr;						/* base I/O address (same as dev->base_addr) */
-	u8						pci_bus;						/* PCI bus number */
-	u8						pci_dev_fun;					/* PCI device and function numbers */
+	struct pci_dev *				pci_dev;
 	u32						full_duplex_enb;				/* FDDI Full Duplex enable (1 == on, 2 == off) */
 	u32						req_ttrt;						/* requested TTRT value (in 80ns units) */
 	u32						burst_size;						/* adapter burst size (enumerated) */
@@ -1772,9 +1771,12 @@ typedef struct DFX_board_tag
 	u32						rcv_length_errors;
 	u32						rcv_total_frames;
 	u32						rcv_multicast_frames;
+	u32						rcv_total_bytes;
+
 	u32						xmt_discards;
 	u32						xmt_length_errors;
 	u32						xmt_total_frames;
+	u32						xmt_total_bytes;
 	} DFX_board_t;
 
 #endif	/* #ifndef _DEFXX_H_ */

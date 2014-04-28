@@ -1,8 +1,8 @@
-/* $Id: isdnloop.c,v 1.1.2.1 1998/11/05 22:13:15 fritz Exp $
+/* $Id: isdnloop.c,v 1.4 1998/02/24 21:39:05 he Exp $
 
  * ISDN low-level module implementing a dummy loop driver.
  *
- * Copyright 1998 by Fritz Elfert (fritz@isdn4linux.de)
+ * Copyright 1997 by Fritz Elfert (fritz@wuemaus.franken.de)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,18 +19,30 @@
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
  * $Log: isdnloop.c,v $
- * Revision 1.1.2.1  1998/11/05 22:13:15  fritz
- * Changed mail-address.
+ * Revision 1.4  1998/02/24 21:39:05  he
+ * L2_PROT_X25DTE / DCE
+ * additional state 17 and new internal signal messages "BCON_I"
+ * (for reliable connect confirmation primitive as needed by x.25 upper layer)
+ * Changes for new LL-HL interface
+ *
+ * Revision 1.3  1998/02/20 17:33:30  fritz
+ * Changes for recent kernels.
+ *
+ * Revision 1.2  1997/10/01 09:22:03  fritz
+ * Removed old compatibility stuff for 2.0.X kernels.
+ * From now on, this code is for 2.1.X ONLY!
+ * Old stuff is still in the separate branch.
  *
  * Revision 1.1  1997/03/24 23:02:04  fritz
  * Added isdnloop driver.
  *
  */
 
+#include <linux/config.h>
 #include "isdnloop.h"
 
 static char
-*revision = "$Revision: 1.1.2.1 $";
+*revision = "$Revision: 1.4 $";
 
 static int isdnloop_addcard(char *);
 
@@ -48,7 +60,7 @@ isdnloop_free_queue(isdnloop_card * card, int channel)
 	struct sk_buff *skb;
 
 	while ((skb = skb_dequeue(queue)))
-		dev_kfree_skb(skb, FREE_WRITE);
+		dev_kfree_skb(skb);
 	card->sndcount[channel] = 0;
 }
 
@@ -64,19 +76,30 @@ static void
 isdnloop_bchan_send(isdnloop_card * card, int ch)
 {
 	isdnloop_card *rcard = card->rcard[ch];
-	int rch = card->rch[ch];
+	int rch = card->rch[ch], len, ack;
 	struct sk_buff *skb;
 	isdn_ctrl cmd;
 
 	while (card->sndcount[ch]) {
 		if ((skb = skb_dequeue(&card->bqueue[ch]))) {
-			card->sndcount[ch] -= skb->len;
-			if (rcard)
-				rcard->interface.rcvcallb_skb(rcard->myid, rch, skb);
-			cmd.command = ISDN_STAT_BSENT;
+			len = skb->len;
+			card->sndcount[ch] -= len;
+			ack = *(skb->head); /* used as scratch area */
 			cmd.driver = card->myid;
 			cmd.arg = ch;
-			card->interface.statcallb(&cmd);
+			if (rcard){
+				rcard->interface.rcvcallb_skb(rcard->myid, rch, skb);
+			} else {
+				printk(KERN_WARNING "isdnloop: no rcard, skb dropped\n");
+				dev_kfree_skb(skb);
+
+				cmd.command = ISDN_STAT_L1ERR;
+				cmd.parm.errcode = ISDN_STAT_L1ERR_SEND;
+				card->interface.statcallb(&cmd); 
+			};
+			cmd.command = ISDN_STAT_BSENT;
+			cmd.parm.length = len;
+			if ( ack ) card->interface.statcallb(&cmd);
 		} else
 			card->sndcount[ch] = 0;
 	}
@@ -318,7 +341,7 @@ isdnloop_polldchan(unsigned long data)
 	int left;
 	u_char c;
 	int ch;
-	unsigned long flags;
+	int flags;
 	u_char *p;
 	isdn_ctrl cmd;
 
@@ -424,7 +447,7 @@ isdnloop_sendbuf(int channel, struct sk_buff *skb, isdnloop_card * card)
 		nskb = skb_clone(skb, GFP_ATOMIC);
 		if (nskb) {
 			skb_queue_tail(&card->bqueue[channel], nskb);
-			dev_kfree_skb(skb, FREE_WRITE);
+			dev_kfree_skb(skb);
 		} else
 			len = 0;
 		card->sndcount[channel] += len;
@@ -494,6 +517,7 @@ isdnloop_fake(isdnloop_card * card, char *s, int ch)
 static isdnloop_stat isdnloop_cmd_table[] =
 {
 	{"BCON_R",         0,  1},	/* B-Channel connect        */
+	{"BCON_I",         0, 17},	/* B-Channel connect ind    */
 	{"BDIS_R",         0,  2},	/* B-Channel disconnect     */
 	{"DDIS_R",         0,  3},	/* D-Channel disconnect     */
 	{"DCON_R",         0, 16},	/* D-Channel connect        */
@@ -822,8 +846,14 @@ isdnloop_parse_cmd(isdnloop_card * card)
 		case 1:
 			/* 0x;BCON_R */
 			if (card->rcard[ch - 1]) {
-				isdnloop_fake(card, "BCON_C", ch);
 				isdnloop_fake(card->rcard[ch - 1], "BCON_I",
+					      card->rch[ch - 1] + 1);
+			}
+			break;
+		case 17:
+			/* 0x;BCON_I */
+			if (card->rcard[ch - 1]) {
+				isdnloop_fake(card->rcard[ch - 1], "BCON_C",
 					      card->rch[ch - 1] + 1);
 			}
 			break;
@@ -879,7 +909,7 @@ isdnloop_parse_cmd(isdnloop_card * card)
 					isdnloop_fake(card->rcard[ch - 1], buf, card->rch[ch - 1] + 1);
 					/* Fall through */
 				case 3:
-					/* si1 does not match, dont alert but start timer */
+					/* si1 does not match, don't alert but start timer */
 					isdnloop_start_ctimer(card, ch - 1);
 					break;
 				case 1:
@@ -1149,11 +1179,9 @@ isdnloop_command(isdn_ctrl * c, isdnloop_card * card)
 						if (!card->leased) {
 							card->leased = 1;
 							while (card->ptype == ISDN_PTYPE_UNKNOWN) {
-								current->timeout = jiffies + 10;
-								schedule();
+								schedule_timeout(10);
 							}
-							current->timeout = jiffies + 10;
-							schedule();
+							schedule_timeout(10);
 							sprintf(cbuf, "00;FV2ON\n01;EAZ1\n02;EAZ2\n");
 							i = isdnloop_writecmd(cbuf, strlen(cbuf), 0, card);
 							printk(KERN_INFO
@@ -1219,6 +1247,14 @@ isdnloop_command(isdn_ctrl * c, isdnloop_card * card)
 					case ISDN_PROTO_L2_X75I:
 						sprintf(cbuf, "%02d;BX75\n", (int) a);
 						break;
+#ifdef CONFIG_ISDN_X25
+					case ISDN_PROTO_L2_X25DTE:
+						sprintf(cbuf, "%02d;BX2T\n", (int) a);
+						break;
+					case ISDN_PROTO_L2_X25DCE:
+						sprintf(cbuf, "%02d;BX2C\n", (int) a);
+						break;
+#endif
 					case ISDN_PROTO_L2_HDLC:
 						sprintf(cbuf, "%02d;BTRA\n", (int) a);
 						break;
@@ -1238,6 +1274,14 @@ isdnloop_command(isdn_ctrl * c, isdnloop_card * card)
 					case ISDN_PROTO_L2_X75I:
 						sprintf(cbuf, "%02d;BCON_R,BX75\n", (int) a);
 						break;
+#ifdef CONFIG_ISDN_X25
+					case ISDN_PROTO_L2_X25DTE:
+						sprintf(cbuf, "%02d;BCON_R,BX2T\n", (int) a);
+						break;
+					case ISDN_PROTO_L2_X25DCE:
+						sprintf(cbuf, "%02d;BCON_R,BX2C\n", (int) a);
+						break;
+#endif
 					case ISDN_PROTO_L2_HDLC:
 						sprintf(cbuf, "%02d;BCON_R,BTRA\n", (int) a);
 						break;
@@ -1295,6 +1339,14 @@ isdnloop_command(isdn_ctrl * c, isdnloop_card * card)
 						case ISDN_PROTO_L2_X75I:
 							sprintf(cbuf, "%02d;BX75\n", (int) (a & 255) + 1);
 							break;
+#ifdef CONFIG_ISDN_X25
+						case ISDN_PROTO_L2_X25DTE:
+							sprintf(cbuf, "%02d;BX2T\n", (int) (a & 255) + 1);
+							break;
+						case ISDN_PROTO_L2_X25DCE:
+							sprintf(cbuf, "%02d;BX2C\n", (int) (a & 255) + 1);
+							break;
+#endif
 						case ISDN_PROTO_L2_HDLC:
 							sprintf(cbuf, "%02d;BTRA\n", (int) (a & 255) + 1);
 							break;
@@ -1410,17 +1462,19 @@ if_readstatus(u_char * buf, int len, int user, int id, int channel)
 }
 
 static int
-if_sendbuf(int id, int channel, struct sk_buff *skb)
+if_sendbuf(int id, int channel, int ack, struct sk_buff *skb)
 {
 	isdnloop_card *card = isdnloop_findcard(id);
 
 	if (card) {
 		if (!card->flags & ISDNLOOP_FLAGS_RUNNING)
 			return -ENODEV;
+		/* ack request stored in skb scratch area */
+		*(skb->head) = ack;
 		return (isdnloop_sendbuf(channel, skb, card));
 	}
 	printk(KERN_ERR
-	       "isdnloop: if_readstatus called with invalid driverId!\n");
+	       "isdnloop: if_sendbuf called with invalid driverId!\n");
 	return -ENODEV;
 }
 
@@ -1441,12 +1495,17 @@ isdnloop_initcard(char *id)
 	}
 	memset((char *) card, 0, sizeof(isdnloop_card));
 	card->interface.channels = ISDNLOOP_BCH;
+	card->interface.hl_hdrlen  = 1; /* scratch area for storing ack flag*/ 
 	card->interface.maxbufsize = 4000;
 	card->interface.command = if_command;
 	card->interface.writebuf_skb = if_sendbuf;
 	card->interface.writecmd = if_writecmd;
 	card->interface.readstat = if_readstatus;
 	card->interface.features = ISDN_FEATURE_L2_X75I |
+#ifdef CONFIG_ISDN_X25
+	    ISDN_FEATURE_L2_X25DTE |
+	    ISDN_FEATURE_L2_X25DCE |
+#endif
 	    ISDN_FEATURE_L2_HDLC |
 	    ISDN_FEATURE_L3_TRANS |
 	    ISDN_FEATURE_P_UNKNOWN;
@@ -1514,11 +1573,7 @@ isdnloop_init(void)
 	char rev[10];
 
 	/* No symbols to export, hide all symbols */
-#if (LINUX_VERSION_CODE < 0x020111)
-	register_symtab(NULL);
-#else
 	EXPORT_NO_SYMBOLS;
-#endif
 
 	if ((p = strchr(revision, ':'))) {
 		strcpy(rev, p + 1);
@@ -1554,7 +1609,7 @@ cleanup_module(void)
 
 		last = card;
 		while ((skb = skb_dequeue(&card->dqueue)))
-			dev_kfree_skb(skb, FREE_WRITE);
+			dev_kfree_skb(skb);
 		card = card->next;
 		kfree(last);
 	}

@@ -16,10 +16,13 @@
 #include <linux/config.h>
 #include <linux/locks.h>
 #include <linux/mm.h>
+#include <linux/init.h>
 
 #include <asm/system.h>
 #include <asm/io.h>
 #include <linux/blk.h>
+
+#include <linux/module.h>
 
 /*
  * The request-struct contains all necessary data
@@ -32,6 +35,20 @@ static struct request all_requests[NR_REQUEST];
  * after a plug
  */
 DECLARE_TASK_QUEUE(tq_disk);
+
+/*
+ * Protect the request list against multiple users..
+ *
+ * With this spinlock the Linux block IO subsystem is 100% SMP threaded
+ * from the IRQ event side, and almost 100% SMP threaded from the syscall
+ * side (we still have protect against block device array operations, and
+ * the do_request() side is casually still unsafe. The kernel lock protects
+ * this part currently.).
+ *
+ * there is a fair chance that things will work just OK if these functions
+ * are called with no global kernel lock held ...
+ */
+spinlock_t io_request_lock = SPIN_LOCK_UNLOCKED;
 
 /*
  * used to wait on when there are no free requests
@@ -76,20 +93,20 @@ int * blksize_size[MAX_BLKDEV] = { NULL, NULL, };
  *		then 512 bytes is assumed.
  * else
  *		sector_size is hardsect_size[MAJOR][MINOR]
- * This is currently set by some scsi device and read by the msdos fs driver
- * This might be a some uses later.
+ * This is currently set by some scsi devices and read by the msdos fs driver.
+ * Other uses may appear later.
  */
 int * hardsect_size[MAX_BLKDEV] = { NULL, NULL, };
+
+/*
+ * The following tunes the read-ahead algorithm in mm/filemap.c
+ */
+int * max_readahead[MAX_BLKDEV] = { NULL, NULL, };
 
 /*
  * Max number of sectors per request
  */
 int * max_sectors[MAX_BLKDEV] = { NULL, NULL, };
-
-/*
- * Max number of segments per request
- */
-int * max_segments[MAX_BLKDEV] = { NULL, NULL, };
 
 static inline int get_max_sectors(kdev_t dev)
 {
@@ -98,11 +115,19 @@ static inline int get_max_sectors(kdev_t dev)
 	return max_sectors[MAJOR(dev)][MINOR(dev)];
 }
 
-static inline int get_max_segments(kdev_t dev)
+/*
+ * Is called with the request spinlock aquired.
+ * NOTE: the device-specific queue() functions
+ * have to be atomic!
+ */
+static inline struct request **get_queue(kdev_t dev)
 {
-	if (!max_segments[MAJOR(dev)])
-		return MAX_SEGMENTS;
-	return max_segments[MAJOR(dev)][MINOR(dev)];
+	int major = MAJOR(dev);
+	struct blk_dev_struct *bdev = blk_dev + major;
+
+	if (bdev->queue)
+		return bdev->queue(dev);
+	return &blk_dev[major].current_request;
 }
 
 /*
@@ -111,19 +136,22 @@ static inline int get_max_segments(kdev_t dev)
 void unplug_device(void * data)
 {
 	struct blk_dev_struct * dev = (struct blk_dev_struct *) data;
+	int queue_new_request=0;
 	unsigned long flags;
 
-	save_flags(flags);
-	cli();
+	spin_lock_irqsave(&io_request_lock,flags);
 	if (dev->current_request == &dev->plug) {
 		struct request * next = dev->plug.next;
 		dev->current_request = next;
-		if (next) {
+		if (next || dev->queue) {
 			dev->plug.next = NULL;
-			(dev->request_fn)();
+			queue_new_request = 1;
 		}
 	}
-	restore_flags(flags);
+	if (queue_new_request)
+		(dev->request_fn)();
+
+	spin_unlock_irqrestore(&io_request_lock,flags);
 }
 
 /*
@@ -132,17 +160,20 @@ void unplug_device(void * data)
  * on the list.
  *
  * This is called with interrupts off and no requests on the queue.
+ * (and with the request spinlock aquired)
  */
 static inline void plug_device(struct blk_dev_struct * dev)
 {
+	if (dev->current_request)
+		return;
 	dev->current_request = &dev->plug;
-	queue_task_irq_off(&dev->plug_tq, &tq_disk);
+	queue_task(&dev->plug_tq, &tq_disk);
 }
 
 /*
  * look for a free request in the first N entries.
- * NOTE: interrupts must be disabled on the way in, and will still
- *       be disabled on the way out.
+ * NOTE: interrupts must be disabled on the way in (on SMP the request queue
+ * spinlock has to be aquired), and will still be disabled on the way out.
  */
 static inline struct request * get_request(int n, kdev_t dev)
 {
@@ -178,13 +209,14 @@ static struct request * __get_request_wait(int n, kdev_t dev)
 {
 	register struct request *req;
 	struct wait_queue wait = { current, NULL };
+	unsigned long flags;
 
 	add_wait_queue(&wait_for_request, &wait);
 	for (;;) {
 		current->state = TASK_UNINTERRUPTIBLE;
-		cli();
+		spin_lock_irqsave(&io_request_lock,flags);
 		req = get_request(n, dev);
-		sti();
+		spin_unlock_irqrestore(&io_request_lock,flags);
 		if (req)
 			break;
 		run_task_queue(&tq_disk);
@@ -198,10 +230,11 @@ static struct request * __get_request_wait(int n, kdev_t dev)
 static inline struct request * get_request_wait(int n, kdev_t dev)
 {
 	register struct request *req;
+	unsigned long flags;
 
-	cli();
+	spin_lock_irqsave(&io_request_lock,flags);
 	req = get_request(n, dev);
-	sti();
+	spin_unlock_irqrestore(&io_request_lock,flags);
 	if (req)
 		return req;
 	return __get_request_wait(n, dev);
@@ -248,8 +281,9 @@ static inline void drive_stat_acct(int cmd, unsigned long nr_sectors,
 
 /*
  * add-request adds a request to the linked list.
- * It disables interrupts so that it can muck with the
- * request-lists in peace.
+ * It disables interrupts (aquires the request spinlock) so that it can muck
+ * with the request-lists in peace. Thus it should be called with no spinlocks
+ * held.
  *
  * By this point, req->cmd is always either READ/WRITE, never READA/WRITEA,
  * which is important for drive_stat_acct() above.
@@ -257,87 +291,85 @@ static inline void drive_stat_acct(int cmd, unsigned long nr_sectors,
 
 void add_request(struct blk_dev_struct * dev, struct request * req)
 {
-	int major = MAJOR(req->rq_dev);
-	int minor = MINOR(req->rq_dev);
-	struct request * tmp;
+	struct request * tmp, **current_request;
 	short		 disk_index;
+	unsigned long flags;
+	int queue_new_request = 0;
 
-	switch (major) {
-		case DAC960_MAJOR+0:
-			disk_index = (minor & 0x00f8) >> 3;
-			if (disk_index < 4)
-				drive_stat_acct(req->cmd, req->nr_sectors, disk_index);
-			break;
-		case SCSI_DISK_MAJOR:
-			disk_index = (minor & 0x0070) >> 4;
+	switch (MAJOR(req->rq_dev)) {
+		case SCSI_DISK0_MAJOR:
+			disk_index = (MINOR(req->rq_dev) & 0x00f0) >> 4;
 			if (disk_index < 4)
 				drive_stat_acct(req->cmd, req->nr_sectors, disk_index);
 			break;
 		case IDE0_MAJOR:	/* same as HD_MAJOR */
 		case XT_DISK_MAJOR:
-			disk_index = (minor & 0x0040) >> 6;
+			disk_index = (MINOR(req->rq_dev) & 0x0040) >> 6;
 			drive_stat_acct(req->cmd, req->nr_sectors, disk_index);
 			break;
 		case IDE1_MAJOR:
-			disk_index = ((minor & 0x0040) >> 6) + 2;
+			disk_index = ((MINOR(req->rq_dev) & 0x0040) >> 6) + 2;
 			drive_stat_acct(req->cmd, req->nr_sectors, disk_index);
 		default:
 			break;
 	}
 
 	req->next = NULL;
-	cli();
+
+	/*
+	 * We use the goto to reduce locking complexity
+	 */
+	spin_lock_irqsave(&io_request_lock,flags);
+	current_request = get_queue(req->rq_dev);
+
 	if (req->bh)
 		mark_buffer_clean(req->bh);
-	if (!(tmp = dev->current_request)) {
-		dev->current_request = req;
-		(dev->request_fn)();
-		sti();
-		return;
+	if (!(tmp = *current_request)) {
+		*current_request = req;
+		if (dev->current_request != &dev->plug)
+			queue_new_request = 1;
+		goto out;
 	}
 	for ( ; tmp->next ; tmp = tmp->next) {
-		if ((IN_ORDER(tmp,req) ||
-		    !IN_ORDER(tmp,tmp->next)) &&
-		    IN_ORDER(req,tmp->next))
-			break;
+		const int after_current = IN_ORDER(tmp,req);
+		const int before_next = IN_ORDER(req,tmp->next);
+
+		if (!IN_ORDER(tmp,tmp->next)) {
+			if (after_current || before_next)
+				break;
+		} else {
+			if (after_current && before_next)
+				break;
+		}
 	}
 	req->next = tmp->next;
 	tmp->next = req;
 
 /* for SCSI devices, call request_fn unconditionally */
-	if (scsi_blk_major(major))
+	if (scsi_blk_major(MAJOR(req->rq_dev)))
+		queue_new_request = 1;
+out:
+	if (queue_new_request)
 		(dev->request_fn)();
-
-	if ( (major >= DAC960_MAJOR+0 && major <= DAC960_MAJOR+7) ||
-	     (major >= COMPAQ_SMART2_MAJOR+0 && major <= COMPAQ_SMART2_MAJOR+7))
-	  (dev->request_fn)();
-
-	sti();
+	spin_unlock_irqrestore(&io_request_lock,flags);
 }
 
-static inline void attempt_merge (struct request *req,
-				  int max_sectors,
-				  int max_segments)
+/*
+ * Has to be called with the request spinlock aquired
+ */
+static inline void attempt_merge (struct request *req, int max_sectors)
 {
 	struct request *next = req->next;
-	int total_segments;
 
 	if (!next)
 		return;
 	if (req->sector + req->nr_sectors != next->sector)
 		return;
-	if (next->sem || req->cmd != next->cmd || req->rq_dev != next->rq_dev ||
-	    req->nr_sectors + next->nr_sectors > max_sectors)
-		return;
-	total_segments = req->nr_segments + next->nr_segments;
-	if (req->bhtail->b_data + req->bhtail->b_size == next->bh->b_data)
-		total_segments--;
-	if (total_segments > max_segments)
+	if (next->sem || req->cmd != next->cmd || req->rq_dev != next->rq_dev || req->nr_sectors + next->nr_sectors > max_sectors)
 		return;
 	req->bhtail->b_reqnext = next->bh;
 	req->bhtail = next->bhtail;
 	req->nr_sectors += next->nr_sectors;
-	req->nr_segments = total_segments;
 	next->rq_status = RQ_INACTIVE;
 	req->next = next->next;
 	wake_up (&wait_for_request);
@@ -347,25 +379,22 @@ void make_request(int major,int rw, struct buffer_head * bh)
 {
 	unsigned int sector, count;
 	struct request * req;
-	int rw_ahead, max_req, max_sectors, max_segments;
+	int rw_ahead, max_req, max_sectors;
+	unsigned long flags;
 
 	count = bh->b_size >> 9;
 	sector = bh->b_rsector;
 
 	/* Uhhuh.. Nasty dead-lock possible here.. */
-	if (buffer_locked(bh)) {
-#if 0
-		printk("make_request(): buffer already locked\n");
-#endif /* 0 */
+	if (buffer_locked(bh))
 		return;
-	}
 	/* Maybe the above fixes it, and maybe it doesn't boot. Life is interesting */
 
 	lock_buffer(bh);
 
 	if (blk_size[major])
-               if (blk_size[major][MINOR(bh->b_rdev)] < (sector + count)>>1) {
-			bh->b_state &= (1 << BH_Lock) | (1 << BH_FreeOnIO);
+		if (blk_size[major][MINOR(bh->b_rdev)] < (sector + count)>>1) {
+			bh->b_state &= (1 << BH_Lock);
                         /* This may well happen - the kernel calls bread()
                            without checking the size of the device, e.g.,
                            when mounting a device. */
@@ -375,8 +404,7 @@ void make_request(int major,int rw, struct buffer_head * bh)
                                kdevname(bh->b_rdev), rw,
                                (sector + count)>>1,
                                blk_size[major][MINOR(bh->b_rdev)]);
-			unlock_buffer(bh);
-			return;
+			goto end_io;
 		}
 
 	rw_ahead = 0;	/* normal case; gets changed below for READA/WRITEA */
@@ -385,13 +413,8 @@ void make_request(int major,int rw, struct buffer_head * bh)
 			rw_ahead = 1;
 			rw = READ;	/* drop into READ */
 		case READ:
-			if (buffer_uptodate(bh)) {
-#if 0
-				printk ("make_request(): buffer uptodate for READ\n");
-#endif /* 0 */
-				unlock_buffer(bh); /* Hmmph! Already have it */
-				return;
-			}
+			if (buffer_uptodate(bh)) /* Hmmph! Already have it */
+				goto end_io;
 			kstat.pgpgin++;
 			max_req = NR_REQUEST;	/* reads take precedence */
 			break;
@@ -399,13 +422,8 @@ void make_request(int major,int rw, struct buffer_head * bh)
 			rw_ahead = 1;
 			rw = WRITE;	/* drop into WRITE */
 		case WRITE:
-			if (!buffer_dirty(bh)) {
-#if 0
-				printk ("make_request(): buffer clean for WRITE\n");
-#endif /* 0 */
-				unlock_buffer(bh); /* Hmmph! Nothing to write */
-				return;
-			}
+			if (!buffer_dirty(bh))   /* Hmmph! Nothing to write */
+				goto end_io;
 			/* We don't allow the write-requests to fill up the
 			 * queue completely:  we want some room for reads,
 			 * as they take precedence. The last third of the
@@ -417,28 +435,31 @@ void make_request(int major,int rw, struct buffer_head * bh)
 		default:
 			printk(KERN_ERR "make_request: bad block dev cmd,"
                                " must be R/W/RA/WA\n");
-			unlock_buffer(bh);
-			return;
+			goto end_io;
 	}
 
 /* look for a free request. */
        /* Loop uses two requests, 1 for loop and 1 for the real device.
         * Cut max_req in half to avoid running out and deadlocking. */
-        if (major == LOOP_MAJOR)
+	 if ((major == LOOP_MAJOR) || (major == NBD_MAJOR))
 	     max_req >>= 1;
 
 	/*
 	 * Try to coalesce the new request with old requests
 	 */
 	max_sectors = get_max_sectors(bh->b_rdev);
-	max_segments = get_max_segments(bh->b_rdev);
 
-	cli();
-	req = blk_dev[major].current_request;
+	/*
+	 * Now we acquire the request spinlock, we have to be mega careful
+	 * not to schedule or do something nonatomic
+	 */
+	spin_lock_irqsave(&io_request_lock,flags);
+	req = *get_queue(bh->b_rdev);
 	if (!req) {
 		/* MD and loop can't handle plugging without deadlocking */
-		if (major != MD_MAJOR && major != LOOP_MAJOR)
-			plug_device(blk_dev + major);
+		if (major != MD_MAJOR && major != LOOP_MAJOR && 
+		    major != DDV_MAJOR && major != NBD_MAJOR)
+			plug_device(blk_dev + major); /* is atomic */
 	} else switch (major) {
 	     case IDE0_MAJOR:	/* same as HD_MAJOR */
 	     case IDE1_MAJOR:
@@ -447,6 +468,8 @@ void make_request(int major,int rw, struct buffer_head * bh)
 	     case IDE3_MAJOR:
 	     case IDE4_MAJOR:
 	     case IDE5_MAJOR:
+	     case ACSI_MAJOR:
+	     case MFM_ACORN_MAJOR:
 		/*
 		 * The scsi disk and cdrom drivers completely remove the request
 		 * from the queue when they start processing an entry.  For this
@@ -456,29 +479,22 @@ void make_request(int major,int rw, struct buffer_head * bh)
 		 * All other drivers need to jump over the first entry, as that
 		 * entry may be busy being processed and we thus can't change it.
 		 */
-	        req = req->next;
+		if (req == blk_dev[major].current_request)
+	        	req = req->next;
 		if (!req)
 			break;
 		/* fall through */
 
-	     case SCSI_DISK_MAJOR:
+	     case SCSI_DISK0_MAJOR:
+	     case SCSI_DISK1_MAJOR:
+	     case SCSI_DISK2_MAJOR:
+	     case SCSI_DISK3_MAJOR:
+	     case SCSI_DISK4_MAJOR:
+	     case SCSI_DISK5_MAJOR:
+	     case SCSI_DISK6_MAJOR:
+	     case SCSI_DISK7_MAJOR:
 	     case SCSI_CDROM_MAJOR:
-	     case DAC960_MAJOR+0:
-	     case DAC960_MAJOR+1:
-	     case DAC960_MAJOR+2:
-	     case DAC960_MAJOR+3:
-	     case DAC960_MAJOR+4:
-	     case DAC960_MAJOR+5:
-	     case DAC960_MAJOR+6:
-	     case DAC960_MAJOR+7:
-	     case COMPAQ_SMART2_MAJOR+0:
-	     case COMPAQ_SMART2_MAJOR+1:
-	     case COMPAQ_SMART2_MAJOR+2:
-	     case COMPAQ_SMART2_MAJOR+3:
-	     case COMPAQ_SMART2_MAJOR+4:
-	     case COMPAQ_SMART2_MAJOR+5:
-	     case COMPAQ_SMART2_MAJOR+6:
-	     case COMPAQ_SMART2_MAJOR+7:
+
 		do {
 			if (req->sem)
 				continue;
@@ -490,25 +506,13 @@ void make_request(int major,int rw, struct buffer_head * bh)
 				continue;
 			/* Can we add it to the end of this request? */
 			if (req->sector + req->nr_sectors == sector) {
-				if (req->bhtail->b_data + req->bhtail->b_size
-				    != bh->b_data) {
-					if (req->nr_segments < max_segments)
-						req->nr_segments++;
-					else continue;
-				}
 				req->bhtail->b_reqnext = bh;
 				req->bhtail = bh;
 			    	req->nr_sectors += count;
 				/* Can we now merge this req with the next? */
-				attempt_merge(req, max_sectors, max_segments);
+				attempt_merge(req, max_sectors);
 			/* or to the beginning? */
 			} else if (req->sector - count == sector) {
-				if (bh->b_data + bh->b_size
-				    != req->bh->b_data) {
-					if (req->nr_segments < max_segments)
-						req->nr_segments++;
-					else continue;
-				}
 			    	bh->b_reqnext = req->bh;
 			    	req->bh = bh;
 			    	req->buffer = bh->b_data;
@@ -519,21 +523,21 @@ void make_request(int major,int rw, struct buffer_head * bh)
 				continue;
 
 			mark_buffer_clean(bh);
-		    	sti();
+			spin_unlock_irqrestore(&io_request_lock,flags);
 		    	return;
+
 		} while ((req = req->next) != NULL);
 	}
 
 /* find an unused request. */
 	req = get_request(max_req, bh->b_rdev);
-	sti();
+
+	spin_unlock_irqrestore(&io_request_lock,flags);
 
 /* if no request available: if rw_ahead, forget it; otherwise try again blocking.. */
 	if (!req) {
-		if (rw_ahead) {
-			unlock_buffer(bh);
-			return;
-		}
+		if (rw_ahead)
+			goto end_io;
 		req = __get_request_wait(max_req, bh->b_rdev);
 	}
 
@@ -542,7 +546,6 @@ void make_request(int major,int rw, struct buffer_head * bh)
 	req->errors = 0;
 	req->sector = sector;
 	req->nr_sectors = count;
-	req->nr_segments = 1;
 	req->current_nr_sectors = count;
 	req->buffer = bh->b_data;
 	req->sem = NULL;
@@ -550,6 +553,10 @@ void make_request(int major,int rw, struct buffer_head * bh)
 	req->bhtail = bh;
 	req->next = NULL;
 	add_request(major+blk_dev,req);
+	return;
+
+end_io:
+	bh->b_end_io(bh, test_bit(BH_Uptodate, &bh->b_state));
 }
 
 /* This function can be used to request a number of buffers from a block
@@ -609,7 +616,7 @@ void ll_rw_block(int rw, int nr, struct buffer_head * bh[])
 				"Bad md_map in ll_rw_block\n");
 		        goto sorry;
 		}
-#endif /* CONFIG_BLK_DEV_MD */
+#endif
 	}
 
 	if ((rw == WRITE || rw == WRITEA) && is_read_only(bh[0]->b_dev)) {
@@ -626,7 +633,7 @@ void ll_rw_block(int rw, int nr, struct buffer_head * bh[])
 				md_make_request(MINOR (bh[i]->b_dev), rw, bh[i]);
 				continue;
 			}
-#endif /* CONFIG_BLK_DEV_MD */
+#endif
 			make_request(MAJOR(bh[i]->b_rdev), rw, bh[i]);
 		}
 	}
@@ -676,7 +683,7 @@ void ll_rw_swap_file(int rw, kdev_t dev, unsigned int *b, int nb, char *buf)
 	}
 	buffersize = PAGE_SIZE / nb;
 
-	if (major == LOOP_MAJOR)
+	if ((major == LOOP_MAJOR) || (major == NBD_MAJOR))
 	     max_req >>= 1;
 	for (j=0, i=0; i<nb;)
 	{
@@ -692,14 +699,15 @@ void ll_rw_swap_file(int rw, kdev_t dev, unsigned int *b, int nb, char *buf)
                                         "Bad md_map in ll_rw_swap_file\n");
 				return;
 			}
-#endif /* CONFIG_BLK_DEV_MD */
-
+#endif
+			
 			if (j == 0) {
 				req[j] = get_request_wait(max_req, rdev);
 			} else {
-				cli();
+				unsigned long flags;
+				spin_lock_irqsave(&io_request_lock,flags);
 				req[j] = get_request(max_req, rdev);
-				sti();
+				spin_unlock_irqrestore(&io_request_lock,flags);
 				if (req[j] == NULL)
 					break;
 			}
@@ -707,7 +715,6 @@ void ll_rw_swap_file(int rw, kdev_t dev, unsigned int *b, int nb, char *buf)
 			req[j]->errors = 0;
 			req[j]->sector = rsector;
 			req[j]->nr_sectors = buffersize >> 9;
-			req[j]->nr_segments = 1;
 			req[j]->current_nr_sectors = buffersize >> 9;
 			req[j]->buffer = buf;
 			req[j]->sem = &sem;
@@ -722,18 +729,75 @@ void ll_rw_swap_file(int rw, kdev_t dev, unsigned int *b, int nb, char *buf)
 		}
 	}
 }
+#ifdef CONFIG_STRAM_SWAP
+extern int stram_device_init( void );
+#endif
 
-int blk_dev_init(void)
+/*
+ * First step of what used to be end_request
+ *
+ * 0 means continue with end_that_request_last,
+ * 1 means we are done
+ */
+
+int 
+end_that_request_first( struct request *req, int uptodate, char *name ) 
+{
+	struct buffer_head * bh;
+	int nsect;
+
+	req->errors = 0;
+	if (!uptodate) {
+		printk("end_request: I/O error, dev %s (%s), sector %lu\n",
+			kdevname(req->rq_dev), name, req->sector);
+		if ((bh = req->bh) != NULL) {
+			nsect = bh->b_size >> 9;
+			req->nr_sectors--;
+			req->nr_sectors &= ~(nsect - 1);
+			req->sector += nsect;
+			req->sector &= ~(nsect - 1);
+		}
+	}
+
+	if ((bh = req->bh) != NULL) {
+		req->bh = bh->b_reqnext;
+		bh->b_reqnext = NULL;
+		bh->b_end_io(bh, uptodate);
+		if ((bh = req->bh) != NULL) {
+			req->current_nr_sectors = bh->b_size >> 9;
+			if (req->nr_sectors < req->current_nr_sectors) {
+				req->nr_sectors = req->current_nr_sectors;
+				printk("end_request: buffer-list destroyed\n");
+			}
+			req->buffer = bh->b_data;
+			return 1;
+		}
+	}
+	return 0;
+}
+
+void
+end_that_request_last( struct request *req ) 
+{
+	if (req->sem != NULL)
+		up(req->sem);
+	req->rq_status = RQ_INACTIVE;
+	wake_up(&wait_for_request);
+}
+
+__initfunc(int blk_dev_init(void))
 {
 	struct request * req;
 	struct blk_dev_struct *dev;
 
 	for (dev = blk_dev + MAX_BLKDEV; dev-- != blk_dev;) {
 		dev->request_fn      = NULL;
+		dev->queue           = NULL;
 		dev->current_request = NULL;
 		dev->plug.rq_status  = RQ_INACTIVE;
 		dev->plug.cmd        = -1;
 		dev->plug.next       = NULL;
+		dev->plug_tq.sync    = 0;
 		dev->plug_tq.routine = &unplug_device;
 		dev->plug_tq.data    = dev;
 	}
@@ -744,66 +808,106 @@ int blk_dev_init(void)
 		req->next = NULL;
 	}
 	memset(ro_bits,0,sizeof(ro_bits));
+	memset(max_readahead, 0, sizeof(max_readahead));
+	memset(max_sectors, 0, sizeof(max_sectors));
+#ifdef CONFIG_AMIGA_Z2RAM
+	z2_init();
+#endif
+#ifdef CONFIG_STRAM_SWAP
+	stram_device_init();
+#endif
 #ifdef CONFIG_BLK_DEV_RAM
 	rd_init();
-#endif /* CONFIG_BLK_DEV_RAM */
+#endif
 #ifdef CONFIG_BLK_DEV_LOOP
 	loop_init();
-#endif /* CONFIG_BLK_DEV_LOOP */
-#ifdef CONFIG_CDI_INIT
-	cdi_init();		/* this MUST precede ide_init */
-#endif /* CONFIG_CDI_INIT */
+#endif
+#ifdef CONFIG_ISP16_CDI
+	isp16_init();
+#endif CONFIG_ISP16_CDI
 #ifdef CONFIG_BLK_DEV_IDE
 	ide_init();		/* this MUST precede hd_init */
-#endif /* CONFIG_BLK_DEV_IDE */
+#endif
 #ifdef CONFIG_BLK_DEV_HD
 	hd_init();
-#endif /* CONFIG_BLK_DEV_HD */
+#endif
+#ifdef CONFIG_BLK_DEV_PS2
+	ps2esdi_init();
+#endif
 #ifdef CONFIG_BLK_DEV_XD
 	xd_init();
-#endif /* CONFIG_BLK_DEV_XD */
+#endif
+#ifdef CONFIG_BLK_DEV_MFM
+	mfm_init();
+#endif
 #ifdef CONFIG_PARIDE
-        { extern void paride_init(void); paride_init(); };
-#endif /* CONFIG_PARIDE */
+	{ extern void paride_init(void); paride_init(); };
+#endif
+#ifdef CONFIG_MAC_FLOPPY
+	swim3_init();
+#endif
+#ifdef CONFIG_AMIGA_FLOPPY
+	amiga_floppy_init();
+#endif
+#ifdef CONFIG_ATARI_FLOPPY
+	atari_floppy_init();
+#endif
 #ifdef CONFIG_BLK_DEV_FD
 	floppy_init();
-#else /* CONFIG_BLK_DEV_FD */
-#if defined(__i386__)	/* Do we even need this? */
+#else
+#if !defined (__mc68000__) && !defined(CONFIG_PMAC) && !defined(__sparc__)\
+    && !defined(CONFIG_APUS)
 	outb_p(0xc, 0x3f2);
-#endif /* defined(__i386__) */
-#endif /* !CONFIG_BLK_DEV_FD */
+#endif
+#endif
 #ifdef CONFIG_CDU31A
 	cdu31a_init();
-#endif /* CONFIG_CDU31A */
+#endif CONFIG_CDU31A
+#ifdef CONFIG_ATARI_ACSI
+	acsi_init();
+#endif CONFIG_ATARI_ACSI
 #ifdef CONFIG_MCD
 	mcd_init();
-#endif /* CONFIG_MCD */
+#endif CONFIG_MCD
 #ifdef CONFIG_MCDX
 	mcdx_init();
-#endif /* CONFIG_MCDX */
+#endif CONFIG_MCDX
 #ifdef CONFIG_SBPCD
 	sbpcd_init();
-#endif /* CONFIG_SBPCD */
+#endif CONFIG_SBPCD
 #ifdef CONFIG_AZTCD
         aztcd_init();
-#endif /* CONFIG_AZTCD */
+#endif CONFIG_AZTCD
 #ifdef CONFIG_CDU535
 	sony535_init();
-#endif /* CONFIG_CDU535 */
+#endif CONFIG_CDU535
 #ifdef CONFIG_GSCD
 	gscd_init();
-#endif /* CONFIG_GSCD */
+#endif CONFIG_GSCD
 #ifdef CONFIG_CM206
 	cm206_init();
-#endif /* CONFIG_CM206 */
+#endif
 #ifdef CONFIG_OPTCD
 	optcd_init();
-#endif /* CONFIG_OPTCD */
+#endif CONFIG_OPTCD
 #ifdef CONFIG_SJCD
 	sjcd_init();
-#endif /* CONFIG_SJCD */
+#endif CONFIG_SJCD
 #ifdef CONFIG_BLK_DEV_MD
 	md_init();
-#endif /* CONFIG_BLK_DEV_MD */
+#endif CONFIG_BLK_DEV_MD
+#ifdef CONFIG_APBLOCK
+	ap_init();
+#endif
+#ifdef CONFIG_DDV
+	ddv_init();
+#endif
+#ifdef CONFIG_BLK_DEV_NBD
+	nbd_init();
+#endif
 	return 0;
-}
+};
+
+EXPORT_SYMBOL(io_request_lock);
+EXPORT_SYMBOL(end_that_request_first);
+EXPORT_SYMBOL(end_that_request_last);

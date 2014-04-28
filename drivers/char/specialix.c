@@ -56,14 +56,14 @@
  *                Changed the specialix=... format to include interrupt.
  * Revision 1.7:  May 27 1997
  *                Made many more debug printk's a compile time option.
- * Revision 1.8:  Port to 2.1 kernel. -- Not here.
- *
- * Revision 1.9:  October 1 1998
- *                Support for the PCI version of the card.
+ * Revision 1.8:  Jul 1  1997
+ *                port to linux-2.1.43 kernel.
+ * Revision 1.9:  Oct 9  1998
+ *                Added stuff for the IO8+/PCI version. . 
  * 
  */
 
-#define VERSION "1.9"
+#define VERSION "1.8"
 
 
 /*
@@ -72,8 +72,9 @@
  * ../../Documentation/specialix.txt 
  */
 
+#include <linux/config.h>
 #include <linux/module.h>
-#include <linux/config.h> /* CONFIG_SPECIALIX_RTSCTS */
+
 #include <asm/io.h>
 #include <linux/kernel.h>
 #include <linux/sched.h>
@@ -89,7 +90,7 @@
 #include <linux/tqueue.h>
 #include <linux/version.h>
 #include <linux/pci.h>
-#include <linux/bios32.h>
+
 
 /* ************************************************************** */
 /* * This section can be removed when 2.0 becomes outdated....  * */
@@ -98,10 +99,10 @@
 #if LINUX_VERSION_CODE < 131328    /* Less than 2.1.0 */
 #define TWO_ZERO
 #else
-#if LINUX_VERSION_CODE < 131368   /* less than 2.1.40 */
+#if LINUX_VERSION_CODE < 131371   /* less than 2.1.43 */
 /* This has not been extensively tested yet. Sorry. */
-#warning "You're on your own between 2.1.0 and 2.1.40.... "
-#warning "Please use 2.1.40 or higher."
+#warning "You're on your own between 2.1.0 and 2.1.43.... "
+#warning "Please use a recent kernel."
 #endif
 #endif
 
@@ -326,28 +327,28 @@ extern inline void sx_wait_CCR_off(struct specialix_board  * bp)
 
 extern inline int sx_check_io_range(struct specialix_board * bp)
 {
-	return check_region (bp->base, 
-	               bp->flags&SX_BOARD_IS_PCI?SX_PCI_IO_SPACE:SX_IO_SPACE);
+	return check_region (bp->base, SX_IO_SPACE);
 }
 
 
 extern inline void sx_request_io_range(struct specialix_board * bp)
 {
-	request_region(bp->base,
-	               bp->flags&SX_BOARD_IS_PCI?SX_PCI_IO_SPACE:SX_IO_SPACE, 
+	request_region(bp->base, 
+	               bp->flags&SX_BOARD_IS_PCI?SX_PCI_IO_SPACE:SX_IO_SPACE,
 	               "specialix IO8+" );
 }
 
 
 extern inline void sx_release_io_range(struct specialix_board * bp)
 {
-	release_region(bp->base,
+	release_region(bp->base, 
 	               bp->flags&SX_BOARD_IS_PCI?SX_PCI_IO_SPACE:SX_IO_SPACE);
 }
 
 	
 /* Must be called with enabled interrupts */
-/* Ugly. Don't use this for anything else than initialization code */
+/* Ugly. Very ugly. Don't use this for anything else than initialization 
+   code */
 extern inline void sx_long_delay(unsigned long delay)
 {
 	unsigned long i;
@@ -951,7 +952,7 @@ void turn_ints_off (struct specialix_board *bp)
 void turn_ints_on (struct specialix_board *bp)
 {
 	if (bp->flags & SX_BOARD_IS_PCI) {
-		/* play with the PCI chip. See comment above */
+		/* play with the PCI chip. See comment above. */
 	}
 	(void) sx_in (bp, 0); /* Turn ON interrupts. */
 }
@@ -1410,7 +1411,7 @@ static int block_til_ready(struct tty_struct *tty, struct file * filp,
 		    !(port->flags & ASYNC_CLOSING) &&
 		    (do_clocal || CD))
 			break;
-		if (current->signal & ~current->blocked) {
+		if (signal_pending(current)) {
 			retval = -ERESTARTSYS;
 			break;
 		}
@@ -1550,8 +1551,7 @@ static void sx_close(struct tty_struct * tty, struct file * filp)
 		timeout = jiffies+HZ;
 		while(port->IER & IER_TXEMPTY) {
 			current->state = TASK_INTERRUPTIBLE;
-			current->timeout = jiffies + port->timeout;
-			schedule();
+			schedule_timeout(port->timeout);
 			if (jiffies > timeout) {
 				printk (KERN_INFO "Timeout waiting for close\n");
 				break;
@@ -1570,8 +1570,7 @@ static void sx_close(struct tty_struct * tty, struct file * filp)
 	if (port->blocked_open) {
 		if (port->close_delay) {
 			current->state = TASK_INTERRUPTIBLE;
-			current->timeout = jiffies + port->close_delay;
-			schedule();
+			schedule_timeout(port->close_delay);
 		}
 		wake_up_interruptible(&port->open_wait);
 	}
@@ -1876,7 +1875,7 @@ extern inline int sx_set_serial_info(struct specialix_port * port,
 	change_speed = ((port->flags & ASYNC_SPD_MASK) !=
 			(tmp.flags & ASYNC_SPD_MASK));
 	
-	if (!suser()) {
+	if (!capable(CAP_SYS_ADMIN)) {
 		if ((tmp.close_delay != port->close_delay) ||
 		    (tmp.closing_wait != port->closing_wait) ||
 		    ((tmp.flags & ~ASYNC_USR_MASK) !=
@@ -2167,7 +2166,7 @@ static void do_softint(void *private_)
 	if(!(tty = port->tty)) 
 		return;
 
-	if (clear_bit(RS_EVENT_WRITE_WAKEUP, &port->event)) {
+	if (test_and_clear_bit(RS_EVENT_WRITE_WAKEUP, &port->event)) {
 		if ((tty->flags & (1 << TTY_DO_WRITE_WAKEUP)) &&
 		    tty->ldisc.write_wakeup)
 			(tty->ldisc.write_wakeup)(tty);
@@ -2276,7 +2275,7 @@ static void sx_release_drivers(void)
 void specialix_setup(char *str, int * ints)
 {
 	int i;
-	
+        
 	for (i=0;i<SX_NBOARD;i++) {
 		sx_board[i].base = 0;
 	}
@@ -2297,10 +2296,6 @@ int specialix_init(void)
 {
 	int i;
 	int found = 0;
-#ifdef CONFIG_PCI
-	int pci_index;
-	unsigned char pci_bus, pci_device_fn;
-#endif
 
 	printk(KERN_INFO "sx: Specialix IO8+ driver v" VERSION ", (c) R.E.Wolff 1997/1998.\n");
 	printk(KERN_INFO "sx: derived from work (c) D.Gorodchanin 1994-1996.\n");
@@ -2318,32 +2313,31 @@ int specialix_init(void)
 			found++;
 
 #ifdef CONFIG_PCI
-	i=0;
-	pci_index = 0;
-	while ((i < SX_NBOARD) && (pci_index < 0xff)) {
-		unsigned char tbyte;
+	if (pci_present()) {
+		struct pci_dev *pdev = NULL;
 		unsigned int tint;
-		if (sx_board[i].flags & SX_BOARD_PRESENT) {
-			i++;
-			continue;
-		}
-		if (pcibios_find_device (PCI_VENDOR_ID_SPECIALIX, 
-		                         PCI_DEVICE_ID_SPECIALIX_IO8,
-		                         pci_index, &pci_bus, &pci_device_fn)
-		    != PCIBIOS_SUCCESSFUL)
-			break;
-		pcibios_read_config_byte(pci_bus, pci_device_fn,
-		                         PCI_INTERRUPT_LINE, &tbyte);
-		sx_board[i].irq = tbyte;
 
-		pcibios_read_config_dword(pci_bus, pci_device_fn,
-		                          PCI_BASE_ADDRESS_2, &tint);
-		/* Mask out the fact that it's IO-space */
-		sx_board[i].base = tint & PCI_BASE_ADDRESS_IO_MASK; 
-		sx_board[i].flags |= SX_BOARD_IS_PCI;
-		if (!sx_probe(&sx_board[i]))
-			found ++;
-		pci_index++;
+		i=0;
+		while (i <= SX_NBOARD) {
+			if (sx_board[i].flags & SX_BOARD_PRESENT) {
+				i++;
+				continue;
+			}
+			pdev = pci_find_device (PCI_VENDOR_ID_SPECIALIX, 
+			                        PCI_DEVICE_ID_SPECIALIX_IO8, 
+			                        pdev);
+			if (!pdev) break;
+
+			sx_board[i].irq = pdev->irq;
+
+			pci_read_config_dword(pdev, PCI_BASE_ADDRESS_2, &tint);
+			/* Mask out the fact that it's IO-space */
+			sx_board[i].base = tint & PCI_BASE_ADDRESS_IO_MASK; 
+
+			sx_board[i].flags |= SX_BOARD_IS_PCI;
+			if (!sx_probe(&sx_board[i]))
+				found ++;
+		}
 	}
 #endif
 

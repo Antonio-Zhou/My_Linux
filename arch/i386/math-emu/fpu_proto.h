@@ -15,7 +15,7 @@ extern int set_precision_flag(int flags);
 extern void set_precision_flag_up(void);
 extern void set_precision_flag_down(void);
 extern int denormal_operand(void);
-extern int arith_overflow(FPU_REG *dest, int sign);
+extern int arith_overflow(FPU_REG *dest);
 extern int arith_underflow(FPU_REG *dest);
 extern void FPU_stack_overflow(void);
 extern void FPU_stack_underflow(void);
@@ -52,19 +52,9 @@ extern void ffree_(void);
 extern void ffreep(void);
 extern void fst_i_(void);
 extern void fstp_i(void);
-
-extern void fcmovnb(void);
-extern void fcmovne(void);
-extern void fcmovnbe(void);
-extern void fcmovnu(void);
-extern void fcmovb(void);
-extern void fcmove(void);
-extern void fcmovbe(void);
-extern void fcmovu(void);
-
 /* fpu_entry.c */
 extern void math_emulate(long arg);
-extern void math_abort(unsigned int signal);
+extern void math_abort(struct info *info, unsigned int signal);
 /* fpu_etc.c */
 extern void FPU_etc(void);
 /* fpu_tags.c */
@@ -119,9 +109,6 @@ extern void fcompp(void);
 extern void fucom_(void);
 extern void fucomp(void);
 extern void fucompp(void);
-
-extern void fucomi(void);
-extern void fcomi(void);
 /* reg_constant.c */
 extern void fconst(void);
 /* reg_ld_str.c */

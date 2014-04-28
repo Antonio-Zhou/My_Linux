@@ -1,7 +1,7 @@
 /*
  *	ROSE release 003
  *
- *	This code REQUIRES 2.1.0 or higher/ NET3.029
+ *	This code REQUIRES 2.1.15 or higher/ NET3.038
  *
  *	This module:
  *		This module is free software; you can redistribute it and/or
@@ -11,6 +11,7 @@
  *
  *	History
  *	ROSE 001	Jonathan(G4KLX)	Cloned from rose_timer.c
+ *	ROSE 003	Jonathan(G4KLX)	New timer architecture.
  */
 
 #include <linux/config.h>
@@ -38,53 +39,64 @@
 #include <linux/firewall.h>
 #include <net/rose.h>
 
-static void rose_link_timer(unsigned long);
+static void rose_ftimer_expiry(unsigned long);
+static void rose_t0timer_expiry(unsigned long);
 
-/*
- *	Linux set timer
- */
-void rose_link_set_timer(struct rose_neigh *neigh)
+void rose_start_ftimer(struct rose_neigh *neigh)
 {
-	unsigned long flags;
+	del_timer(&neigh->ftimer);
 
-	save_flags(flags); cli();
-	del_timer(&neigh->timer);
-	restore_flags(flags);
+	neigh->ftimer.data     = (unsigned long)neigh;
+	neigh->ftimer.function = &rose_ftimer_expiry;
+	neigh->ftimer.expires  = jiffies + sysctl_rose_link_fail_timeout;
 
-	neigh->timer.data     = (unsigned long)neigh;
-	neigh->timer.function = &rose_link_timer;
-	neigh->timer.expires  = jiffies + 10;
-
-	add_timer(&neigh->timer);
+	add_timer(&neigh->ftimer);
 }
 
-/*
- *	ROSE Link Timer
- *
- *	This routine is called every 100ms. Decrement timer by this
- *	amount - if expired then process the event.
- */
-static void rose_link_timer(unsigned long param)
+void rose_start_t0timer(struct rose_neigh *neigh)
+{
+	del_timer(&neigh->t0timer);
+
+	neigh->t0timer.data     = (unsigned long)neigh;
+	neigh->t0timer.function = &rose_t0timer_expiry;
+	neigh->t0timer.expires  = jiffies + sysctl_rose_restart_request_timeout;
+
+	add_timer(&neigh->t0timer);
+}
+
+void rose_stop_ftimer(struct rose_neigh *neigh)
+{
+	del_timer(&neigh->ftimer);
+}
+
+void rose_stop_t0timer(struct rose_neigh *neigh)
+{
+	del_timer(&neigh->t0timer);
+}
+
+int rose_ftimer_running(struct rose_neigh *neigh)
+{
+	return (neigh->ftimer.prev != NULL || neigh->ftimer.next != NULL);
+}
+
+int rose_t0timer_running(struct rose_neigh *neigh)
+{
+	return (neigh->t0timer.prev != NULL || neigh->t0timer.next != NULL);
+}
+
+static void rose_ftimer_expiry(unsigned long param)
+{
+}
+
+static void rose_t0timer_expiry(unsigned long param)
 {
 	struct rose_neigh *neigh = (struct rose_neigh *)param;
 
-	if (neigh->ftimer > 0)
-		neigh->ftimer--;
+	rose_transmit_restart_request(neigh);
 
-	if (neigh->t0timer > 0) {
-		neigh->t0timer--;
+	neigh->dce_mode = 0;
 
-		if (neigh->t0timer == 0) {
-			rose_transmit_restart_request(neigh);
-			neigh->dce_mode = 0;
-			neigh->t0timer  = sysctl_rose_restart_request_timeout;
-		}
-	}
-
-	if (neigh->ftimer > 0 || neigh->t0timer > 0)
-		rose_link_set_timer(neigh);
-	else
-		del_timer(&neigh->timer);
+	rose_start_t0timer(neigh);
 }
 
 /*
@@ -134,34 +146,30 @@ void rose_link_rx_restart(struct sk_buff *skb, struct rose_neigh *neigh, unsigne
 
 	switch (frametype) {
 		case ROSE_RESTART_REQUEST:
-			/* Stop all existing routes on this link - F6FBB */
-			rose_clean_neighbour(neigh);
-			neigh->t0timer   = 0;
+			rose_stop_t0timer(neigh);
 			neigh->restarted = 1;
 			neigh->dce_mode  = (skb->data[3] == ROSE_DTE_ORIGINATED);
-			del_timer(&neigh->timer);
 			rose_transmit_restart_confirmation(neigh);
 			break;
 
 		case ROSE_RESTART_CONFIRMATION:
-			neigh->t0timer   = 0;
+			rose_stop_t0timer(neigh);
 			neigh->restarted = 1;
-			del_timer(&neigh->timer);
 			break;
 
 		case ROSE_DIAGNOSTIC:
-			printk(KERN_WARNING "rose: diagnostic #%d - %02X %02X %02X\n", skb->data[3], skb->data[4], skb->data[5], skb->data[6]);
+			printk(KERN_WARNING "ROSE: received diagnostic #%d - %02X %02X %02X\n", skb->data[3], skb->data[4], skb->data[5], skb->data[6]);
 			break;
 
 		default:
-			printk(KERN_WARNING "rose: received unknown %02X with LCI 000\n", frametype);
+			printk(KERN_WARNING "ROSE: received unknown %02X with LCI 000\n", frametype);
 			break;
 	}
 
 	if (neigh->restarted) {
 		while ((skbn = skb_dequeue(&neigh->queue)) != NULL)
 			if (!rose_send_frame(skbn, neigh))
-				kfree_skb(skbn, FREE_WRITE);
+				kfree_skb(skbn);
 	}
 }
 
@@ -179,8 +187,6 @@ void rose_transmit_restart_request(struct rose_neigh *neigh)
 	if ((skb = alloc_skb(len, GFP_ATOMIC)) == NULL)
 		return;
 
-	skb->free = 1;
-
 	skb_reserve(skb, AX25_BPQ_HEADER_LEN + AX25_MAX_HEADER_LEN);
 
 	dptr = skb_put(skb, ROSE_MIN_LEN + 3);
@@ -193,7 +199,7 @@ void rose_transmit_restart_request(struct rose_neigh *neigh)
 	*dptr++ = 0;
 
 	if (!rose_send_frame(skb, neigh))
-		kfree_skb(skb, FREE_WRITE);
+		kfree_skb(skb);
 }
 
 /*
@@ -210,8 +216,6 @@ void rose_transmit_restart_confirmation(struct rose_neigh *neigh)
 	if ((skb = alloc_skb(len, GFP_ATOMIC)) == NULL)
 		return;
 
-	skb->free = 1;
-
 	skb_reserve(skb, AX25_BPQ_HEADER_LEN + AX25_MAX_HEADER_LEN);
 
 	dptr = skb_put(skb, ROSE_MIN_LEN + 1);
@@ -222,7 +226,7 @@ void rose_transmit_restart_confirmation(struct rose_neigh *neigh)
 	*dptr++ = ROSE_RESTART_CONFIRMATION;
 
 	if (!rose_send_frame(skb, neigh))
-		kfree_skb(skb, FREE_WRITE);
+		kfree_skb(skb);
 }
 
 /*
@@ -239,8 +243,6 @@ void rose_transmit_diagnostic(struct rose_neigh *neigh, unsigned char diag)
 	if ((skb = alloc_skb(len, GFP_ATOMIC)) == NULL)
 		return;
 
-	skb->free = 1;
-
 	skb_reserve(skb, AX25_BPQ_HEADER_LEN + AX25_MAX_HEADER_LEN);
 
 	dptr = skb_put(skb, ROSE_MIN_LEN + 2);
@@ -252,7 +254,7 @@ void rose_transmit_diagnostic(struct rose_neigh *neigh, unsigned char diag)
 	*dptr++ = diag;
 
 	if (!rose_send_frame(skb, neigh))
-		kfree_skb(skb, FREE_WRITE);
+		kfree_skb(skb);
 }
 
 /*
@@ -263,25 +265,16 @@ void rose_transmit_clear_request(struct rose_neigh *neigh, unsigned int lci, uns
 {
 	struct sk_buff *skb;
 	unsigned char *dptr;
-	struct device *first;
 	int len;
 
 	len = AX25_BPQ_HEADER_LEN + AX25_MAX_HEADER_LEN + ROSE_MIN_LEN + 3;
-	
-	first = rose_dev_first();
-	if (first) {	
-		/* F6FBB - Adding facilities */
-		len += 6 + AX25_ADDR_LEN + 3 + ROSE_ADDR_LEN;
-	}
-	
+
 	if ((skb = alloc_skb(len, GFP_ATOMIC)) == NULL)
 		return;
 
-	skb->free = 1;
-
 	skb_reserve(skb, AX25_BPQ_HEADER_LEN + AX25_MAX_HEADER_LEN);
 
-	dptr = skb_put(skb, skb_tailroom(skb));
+	dptr = skb_put(skb, ROSE_MIN_LEN + 3);
 
 	*dptr++ = AX25_P_ROSE;
 	*dptr++ = ((lci >> 8) & 0x0F) | ROSE_GFI;
@@ -290,44 +283,20 @@ void rose_transmit_clear_request(struct rose_neigh *neigh, unsigned int lci, uns
 	*dptr++ = cause;
 	*dptr++ = diagnostic;
 
-	if (first) {	
-		/* F6FBB - Adding facilities */
-		*dptr++ = 0x00;		/* Address length */
-		*dptr++ = 4 + AX25_ADDR_LEN + 3 + ROSE_ADDR_LEN; /* Facilities length */
-		*dptr++ = 0;
-		*dptr++ = FAC_NATIONAL;
-		*dptr++ = FAC_NATIONAL_FAIL_CALL;
-		*dptr++ = AX25_ADDR_LEN;
-		memcpy(dptr, &rose_callsign, AX25_ADDR_LEN);
-		dptr += AX25_ADDR_LEN;
-		*dptr++ = FAC_NATIONAL_FAIL_ADD;
-		*dptr++ = ROSE_ADDR_LEN + 1;
-		*dptr++ = ROSE_ADDR_LEN * 2;
-		memcpy(dptr, first->dev_addr, ROSE_ADDR_LEN);
-	}
-	
 	if (!rose_send_frame(skb, neigh))
-		kfree_skb(skb, FREE_WRITE);
+		kfree_skb(skb);
 }
 
 void rose_transmit_link(struct sk_buff *skb, struct rose_neigh *neigh)
 {
-	rose_address *dest_addr;
 	unsigned char *dptr;
 
-#ifdef CONFIG_FIREWALL
-	if (call_fw_firewall(PF_ROSE, skb->dev, skb->data, NULL) != FW_ACCEPT)
+	if (call_fw_firewall(PF_ROSE, skb->dev, skb->data, NULL, &skb) != FW_ACCEPT) {
+		kfree_skb(skb);
 		return;
-#endif
+	}
 
-	/*
-	 * Check to see if its for us, if it is put it onto the loopback
-	 * queue.
-	 */
-        dest_addr = (rose_address *)(skb->data + 4);
-  
-	if ((neigh->dce_mode == -1) || (rose_dev_get(dest_addr) != NULL)) {
-		neigh->dce_mode = -1;
+	if (neigh->loopback) {
 		rose_loopback_queue(skb, neigh);
 		return;
 	}
@@ -340,15 +309,14 @@ void rose_transmit_link(struct sk_buff *skb, struct rose_neigh *neigh)
 
 	if (neigh->restarted) {
 		if (!rose_send_frame(skb, neigh))
-			kfree_skb(skb, FREE_WRITE);
+			kfree_skb(skb);
 	} else {
 		skb_queue_tail(&neigh->queue, skb);
 
-		if (neigh->t0timer == 0) {
+		if (!rose_t0timer_running(neigh)) {
 			rose_transmit_restart_request(neigh);
 			neigh->dce_mode = 0;
-			neigh->t0timer  = sysctl_rose_restart_request_timeout;
-			rose_link_set_timer(neigh);
+			rose_start_t0timer(neigh);
 		}
 	}
 }

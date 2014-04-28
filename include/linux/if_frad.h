@@ -27,6 +27,8 @@
 #include <linux/config.h>
 #include <linux/if.h>
 
+#if defined(CONFIG_DLCI) || defined(CONFIG_DLCI_MODULE)
+
 /* Structures and constants associated with the DLCI device driver */
 
 struct dlci_add
@@ -132,13 +134,13 @@ struct frhdr
    unsigned char  control	__attribute__((packed));
 
    /* for IP packets, this can be the NLPID */
-   unsigned char  pad		__attribute__((packed));
+   unsigned char  pad		__attribute__((packed)); 
 
    unsigned char  NLPID		__attribute__((packed));
    unsigned char  OUI[3]	__attribute__((packed));
    unsigned short PID		__attribute__((packed));
 
-#define IP_NLPID pad
+#define IP_NLPID pad 
 };
 
 /* see RFC 1490 for the definition of the following */
@@ -190,6 +192,10 @@ struct frad_local
 int register_frad(const char *name);
 int unregister_frad(const char *name);
 
-#endif /* __KERNEL__ */
+int (*dlci_ioctl_hook)(unsigned int, void *);
 
-#endif /* _FRAD_H_ */
+#endif __KERNEL__
+
+#endif /* CONFIG_DLCI || CONFIG_DLCI_MODULE */
+
+#endif

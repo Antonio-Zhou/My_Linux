@@ -1,7 +1,7 @@
 /*
  *	ROSE release 003
  *
- *	This code REQUIRES 2.1.0 or higher/ NET3.029
+ *	This code REQUIRES 2.1.15 or higher/ NET3.038
  *
  *	This module:
  *		This module is free software; you can redistribute it and/or
@@ -11,6 +11,8 @@
  *
  *	History
  *	ROSE 001	Jonathan(G4KLX)	Cloned from nr_subr.c
+ *	ROSE 002	Jonathan(G4KLX)	Centralised disconnect processing.
+ *	ROSE 003	Jonathan(G4KLX)	Added use count to neighbours.
  */
 
 #include <linux/config.h>
@@ -45,15 +47,10 @@ void rose_clear_queues(struct sock *sk)
 	struct sk_buff *skb;
 
 	while ((skb = skb_dequeue(&sk->write_queue)) != NULL)
-		kfree_skb(skb, FREE_WRITE);
+		kfree_skb(skb);
 
 	while ((skb = skb_dequeue(&sk->protinfo.rose->ack_queue)) != NULL)
-		kfree_skb(skb, FREE_WRITE);
-
-#ifdef M_BIT
-	while ((skb = skb_dequeue(&sk->protinfo.rose->frag_queue)) != NULL)
-		kfree_skb(skb, FREE_READ);
-#endif
+		kfree_skb(skb);
 }
 
 /*
@@ -69,12 +66,29 @@ void rose_frames_acked(struct sock *sk, unsigned short nr)
 	 * Remove all the ack-ed frames from the ack queue.
 	 */
 	if (sk->protinfo.rose->va != nr) {
-
 		while (skb_peek(&sk->protinfo.rose->ack_queue) != NULL && sk->protinfo.rose->va != nr) {
 			skb = skb_dequeue(&sk->protinfo.rose->ack_queue);
-			kfree_skb(skb, FREE_WRITE);
+			kfree_skb(skb);
 			sk->protinfo.rose->va = (sk->protinfo.rose->va + 1) % ROSE_MODULUS;
 		}
+	}
+}
+
+void rose_requeue_frames(struct sock *sk)
+{
+	struct sk_buff *skb, *skb_prev = NULL;
+
+	/*
+	 * Requeue all the un-ack-ed frames on the output queue to be picked
+	 * up by rose_kick. This arrangement handles the possibility of an
+	 * empty output queue.
+	 */
+	while ((skb = skb_dequeue(&sk->protinfo.rose->ack_queue)) != NULL) {
+		if (skb_prev == NULL)
+			skb_queue_head(&sk->write_queue, skb);
+		else
+			skb_append(skb_prev, skb);
+		skb_prev = skb;
 	}
 }
 
@@ -105,7 +119,7 @@ void rose_write_internal(struct sock *sk, int frametype)
 	struct sk_buff *skb;
 	unsigned char  *dptr;
 	unsigned char  lci1, lci2;
-	char buffer[250];
+	char buffer[100];
 	int len, faclen = 0;
 
 	len = AX25_BPQ_HEADER_LEN + AX25_MAX_HEADER_LEN + ROSE_MIN_LEN + 1;
@@ -113,38 +127,18 @@ void rose_write_internal(struct sock *sk, int frametype)
 	switch (frametype) {
 		case ROSE_CALL_REQUEST:
 			len   += 1 + ROSE_ADDR_LEN + ROSE_ADDR_LEN;
-			/* facilities */
 			faclen = rose_create_facilities(buffer, sk->protinfo.rose);
 			len   += faclen;
 			break;
 		case ROSE_CALL_ACCEPTED:
+		case ROSE_CLEAR_REQUEST:
 		case ROSE_RESET_REQUEST:
 			len   += 2;
-			break;
-		case ROSE_CLEAR_REQUEST:
-			len   += 3;
-			/* facilities */
-			faclen = 3 + 2 + AX25_ADDR_LEN + 3 + ROSE_ADDR_LEN;
-			dptr = buffer;
-			*dptr++ = faclen-1;	/* Facilities length */
-			*dptr++ = 0;
-			*dptr++ = FAC_NATIONAL;
-			*dptr++ = FAC_NATIONAL_FAIL_CALL;
-			*dptr++ = AX25_ADDR_LEN;
-			memcpy(dptr, &rose_callsign, AX25_ADDR_LEN);
-			dptr += AX25_ADDR_LEN;
-			*dptr++ = FAC_NATIONAL_FAIL_ADD;
-			*dptr++ = ROSE_ADDR_LEN + 1;
-			*dptr++ = ROSE_ADDR_LEN * 2;
-			memcpy(dptr, &sk->protinfo.rose->source_addr, ROSE_ADDR_LEN);
-			len   += faclen;
 			break;
 	}
 
 	if ((skb = alloc_skb(len, GFP_ATOMIC)) == NULL)
 		return;
-
-	skb->free = 1;
 
 	/*
 	 *	Space for AX.25 header and PID.
@@ -185,9 +179,6 @@ void rose_write_internal(struct sock *sk, int frametype)
 			*dptr++ = frametype;
 			*dptr++ = sk->protinfo.rose->cause;
 			*dptr++ = sk->protinfo.rose->diagnostic;
-			*dptr++ = 0x00;		/* Address length */
-			memcpy(dptr, buffer, faclen);
-			dptr   += faclen;
 			break;
 
 		case ROSE_RESET_REQUEST:
@@ -195,7 +186,7 @@ void rose_write_internal(struct sock *sk, int frametype)
 			*dptr++ = lci2;
 			*dptr++ = frametype;
 			*dptr++ = ROSE_DTE_ORIGINATED;
-			*dptr++ = 0x00;		/* Address length */
+			*dptr++ = 0;
 			break;
 
 		case ROSE_RR:
@@ -214,8 +205,8 @@ void rose_write_internal(struct sock *sk, int frametype)
 			break;
 
 		default:
-			printk(KERN_ERR "rose_write_internal: invalid frametype %02X\n", frametype);
-			kfree_skb(skb, FREE_WRITE);
+			printk(KERN_ERR "ROSE: rose_write_internal - invalid frametype %02X\n", frametype);
+			kfree_skb(skb);
 			return;
 	}
 
@@ -362,7 +353,7 @@ static int rose_parse_ccitt(unsigned char *p, struct rose_facilities_struct *fac
 					callsign[l - 10] = '\0';
 					facilities->source_call = *asc2ax(callsign);
 				}
-				else if (*p == FAC_CCITT_SRC_NSAP) {
+				if (*p == FAC_CCITT_SRC_NSAP) {
 					memcpy(&facilities->dest_addr, p + 7, ROSE_ADDR_LEN);
 					memcpy(callsign, p + 12, l - 10);
 					callsign[l - 10] = '\0';
@@ -393,24 +384,25 @@ int rose_parse_facilities(unsigned char *p, struct rose_facilities_struct *facil
 			p++;
 
 			switch (*p) {
-				case FAC_NATIONAL:		/* National 0x00 */
+				case FAC_NATIONAL:		/* National */
 					len = rose_parse_national(p + 1, facilities, facilities_len - 1);
 					facilities_len -= len + 1;
 					p += len + 1;
 					break;
 
-				case FAC_CCITT:		/* CCITT 0x0F */
+				case FAC_CCITT:		/* CCITT */
 					len = rose_parse_ccitt(p + 1, facilities, facilities_len - 1);
 					facilities_len -= len + 1;
 					p += len + 1;
 					break;
 
 				default:
+					printk(KERN_DEBUG "ROSE: rose_parse_facilities - unknown facilities family %02X\n", *p);
 					facilities_len--;
 					p++;
 					break;
 			}
-		} 
+		}
 		else break;	/* Error in facilities format */
 	}
 
@@ -421,8 +413,7 @@ int rose_create_facilities(unsigned char *buffer, rose_cb *rose)
 {
 	unsigned char *p = buffer + 1;
 	char *callsign;
-	int len;
-	int nb;
+	int len, nb;
 
 	/* National Facilities */
 	if (rose->rand != 0 || rose->source_ndigis == 1 || rose->dest_ndigis == 1) {
@@ -471,7 +462,6 @@ int rose_create_facilities(unsigned char *buffer, rose_cb *rose)
 			memcpy(p, &rose->dest_digis[0], AX25_ADDR_LEN);
 			p   += AX25_ADDR_LEN;
 		}
-		
 	}
 
 	*p++ = 0x00;
@@ -511,6 +501,32 @@ int rose_create_facilities(unsigned char *buffer, rose_cb *rose)
 	buffer[0] = len - 1;
 
 	return len;
+}
+
+void rose_disconnect(struct sock *sk, int reason, int cause, int diagnostic)
+{
+	rose_stop_timer(sk);
+	rose_stop_idletimer(sk);
+
+	rose_clear_queues(sk);
+
+	sk->protinfo.rose->lci   = 0;
+	sk->protinfo.rose->state = ROSE_STATE_0;
+
+	if (cause != -1)
+		sk->protinfo.rose->cause = cause;
+
+	if (diagnostic != -1)
+		sk->protinfo.rose->diagnostic = diagnostic;
+
+	sk->state     = TCP_CLOSE;
+	sk->err       = reason;
+	sk->shutdown |= SEND_SHUTDOWN;
+
+	if (!sk->dead)
+		sk->state_change(sk);
+
+	sk->dead  = 1;
 }
 
 #endif

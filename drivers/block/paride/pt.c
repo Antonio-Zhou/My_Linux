@@ -2,8 +2,6 @@
         pt.c    (c) 1998  Grant R. Guenther <grant@torque.net>
                           Under the terms of the GNU public license.
 
-	Special 2.0.35 version
-
         This is the high-level driver for parallel port ATAPI tape
         drives based on chips supported by the paride module.
 
@@ -106,7 +104,7 @@
 	
 */
 
-#define PT_VERSION      "1.04s"
+#define PT_VERSION      "1.04"
 #define PT_MAJOR	96
 #define PT_NAME		"pt"
 #define PT_UNITS	4
@@ -150,7 +148,7 @@ static int pt_drive_count;
 #include <linux/malloc.h>
 #include <linux/mtio.h>
 
-#include <asm/segment.h>
+#include <asm/uaccess.h>
 
 #ifndef MODULE
 
@@ -168,6 +166,14 @@ void pt_setup( char *str, int *ints)
 }
 
 #endif
+
+MODULE_PARM(verbose,"i");
+MODULE_PARM(major,"i");
+MODULE_PARM(name,"s");
+MODULE_PARM(drive0,"1-6i");
+MODULE_PARM(drive1,"1-6i");
+MODULE_PARM(drive2,"1-6i");
+MODULE_PARM(drive3,"1-6i");
 
 #include "paride.h"
 
@@ -208,10 +214,11 @@ void cleanup_module( void );
 static int pt_open(struct inode *inode, struct file *file);
 static int pt_ioctl(struct inode *inode,struct file *file,
                     unsigned int cmd, unsigned long arg);
-static void pt_release (struct inode *inode, struct file *file);
-static int pt_read(struct inode *inode, struct file *filp, char *buf, int count);
-static int pt_write(struct inode *inode, struct file *filp, 
-		const char *buf, int count);
+static int pt_release (struct inode *inode, struct file *file);
+static ssize_t pt_read(struct file * filp, char * buf, 
+                       size_t count, loff_t *ppos);
+static ssize_t pt_write(struct file * filp, const char * buf, 
+                        size_t count, loff_t *ppos);
 static int pt_detect(void);
 
 static int pt_identify (int unit);
@@ -262,6 +269,7 @@ static struct file_operations pt_fops = {
         pt_ioctl,               /* ioctl */
         NULL,                   /* mmap */
         pt_open,                /* open */
+	NULL,			/* flush */
         pt_release,             /* release */
         NULL,                   /* fsync */
         NULL,                   /* fasync */
@@ -429,7 +437,7 @@ static void pt_req_sense( int unit, int quiet )
         int     r;
 
         r = pt_command(unit,rs_cmd,16,"Request sense");
-        udelay(1000);
+        mdelay(1);
         if (!r) pt_completion(unit,buf,"Request sense");
 
 	PT.last_sense = -1;
@@ -446,7 +454,7 @@ static int pt_atapi( int unit, char * cmd, int dlen, char * buf, char * fun )
 {       int r;
 
         r = pt_command(unit,cmd,dlen,fun);
-        udelay(1000);
+        mdelay(1);
         if (!r) r = pt_completion(unit,buf,fun);
         if (r) pt_req_sense(unit,!fun);
         
@@ -456,8 +464,7 @@ static int pt_atapi( int unit, char * cmd, int dlen, char * buf, char * fun )
 static void pt_sleep( int cs )
 
 {       current->state = TASK_INTERRUPTIBLE;
-        current->timeout = jiffies + cs;
-        schedule();
+        schedule_timeout(cs);
 }
 
 static int pt_poll_dsc( int unit, int pause, int tmo, char *msg )
@@ -737,8 +744,8 @@ static int pt_ioctl(struct inode *inode,struct file *file,
 
         switch (cmd) {
 	    case MTIOCTOP:	
-		memcpy_fromfs((char *)&mtop, (char *)arg, 
-			           sizeof(struct mtop));
+		if (copy_from_user((char *)&mtop, (char *)arg, 
+			           sizeof(struct mtop))) return -EFAULT;
 
 		switch (mtop.mt_op) {
 
@@ -760,12 +767,12 @@ static int pt_ioctl(struct inode *inode,struct file *file,
 }
 
 
-static void pt_release (struct inode *inode, struct file *file)
+static int pt_release (struct inode *inode, struct file *file)
 {
         int	unit = DEVICE_NR(inode->i_rdev);
 
         if ((unit >= PT_UNITS) || (PT.access <= 0)) 
-                return;
+                return -EINVAL;
 
 	if (PT.flags & PT_WRITING) pt_write_fm(unit);
 
@@ -778,11 +785,15 @@ static void pt_release (struct inode *inode, struct file *file)
 
         MOD_DEC_USE_COUNT;
 
+	return 0;
+
 }
 
-static int pt_read(struct inode *inode, struct file *filp, char *buf, int count)
-
-{	int	unit = DEVICE_NR(inode->i_rdev);
+static ssize_t pt_read(struct file * filp, char * buf, 
+                       size_t count, loff_t *ppos)
+{
+  	struct 	inode *ino = filp->f_dentry->d_inode;
+	int	unit = DEVICE_NR(ino->i_rdev);
 	char	rd_cmd[12] = {ATAPI_READ_6,1,0,0,0,0,0,0,0,0,0,0};
 	int	k, n, r, p, s, t, b;
 
@@ -809,7 +820,7 @@ static int pt_read(struct inode *inode, struct file *filp, char *buf, int count)
 
 	    r = pt_command(unit,rd_cmd,n,"read");
 
-	    udelay(1000);
+	    mdelay(1);
 
 	    if (r) {
 	        pt_req_sense(unit,0);
@@ -848,7 +859,7 @@ static int pt_read(struct inode *inode, struct file *filp, char *buf, int count)
 		    n -= k;
 		    b = k;
 		    if (b > count) b = count;
-		    memcpy_tofs(buf+t,PT.bufptr,b);
+		    copy_to_user(buf+t,PT.bufptr,b);
 		    t += b;
 		    count -= b;
 	        }
@@ -862,10 +873,11 @@ static int pt_read(struct inode *inode, struct file *filp, char *buf, int count)
 
 }
 
-static int pt_write(struct inode *inode, struct file *filp, 
-			const char *buf, int count)
-
-{	int unit = DEVICE_NR(inode->i_rdev);
+static ssize_t pt_write(struct file * filp, const char * buf, 
+                        size_t count, loff_t *ppos)
+{
+        struct inode *ino = filp->f_dentry->d_inode;
+        int unit = DEVICE_NR(ino->i_rdev);
         char    wr_cmd[12] = {ATAPI_WRITE_6,1,0,0,0,0,0,0,0,0,0,0};
         int     k, n, r, p, s, t, b;
 
@@ -894,7 +906,7 @@ static int pt_write(struct inode *inode, struct file *filp,
 
             r = pt_command(unit,wr_cmd,n,"write");
 
-            udelay(1000);
+            mdelay(1);
 
             if (r) {			/* error delivering command only */
                 pt_req_sense(unit,0);
@@ -931,7 +943,7 @@ static int pt_write(struct inode *inode, struct file *filp,
 		    if (k > PT_BUFSIZE) k = PT_BUFSIZE;
 		    b = k;
 		    if (b > count) b = count;
-		    memcpy_fromfs(PT.bufptr,buf+t,b);
+		    copy_from_user(PT.bufptr,buf+t,b);
                     pi_write_block(PI,PT.bufptr,k);
 		    t += b;
 		    count -= b;

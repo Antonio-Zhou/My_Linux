@@ -12,7 +12,7 @@
 #include <linux/iso_fs.h>
 
 /*
- * Convert Unicode 16 to UTF8 or ascii.
+ * Convert Unicode 16 to UTF8 or ASCII.
  */
 static int
 uni16_to_x8(unsigned char *ascii, unsigned char *uni, int len,
@@ -79,8 +79,6 @@ get_joliet_filename(struct iso_directory_record * de, struct inode * inode,
 	unsigned char utf8;
 	struct nls_table *nls;
 	unsigned char len = 0;
-	int i;
-	char c;
 
 	utf8 = inode->i_sb->u.isofs_sb.s_utf8;
 	nls = inode->i_sb->u.isofs_sb.s_nls_iocharset;
@@ -97,20 +95,11 @@ get_joliet_filename(struct iso_directory_record * de, struct inode * inode,
 	}
 
 	/*
-	 * Windows doesn't like periods at the end of a name
+	 * Windows doesn't like periods at the end of a name,
+	 * so neither do we
 	 */
 	while (len >= 2 && (outname[len-1] == '.')) {
 		len--;
-	}
-
-        if (inode->i_sb->u.isofs_sb.s_name_check == 'r') {
-               for (i = 0; i < len; i++) {
-                       c = outname[i];
-                       /* lower case */
-                       if (c >= 'A' && c <= 'Z') c |= 0x20;
-                       if (c == ';') c = '.';
-                       outname[i] = c;
-               }
 	}
 
 	return len;

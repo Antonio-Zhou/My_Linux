@@ -1,8 +1,8 @@
-/* $Id: isdn_common.c,v 1.44.2.9 1998/11/06 00:07:25 fritz Exp $
+/* $Id: isdn_common.c,v 1.55 1998/02/23 23:35:32 fritz Exp $
 
  * Linux ISDN subsystem, common used functions (linklevel).
  *
- * Copyright 1994-1998  by Fritz Elfert (fritz@isdn4linux.de)
+ * Copyright 1994,95,96 by Fritz Elfert (fritz@wuemaus.franken.de)
  * Copyright 1995,96    Thinking Objects Software GmbH Wuerzburg
  * Copyright 1995,96    by Michael Hipp (Michael.Hipp@student.uni-tuebingen.de)
  *
@@ -21,42 +21,54 @@
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
  * $Log: isdn_common.c,v $
- * Revision 1.44.2.9  1998/11/06 00:07:25  fritz
- * Bugfix: loading additional driver while /dev/isdnctrl opened resulted in
- *         wrong module usage count after closing /dev/isdnctrl.
+ * Revision 1.55  1998/02/23 23:35:32  fritz
+ * Eliminated some compiler warnings.
  *
- * Revision 1.44.2.8  1998/11/05 22:11:43  fritz
- * Changed mail-address.
+ * Revision 1.54  1998/02/22 19:44:19  fritz
+ * Bugfixes and improvements regarding V.110, V.110 now running.
  *
- * Revision 1.44.2.7  1998/11/04 17:22:40  fritz
- * Replaced broken lowlevel-driver locking.
+ * Revision 1.53  1998/02/20 17:18:05  fritz
+ * Changes for recent kernels.
+ * Added common stub for sending commands to lowlevel.
+ * Added V.110.
  *
- * Revision 1.44.2.6  1998/11/03 14:30:56  fritz
- * Reduced stack usage in various functions.
- * Adapted statemachine to work with certified HiSax.
- * Some fixes in callback handling.
+ * Revision 1.52  1998/01/31 22:05:57  keil
+ * Lots of changes for X.25 support:
+ * Added generic support for connection-controlling encapsulation protocols
+ * Added support of BHUP status message
+ * Added support for additional p_encap X25IFACE
+ * Added support for kernels >= 2.1.72
  *
- * Revision 1.44.2.5  1998/10/25 15:48:04  fritz
- * Misc bugfixes and adaptions to new HiSax
+ * Revision 1.51  1998/01/31 19:17:29  calle
+ * merged changes from and for 2.1.82
  *
- * Revision 1.44.2.4  1998/06/07 13:47:44  fritz
- * ABC cleanup
+ * Revision 1.50  1997/12/12 06:12:11  calle
+ * moved EXPORT_SYMBOL(register_isdn) from isdn_syms.c to isdn_common.c
  *
- * Revision 1.44.2.2  1998/03/16 09:55:44  cal
- * Merged in TimRu-patches. Still needs validation in conjunction with ABC-patches.
+ * Revision 1.49  1997/11/06 17:16:52  keil
+ * Sync to 2.1.62 changes
  *
- * Revision 1.44.2.1  1998/03/07 23:35:03  detabc
- * added the abc-extension to the linux isdn-kernel
- * for kernel-version 2.0.xx
- * DO NOT USE FOR HIGHER KERNELS-VERSIONS
- * all source-lines are switched with the define  CONFIG_ISDN_WITH_ABC
- * (make config and answer ABC-Ext. Support (Compress,TCP-Keepalive ...) with yes
+ * Revision 1.48  1997/11/02 23:55:50  keil
+ * Andi Kleen's changes for 2.1.60
+ * without it the isdninfo and isdnctrl devices won't work
  *
- * you need also a modified isdnctrl-source the switch on the
- * features of the abc-extension
+ * Revision 1.47  1997/10/09 21:28:46  fritz
+ * New HL<->LL interface:
+ *   New BSENT callback with nr. of bytes included.
+ *   Sending without ACK.
+ *   New L1 error status (not yet in use).
+ *   Cleaned up obsolete structures.
+ * Implemented Cisco-SLARP.
+ * Changed local net-interface data to be dynamically allocated.
+ * Removed old 2.0 compatibility stuff.
  *
- * please use carefully. more detail will be follow.
- * thanks
+ * Revision 1.46  1997/10/01 09:20:27  fritz
+ * Removed old compatibility stuff for 2.0.X kernels.
+ * From now on, this code is for 2.1.X ONLY!
+ * Old stuff is still in the separate branch.
+ *
+ * Revision 1.45  1997/08/21 23:11:41  fritz
+ * Added changes for kernels >= 2.1.45
  *
  * Revision 1.44  1997/05/27 15:17:23  fritz
  * Added changes for recent 2.1.x kernels:
@@ -234,12 +246,9 @@
  */
 
 #include <linux/config.h>
-#define __NO_VERSION__
 #include <linux/module.h>
 #include <linux/version.h>
-#if (LINUX_VERSION_CODE >= 0x020117)
-#include <asm/poll.h>
-#endif
+#include <linux/poll.h>
 #include <linux/isdn.h>
 #include "isdn_common.h"
 #include "isdn_tty.h"
@@ -248,6 +257,7 @@
 #ifdef CONFIG_ISDN_AUDIO
 #include "isdn_audio.h"
 #endif
+#include "isdn_v110.h"
 #include "isdn_cards.h"
 
 /* Debugflags */
@@ -255,7 +265,7 @@
 
 isdn_dev *dev = (isdn_dev *) 0;
 
-static char *isdn_revision = "$Revision: 1.44.2.9 $";
+static char *isdn_revision = "$Revision: 1.55 $";
 
 extern char *isdn_net_revision;
 extern char *isdn_tty_revision;
@@ -269,45 +279,23 @@ extern char *isdn_audio_revision;
 #else
 static char *isdn_audio_revision = ": none $";
 #endif
+extern char *isdn_v110_revision;
 
 static int isdn_writebuf_stub(int, int, const u_char *, int, int);
 
 void
 isdn_MOD_INC_USE_COUNT(void)
 {
-	int i;
-
 	MOD_INC_USE_COUNT;
-	for (i = 0; i < dev->drivers; i++) {
-		isdn_ctrl cmd;
-
-		cmd.driver = i;
-		cmd.arg = 0;
-		cmd.command = ISDN_CMD_LOCK;
-		isdn_command(&cmd);
-		dev->drv[i]->locks++;
-	}
 }
 
 void
 isdn_MOD_DEC_USE_COUNT(void)
 {
-	int i;
-
 	MOD_DEC_USE_COUNT;
-	for (i = 0; i < dev->drivers; i++)
-		if (dev->drv[i]->locks > 0) {
-			isdn_ctrl cmd;
-
-			cmd.driver = i;
-			cmd.arg = 0;
-			cmd.command = ISDN_CMD_UNLOCK;
-			isdn_command(&cmd);
-			dev->drv[i]->locks--;
-		}
 }
 
-#if defined(ISDN_DEBUG_NET_DUMP) || defined(ISDN_DEBUG_MODEM_DUMP) || defined(CONFIG_ISDN_TIMEOUT_RULES)
+#if defined(ISDN_DEBUG_NET_DUMP) || defined(ISDN_DEBUG_MODEM_DUMP)
 void
 isdn_dumppkt(char *s, u_char * p, int len, int dumplen)
 {
@@ -320,13 +308,6 @@ isdn_dumppkt(char *s, u_char * p, int len, int dumplen)
 }
 #endif
 
-static __inline void
-isdn_trash_skb(struct sk_buff *skb, int rw)
-{
-	SET_SKB_FREE(skb);
-	kfree_skb(skb, rw);
-}
-
 static void
 isdn_free_queue(struct sk_buff_head *queue)
 {
@@ -337,7 +318,7 @@ isdn_free_queue(struct sk_buff_head *queue)
 	cli();
 	if (skb_queue_len(queue))
 		while ((skb = skb_dequeue(queue)))
-			isdn_trash_skb(skb, FREE_READ);
+			dev_kfree_skb(skb);
 	restore_flags(flags);
 }
 
@@ -354,6 +335,7 @@ isdn_dc2minor(int di, int ch)
 static int isdn_timer_cnt1 = 0;
 static int isdn_timer_cnt2 = 0;
 static int isdn_timer_cnt3 = 0;
+static int isdn_timer_cnt4 = 0;
 
 static void
 isdn_timer_funct(ulong dummy)
@@ -383,15 +365,19 @@ isdn_timer_funct(ulong dummy)
 				if (tf & ISDN_TIMER_MODEMRING)
 					isdn_tty_modem_ring();
 			}
+			if (++isdn_timer_cnt4 > ISDN_TIMER_KEEPINT) {
+				isdn_timer_cnt4 = 0;
+				if (tf & ISDN_TIMER_KEEPALIVE)
+					isdn_net_slarp_out();
+			}
 #if (defined CONFIG_ISDN_PPP) && (defined CONFIG_ISDN_MPP)
 			if (tf & ISDN_TIMER_IPPP)
 				isdn_ppp_timer_timeout();
 #endif
 		}
 	}
-
 	if (tf) {
-		unsigned long flags;
+		int flags;
 
 		save_flags(flags);
 		cli();
@@ -405,7 +391,7 @@ isdn_timer_funct(ulong dummy)
 void
 isdn_timer_ctrl(int tf, int onoff)
 {
-	unsigned long flags;
+	int flags;
 
 	save_flags(flags);
 	cli();
@@ -435,30 +421,70 @@ isdn_receive_skb_callback(int di, int channel, struct sk_buff *skb)
 	int i;
 
 	if ((i = isdn_dc2minor(di, channel)) == -1) {
-		isdn_trash_skb(skb, FREE_READ);
+		dev_kfree_skb(skb);
 		return;
 	}
 	/* Update statistics */
 	dev->ibytes[i] += skb->len;
+	
 	/* First, try to deliver data to network-device */
 	if (isdn_net_rcv_skb(i, skb))
 		return;
+
+	/* V.110 handling
+	 * makes sense for async streams only, so it is
+	 * called after possible net-device delivery.
+	 */
+	if (dev->v110[i]) {
+		atomic_inc(&dev->v110use[i]);
+		skb = isdn_v110_decode(dev->v110[i], skb);
+		atomic_dec(&dev->v110use[i]);
+		if (!skb)
+			return;
+	}
+
 	/* No network-device found, deliver to tty or raw-channel */
-	SET_SKB_FREE(skb);
 	if (skb->len) {
 		if (isdn_tty_rcv_skb(i, di, channel, skb))
 			return;
 		wake_up_interruptible(&dev->drv[di]->rcv_waitq[channel]);
 	} else
-		isdn_trash_skb(skb, FREE_READ);
+		dev_kfree_skb(skb);
 }
 
 /*
  * Intercept command from Linklevel to Lowlevel.
+ * If layer 2 protocol is V.110 and this is not supported by current
+ * lowlevel-driver, use driver's transparent mode and handle V.110 in
+ * linklevel instead.
  */
 int
 isdn_command(isdn_ctrl *cmd)
 {
+	if (cmd->command == ISDN_CMD_SETL2) {
+			int idx = isdn_dc2minor(cmd->driver, cmd->arg & 255);
+			unsigned long l2prot = (cmd->arg >> 8) & 255;
+			unsigned long features = (dev->drv[cmd->driver]->interface->features
+						 >> ISDN_FEATURE_L2_SHIFT) &
+				ISDN_FEATURE_L2_MASK;
+			unsigned long l2_feature = (1 << l2prot);
+
+			switch (l2prot) {
+				case ISDN_PROTO_L2_V11096:
+				case ISDN_PROTO_L2_V11019:
+				case ISDN_PROTO_L2_V11038:
+						/* If V.110 requested, but not supported by
+						 * HL-driver, set emulator-flag and change
+						 * Layer-2 to transparent
+						 */
+					if (!(features & l2_feature)) {
+						dev->v110emu[idx] = l2prot;
+						cmd->arg = (cmd->arg & 255) |
+								   (ISDN_PROTO_L2_TRANS << 8);
+					} else
+						dev->v110emu[idx] = 0;
+			}
+	}
 	return dev->drv[cmd->driver]->interface->command(cmd);
 }
 
@@ -496,6 +522,8 @@ isdn_status_callback(isdn_ctrl * c)
 				return 0;
 			if (isdn_net_stat_callback(i, c))
 				return 0;
+			if (isdn_v110_stat_callback(i, c))
+				return 0;
 			if (isdn_tty_stat_callback(i, c))
 				return 0;
 			wake_up_interruptible(&dev->drv[di]->snd_waitq[c->arg]);
@@ -508,13 +536,13 @@ isdn_status_callback(isdn_ctrl * c)
 			wake_up_interruptible(&dev->drv[di]->st_waitq);
 			break;
 		case ISDN_STAT_RUN:
-			dev->drv[di]->flags |= DRV_FLAG_RUNNING;
+			dev->drv[di]->running = 1;
 			for (i = 0; i < ISDN_MAX_CHANNELS; i++)
 				if (dev->drvmap[i] == di)
 					isdn_all_eaz(di, dev->chanmap[i]);
 			break;
 		case ISDN_STAT_STOP:
-			dev->drv[di]->flags &= ~DRV_FLAG_RUNNING;
+			dev->drv[di]->running = 0;
 			break;
 		case ISDN_STAT_ICALL:
 			if (i < 0)
@@ -530,15 +558,19 @@ isdn_status_callback(isdn_ctrl * c)
 				return 0;
 			}
 			/* Try to find a network-interface which will accept incoming call */
-			r = isdn_net_find_icall(di, c, i);
+			cmd.driver = di;
+			cmd.arg = c->arg;
+			cmd.command = ISDN_CMD_LOCK;
+			isdn_command(&cmd);
+			r = isdn_net_find_icall(di, c->arg, i, c->parm.setup);
 			switch (r) {
 				case 0:
 					/* No network-device replies.
 					 * Try ttyI's
 					 */
-					if (isdn_tty_find_icall(di, c) >= 0)
+					if (isdn_tty_find_icall(di, c->arg, c->parm.setup) >= 0)
 						retval = 1;
-					else if (dev->drv[di]->flags & DRV_FLAG_REJBUS) {
+					else if (dev->drv[di]->reject_bus) {
 						cmd.driver = di;
 						cmd.arg = c->arg;
 						cmd.command = ISDN_CMD_HANGUP;
@@ -571,6 +603,12 @@ isdn_status_callback(isdn_ctrl * c)
 					isdn_net_dial();
 					break;
 			}
+			if (retval != 1) {
+				cmd.driver = di;
+				cmd.arg = c->arg;
+				cmd.command = ISDN_CMD_UNLOCK;
+				isdn_command(&cmd);
+			}
 			return retval;
 			break;
 		case ISDN_STAT_CINF:
@@ -583,6 +621,7 @@ isdn_status_callback(isdn_ctrl * c)
 				return 0;
 			if (strcmp(c->parm.num, "0"))
 				isdn_net_stat_callback(i, c);
+			isdn_tty_stat_callback(i, c);
 			break;
 		case ISDN_STAT_CAUSE:
 #ifdef ISDN_DEBUG_STATCALLB
@@ -603,6 +642,7 @@ isdn_status_callback(isdn_ctrl * c)
 			/* Find any net-device, waiting for D-channel setup */
 			if (isdn_net_stat_callback(i, c))
 				break;
+			isdn_v110_stat_callback(i, c);
 			/* Find any ttyI, waiting for D-channel setup */
 			if (isdn_tty_stat_callback(i, c)) {
 				cmd.driver = di;
@@ -620,11 +660,12 @@ isdn_status_callback(isdn_ctrl * c)
 #endif
 			if (dev->global_flags & ISDN_GLOBAL_STOPPED)
 				return 0;
-			dev->drv[di]->online &= ~(1 << (c->arg));
+			dev->drv[di]->flags &= ~(1 << (c->arg));
 			isdn_info_update();
 			/* Signal hangup to network-devices */
 			if (isdn_net_stat_callback(i, c))
 				break;
+			isdn_v110_stat_callback(i, c);
 			if (isdn_tty_stat_callback(i, c))
 				break;
 			break;
@@ -637,10 +678,11 @@ isdn_status_callback(isdn_ctrl * c)
 			/* Signal B-channel-connect to network-devices */
 			if (dev->global_flags & ISDN_GLOBAL_STOPPED)
 				return 0;
-			dev->drv[di]->online |= (1 << (c->arg));
+			dev->drv[di]->flags |= (1 << (c->arg));
 			isdn_info_update();
 			if (isdn_net_stat_callback(i, c))
 				break;
+			isdn_v110_stat_callback(i, c);
 			if (isdn_tty_stat_callback(i, c))
 				break;
 			break;
@@ -652,8 +694,14 @@ isdn_status_callback(isdn_ctrl * c)
 #endif
 			if (dev->global_flags & ISDN_GLOBAL_STOPPED)
 				return 0;
-			dev->drv[di]->online &= ~(1 << (c->arg));
+			dev->drv[di]->flags &= ~(1 << (c->arg));
 			isdn_info_update();
+#ifdef CONFIG_ISDN_X25
+			/* Signal hangup to network-devices */
+			if (isdn_net_stat_callback(i, c))
+				break;
+#endif
+			isdn_v110_stat_callback(i, c);
 			if (isdn_tty_stat_callback(i, c))
 				break;
 			break;
@@ -696,6 +744,8 @@ isdn_status_callback(isdn_ctrl * c)
 			isdn_info_update();
 			restore_flags(flags);
 			return 0;
+		case ISDN_STAT_L1ERR:
+			break;
 		default:
 			return -1;
 	}
@@ -812,7 +862,7 @@ isdn_readbchan(int di, int channel, u_char * buf, u_char * fp, int len, int user
 			ISDN_AUDIO_SKB_LOCK(skb) = 0;
 #endif
 			skb = skb_dequeue(&dev->drv[di]->rpqueue[channel]);
-			isdn_trash_skb(skb, FREE_READ);
+			dev_kfree_skb(skb);
 		} else {
 			/* Not yet emptied this buff, so it
 			 * must stay in the queue, for further calls
@@ -877,7 +927,7 @@ isdn_statstr(void)
 	p = istatbuf + strlen(istatbuf);
 	for (i = 0; i < ISDN_MAX_DRIVERS; i++) {
 		if (dev->drv[i]) {
-			sprintf(p, "%ld ", dev->drv[i]->online);
+			sprintf(p, "%ld ", dev->drv[i]->flags);
 			p = istatbuf + strlen(istatbuf);
 		} else {
 			sprintf(p, "? ");
@@ -908,14 +958,17 @@ isdn_info_update(void)
 	wake_up_interruptible(&(dev->info_waitq));
 }
 
-static RWTYPE
-isdn_read(struct inode *inode, struct file *file, char *buf, RWARG count)
+static ssize_t
+isdn_read(struct file *file, char *buf, size_t count, loff_t * off)
 {
-	uint minor = MINOR(inode->i_rdev);
+	uint minor = MINOR(file->f_dentry->d_inode->i_rdev);
 	int len = 0;
 	ulong flags;
 	int drvidx;
 	int chidx;
+
+	if (off != &file->f_pos)
+		return -ESPIPE;
 
 	if (minor == ISDN_MINOR_STATUS) {
 		char *p;
@@ -929,7 +982,7 @@ isdn_read(struct inode *inode, struct file *file, char *buf, RWARG count)
 		if ((len = strlen(p)) <= count) {
 			if (copy_to_user(buf, p, len))
 				return -EFAULT;
-			file->f_pos += len;
+			*off += len;
 			return len;
 		}
 		return 0;
@@ -940,13 +993,13 @@ isdn_read(struct inode *inode, struct file *file, char *buf, RWARG count)
 		drvidx = isdn_minor2drv(minor);
 		if (drvidx < 0)
 			return -ENODEV;
-		if (!(dev->drv[drvidx]->flags & DRV_FLAG_RUNNING))
+		if (!dev->drv[drvidx]->running)
 			return -ENODEV;
 		chidx = isdn_minor2chan(minor);
 		save_flags(flags);
 		cli();
 		len = isdn_readbchan(drvidx, chidx, buf, 0, count, 1);
-		file->f_pos += len;
+		*off += len;
 		restore_flags(flags);
 		return len;
 	}
@@ -972,7 +1025,7 @@ isdn_read(struct inode *inode, struct file *file, char *buf, RWARG count)
 		else
 			dev->drv[drvidx]->stavail = 0;
 		restore_flags(flags);
-		file->f_pos += len;
+		*off += len;
 		return len;
 	}
 #ifdef CONFIG_ISDN_PPP
@@ -982,18 +1035,21 @@ isdn_read(struct inode *inode, struct file *file, char *buf, RWARG count)
 	return -ENODEV;
 }
 
-static LSTYPE
-isdn_lseek(struct inode *inode, struct file *file, LSARG offset, int orig)
+static loff_t
+isdn_lseek(struct file *file, loff_t offset, int orig)
 {
 	return -ESPIPE;
 }
 
-static RWTYPE
-isdn_write(struct inode *inode, struct file *file, const char *buf, RWARG count)
+static ssize_t
+isdn_write(struct file *file, const char *buf, size_t count, loff_t * off)
 {
-	uint minor = MINOR(inode->i_rdev);
+	uint minor = MINOR(file->f_dentry->d_inode->i_rdev);
 	int drvidx;
 	int chidx;
+
+	if (off != &file->f_pos)
+		return -ESPIPE;
 
 	if (minor == ISDN_MINOR_STATUS)
 		return -EPERM;
@@ -1003,7 +1059,7 @@ isdn_write(struct inode *inode, struct file *file, const char *buf, RWARG count)
 		drvidx = isdn_minor2drv(minor);
 		if (drvidx < 0)
 			return -ENODEV;
-		if (!(dev->drv[drvidx]->flags & DRV_FLAG_RUNNING))
+		if (!dev->drv[drvidx]->running)
 			return -ENODEV;
 		chidx = isdn_minor2chan(minor);
 		while (isdn_writebuf_stub(drvidx, chidx, buf, count, 1) != count)
@@ -1017,7 +1073,7 @@ isdn_write(struct inode *inode, struct file *file, const char *buf, RWARG count)
 		/*
 		 * We want to use the isdnctrl device to load the firmware
 		 *
-		if (!(dev->drv[drvidx]->flags & DRV_FLAG_RUNNING))
+		 if (!dev->drv[drvidx]->running)
 		 return -ENODEV;
 		 */
 		if (dev->drv[drvidx]->interface->writecmd)
@@ -1033,50 +1089,15 @@ isdn_write(struct inode *inode, struct file *file, const char *buf, RWARG count)
 	return -ENODEV;
 }
 
-#if (LINUX_VERSION_CODE < 0x020117)
-static int
-isdn_select(struct inode *inode, struct file *file, int type, select_table * st)
-{
-	uint minor = MINOR(inode->i_rdev);
-	int drvidx = isdn_minor2drv(minor - ISDN_MINOR_CTRL);
-
-	if (minor == ISDN_MINOR_STATUS) {
-		if (file->private_data)
-			return 1;
-		else {
-			if (st)
-				select_wait(&(dev->info_waitq), st);
-			return 0;
-		}
-	}
-	if (minor >= ISDN_MINOR_CTRL && minor <= ISDN_MINOR_CTRLMAX) {
-		if (drvidx < 0)
-			return -ENODEV;
-		if (dev->drv[drvidx]->stavail)
-			return 1;
-		else {
-			if (st)
-				select_wait(&(dev->drv[drvidx]->st_waitq), st);
-			return 0;
-		}
-		return 1;
-	}
-#ifdef CONFIG_ISDN_PPP
-	if (minor <= ISDN_MINOR_PPPMAX)
-		return (isdn_ppp_select(minor - ISDN_MINOR_PPP, file, type, st));
-#endif
-	return -ENODEV;
-}
-#else
 static unsigned int
 isdn_poll(struct file *file, poll_table * wait)
 {
 	unsigned int mask = 0;
-	unsigned int minor = MINOR(file->f_inode->i_rdev);
+	unsigned int minor = MINOR(file->f_dentry->d_inode->i_rdev);
 	int drvidx = isdn_minor2drv(minor - ISDN_MINOR_CTRL);
 
 	if (minor == ISDN_MINOR_STATUS) {
-		poll_wait(&(dev->info_waitq), wait);
+		poll_wait(file, &(dev->info_waitq), wait);
 		/* mask = POLLOUT | POLLWRNORM; */
 		if (file->private_data) {
 			mask |= POLLIN | POLLRDNORM;
@@ -1084,7 +1105,7 @@ isdn_poll(struct file *file, poll_table * wait)
 		return mask;
 	}
 	if (minor >= ISDN_MINOR_CTRL && minor <= ISDN_MINOR_CTRLMAX) {
-		poll_wait(&(dev->drv[drvidx]->st_waitq), wait);
+		poll_wait(file, &(dev->drv[drvidx]->st_waitq), wait);
 		if (drvidx < 0) {
 			printk(KERN_ERR "isdn_common: isdn_poll 1 -> what the hell\n");
 			return POLLERR;
@@ -1102,15 +1123,139 @@ isdn_poll(struct file *file, poll_table * wait)
 	printk(KERN_ERR "isdn_common: isdn_poll 2 -> what the hell\n");
 	return POLLERR;
 }
-#endif
 
-typedef union {
-	char name[10];
-	char bname[22];
-	isdn_ioctl_struct iocts;
-	isdn_net_ioctl_phone phone;
+static int
+isdn_set_allcfg(char *src)
+{
+	int ret;
+	int i;
+	ulong flags;
 	isdn_net_ioctl_cfg cfg;
-} iocpar_t;
+	isdn_net_ioctl_phone phone;
+
+	if ((ret = isdn_net_rmall()))
+		return ret;
+	if ((ret = copy_from_user((char *) &i, src, sizeof(int))))
+		 return ret;
+	save_flags(flags);
+	cli();
+	src += sizeof(int);
+	while (i) {
+		int phone_len;
+		int out_flag;
+
+		if ((ret = copy_from_user((char *) &cfg, src, sizeof(cfg)))) {
+			restore_flags(flags);
+			return ret;
+		}
+		src += sizeof(cfg);
+		if (!isdn_net_new(cfg.name, NULL)) {
+			restore_flags(flags);
+			return -EIO;
+		}
+		if ((ret = isdn_net_setcfg(&cfg))) {
+			restore_flags(flags);
+			return ret;
+		}
+		phone_len = out_flag = 0;
+		while (out_flag < 2) {
+			if ((ret = verify_area(VERIFY_READ, src, 1))) {
+				restore_flags(flags);
+				return ret;
+			}
+			get_user(phone.phone[phone_len], src++);
+			if ((phone.phone[phone_len] == ' ') ||
+			    (phone.phone[phone_len] == '\0')) {
+				if (phone_len) {
+					phone.phone[phone_len] = '\0';
+					strcpy(phone.name, cfg.name);
+					phone.outgoing = out_flag;
+					if ((ret = isdn_net_addphone(&phone))) {
+						restore_flags(flags);
+						return ret;
+					}
+				} else
+					out_flag++;
+				phone_len = 0;
+			}
+			if (++phone_len >= sizeof(phone.phone))
+				printk(KERN_WARNING
+				       "%s: IIOCSETSET phone number too long, ignored\n",
+				       cfg.name);
+		}
+		i--;
+	}
+	restore_flags(flags);
+	return 0;
+}
+
+static int
+isdn_get_allcfg(char *dest)
+{
+	isdn_net_ioctl_cfg cfg;
+	isdn_net_ioctl_phone phone;
+	isdn_net_dev *p;
+	ulong flags;
+	int ret;
+
+	/* Walk through netdev-chain */
+	save_flags(flags);
+	cli();
+	p = dev->netdev;
+	while (p) {
+		isdn_net_local *lp = p->local;
+
+		if ((ret = verify_area(VERIFY_WRITE, (void *) dest, sizeof(cfg) + 200))) {
+			restore_flags(flags);
+			return ret;
+		}
+		strcpy(cfg.eaz, lp->msn);
+		cfg.exclusive = lp->exclusive;
+		if (lp->pre_device >= 0) {
+			sprintf(cfg.drvid, "%s,%d", dev->drvid[lp->pre_device],
+				lp->pre_channel);
+		} else
+			cfg.drvid[0] = '\0';
+		cfg.onhtime = lp->onhtime;
+		cfg.charge = lp->charge;
+		cfg.l2_proto = lp->l2_proto;
+		cfg.l3_proto = lp->l3_proto;
+		cfg.p_encap = lp->p_encap;
+		cfg.secure = (lp->flags & ISDN_NET_SECURE) ? 1 : 0;
+		cfg.callback = (lp->flags & ISDN_NET_CALLBACK) ? 1 : 0;
+		cfg.chargehup = (lp->hupflags & ISDN_CHARGEHUP) ? 1 : 0;
+		cfg.ihup = (lp->hupflags & ISDN_INHUP) ? 1 : 0;
+		cfg.chargeint = lp->chargeint;
+		if (copy_to_user(dest, lp->name, 10)) {
+			restore_flags(flags);
+			return -EFAULT;
+		}
+		dest += 10;
+		if (copy_to_user(dest, (char *) &cfg, sizeof(cfg))) {
+			restore_flags(flags);
+			return -EFAULT;
+		}
+		dest += sizeof(cfg);
+		strcpy(phone.name, lp->name);
+		phone.outgoing = 0;
+		if ((ret = isdn_net_getphones(&phone, dest)) < 0) {
+			restore_flags(flags);
+			return ret;
+		} else
+			dest += ret;
+		strcpy(phone.name, lp->name);
+		phone.outgoing = 1;
+		if ((ret = isdn_net_getphones(&phone, dest)) < 0) {
+			restore_flags(flags);
+			return ret;
+		} else
+			dest += ret;
+		put_user(0, dest);
+		p = p->next;
+	}
+	restore_flags(flags);
+	return 0;
+}
 
 static int
 isdn_ioctl(struct inode *inode, struct file *file, uint cmd, ulong arg)
@@ -1123,15 +1268,19 @@ isdn_ioctl(struct inode *inode, struct file *file, uint cmd, ulong arg)
 	int i;
 	char *p;
 	char *s;
-	iocpar_t *iocpar;
+	union iocpar {
+		char name[10];
+		char bname[22];
+		isdn_ioctl_struct iocts;
+		isdn_net_ioctl_phone phone;
+		isdn_net_ioctl_cfg cfg;
+	} iocpar;
 
-#define name  iocpar->name
-#define bname iocpar->bname
-#define iocts iocpar->iocts
-#define phone iocpar->phone
-#define cfg   iocpar->cfg
-
-#define RETURN(r) ({ ret = r; kfree(iocpar); return ret; })
+#define name  iocpar.name
+#define bname iocpar.bname
+#define iocts iocpar.iocts
+#define phone iocpar.phone
+#define cfg   iocpar.cfg
 
 	if (minor == ISDN_MINOR_STATUS) {
 		switch (cmd) {
@@ -1165,131 +1314,127 @@ isdn_ioctl(struct inode *inode, struct file *file, uint cmd, ulong arg)
 		if (drvidx < 0)
 			return -ENODEV;
 		chidx = isdn_minor2chan(minor);
-		if (!(dev->drv[drvidx]->flags & DRV_FLAG_RUNNING))
+		if (!dev->drv[drvidx]->running)
 			return -ENODEV;
 		return 0;
 	}
 	if (minor <= ISDN_MINOR_CTRLMAX) {
-		if ((iocpar = (iocpar_t *)kmalloc(sizeof(iocpar_t), GFP_KERNEL)) == NULL) {
-			printk(KERN_WARNING "isdn: Out of memory in isdn_ioctl\n");
-			return -ENOMEM;
-		}
 		switch (cmd) {
 #ifdef CONFIG_NETDEVICES
 			case IIOCNETAIF:
 				/* Add a network-interface */
 				if (arg) {
 					if ((ret = copy_from_user(name, (char *) arg, sizeof(name))))
-						RETURN(ret);
+						return ret;
 					s = name;
 				} else
 					s = NULL;
 				if ((s = isdn_net_new(s, NULL))) {
 					if ((ret = copy_to_user((char *) arg, s, strlen(s) + 1)))
-						RETURN(ret);
-					RETURN(0);
+						return ret;
+					return 0;
 				} else
-					RETURN(-ENODEV);
+					return -ENODEV;
 			case IIOCNETASL:
 				/* Add a slave to a network-interface */
 				if (arg) {
 					if ((ret = copy_from_user(bname, (char *) arg, sizeof(bname) - 1)))
-						RETURN(ret);
+						return ret;
 				} else
-					RETURN(-EINVAL);
+					return -EINVAL;
 				if ((s = isdn_net_newslave(bname))) {
 					if ((ret = copy_to_user((char *) arg, s, strlen(s) + 1)))
-						RETURN(ret);
-					RETURN(0);
+						return ret;
+					return 0;
 				} else
-					RETURN(-ENODEV);
+					return -ENODEV;
 			case IIOCNETDIF:
 				/* Delete a network-interface */
 				if (arg) {
 					if ((ret = copy_from_user(name, (char *) arg, sizeof(name))))
-						RETURN(ret);
-					RETURN(isdn_net_rm(name));
+						return ret;
+					return isdn_net_rm(name);
 				} else
-					RETURN(-EINVAL);
+					return -EINVAL;
 			case IIOCNETSCF:
 				/* Set configurable parameters of a network-interface */
 				if (arg) {
 					if ((ret = copy_from_user((char *) &cfg, (char *) arg, sizeof(cfg))))
-						RETURN(ret);
-					RETURN(isdn_net_setcfg(&cfg));
+						return ret;
+					return isdn_net_setcfg(&cfg);
 				} else
-					RETURN(-EINVAL);
+					return -EINVAL;
 			case IIOCNETGCF:
 				/* Get configurable parameters of a network-interface */
 				if (arg) {
 					if ((ret = copy_from_user((char *) &cfg, (char *) arg, sizeof(cfg))))
-						RETURN(ret);
+						return ret;
 					if (!(ret = isdn_net_getcfg(&cfg))) {
 						if ((ret = copy_to_user((char *) arg, (char *) &cfg, sizeof(cfg))))
-							RETURN(ret);
+							return ret;
 					}
-					RETURN(ret);
+					return ret;
 				} else
-					RETURN(-EINVAL);
+					return -EINVAL;
 			case IIOCNETANM:
 				/* Add a phone-number to a network-interface */
 				if (arg) {
 					if ((ret = copy_from_user((char *) &phone, (char *) arg, sizeof(phone))))
-						RETURN(ret);
-					RETURN(isdn_net_addphone(&phone));
+						return ret;
+					return isdn_net_addphone(&phone);
 				} else
-					RETURN(-EINVAL);
+					return -EINVAL;
 			case IIOCNETGNM:
 				/* Get list of phone-numbers of a network-interface */
 				if (arg) {
 					if ((ret = copy_from_user((char *) &phone, (char *) arg, sizeof(phone))))
-						RETURN(ret);
-					RETURN(isdn_net_getphones(&phone, (char *) arg));
+						return ret;
+					return isdn_net_getphones(&phone, (char *) arg);
 				} else
-					RETURN(-EINVAL);
+					return -EINVAL;
 			case IIOCNETDNM:
 				/* Delete a phone-number of a network-interface */
 				if (arg) {
 					if ((ret = copy_from_user((char *) &phone, (char *) arg, sizeof(phone))))
-						RETURN(ret);
-					RETURN(isdn_net_delphone(&phone));
+						return ret;
+					return isdn_net_delphone(&phone);
 				} else
-					RETURN(-EINVAL);
+					return -EINVAL;
 			case IIOCNETDIL:
 				/* Force dialing of a network-interface */
 				if (arg) {
 					if ((ret = copy_from_user(name, (char *) arg, sizeof(name))))
-						RETURN(ret);
-					RETURN(isdn_net_force_dial(name));
+						return ret;
+					return isdn_net_force_dial(name);
 				} else
-					RETURN(-EINVAL);
+					return -EINVAL;
 #ifdef CONFIG_ISDN_PPP
 			case IIOCNETALN:
 				if (!arg)
-					RETURN(-EINVAL);
+					return -EINVAL;
 				if ((ret = copy_from_user(name, (char *) arg, sizeof(name))))
-					RETURN(ret);
-				RETURN(isdn_ppp_dial_slave(name));
+					return ret;
+				return isdn_ppp_dial_slave(name);
 			case IIOCNETDLN:
 				if (!arg)
-					RETURN(-EINVAL);
+					return -EINVAL;
 				if ((ret = copy_from_user(name, (char *) arg, sizeof(name))))
-					RETURN(ret);
-				RETURN(isdn_ppp_hangup_slave(name));
+					return ret;
+				return isdn_ppp_hangup_slave(name);
 #endif
 			case IIOCNETHUP:
 				/* Force hangup of a network-interface */
 				if (!arg)
-					RETURN(-EINVAL);
-			        if ((ret = copy_from_user(name, (char *) arg, sizeof(name))))
-			        	RETURN(ret);
-			        RETURN(isdn_net_force_hangup(name));
+					return -EINVAL;
+				if ((ret = copy_from_user(name, (char *) arg, sizeof(name))))
+					return ret;
+				return isdn_net_force_hangup(name);
 				break;
 #endif                          /* CONFIG_NETDEVICES */
 			case IIOCSETVER:
 				dev->net_verbose = arg;
 				printk(KERN_INFO "isdn: Verbose-Level is %d\n", dev->net_verbose);
-				RETURN(0);
+				return 0;
 			case IIOCSETGST:
 				if (arg)
 					dev->global_flags |= ISDN_GLOBAL_STOPPED;
@@ -1297,15 +1442,15 @@ isdn_ioctl(struct inode *inode, struct file *file, uint cmd, ulong arg)
 					dev->global_flags &= ~ISDN_GLOBAL_STOPPED;
 				printk(KERN_INFO "isdn: Global Mode %s\n",
 				       (dev->global_flags & ISDN_GLOBAL_STOPPED) ? "stopped" : "running");
-				RETURN(0);
+				return 0;
 			case IIOCSETBRJ:
 				drvidx = -1;
 				if (arg) {
 					int i;
 					char *p;
 					if ((ret = copy_from_user((char *) &iocts, (char *) arg,
-					      sizeof(isdn_ioctl_struct))))
-						RETURN(ret);
+					     sizeof(isdn_ioctl_struct))))
+						return ret;
 					if (strlen(iocts.drvid)) {
 						if ((p = strchr(iocts.drvid, ',')))
 							*p = 0;
@@ -1318,15 +1463,28 @@ isdn_ioctl(struct inode *inode, struct file *file, uint cmd, ulong arg)
 					}
 				}
 				if (drvidx == -1)
-					RETURN(-ENODEV);
-				if (iocts.arg)
-					dev->drv[drvidx]->flags |= DRV_FLAG_REJBUS;
+					return -ENODEV;
+				dev->drv[drvidx]->reject_bus = iocts.arg;
+				return 0;
+			case IIOCGETSET:
+				/* Get complete setup (all network-interfaces and profile-
+				   settings of all tty-devices */
+				if (arg)
+					return (isdn_get_allcfg((char *) arg));
 				else
-					dev->drv[drvidx]->flags &= ~DRV_FLAG_REJBUS;
-				RETURN(0);
+					return -EINVAL;
+				break;
+			case IIOCSETSET:
+				/* Set complete setup (all network-interfaces and profile-
+				   settings of all tty-devices */
+				if (arg)
+					return (isdn_set_allcfg((char *) arg));
+				else
+					return -EINVAL;
+				break;
 			case IIOCSIGPRF:
 				dev->profd = current;
-				RETURN(0);
+				return 0;
 				break;
 			case IIOCGETPRF:
 				/* Get all Modem-Profiles */
@@ -1337,20 +1495,20 @@ isdn_ioctl(struct inode *inode, struct file *file, uint cmd, ulong arg)
 					if ((ret = verify_area(VERIFY_WRITE, (void *) arg,
 					(ISDN_MODEM_ANZREG + ISDN_MSNLEN)
 						   * ISDN_MAX_CHANNELS)))
-						RETURN(ret);
+						return ret;
 
 					for (i = 0; i < ISDN_MAX_CHANNELS; i++) {
 						if (copy_to_user(p, dev->mdm.info[i].emu.profile,
 						      ISDN_MODEM_ANZREG))
-							RETURN(-EFAULT);
+							return -EFAULT;
 						p += ISDN_MODEM_ANZREG;
 						if (copy_to_user(p, dev->mdm.info[i].emu.pmsn, ISDN_MSNLEN))
-							RETURN(-EFAULT);
+							return -EFAULT;
 						p += ISDN_MSNLEN;
 					}
-					RETURN((ISDN_MODEM_ANZREG + ISDN_MSNLEN) * ISDN_MAX_CHANNELS);
+					return (ISDN_MODEM_ANZREG + ISDN_MSNLEN) * ISDN_MAX_CHANNELS;
 				} else
-					RETURN(-EINVAL);
+					return -EINVAL;
 				break;
 			case IIOCSETPRF:
 				/* Set all Modem-Profiles */
@@ -1361,20 +1519,20 @@ isdn_ioctl(struct inode *inode, struct file *file, uint cmd, ulong arg)
 					if ((ret = verify_area(VERIFY_READ, (void *) arg,
 					(ISDN_MODEM_ANZREG + ISDN_MSNLEN)
 						   * ISDN_MAX_CHANNELS)))
-						RETURN(ret);
+						return ret;
 
 					for (i = 0; i < ISDN_MAX_CHANNELS; i++) {
 						if ((ret = copy_from_user(dev->mdm.info[i].emu.profile, p,
-						      ISDN_MODEM_ANZREG)))
-							RETURN(ret);
+						     ISDN_MODEM_ANZREG)))
+							return ret;
 						p += ISDN_MODEM_ANZREG;
 						if ((ret = copy_from_user(dev->mdm.info[i].emu.pmsn, p, ISDN_MSNLEN)))
-							RETURN(ret);
+							return ret;
 						p += ISDN_MSNLEN;
 					}
-					RETURN(0);
+					return 0;
 				} else
-					RETURN(-EINVAL);
+					return -EINVAL;
 				break;
 			case IIOCSETMAP:
 			case IIOCGETMAP:
@@ -1384,7 +1542,7 @@ isdn_ioctl(struct inode *inode, struct file *file, uint cmd, ulong arg)
 					if ((ret = copy_from_user((char *) &iocts,
 							    (char *) arg,
 					     sizeof(isdn_ioctl_struct))))
-						RETURN(ret);
+						return ret;
 					if (strlen(iocts.drvid)) {
 						drvidx = -1;
 						for (i = 0; i < ISDN_MAX_DRIVERS; i++)
@@ -1395,7 +1553,7 @@ isdn_ioctl(struct inode *inode, struct file *file, uint cmd, ulong arg)
 					} else
 						drvidx = 0;
 					if (drvidx == -1)
-						RETURN(-ENODEV);
+						return -ENODEV;
 					if (cmd == IIOCSETMAP) {
 						int loop = 1;
 
@@ -1406,8 +1564,8 @@ isdn_ioctl(struct inode *inode, struct file *file, uint cmd, ulong arg)
 
 							while (1) {
 								if ((ret = verify_area(VERIFY_READ, p, 1)))
-									RETURN(ret);
-								GET_USER(bname[j], p++);
+									return ret;
+								get_user(bname[j], p++);
 								switch (bname[j]) {
 									case '\0':
 										loop = 0;
@@ -1434,31 +1592,31 @@ isdn_ioctl(struct inode *inode, struct file *file, uint cmd, ulong arg)
 								dev->drv[drvidx]->msn2eaz[i] : "-",
 								(i < 9) ? "," : "\0");
 							if ((ret = copy_to_user(p, bname, strlen(bname) + 1)))
-								RETURN(ret);
+								return ret;
 							p += strlen(bname);
 						}
 					}
-					RETURN(0);
+					return 0;
 				} else
-					RETURN(-EINVAL);
+					return -EINVAL;
 			case IIOCDBGVAR:
 				if (arg) {
 					if ((ret = copy_to_user((char *) arg, (char *) &dev, sizeof(ulong))))
-						RETURN(ret);
-					RETURN(0);
+						return ret;
+					return 0;
 				} else
-					RETURN(-EINVAL);
+					return -EINVAL;
 				break;
 			default:
 				if ((cmd & IIOCDRVCTL) == IIOCDRVCTL)
 					cmd = ((cmd >> _IOC_NRSHIFT) & _IOC_NRMASK) & ISDN_DRVIOCTL_MASK;
 				else
-					RETURN(-EINVAL);
+					return -EINVAL;
 				if (arg) {
 					int i;
 					char *p;
 					if ((ret = copy_from_user((char *) &iocts, (char *) arg, sizeof(isdn_ioctl_struct))))
-						RETURN(ret);
+						return ret;
 					if (strlen(iocts.drvid)) {
 						if ((p = strchr(iocts.drvid, ',')))
 							*p = 0;
@@ -1471,10 +1629,10 @@ isdn_ioctl(struct inode *inode, struct file *file, uint cmd, ulong arg)
 					} else
 						drvidx = 0;
 					if (drvidx == -1)
-						RETURN(-ENODEV);
+						return -ENODEV;
 					if ((ret = verify_area(VERIFY_WRITE, (void *) arg,
 					     sizeof(isdn_ioctl_struct))))
-						RETURN(ret);
+						return ret;
 					c.driver = drvidx;
 					c.command = ISDN_CMD_IOCTL;
 					c.arg = cmd;
@@ -1482,10 +1640,10 @@ isdn_ioctl(struct inode *inode, struct file *file, uint cmd, ulong arg)
 					ret = isdn_command(&c);
 					memcpy((char *) &iocts.arg, c.parm.num, sizeof(ulong));
 					if ((copy_to_user((char *) arg, &iocts, sizeof(isdn_ioctl_struct))))
-						RETURN(-EFAULT);
-					RETURN(ret);
+						return -EFAULT;
+					return ret;
 				} else
-					RETURN(-EINVAL);
+					return -EINVAL;
 		}
 	}
 #ifdef CONFIG_ISDN_PPP
@@ -1499,8 +1657,6 @@ isdn_ioctl(struct inode *inode, struct file *file, uint cmd, ulong arg)
 #undef iocts
 #undef phone
 #undef cfg
-
-#undef RETURN
 }
 
 /*
@@ -1514,6 +1670,7 @@ isdn_open(struct inode *ino, struct file *filep)
 	uint minor = MINOR(ino->i_rdev);
 	int drvidx;
 	int chidx;
+	isdn_ctrl c;
 
 	if (minor == ISDN_MINOR_STATUS) {
 		infostruct *p;
@@ -1536,42 +1693,48 @@ isdn_open(struct inode *ino, struct file *filep)
 		if (drvidx < 0)
 			return -ENODEV;
 		chidx = isdn_minor2chan(minor);
-		if (!(dev->drv[drvidx]->flags & DRV_FLAG_RUNNING))
+		if (!dev->drv[drvidx]->running)
 			return -ENODEV;
-		if (!(dev->drv[drvidx]->online & (1 << chidx)))
+		if (!(dev->drv[drvidx]->flags & (1 << chidx)))
 			return -ENODEV;
-		isdn_MOD_INC_USE_COUNT();
+		c.command = ISDN_CMD_LOCK;
+		c.driver = drvidx;
+		isdn_command(&c);
+		MOD_INC_USE_COUNT;
 		return 0;
 	}
 	if (minor <= ISDN_MINOR_CTRLMAX) {
 		drvidx = isdn_minor2drv(minor - ISDN_MINOR_CTRL);
 		if (drvidx < 0)
 			return -ENODEV;
-		isdn_MOD_INC_USE_COUNT();
+		c.command = ISDN_CMD_LOCK;
+		c.driver = drvidx;
+		MOD_INC_USE_COUNT;
+		isdn_command(&c);
 		return 0;
 	}
 #ifdef CONFIG_ISDN_PPP
 	if (minor <= ISDN_MINOR_PPPMAX) {
 		int ret;
 		if (!(ret = isdn_ppp_open(minor - ISDN_MINOR_PPP, filep)))
-			isdn_MOD_INC_USE_COUNT();
+			MOD_INC_USE_COUNT;
 		return ret;
 	}
 #endif
 	return -ENODEV;
 }
 
-static CLOSETYPE
+static int
 isdn_close(struct inode *ino, struct file *filep)
 {
 	uint minor = MINOR(ino->i_rdev);
+	int drvidx;
+	isdn_ctrl c;
 
+	MOD_DEC_USE_COUNT;
 	if (minor == ISDN_MINOR_STATUS) {
 		infostruct *p = dev->infochain;
 		infostruct *q = NULL;
-
-
-		MOD_DEC_USE_COUNT;
 		while (p) {
 			if (p->private == (char *) &(filep->private_data)) {
 				if (q)
@@ -1579,27 +1742,39 @@ isdn_close(struct inode *ino, struct file *filep)
 				else
 					dev->infochain = (infostruct *) (p->next);
 				kfree(p);
-				return CLOSEVAL;
+				return 0;
 			}
 			q = p;
 			p = (infostruct *) (p->next);
 		}
 		printk(KERN_WARNING "isdn: No private data while closing isdnctrl\n");
-		return CLOSEVAL;
+		return 0;
 	}
-	isdn_MOD_DEC_USE_COUNT();
-	if (minor < ISDN_MINOR_CTRL)
-		return CLOSEVAL;
+	if (minor < ISDN_MINOR_CTRL) {
+		drvidx = isdn_minor2drv(minor);
+		if (drvidx < 0)
+			return 0;
+		c.command = ISDN_CMD_UNLOCK;
+		c.driver = drvidx;
+		isdn_command(&c);
+		return 0;
+	}
 	if (minor <= ISDN_MINOR_CTRLMAX) {
+		drvidx = isdn_minor2drv(minor - ISDN_MINOR_CTRL);
+		if (drvidx < 0)
+			return 0;
 		if (dev->profd == current)
 			dev->profd = NULL;
-		return CLOSEVAL;
+		c.command = ISDN_CMD_UNLOCK;
+		c.driver = drvidx;
+		isdn_command(&c);
+		return 0;
 	}
 #ifdef CONFIG_ISDN_PPP
 	if (minor <= ISDN_MINOR_PPPMAX)
 		isdn_ppp_release(minor - ISDN_MINOR_PPP, filep);
 #endif
-	return CLOSEVAL;
+	return 0;
 }
 
 static struct file_operations isdn_fops =
@@ -1608,14 +1783,11 @@ static struct file_operations isdn_fops =
 	isdn_read,
 	isdn_write,
 	NULL,                   /* isdn_readdir */
-#if (LINUX_VERSION_CODE < 0x020117)
-	isdn_select,            /* isdn_select */
-#else
 	isdn_poll,              /* isdn_poll */
-#endif
 	isdn_ioctl,             /* isdn_ioctl */
 	NULL,                   /* isdn_mmap */
 	isdn_open,
+	NULL,			/* flush */
 	isdn_close,
 	NULL                    /* fsync */
 };
@@ -1639,6 +1811,8 @@ isdn_map_eaz2msn(char *msn, int di)
  * Find an unused ISDN-channel, whose feature-flags match the
  * given L2- and L3-protocols.
  */
+#define L2V (~(ISDN_FEATURE_L2_V11096|ISDN_FEATURE_L2_V11019|ISDN_FEATURE_L2_V11038))
+
 int
 isdn_get_free_channel(int usage, int l2_proto, int l3_proto, int pre_dev
 		      ,int pre_chan)
@@ -1646,10 +1820,18 @@ isdn_get_free_channel(int usage, int l2_proto, int l3_proto, int pre_dev
 	int i;
 	ulong flags;
 	ulong features;
+	ulong vfeatures;
+	isdn_ctrl cmd;
 
 	save_flags(flags);
 	cli();
-	features = (1 << l2_proto) | (0x100 << l3_proto);
+	features = ((1 << l2_proto) | (0x10000 << l3_proto));
+	vfeatures = (((1 << l2_proto) | (0x10000 << l3_proto)) &
+		     ~(ISDN_FEATURE_L2_V11096|ISDN_FEATURE_L2_V11019|ISDN_FEATURE_L2_V11038));
+	/* If Layer-2 protocol is V.110, accept drivers with
+	 * transparent feature even if these don't support V.110
+	 * because we can emulate this in linklevel.
+	 */
 	for (i = 0; i < ISDN_MAX_CHANNELS; i++)
 		if (USG_NONE(dev->usage[i]) &&
 		    (dev->drvmap[i] != -1)) {
@@ -1657,12 +1839,18 @@ isdn_get_free_channel(int usage, int l2_proto, int l3_proto, int pre_dev
 			if ((dev->usage[i] & ISDN_USAGE_EXCLUSIVE) &&
 			((pre_dev != d) || (pre_chan != dev->chanmap[i])))
 				continue;
-			if (dev->drv[d]->flags & DRV_FLAG_RUNNING) {
-				if ((dev->drv[d]->interface->features & features) == features) {
+			if ((dev->drv[d]->running)) {
+				if (((dev->drv[d]->interface->features & features) == features) ||
+				    (((dev->drv[d]->interface->features & vfeatures) == vfeatures) &&
+				     (dev->drv[d]->interface->features & ISDN_FEATURE_L2_TRANS))) {
 					if ((pre_dev < 0) || (pre_chan < 0)) {
 						dev->usage[i] &= ISDN_USAGE_EXCLUSIVE;
 						dev->usage[i] |= usage;
 						isdn_info_update();
+						cmd.driver = d;
+						cmd.arg = 0;
+						cmd.command = ISDN_CMD_LOCK;
+						isdn_command(&cmd);
 						restore_flags(flags);
 						return i;
 					} else {
@@ -1670,6 +1858,10 @@ isdn_get_free_channel(int usage, int l2_proto, int l3_proto, int pre_dev
 							dev->usage[i] &= ISDN_USAGE_EXCLUSIVE;
 							dev->usage[i] |= usage;
 							isdn_info_update();
+							cmd.driver = d;
+							cmd.arg = 0;
+							cmd.command = ISDN_CMD_LOCK;
+							isdn_command(&cmd);
 							restore_flags(flags);
 							return i;
 						}
@@ -1705,12 +1897,11 @@ isdn_free_channel(int di, int ch, int usage)
 			isdn_free_queue(&dev->drv[di]->rpqueue[ch]);
 			cmd.driver = di;
 			cmd.arg = ch;
-			cmd.command = ISDN_CMD_HANGUP;
+			cmd.command = ISDN_CMD_UNLOCK;
 			restore_flags(flags);
 			isdn_command(&cmd);
 			return;
 		}
-	printk(KERN_DEBUG "Unmatched free_channel d=%d c=%d u=%d\n", di, ch, usage);
 	restore_flags(flags);
 }
 
@@ -1737,31 +1928,6 @@ isdn_unexclusive_channel(int di, int ch)
 }
 
 /*
- * receive callback handler for drivers not supporting sk_buff's.
- * Parameters:
- *
- * di      = Driver-Index.
- * channel = Number of B-Channel (0...)
- * buf     = pointer to packet-data
- * len     = Length of packet-data
- *
- */
-static void
-isdn_receive_callback(int drvidx, int chan, u_char * buf, int len)
-{
-	struct sk_buff *skb;
-
-	if (dev->global_flags & ISDN_GLOBAL_STOPPED)
-		return;
-	skb = dev_alloc_skb(len);
-	if (skb) {
-		memcpy(skb_put(skb, len), buf, len);
-		isdn_receive_skb_callback(drvidx, chan, skb);
-	} else
-		printk(KERN_WARNING "isdn: rcv alloc_skb failed, packet dropped.\n");
-}
-
-/*
  *  writebuf replacement for SKB_ABLE drivers
  */
 static int
@@ -1769,66 +1935,77 @@ isdn_writebuf_stub(int drvidx, int chan, const u_char * buf, int len,
 		   int user)
 {
 	int ret;
+	int hl = dev->drv[drvidx]->interface->hl_hdrlen;
+	struct sk_buff *skb = alloc_skb(hl + len, GFP_ATOMIC);
 
-	if (dev->drv[drvidx]->interface->writebuf)
-		ret = dev->drv[drvidx]->interface->writebuf(drvidx, chan, buf,
-							    len, user);
-	else {
-		struct sk_buff *skb;
+	if (!skb)
+		return 0;
+	skb_reserve(skb, hl);
+	if (user)
+		copy_from_user(skb_put(skb, len), buf, len);
+	else
+		memcpy(skb_put(skb, len), buf, len);
 
-		skb = alloc_skb(dev->drv[drvidx]->interface->hl_hdrlen + len,
-				GFP_ATOMIC);
-		if (skb == NULL)
-			return 0;
-
-		skb_reserve(skb, dev->drv[drvidx]->interface->hl_hdrlen);
-		SET_SKB_FREE(skb);
-
-		if (user)
-			copy_from_user(skb_put(skb, len), buf, len);
-		else
-			memcpy(skb_put(skb, len), buf, len);
-
-		ret = dev->drv[drvidx]->interface->writebuf_skb(drvidx,
-							      chan, skb);
-		if (ret <= 0)
-			kfree_skb(skb, FREE_WRITE);
-	}
+	ret = dev->drv[drvidx]->interface->writebuf_skb(drvidx, chan, 1, skb);
+	if (ret <= 0)
+		dev_kfree_skb(skb);
 	if (ret > 0)
 		dev->obytes[isdn_dc2minor(drvidx, chan)] += ret;
 	return ret;
 }
 
 /*
- * writebuf_skb replacement for NON SKB_ABLE drivers
- * If lowlevel-device does not support supports skbufs, use
- * standard send-routine, else sind directly.
- *
  * Return: length of data on success, -ERRcode on failure.
  */
-
 int
-isdn_writebuf_skb_stub(int drvidx, int chan, struct sk_buff *skb)
+isdn_writebuf_skb_stub(int drvidx, int chan, int ack, struct sk_buff *skb)
 {
 	int ret;
-	int len = skb->len;     /* skb pointer no longer valid after free */
+	struct sk_buff *nskb = NULL;
+	int v110_ret = skb->len;
+	int idx = isdn_dc2minor(drvidx, chan);
 
-	if (dev->drv[drvidx]->interface->writebuf_skb)
-		ret = dev->drv[drvidx]->interface->
-		    writebuf_skb(drvidx, chan, skb);
-	else {
-		if ((ret = dev->drv[drvidx]->interface->
-		  writebuf(drvidx, chan, skb->data, skb->len, 0)) == len)
-			dev_kfree_skb(skb, FREE_WRITE);
-	}
-	if (ret > 0)
-		dev->obytes[isdn_dc2minor(drvidx, chan)] += len;
+	if (dev->v110[idx]) {
+		atomic_inc(&dev->v110use[idx]);
+		nskb = isdn_v110_encode(dev->v110[idx], skb);
+		atomic_dec(&dev->v110use[idx]);
+		if (!nskb)
+			return 0;
+		v110_ret = *((int *)nskb->data);
+		skb_pull(nskb, sizeof(int));
+		if (!nskb->len) {
+			dev_kfree_skb(nskb);
+			dev_kfree_skb(skb);
+			return v110_ret;
+		}
+		/* V.110 must always be acknowledged */
+		ack = 1;
+		ret = dev->drv[drvidx]->interface->writebuf_skb(drvidx, chan, ack, nskb);
+	} else
+		ret = dev->drv[drvidx]->interface->writebuf_skb(drvidx, chan, ack, skb);
+	if (ret > 0) {
+		dev->obytes[idx] += ret;
+		if (dev->v110[idx]) {
+			atomic_inc(&dev->v110use[idx]);
+			dev->v110[idx]->skbuser++;
+			atomic_dec(&dev->v110use[idx]);
+			dev_kfree_skb(skb);
+			/* For V.110 return unencoded data length */
+			ret = v110_ret;
+			if (ret == skb->len)
+				dev_kfree_skb(skb);
+		}
+	} else
+		if (dev->v110[idx])
+			dev_kfree_skb(nskb);
 	return ret;
 }
 
 /*
  * Low-level-driver registration
  */
+
+EXPORT_SYMBOL(register_isdn);
 
 int
 register_isdn(isdn_if * i)
@@ -1851,7 +2028,7 @@ register_isdn(isdn_if * i)
 		       ISDN_MAX_CHANNELS);
 		return 0;
 	}
-	if ((!i->writebuf_skb) && (!i->writebuf)) {
+	if (!i->writebuf_skb) {
 		printk(KERN_WARNING "register_isdn: No write routine given.\n");
 		return 0;
 	}
@@ -1906,11 +2083,12 @@ register_isdn(isdn_if * i)
 	}
 	memset((char *) d->snd_waitq, 0, sizeof(struct wait_queue *) * n);
 	d->channels = n;
+	d->loaded = 1;
 	d->maxbufsize = i->maxbufsize;
 	d->pktcount = 0;
 	d->stavail = 0;
-	d->flags = DRV_FLAG_LOADED;
-	d->online = 0;
+	d->running = 0;
+	d->flags = 0;
 	d->interface = i;
 	for (drvidx = 0; drvidx < ISDN_MAX_DRIVERS; drvidx++)
 		if (!dev->drv[drvidx])
@@ -1918,7 +2096,6 @@ register_isdn(isdn_if * i)
 	i->channels = drvidx;
 
 	i->rcvcallb_skb = isdn_receive_skb_callback;
-	i->rcvcallb = isdn_receive_callback;
 	i->statcallb = isdn_status_callback;
 	if (!strlen(i->id))
 		sprintf(i->id, "line%d", drvidx);
@@ -1977,11 +2154,7 @@ int
 isdn_init(void)
 {
 	int i;
-	char irev[50];
-	char trev[50];
-	char nrev[50];
-	char prev[50];
-	char arev[50];
+	char tmprev[50];
 
 	sti();
 	if (!(dev = (isdn_dev *) kmalloc(sizeof(isdn_dev), GFP_KERNEL))) {
@@ -2025,18 +2198,18 @@ isdn_init(void)
 	}
 #endif                          /* CONFIG_ISDN_PPP */
 
-	isdn_export_syms();
-
-	strcpy(irev, isdn_revision);
-	strcpy(trev, isdn_tty_revision);
-	strcpy(nrev, isdn_net_revision);
-	strcpy(prev, isdn_ppp_revision);
-	strcpy(arev, isdn_audio_revision);
-	printk(KERN_NOTICE "ISDN subsystem Rev: %s/", isdn_getrev(irev));
-	printk("%s/", isdn_getrev(trev));
-	printk("%s/", isdn_getrev(nrev));
-	printk("%s/", isdn_getrev(prev));
-	printk("%s", isdn_getrev(arev));
+	strcpy(tmprev, isdn_revision);
+	printk(KERN_NOTICE "ISDN subsystem Rev: %s/", isdn_getrev(tmprev));
+	strcpy(tmprev, isdn_tty_revision);
+	printk("%s/", isdn_getrev(tmprev));
+	strcpy(tmprev, isdn_net_revision);
+	printk("%s/", isdn_getrev(tmprev));
+	strcpy(tmprev, isdn_ppp_revision);
+	printk("%s/", isdn_getrev(tmprev));
+	strcpy(tmprev, isdn_audio_revision);
+	printk("%s/", isdn_getrev(tmprev));
+	strcpy(tmprev, isdn_v110_revision);
+	printk("%s", isdn_getrev(tmprev));
 
 #ifdef MODULE
 	printk(" loaded\n");
@@ -2055,7 +2228,7 @@ isdn_init(void)
 void
 cleanup_module(void)
 {
-	unsigned long flags;
+	int flags;
 	int i;
 
 #ifdef CONFIG_ISDN_PPP

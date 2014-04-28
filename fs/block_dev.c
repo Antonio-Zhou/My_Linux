@@ -4,15 +4,11 @@
  *  Copyright (C) 1991, 1992  Linus Torvalds
  */
 
-#include <linux/errno.h>
-#include <linux/sched.h>
-#include <linux/kernel.h>
+#include <linux/mm.h>
 #include <linux/locks.h>
 #include <linux/fcntl.h>
-#include <linux/mm.h>
 
-#include <asm/segment.h>
-#include <asm/system.h>
+#include <asm/uaccess.h>
 
 extern int *blk_size[];
 extern int *blksize_size[];
@@ -20,16 +16,17 @@ extern int *blksize_size[];
 #define MAX_BUF_PER_PAGE (PAGE_SIZE / 512)
 #define NBUF 64
 
-int block_write(struct inode * inode, struct file * filp,
-	const char * buf, int count)
+ssize_t block_write(struct file * filp, const char * buf,
+		    size_t count, loff_t *ppos)
 {
-	int blocksize, blocksize_bits, i, buffercount,write_error;
-	int block, blocks;
+	struct inode * inode = filp->f_dentry->d_inode;
+	ssize_t blocksize, blocksize_bits, i, buffercount, write_error;
+	ssize_t block, blocks;
 	loff_t offset;
-	int chars;
-	int written = 0, retval = 0;
+	ssize_t chars;
+	ssize_t written = 0;
 	struct buffer_head * bhlist[NBUF];
-	unsigned int size;
+	size_t size;
 	kdev_t dev;
 	struct buffer_head * bh, *bufferlist[NBUF];
 	register char * p;
@@ -49,18 +46,16 @@ int block_write(struct inode * inode, struct file * filp,
 		i >>= 1;
 	}
 
-	block = filp->f_pos >> blocksize_bits;
-	offset = filp->f_pos & (blocksize-1);
+	block = *ppos >> blocksize_bits;
+	offset = *ppos & (blocksize-1);
 
 	if (blk_size[MAJOR(dev)])
 		size = ((loff_t) blk_size[MAJOR(dev)][MINOR(dev)] << BLOCK_SIZE_BITS) >> blocksize_bits;
 	else
 		size = INT_MAX;
 	while (count>0) {
-		if (block >= size) {
-			retval = -ENOSPC;
-			goto cleanup;
-		}
+		if (block >= size)
+			return written ? written : -ENOSPC;
 		chars = blocksize - offset;
 		if (chars > count)
 			chars=count;
@@ -92,8 +87,7 @@ int block_write(struct inode * inode, struct file * filp,
 		      bhlist[i] = getblk (dev, block+i, blocksize);
 		      if(!bhlist[i]){
 			while(i >= 0) brelse(bhlist[i--]);
-			retval= -EIO;
-			goto cleanup;
+			return written ? written : -EIO;
 		      };
 		    };
 		    ll_rw_block(READ, blocks, bhlist);
@@ -104,16 +98,14 @@ int block_write(struct inode * inode, struct file * filp,
 		};
 #endif
 		block++;
-		if (!bh) {
-			retval = -EIO;
-			goto cleanup;
-		}
+		if (!bh)
+			return written ? written : -EIO;
 		p = offset + bh->b_data;
 		offset = 0;
-		filp->f_pos += chars;
+		*ppos += chars;
 		written += chars;
 		count -= chars;
-		memcpy_fromfs(p,buf,chars);
+		copy_from_user(p,buf,chars);
 		p += chars;
 		buf += chars;
 		mark_buffer_uptodate(bh, 1);
@@ -135,7 +127,6 @@ int block_write(struct inode * inode, struct file * filp,
 		if(write_error)
 			break;
 	}
-	cleanup:
 	if ( buffercount ){
 		ll_rw_block(WRITE, buffercount, bufferlist);
 		for(i=0; i<buffercount; i++){
@@ -145,21 +136,20 @@ int block_write(struct inode * inode, struct file * filp,
 			brelse(bufferlist[i]);
 		}
 	}		
-	if(!retval)
-		filp->f_reada = 1;
+	filp->f_reada = 1;
 	if(write_error)
 		return -EIO;
-	return written ? written : retval;
+	return written;
 }
 
-int block_read(struct inode * inode, struct file * filp,
-	char * buf, int count)
+ssize_t block_read(struct file * filp, char * buf, size_t count, loff_t *ppos)
 {
-	unsigned int block;
+	struct inode * inode = filp->f_dentry->d_inode;
+	size_t block;
 	loff_t offset;
-	int blocksize;
-	int blocksize_bits, i;
-	unsigned int blocks, rblocks, left;
+	ssize_t blocksize;
+	ssize_t blocksize_bits, i;
+	size_t blocks, rblocks, left;
 	int bhrequest, uptodate;
 	struct buffer_head ** bhb, ** bhe;
 	struct buffer_head * buflist[NBUF];
@@ -167,7 +157,7 @@ int block_read(struct inode * inode, struct file * filp,
 	unsigned int chars;
 	loff_t size;
 	kdev_t dev;
-	int read;
+	ssize_t read;
 
 	dev = inode->i_rdev;
 	blocksize = BLOCK_SIZE;
@@ -180,7 +170,7 @@ int block_read(struct inode * inode, struct file * filp,
 		i >>= 1;
 	}
 
-	offset = filp->f_pos;
+	offset = *ppos;
 	if (blk_size[MAJOR(dev)])
 		size = (loff_t) blk_size[MAJOR(dev)][MINOR(dev)] << BLOCK_SIZE_BITS;
 	else
@@ -268,11 +258,11 @@ int block_read(struct inode * inode, struct file * filp,
 				chars = left;
 			else
 				chars = blocksize - offset;
-			filp->f_pos += chars;
+			*ppos += chars;
 			left -= chars;
 			read += chars;
 			if (*bhe) {
-				memcpy_tofs(buf,offset+(*bhe)->b_data,chars);
+				copy_to_user(buf,offset+(*bhe)->b_data,chars);
 				brelse(*bhe);
 				buf += chars;
 			} else {
@@ -297,7 +287,12 @@ int block_read(struct inode * inode, struct file * filp,
 	return read;
 }
 
-int block_fsync(struct inode *inode, struct file *filp)
+/*
+ *	Filp may be NULL when we are called by an msync of a vma
+ *	since the vma has no handle.
+ */
+ 
+int block_fsync(struct file *filp, struct dentry *dentry)
 {
-	return fsync_dev (inode->i_rdev);
+	return fsync_dev(dentry->d_inode->i_rdev);
 }

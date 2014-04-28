@@ -180,6 +180,7 @@ extern inline void raise_dtr(struct isi_port * port)
 	InterruptTheCard(base);
 	port->status |= ISI_DTR;
 }
+
 extern inline void drop_dtr(struct isi_port * port)
 {	
 	struct isi_board * card = port->card;
@@ -298,3 +299,4 @@ extern inline void kill_queue(struct isi_port * port, short queue)
 #endif	/*	__KERNEL__	*/
 
 #endif	/*	ISICOM_H	*/
+

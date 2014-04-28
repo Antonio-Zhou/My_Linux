@@ -1,27 +1,14 @@
-/* $Id: arcofi.c,v 1.1.2.5 1998/09/30 22:20:03 keil Exp $
+/* $Id: arcofi.c,v 1.1 1997/10/29 18:51:20 keil Exp $
 
- * arcofi.c   Ansteuerung ARCOFI 2165
+ * arcofi.h   Ansteuerung ARCOFI 2165
  *
  * Author     Karsten Keil (keil@temic-ech.spacenet.de)
  *
  *
  *
  * $Log: arcofi.c,v $
- * Revision 1.1.2.5  1998/09/30 22:20:03  keil
- * Cosmetics
- *
- * Revision 1.1.2.4  1998/09/27 13:05:29  keil
- * Apply most changes from 2.1.X (HiSax 3.1)
- *
- * Revision 1.1.2.3  1998/05/27 18:04:48  keil
- * HiSax 3.0
- *
- * Revision 1.1.2.2  1998/04/11 18:45:13  keil
- * New interface
- *
- * Revision 1.1.2.1  1997/11/15 18:57:37  keil
- * ARCOFI 2165 support
- *
+ * Revision 1.1  1997/10/29 18:51:20  keil
+ * New files
  *
  */
  
@@ -31,25 +18,18 @@
 #include "isac.h"
 
 int
-send_arcofi(struct IsdnCardState *cs, const u_char *msg, int bc, int receive) {
+send_arcofi(struct IsdnCardState *cs, const u_char *msg) {
 	u_char val;
+	char tmp[32];
 	long flags;
-	int cnt=30;
+	int cnt=2;
 	
 	cs->mon_txp = 0;
 	cs->mon_txc = msg[0];
 	memcpy(cs->mon_tx, &msg[1], cs->mon_txc);
-	switch(bc) {
-		case 0: break;
-		case 1: cs->mon_tx[1] |= 0x40;
-			break;
-		default: break;
-	}
 	cs->mocr &= 0x0f;
 	cs->mocr |= 0xa0;
 	test_and_clear_bit(HW_MON1_TX_END, &cs->HW_Flags);
-	if (receive)
-		test_and_clear_bit(HW_MON1_RX_END, &cs->HW_Flags);
 	cs->writeisac(cs, ISAC_MOCR, cs->mocr);
 	val = cs->readisac(cs, ISAC_MOSR);
 	cs->writeisac(cs, ISAC_MOX1, cs->mon_tx[cs->mon_txp++]);
@@ -59,18 +39,12 @@ send_arcofi(struct IsdnCardState *cs, const u_char *msg, int bc, int receive) {
 	sti();
 	while (cnt && !test_bit(HW_MON1_TX_END, &cs->HW_Flags)) {
 		cnt--;
-		udelay(500);
-	}
-	if (receive) {
-		while (cnt && !test_bit(HW_MON1_RX_END, &cs->HW_Flags)) {
-			cnt--;
-			udelay(500);
-		}
+		current->state = TASK_INTERRUPTIBLE;
+		schedule_timeout((10*HZ)/1000);	/* Timeout 10ms */
 	}
 	restore_flags(flags);
-	if (cnt <= 0) {
-		printk(KERN_WARNING"HiSax arcofi monitor timed out\n");
-		debugl1(cs, "HiSax arcofi monitor timed out");
-	}
+	sprintf(tmp, "arcofi tout %d", cnt);
+	debugl1(cs, tmp);
 	return(cnt);	
 }
+

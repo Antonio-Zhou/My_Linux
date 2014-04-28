@@ -1,8 +1,8 @@
-/* $Id: isdnloop.h,v 1.1.2.1 1998/11/05 22:13:20 fritz Exp $
+/* $Id: isdnloop.h,v 1.2 1997/10/01 09:22:07 fritz Exp $
 
  * Loopback lowlevel module for testing of linklevel.
  *
- * Copyright 1998 by Fritz Elfert (fritz@isdn4linux.de)
+ * Copyright 1997 by Fritz Elfert (fritz@wuemaus.franken.de)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,8 +19,10 @@
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
  * $Log: isdnloop.h,v $
- * Revision 1.1.2.1  1998/11/05 22:13:20  fritz
- * Changed mail-address.
+ * Revision 1.2  1997/10/01 09:22:07  fritz
+ * Removed old compatibility stuff for 2.0.X kernels.
+ * From now on, this code is for 2.1.X ONLY!
+ * Old stuff is still in the separate branch.
  *
  * Revision 1.1  1997/03/24 23:02:05  fritz
  * Added isdnloop driver.
@@ -51,7 +53,6 @@ typedef struct isdnloop_sdef {
 #ifdef __KERNEL__
 /* Kernel includes */
 
-#include <linux/config.h>
 #include <linux/module.h>
 #include <linux/version.h>
 #include <linux/errno.h>
@@ -126,11 +127,9 @@ static isdnloop_card *cards = (isdnloop_card *) 0;
 static char *isdnloop_id = "\0";
 
 #ifdef MODULE
-#if (LINUX_VERSION_CODE > 0x020111)
 MODULE_AUTHOR("Fritz Elfert");
 MODULE_PARM(isdnloop_id, "s");
 MODULE_PARM_DESC(isdnloop_id, "ID-String of first card");
-#endif
 #endif
 
 #endif                          /* __KERNEL__ */

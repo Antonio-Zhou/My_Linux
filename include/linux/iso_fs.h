@@ -163,10 +163,6 @@ struct iso_directory_record {
 #define ISOFS_ZONE_BITS(INODE)   ((INODE)->i_sb->u.isofs_sb.s_log_zone_size)
 
 #define ISOFS_SUPER_MAGIC 0x9660
-#define ISOFS_FILE_UNKNOWN 0
-#define ISOFS_FILE_TEXT 1
-#define ISOFS_FILE_BINARY 2
-#define ISOFS_FILE_TEXT_M 3
 
 #ifdef __KERNEL__
 extern int isonum_711(char *);
@@ -186,14 +182,14 @@ extern char * get_rock_ridge_symlink(struct inode *);
 extern int find_rock_ridge_relocation(struct iso_directory_record *, struct inode *);
 
 int get_joliet_filename(struct iso_directory_record *, struct inode *, unsigned char *);
+int get_acorn_filename(struct iso_directory_record *, char *, struct inode *);
 
 /* The stuff that follows may be totally unneeded. I have not checked to see 
  which prototypes we are still using.  */
 
 extern int isofs_open(struct inode * inode, struct file * filp);
 extern void isofs_release(struct inode * inode, struct file * filp);
-extern int isofs_lookup(struct inode * dir,const char * name, int len,
-			struct inode ** result);
+extern int isofs_lookup(struct inode * dir, struct dentry *);
 extern unsigned long isofs_count_free_inodes(struct super_block *sb);
 extern int isofs_new_block(int dev);
 extern int isofs_free_block(int dev, int block);
@@ -204,7 +200,7 @@ extern struct super_block *isofs_read_super(struct super_block *,void *,int);
 extern int init_iso9660_fs(void);
 extern void isofs_read_inode(struct inode *);
 extern void isofs_put_inode(struct inode *);
-extern void isofs_statfs(struct super_block *, struct statfs *, int);
+extern int isofs_statfs(struct super_block *, struct statfs *, int);
 
 extern int isofs_lseek(struct inode *, struct file *, off_t, int);
 extern int isofs_read(struct inode *, struct file *, char *, int);
@@ -232,6 +228,3 @@ extern void leak_check_brelse(struct buffer_head * bh);
 #endif /* __KERNEL__ */
 
 #endif
-
-
-

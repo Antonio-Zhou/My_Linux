@@ -4,39 +4,12 @@
  *  Copyright (C) 1993  Linus Torvalds
  */
 
-#include <asm/system.h>
-
-#include <linux/signal.h>
-#include <linux/sched.h>
-#include <linux/head.h>
-#include <linux/kernel.h>
-#include <linux/errno.h>
-#include <linux/types.h>
 #include <linux/malloc.h>
-#include <linux/mm.h>
+#include <linux/vmalloc.h>
 
-#include <asm/segment.h>
-#include <asm/pgtable.h>
-
-struct vm_struct {
-	unsigned long flags;
-	void * addr;
-	unsigned long size;
-	struct vm_struct * next;
-};
+#include <asm/uaccess.h>
 
 static struct vm_struct * vmlist = NULL;
-
-static inline void set_pgdir(unsigned long address, pgd_t entry)
-{
-	struct task_struct * p;
-
-	for_each_task(p) {
-		if (!p->mm)
-			continue;
-		*pgd_offset(p->mm,address) = entry;
-	}
-}
 
 static inline void free_area_pte(pmd_t * pmd, unsigned long address, unsigned long size)
 {
@@ -94,12 +67,12 @@ static inline void free_area_pmd(pgd_t * dir, unsigned long address, unsigned lo
 	}
 }
 
-static void free_area_pages(unsigned long address, unsigned long size)
+void vmfree_area_pages(unsigned long address, unsigned long size)
 {
 	pgd_t * dir;
 	unsigned long end = address + size;
 
-	dir = pgd_offset(&init_mm, address);
+	dir = pgd_offset_k(address);
 	flush_cache_all();
 	while (address < end) {
 		free_area_pmd(dir, address, end - address);
@@ -151,81 +124,24 @@ static inline int alloc_area_pmd(pmd_t * pmd, unsigned long address, unsigned lo
 	return 0;
 }
 
-static int alloc_area_pages(unsigned long address, unsigned long size)
+int vmalloc_area_pages(unsigned long address, unsigned long size)
 {
 	pgd_t * dir;
 	unsigned long end = address + size;
 
-	dir = pgd_offset(&init_mm, address);
+	dir = pgd_offset_k(address);
+	flush_cache_all();
 	while (address < end) {
-		pmd_t *pmd = pmd_alloc_kernel(dir, address);
+		pmd_t *pmd;
+		pgd_t olddir = *dir;
+		
+		pmd = pmd_alloc_kernel(dir, address);
 		if (!pmd)
 			return -ENOMEM;
 		if (alloc_area_pmd(pmd, address, end - address))
 			return -ENOMEM;
-		set_pgdir(address, *dir);
-		address = (address + PGDIR_SIZE) & PGDIR_MASK;
-		dir++;
-	}
-	flush_cache_all();
-	return 0;
-}
-
-static inline void remap_area_pte(pte_t * pte, unsigned long address, unsigned long size,
-	unsigned long offset)
-{
-	unsigned long end;
-
-	address &= ~PMD_MASK;
-	end = address + size;
-	if (end > PMD_SIZE)
-		end = PMD_SIZE;
-	do {
-		if (!pte_none(*pte))
-			printk("remap_area_pte: page already exists\n");
-		set_pte(pte, mk_pte(offset, PAGE_KERNEL));
-		address += PAGE_SIZE;
-		offset += PAGE_SIZE;
-		pte++;
-	} while (address < end);
-}
-
-static inline int remap_area_pmd(pmd_t * pmd, unsigned long address, unsigned long size,
-	unsigned long offset)
-{
-	unsigned long end;
-
-	address &= ~PGDIR_MASK;
-	end = address + size;
-	if (end > PGDIR_SIZE)
-		end = PGDIR_SIZE;
-	offset -= address;
-	do {
-		pte_t * pte = pte_alloc_kernel(pmd, address);
-		if (!pte)
-			return -ENOMEM;
-		remap_area_pte(pte, address, end - address, address + offset);
-		address = (address + PMD_SIZE) & PMD_MASK;
-		pmd++;
-	} while (address < end);
-	return 0;
-}
-
-static int remap_area_pages(unsigned long address, unsigned long offset, unsigned long size)
-{
-	pgd_t * dir;
-	unsigned long end = address + size;
-
-	offset -= address;
-	dir = pgd_offset(&init_mm, address);
-	flush_cache_all();
-	while (address < end) {
-		pmd_t *pmd = pmd_alloc_kernel(dir, address);
-		if (!pmd)
-			return -ENOMEM;
-		if (remap_area_pmd(pmd, address, end - address, offset + address))
-			return -ENOMEM;
-		set_pgdir(address, *dir);
+		if (pgd_val(olddir) != pgd_val(*dir))
+			set_pgdir(address, *dir);
 		address = (address + PGDIR_SIZE) & PGDIR_MASK;
 		dir++;
 	}
@@ -233,23 +149,24 @@ static int remap_area_pages(unsigned long address, unsigned long offset, unsigne
 	return 0;
 }
 
-static struct vm_struct * get_vm_area(unsigned long size)
+struct vm_struct * get_vm_area(unsigned long size)
 {
-	void *addr;
+	unsigned long addr;
 	struct vm_struct **p, *tmp, *area;
 
 	area = (struct vm_struct *) kmalloc(sizeof(*area), GFP_KERNEL);
 	if (!area)
 		return NULL;
-	addr = (void *) VMALLOC_START;
-	area->size = size + PAGE_SIZE;
-	area->next = NULL;
+	addr = VMALLOC_START;
 	for (p = &vmlist; (tmp = *p) ; p = &tmp->next) {
-		if (size + (unsigned long) addr < (unsigned long) tmp->addr)
+		if (size + addr < (unsigned long) tmp->addr)
 			break;
-		addr = (void *) (tmp->size + (unsigned long) tmp->addr);
+		if (addr > VMALLOC_END-size)
+			return NULL;
+		addr = tmp->size + (unsigned long) tmp->addr;
 	}
-	area->addr = addr;
+	area->addr = (void *)addr;
+	area->size = size + PAGE_SIZE;
 	area->next = *p;
 	*p = area;
 	return area;
@@ -268,7 +185,7 @@ void vfree(void * addr)
 	for (p = &vmlist ; (tmp = *p) ; p = &tmp->next) {
 		if (tmp->addr == addr) {
 			*p = tmp->next;
-			free_area_pages(VMALLOC_VMADDR(tmp->addr), tmp->size);
+			vmfree_area_pages(VMALLOC_VMADDR(tmp->addr), tmp->size);
 			kfree(tmp);
 			return;
 		}
@@ -282,68 +199,50 @@ void * vmalloc(unsigned long size)
 	struct vm_struct *area;
 
 	size = PAGE_ALIGN(size);
-	if (!size || size > (MAP_NR(high_memory) << PAGE_SHIFT))
+	if (!size || size > (max_mapnr << PAGE_SHIFT))
 		return NULL;
 	area = get_vm_area(size);
 	if (!area)
 		return NULL;
 	addr = area->addr;
-	if (alloc_area_pages(VMALLOC_VMADDR(addr), size)) {
+	if (vmalloc_area_pages(VMALLOC_VMADDR(addr), size)) {
 		vfree(addr);
 		return NULL;
 	}
 	return addr;
 }
 
-/*
- * Remap an arbitrary physical address space into the kernel virtual
- * address space. Needed when the kernel wants to access high addresses
- * directly.
- */
-void * vremap(unsigned long offset, unsigned long size)
+long vread(char *buf, char *addr, unsigned long count)
 {
-	void * addr;
-	struct vm_struct * area;
-
-	if (MAP_NR(offset) < MAP_NR(high_memory))
-		return NULL;
-	if (offset & ~PAGE_MASK)
-		return NULL;
-	size = PAGE_ALIGN(size);
-	if (!size || size > offset + size)
-		return NULL;
-	area = get_vm_area(size);
-	if (!area)
-		return NULL;
-	addr = area->addr;
-	if (remap_area_pages(VMALLOC_VMADDR(addr), offset, size)) {
-		vfree(addr);
-		return NULL;
-	}
-	return addr;
-}
-
-int vread(char *buf, char *addr, int count)
-{
-	struct vm_struct **p, *tmp;
+	struct vm_struct *tmp;
 	char *vaddr, *buf_start = buf;
-	int n;
+	unsigned long n;
 
-	for (p = &vmlist; (tmp = *p) ; p = &tmp->next) {
+	/* Don't allow overflow */
+	if ((unsigned long) addr + count < count)
+		count = -(unsigned long) addr;
+
+	for (tmp = vmlist; tmp; tmp = tmp->next) {
 		vaddr = (char *) tmp->addr;
+		if (addr >= vaddr + tmp->size - PAGE_SIZE)
+			continue;
 		while (addr < vaddr) {
 			if (count == 0)
 				goto finished;
-			put_user('\0', buf++), addr++, count--;
+			put_user('\0', buf);
+			buf++;
+			addr++;
+			count--;
 		}
-		n = tmp->size - PAGE_SIZE;
-		if (addr > vaddr)
-			n -= addr - vaddr;
-		while (--n >= 0) {
+		n = vaddr + tmp->size - PAGE_SIZE - addr;
+		do {
 			if (count == 0)
 				goto finished;
-			put_user(*addr++, buf++), count--;
-		}
+			put_user(*addr, buf);
+			buf++;
+			addr++;
+			count--;
+		} while (--n > 0);
 	}
 finished:
 	return buf - buf_start;

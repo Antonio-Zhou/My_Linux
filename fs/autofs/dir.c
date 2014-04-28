@@ -2,7 +2,7 @@
  *
  * linux/fs/autofs/dir.c
  *
- *  Copyright 1997 Transmeta Corporation -- All Rights Reserved
+ *  Copyright 1997-1998 Transmeta Corporation -- All Rights Reserved
  *
  * This file is part of the Linux kernel and is made available under
  * the terms of the GNU General Public License, version 2, or at your
@@ -12,9 +12,10 @@
 
 #include "autofs_i.h"
 
-static int autofs_dir_readdir(struct inode *inode, struct file *filp,
+static int autofs_dir_readdir(struct file *filp,
 			       void *dirent, filldir_t filldir)
 {
+	struct inode *inode=filp->f_dentry->d_inode;
 	if (!inode || !S_ISDIR(inode->i_mode))
 		return -ENOTDIR;
 
@@ -34,38 +35,31 @@ static int autofs_dir_readdir(struct inode *inode, struct file *filp,
 	return 1;
 }
 
-static int autofs_dir_lookup(struct inode *dir, const char *name, int len,
-			      struct inode **result)
+/*
+ * No entries except for "." and "..", both of which are handled by the VFS layer
+ */
+static int autofs_dir_lookup(struct inode *dir, struct dentry * dentry)
 {
-	*result = dir;
-	if (!len)
-		return 0;
-	if (name[0] == '.') {
-		if (len == 1)
-			return 0;
-		if (name[1] == '.' && len == 2) {
-			/* Return the root directory */
-			*result = iget(dir->i_sb,AUTOFS_ROOT_INO);
-			iput(dir);
-			return 0;
-		}
-	}
-	*result = NULL;
-	iput(dir);
-	return -ENOENT;		/* No other entries */
+	d_add(dentry, NULL);
+	return 0;
 }
 
 static struct file_operations autofs_dir_operations = {
-	NULL,			/* lseek */
+	NULL,			/* llseek */
 	NULL,			/* read */
 	NULL,			/* write */
 	autofs_dir_readdir,	/* readdir */
-	NULL,			/* select */
+	NULL,			/* poll */
 	NULL,			/* ioctl */
 	NULL,			/* mmap */
 	NULL,			/* open */
+	NULL,			/* flush */
 	NULL,			/* release */
-	NULL			/* fsync */
+	NULL,			/* fsync */
+	NULL,			/* fasync */
+	NULL,			/* check_media_change */
+	NULL,			/* revalidate */
+	NULL			/* lock */
 };
 
 struct inode_operations autofs_dir_inode_operations = {
@@ -81,10 +75,13 @@ struct inode_operations autofs_dir_inode_operations = {
 	NULL,			/* rename */
 	NULL,			/* readlink */
 	NULL,			/* follow_link */
-	NULL,			/* read_page */
+	NULL,			/* readpage */
 	NULL,			/* writepage */
 	NULL,			/* bmap */
 	NULL,			/* truncate */
-	NULL			/* permission */
+	NULL,			/* permission */
+	NULL,			/* smap */
+	NULL,			/* updatepage */
+	NULL			/* revalidate */
 };
 

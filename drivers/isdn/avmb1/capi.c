@@ -1,11 +1,34 @@
 /*
- * $Id: capi.c,v 1.4 1997/05/27 15:17:50 fritz Exp $
+ * $Id: capi.c,v 1.10 1998/02/13 07:09:13 calle Exp $
  *
  * CAPI 2.0 Interface for Linux
  *
  * Copyright 1996 by Carsten Paeth (calle@calle.in-berlin.de)
  *
  * $Log: capi.c,v $
+ * Revision 1.10  1998/02/13 07:09:13  calle
+ * change for 2.1.86 (removing FREE_READ/FREE_WRITE from [dev]_kfree_skb()
+ *
+ * Revision 1.9  1998/01/31 11:14:44  calle
+ * merged changes to 2.0 tree, prepare 2.1.82 to work.
+ *
+ * Revision 1.8  1997/11/04 06:12:08  calle
+ * capi.c: new read/write in file_ops since 2.1.60
+ * capidrv.c: prepared isdnlog interface for d2-trace in newer firmware.
+ * capiutil.c: needs config.h (CONFIG_ISDN_DRV_AVMB1_VERBOSE_REASON)
+ * compat.h: added #define LinuxVersionCode
+ *
+ * Revision 1.7  1997/10/11 10:29:34  calle
+ * llseek() parameters changed in 2.1.56.
+ *
+ * Revision 1.6  1997/10/01 09:21:15  fritz
+ * Removed old compatibility stuff for 2.0.X kernels.
+ * From now on, this code is for 2.1.X ONLY!
+ * Old stuff is still in the separate branch.
+ *
+ * Revision 1.5  1997/08/21 23:11:55  fritz
+ * Added changes for kernels >= 2.1.45
+ *
  * Revision 1.4  1997/05/27 15:17:50  fritz
  * Added changes for recent 2.1.x kernels:
  *   changed return type of isdn_close
@@ -45,9 +68,7 @@
 #include <linux/timer.h>
 #include <linux/wait.h>
 #include <linux/skbuff.h>
-#if (LINUX_VERSION_CODE >= 0x020117)
-#include <asm/poll.h>
-#endif
+#include <linux/poll.h>
 #include <linux/capi.h>
 #include <linux/kernelcapi.h>
 
@@ -56,17 +77,13 @@
 #include "capicmd.h"
 #include "capidev.h"
 
-#ifdef HAS_NEW_SYMTAB
 MODULE_AUTHOR("Carsten Paeth (calle@calle.in-berlin.de)");
-#endif
 
 /* -------- driver information -------------------------------------- */
 
 int capi_major = 68;		/* allocated */
 
-#ifdef HAS_NEW_SYMTAB
 MODULE_PARM(capi_major, "i");
-#endif
 
 /* -------- global variables ---------------------------------------- */
 
@@ -96,33 +113,24 @@ static void capi_signal(__u16 applid, __u32 minor)
 
 /* -------- file_operations ----------------------------------------- */
 
-#if LINUX_VERSION_CODE < 0x020100
-static int capi_lseek(struct inode *inode, struct file *file,
-		      off_t offset, int origin)
-{
-	return -ESPIPE;
-}
-#else
-static long long capi_llseek(struct inode *inode, struct file *file,
+static long long capi_llseek(struct file *file,
 			     long long offset, int origin)
 {
 	return -ESPIPE;
 }
-#endif
 
-#if LINUX_VERSION_CODE < 0x020100
-static int capi_read(struct inode *inode, struct file *file,
-		     char *buf, int count)
-#else
-static long capi_read(struct inode *inode, struct file *file,
-		      char *buf, unsigned long count)
-#endif
+static ssize_t capi_read(struct file *file, char *buf,
+		      size_t count, loff_t *ppos)
 {
+        struct inode *inode = file->f_dentry->d_inode;
 	unsigned int minor = MINOR(inode->i_rdev);
 	struct capidev *cdev;
 	struct sk_buff *skb;
 	int retval;
 	size_t copied;
+
+       if (ppos != &file->f_pos)
+		return -ESPIPE;
 
 	if (!minor || minor > CAPI_MAXMINOR || !capidevs[minor].is_registered)
 		return -ENODEV;
@@ -138,7 +146,7 @@ static long capi_read(struct inode *inode, struct file *file,
 			interruptible_sleep_on(&cdev->recv_wait);
 			if ((skb = skb_dequeue(&cdev->recv_queue)) != 0)
 				break;
-			if (current->signal & ~current->blocked)
+			if (signal_pending(current))
 				break;
 		}
 		if (skb == 0)
@@ -159,19 +167,15 @@ static long capi_read(struct inode *inode, struct file *file,
 	copied = skb->len;
 
 
-	kfree_skb(skb, FREE_READ);
+	kfree_skb(skb);
 
 	return copied;
 }
 
-#if LINUX_VERSION_CODE < 0x020100
-static int capi_write(struct inode *inode, struct file *file,
-		      const char *buf, int count)
-#else
-static long capi_write(struct inode *inode, struct file *file,
-		       const char *buf, unsigned long count)
-#endif
+static ssize_t capi_write(struct file *file, const char *buf,
+		       size_t count, loff_t *ppos)
 {
+        struct inode *inode = file->f_dentry->d_inode;
 	unsigned int minor = MINOR(inode->i_rdev);
 	struct capidev *cdev;
 	struct sk_buff *skb;
@@ -179,6 +183,9 @@ static long capi_write(struct inode *inode, struct file *file,
 	__u8 cmd;
 	__u8 subcmd;
 	__u16 mlen;
+
+       if (ppos != &file->f_pos)
+		return -ESPIPE;
 
 	if (!minor || minor > CAPI_MAXMINOR || !capidevs[minor].is_registered)
 		return -ENODEV;
@@ -188,7 +195,7 @@ static long capi_write(struct inode *inode, struct file *file,
 	skb = alloc_skb(count, GFP_USER);
 
 	if ((retval = copy_from_user(skb_put(skb, count), buf, count))) {
-		dev_kfree_skb(skb, FREE_WRITE);
+		dev_kfree_skb(skb);
 		return retval;
 	}
 	cmd = CAPIMSG_COMMAND(skb->data);
@@ -197,11 +204,11 @@ static long capi_write(struct inode *inode, struct file *file,
 	if (cmd == CAPI_DATA_B3 && subcmd == CAPI_REQ) {
 		__u16 dlen = CAPIMSG_DATALEN(skb->data);
 		if (mlen + dlen != count) {
-			dev_kfree_skb(skb, FREE_WRITE);
+			dev_kfree_skb(skb);
 			return -EINVAL;
 		}
 	} else if (mlen != count) {
-		dev_kfree_skb(skb, FREE_WRITE);
+		dev_kfree_skb(skb);
 		return -EINVAL;
 	}
 	CAPIMSG_SETAPPID(skb->data, cdev->applid);
@@ -209,64 +216,33 @@ static long capi_write(struct inode *inode, struct file *file,
 	cdev->errcode = (*capifuncs->capi_put_message) (cdev->applid, skb);
 
 	if (cdev->errcode) {
-		dev_kfree_skb(skb, FREE_WRITE);
+		dev_kfree_skb(skb);
 		return -EIO;
 	}
 	return count;
 }
 
-#if (LINUX_VERSION_CODE < 0x020117)
-static int capi_select(struct inode *inode, struct file *file,
-		       int sel_type, select_table * wait)
-{
-	unsigned int minor = MINOR(inode->i_rdev);
-	struct capidev *cdev;
-
-	if (!minor || minor > CAPI_MAXMINOR || !capidevs[minor].is_registered)
-		return -ENODEV;
-
-	cdev = &capidevs[minor];
-
-	switch (sel_type) {
-	case SEL_IN:
-		if (!skb_queue_empty(&cdev->recv_queue))
-			return 1;
-		/* fall througth */
-	case SEL_EX:
-		/* error conditions ? */
-
-		select_wait(&cdev->recv_wait, wait);
-		return 0;
-	case SEL_OUT:
-		/* 
-		   if (!queue_full())
-		   return 1;
-		   select_wait(&cdev->send_wait, wait);
-		   return 0;
-		 */
-		return 1;
-	}
-	return 1;
-}
-#else
 static unsigned int
 capi_poll(struct file *file, poll_table * wait)
 {
 	unsigned int mask = 0;
+#if (LINUX_VERSION_CODE >= 0x02012d)
+	unsigned int minor = MINOR(file->f_dentry->d_inode->i_rdev);
+#else
 	unsigned int minor = MINOR(file->f_inode->i_rdev);
+#endif
 	struct capidev *cdev;
 
 	if (!minor || minor > CAPI_MAXMINOR || !capidevs[minor].is_registered)
 		return POLLERR;
 
 	cdev = &capidevs[minor];
-	poll_wait(&(cdev->recv_wait), wait);
+	poll_wait(file, &(cdev->recv_wait), wait);
 	mask = POLLOUT | POLLWRNORM;
 	if (!skb_queue_empty(&cdev->recv_queue))
 		mask |= POLLIN | POLLRDNORM;
 	return mask;
 }
-#endif
 
 static int capi_ioctl(struct inode *inode, struct file *file,
 		      unsigned int cmd, unsigned long arg)
@@ -408,7 +384,7 @@ static int capi_ioctl(struct inode *inode, struct file *file,
 			struct capi_manufacturer_cmd mcmd;
 			if (minor)
 				return -EINVAL;
-			if (!suser())
+			if (!capable(CAP_SYS_ADMIN))
 				return -EPERM;
 			retval = copy_from_user((void *) &mcmd, (void *) arg,
 						sizeof(mcmd));
@@ -448,7 +424,7 @@ static int capi_open(struct inode *inode, struct file *file)
 	return 0;
 }
 
-static CLOSETYPE
+static int
 capi_release(struct inode *inode, struct file *file)
 {
 	unsigned int minor = MINOR(inode->i_rdev);
@@ -457,7 +433,7 @@ capi_release(struct inode *inode, struct file *file)
 
 	if (minor >= CAPI_MAXMINOR || !capidevs[minor].is_open) {
 		printk(KERN_ERR "capi20: release minor %d ???\n", minor);
-		return CLOSEVAL;
+		return 0;
 	}
 	cdev = &capidevs[minor];
 
@@ -470,32 +446,25 @@ capi_release(struct inode *inode, struct file *file)
 		cdev->applid = 0;
 
 		while ((skb = skb_dequeue(&cdev->recv_queue)) != 0)
-			kfree_skb(skb, FREE_READ);
+			kfree_skb(skb);
 	}
 	cdev->is_open = 0;
 
 	MOD_DEC_USE_COUNT;
-	return CLOSEVAL;
+	return 0;
 }
 
 static struct file_operations capi_fops =
 {
-#if LINUX_VERSION_CODE < 0x020100
-	capi_lseek,
-#else
 	capi_llseek,
-#endif
 	capi_read,
 	capi_write,
 	NULL,			/* capi_readdir */
-#if (LINUX_VERSION_CODE < 0x020117)
-	capi_select,
-#else
 	capi_poll,
-#endif
 	capi_ioctl,
 	NULL,			/* capi_mmap */
 	capi_open,
+	NULL,			/* flush */
 	capi_release,
 	NULL,			/* capi_fsync */
 	NULL,			/* capi_fasync */

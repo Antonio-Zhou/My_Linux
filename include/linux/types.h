@@ -1,18 +1,6 @@
 #ifndef _LINUX_TYPES_H
 #define _LINUX_TYPES_H
 
-#ifdef __i386__
-#if defined(__KERNEL__) && !defined(STDC_HEADERS)
-#if ((__GNUC_MINOR__ >= 8) || (__GNUC_MAJOR >=3))
-#warning "This code is tested with gcc 2.7.2.x only. Using egcs/gcc 2.8.x needs"
-#warning "additional patches that have not been sufficiently tested to include by"
-#warning "default."
-#warning "See http://www.suse.de/~florian/kernel+egcs.html for more information"
-#error "Remove this if you have applied the gcc 2.8/egcs patches and wish to use them"
-#endif
-#endif
-#endif
-
 #include <linux/posix_types.h>
 #include <asm/types.h>
 
@@ -28,6 +16,8 @@ typedef __kernel_pid_t		pid_t;
 typedef __kernel_uid_t		uid_t;
 typedef __kernel_gid_t		gid_t;
 typedef __kernel_daddr_t	daddr_t;
+typedef __kernel_key_t		key_t;
+typedef __kernel_suseconds_t	suseconds_t;
 
 #if defined(__GNUC__) && !defined(__STRICT_ANSI__)
 typedef __kernel_loff_t		loff_t;
@@ -78,6 +68,28 @@ typedef unsigned char		unchar;
 typedef unsigned short		ushort;
 typedef unsigned int		uint;
 typedef unsigned long		ulong;
+
+#ifndef __BIT_TYPES_DEFINED__
+#define __BIT_TYPES_DEFINED__
+
+typedef		__u8		u_int8_t;
+typedef		__s8		int8_t;
+typedef		__u16		u_int16_t;
+typedef		__s16		int16_t;
+typedef		__u32		u_int32_t;
+typedef		__s32		int32_t;
+
+#endif /* !(__BIT_TYPES_DEFINED__) */
+
+typedef		__u8		uint8_t;
+typedef		__u16		uint16_t;
+typedef		__u32		uint32_t;
+
+#if defined(__GNUC__) && !defined(__STRICT_ANSI__)
+typedef		__u64		uint64_t;
+typedef		__u64		u_int64_t;
+typedef		__s64		int64_t;
+#endif
 
 #endif /* __KERNEL_STRICT_NAMES */
 

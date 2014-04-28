@@ -2,270 +2,288 @@
  *  sock.c
  *
  *  Copyright (C) 1995, 1996 by Paal-Kr. Engstad and Volker Lendecke
+ *  Copyright (C) 1997 by Volker Lendecke
  *
  */
 
 #include <linux/sched.h>
-#include <linux/smb_fs.h>
 #include <linux/errno.h>
 #include <linux/socket.h>
 #include <linux/fcntl.h>
-#include <linux/stat.h>
-#include <asm/segment.h>
+#include <linux/file.h>
 #include <linux/in.h>
 #include <linux/net.h>
 #include <linux/mm.h>
 #include <linux/netdevice.h>
+#include <net/scm.h>
 #include <net/ip.h>
 
+#include <linux/smb_fs.h>
 #include <linux/smb.h>
 #include <linux/smbno.h>
 
+#include <asm/uaccess.h>
 
-#define _S(nr) (1<<((nr)-1))
+#define SMBFS_PARANOIA 1
+/* #define SMBFS_DEBUG_VERBOSE 1 */
 
 static int
-_recvfrom(struct socket *sock, unsigned char *ubuf, int size,
-	  int noblock, unsigned flags, struct sockaddr_in *sa, int *addr_len)
+_recvfrom(struct socket *socket, unsigned char *ubuf, int size,
+	  unsigned flags)
 {
 	struct iovec iov;
 	struct msghdr msg;
-
-	iov.iov_base = ubuf;
-	iov.iov_len = size;
-
-	msg.msg_name = (void *) sa;
-	msg.msg_namelen = 0;
-	if (addr_len)
-		msg.msg_namelen = *addr_len;
-	msg.msg_control = NULL;
-	msg.msg_iov = &iov;
-	msg.msg_iovlen = 1;
-
-	return sock->ops->recvmsg(sock, &msg, size, noblock, flags, addr_len);
-}
-
-static int
-_send(struct socket *sock, const void *buff, int len,
-      int nonblock, unsigned flags)
-{
-	struct iovec iov;
-	struct msghdr msg;
-
-	iov.iov_base = (void *) buff;
-	iov.iov_len = len;
+	struct scm_cookie scm;
 
 	msg.msg_name = NULL;
 	msg.msg_namelen = 0;
-	msg.msg_control = NULL;
 	msg.msg_iov = &iov;
 	msg.msg_iovlen = 1;
-
-	return sock->ops->sendmsg(sock, &msg, len, nonblock, flags);
+	msg.msg_control = NULL;
+	iov.iov_base = ubuf;
+	iov.iov_len = size;
+	
+	memset(&scm, 0,sizeof(scm));
+	size=socket->ops->recvmsg(socket, &msg, size, flags, &scm);
+	if(size>=0)
+		scm_recv(socket,&msg,&scm,flags);
+	return size;
 }
 
-struct data_callback {
-	struct tq_struct cb;
-	struct sock *sk;
-};
+static int
+_send(struct socket *socket, const void *buff, int len)
+{
+	struct iovec iov;
+	struct msghdr msg;
+	struct scm_cookie scm;
+	int err;
+
+	msg.msg_name = NULL;
+	msg.msg_namelen = 0;
+	msg.msg_iov = &iov;
+	msg.msg_iovlen = 1;
+	msg.msg_control = NULL;
+	msg.msg_controllen = 0;
+	
+	iov.iov_base = (void *)buff;
+	iov.iov_len = len;
+
+	msg.msg_flags = 0;
+
+	err = scm_send(socket, &msg, &scm);
+        if (err >= 0)
+	{
+		err = socket->ops->sendmsg(socket, &msg, len, &scm);
+		scm_destroy(&scm);
+	}
+	return err;
+}
+
 /*
  * N.B. What happens if we're in here when the socket closes??
  */
 static void
-found_data(struct sock *sk)
+smb_data_callback(struct sock *sk, int len)
 {
-	/*
-	 * FIXME: copied from sock_def_readable, it should be a call to
-	 * server->data_ready();
-	 */
-	if (!sk->dead) {
-		wake_up_interruptible(sk->sleep);
-		sock_wake_async(sk->socket, 1);
-	}
-}
+	struct socket *socket = sk->socket;
+	unsigned char peek_buf[4];
+	int result;
+	mm_segment_t fs;
 
-static void
-smb_data_callback(void *ptr)
-{
-	struct data_callback *job = ptr;
-	struct socket *sock = job->sk->socket;
+	fs = get_fs();
+	set_fs(get_ds());
 
-	if (!job->sk->dead)
+	while (1)
 	{
-		unsigned char peek_buf[4];
-		int result;
-		unsigned short fs;
-
-		fs = get_fs();
-		set_fs(get_ds());
-
-		result = _recvfrom(sock, (void *) peek_buf, 1, 1,
-				   MSG_PEEK, NULL, NULL);
-
-		while ((result != -EAGAIN) && (peek_buf[0] == 0x85))
+		result = -EIO;
+		if (sk->dead)
 		{
-			/* got SESSION KEEP ALIVE */
-			result = _recvfrom(sock, (void *) peek_buf,
-					   4, 1, 0, NULL, NULL);
-
-			DDPRINTK("smb_data_callback:"
-				 " got SESSION KEEP ALIVE\n");
-
-			if (result == -EAGAIN)
-			{
-				break;
-			}
-			result = _recvfrom(sock, (void *) peek_buf,
-					   1, 1, MSG_PEEK,
-					   NULL, NULL);
+#ifdef SMBFS_PARANOIA
+			printk("smb_data_callback: sock dead!\n");
+#endif
+			break;
 		}
-		set_fs(fs);
 
-		if (result != -EAGAIN)
-			found_data(job->sk);
+		result = _recvfrom(socket, (void *) peek_buf, 1,
+				   MSG_PEEK | MSG_DONTWAIT);
+		if (result == -EAGAIN)
+			break;
+		if (peek_buf[0] != 0x85)
+			break;
+
+		/* got SESSION KEEP ALIVE */
+		result = _recvfrom(socket, (void *) peek_buf, 4,
+				   MSG_DONTWAIT);
+
+		pr_debug("smb_data_callback: got SESSION KEEPALIVE\n");
+
+		if (result == -EAGAIN)
+			break;
 	}
-	kfree(ptr);
+	set_fs(fs);
+
+	if (result != -EAGAIN)
+	{
+		wake_up_interruptible(sk->sleep);
+	}
 }
-static void
-smb_data_ready(struct sock *sk, int len)
-{
-	struct data_callback *job;
-	job = kmalloc(sizeof(struct data_callback), GFP_ATOMIC);
-	if (job == 0) {
-		printk("smb_data_ready(): lost SESSION KEEPALIVE due to OOM.\n");
-		found_data(sk);
-		return;
-	}
-	job->cb.next = NULL;
-	job->cb.sync = 0;
-	job->cb.routine = smb_data_callback;
-	job->cb.data = job;
-	job->sk = sk;
-	queue_task(&job->cb, &tq_scheduler);
- }
 
 int
-smb_catch_keepalive(struct smb_server *server)
+smb_valid_socket(struct inode * inode)
+{
+	return (inode && S_ISSOCK(inode->i_mode) && 
+		inode->u.socket_i.type == SOCK_STREAM);
+}
+
+static struct socket *
+server_sock(struct smb_sb_info *server)
 {
 	struct file *file;
-	struct inode *inode;
-	struct socket *sock;
-	void *data_ready;
-	struct sock *sk;
 
-	if ((server == NULL)
-	    || ((file = server->sock_file) == NULL)
-	    || ((inode = file->f_inode) == NULL)
-	    || (!S_ISSOCK(inode->i_mode)))
+	if (server && (file = server->sock_file))
+	{
+#ifdef SMBFS_PARANOIA
+		if (!smb_valid_socket(file->f_dentry->d_inode))
+			printk("smb_server_sock: bad socket!\n");
+#endif
+		return &file->f_dentry->d_inode->u.socket_i;
+	}
+	return NULL;
+}
+
+int
+smb_catch_keepalive(struct smb_sb_info *server)
+{
+	struct socket *socket;
+	struct sock *sk;
+	void *data_ready;
+	int error;
+
+	error = -EINVAL;
+	socket = server_sock(server);
+	if (!socket)
 	{
 		printk("smb_catch_keepalive: did not get valid server!\n");
 		server->data_ready = NULL;
-		return -EINVAL;
+		goto out;
 	}
-	sock = &(inode->u.socket_i);
 
-	if (sock->type != SOCK_STREAM)
-	{
-		printk("smb_catch_keepalive: did not get SOCK_STREAM\n");
-		server->data_ready = NULL;
-		return -EINVAL;
-	}
-	sk = (struct sock *) (sock->data);
-
+	sk = socket->sk;
 	if (sk == NULL)
 	{
-		printk("smb_catch_keepalive: sk == NULL");
+		pr_debug("smb_catch_keepalive: sk == NULL");
 		server->data_ready = NULL;
-		return -EINVAL;
+		goto out;
 	}
-	DDPRINTK("smb_catch_keepalive.: sk->d_r = %x, server->d_r = %x\n",
+	pr_debug("smb_catch_keepalive.: sk->d_r = %x, server->d_r = %x\n",
 		 (unsigned int) (sk->data_ready),
 		 (unsigned int) (server->data_ready));
-        /*
-         * Install the callback atomically to avoid races ...
-         */
-        data_ready = xchg(&sk->data_ready, smb_data_ready);
-        if (data_ready != smb_data_ready)
-        {
-                server->data_ready = data_ready;
-                return 0;
-        } else {
-                printk("smb_catch_keepalive: already done\n");
-		return -EINVAL;
-	}
+
+	/*
+	 * Install the callback atomically to avoid races ...
+	 */
+	data_ready = xchg(&sk->data_ready, smb_data_callback);
+	if (data_ready != smb_data_callback)
+	{
+		server->data_ready = data_ready;
+		error = 0;
+	} else
+		printk(KERN_ERR "smb_catch_keepalive: already done\n");
+out:
+	return error;
 }
 
 int
-smb_dont_catch_keepalive(struct smb_server *server)
+smb_dont_catch_keepalive(struct smb_sb_info *server)
 {
-	struct file *file;
-	struct inode *inode;
-	struct socket *sock;
-	void *data_ready;
+	struct socket *socket;
 	struct sock *sk;
+	void * data_ready;
+	int error;
 
-	if ((server == NULL)
-	    || ((file = server->sock_file) == NULL)
-	    || ((inode = file->f_inode) == NULL)
-	    || (!S_ISSOCK(inode->i_mode)))
+	error = -EINVAL;
+	socket = server_sock(server);
+	if (!socket)
 	{
-		printk("smb_dont_catch_keepalive: "
-		       "did not get valid server!\n");
-		return -EINVAL;
+		printk("smb_dont_catch_keepalive: did not get valid server!\n");
+		goto out;
 	}
-	sock = &(inode->u.socket_i);
 
-	if (sock->type != SOCK_STREAM)
-	{
-		printk("smb_dont_catch_keepalive: did not get SOCK_STREAM\n");
-		return -EINVAL;
-	}
-	sk = (struct sock *) (sock->data);
-
+	sk = socket->sk;
 	if (sk == NULL)
 	{
 		printk("smb_dont_catch_keepalive: sk == NULL");
-		return -EINVAL;
+		goto out;
 	}
+
+	/* Is this really an error?? */
 	if (server->data_ready == NULL)
 	{
 		printk("smb_dont_catch_keepalive: "
 		       "server->data_ready == NULL\n");
-		return -EINVAL;
+		goto out;
 	}
+	pr_debug("smb_dont_catch_keepalive: sk->d_r = %x, server->d_r = %x\n",
+		 (unsigned int) (sk->data_ready),
+		 (unsigned int) (server->data_ready));
+
 	/*
- 	 * Restore the original callback atomically to avoid races ...
+	 * Restore the original callback atomically to avoid races ...
 	 */
 	data_ready = xchg(&sk->data_ready, server->data_ready);
 	server->data_ready = NULL;
-	if (data_ready != smb_data_ready)
+	if (data_ready != smb_data_callback)
 	{
 		printk("smb_dont_catch_keepalive: "
-		"sk->data_ready != smb_data_ready\n");
-		return -EINVAL;
+		       "sk->data_callback != smb_data_callback\n");
 	}
-	DDPRINTK("smb_dont_catch_keepalive: sk->d_r = %x, server->d_r = %x\n",
-		 (unsigned int) (sk->data_ready),
-		 (unsigned int) (server->data_ready));
-	return 0;
+	error = 0;
+out:
+	return error;
+}
+
+/*
+ * Called with the server locked.
+ */
+void
+smb_close_socket(struct smb_sb_info *server)
+{
+	struct file * file = server->sock_file;
+
+	if (file)
+	{
+#ifdef SMBFS_DEBUG_VERBOSE
+printk("smb_close_socket: closing socket %p\n", server_sock(server));
+#endif
+#ifdef SMBFS_PARANOIA
+if (server_sock(server)->sk->data_ready == smb_data_callback)
+printk("smb_close_socket: still catching keepalives!\n");
+#endif
+		server->sock_file = NULL;
+		fput(file);
+	}
 }
 
 static int
-smb_send_raw(struct socket *sock, unsigned char *source, int length)
+smb_send_raw(struct socket *socket, unsigned char *source, int length)
 {
 	int result;
 	int already_sent = 0;
 
 	while (already_sent < length)
 	{
-		result = _send(sock,
+		result = _send(socket,
 			       (void *) (source + already_sent),
-			       length - already_sent, 0, 0);
+			       length - already_sent);
 
+		if (result == 0)
+		{
+			return -EIO;
+		}
 		if (result < 0)
 		{
-			DPRINTK("smb_send_raw: sendto error = %d\n",
-				-result);
+			pr_debug("smb_send_raw: sendto error = %d\n",
+				 -result);
 			return result;
 		}
 		already_sent += result;
@@ -274,17 +292,16 @@ smb_send_raw(struct socket *sock, unsigned char *source, int length)
 }
 
 static int
-smb_receive_raw(struct socket *sock, unsigned char *target, int length)
+smb_receive_raw(struct socket *socket, unsigned char *target, int length)
 {
 	int result;
 	int already_read = 0;
 
 	while (already_read < length)
 	{
-		result = _recvfrom(sock,
+		result = _recvfrom(socket,
 				   (void *) (target + already_read),
-				   length - already_read, 0, 0,
-				   NULL, NULL);
+				   length - already_read, 0);
 
 		if (result == 0)
 		{
@@ -292,8 +309,8 @@ smb_receive_raw(struct socket *sock, unsigned char *target, int length)
 		}
 		if (result < 0)
 		{
-			DPRINTK("smb_receive_raw: recvfrom error = %d\n",
-				-result);
+			pr_debug("smb_receive_raw: recvfrom error = %d\n",
+				 -result);
 			return result;
 		}
 		already_read += result;
@@ -302,21 +319,23 @@ smb_receive_raw(struct socket *sock, unsigned char *target, int length)
 }
 
 static int
-smb_get_length(struct socket *sock, unsigned char *header)
+smb_get_length(struct socket *socket, unsigned char *header)
 {
 	int result;
 	unsigned char peek_buf[4];
-	unsigned short fs;
+	mm_segment_t fs;
 
       re_recv:
 	fs = get_fs();
 	set_fs(get_ds());
-	result = smb_receive_raw(sock, peek_buf, 4);
+	result = smb_receive_raw(socket, peek_buf, 4);
 	set_fs(fs);
 
 	if (result < 0)
 	{
-		DPRINTK("smb_get_length: recv error = %d\n", -result);
+#ifdef SMBFS_PARANOIA
+printk("smb_get_length: recv error = %d\n", -result);
+#endif
 		return result;
 	}
 	switch (peek_buf[0])
@@ -326,11 +345,13 @@ smb_get_length(struct socket *sock, unsigned char *header)
 		break;
 
 	case 0x85:
-		DPRINTK("smb_get_length: Got SESSION KEEP ALIVE\n");
+		pr_debug("smb_get_length: Got SESSION KEEP ALIVE\n");
 		goto re_recv;
 
 	default:
-		printk("smb_get_length: Invalid NBT packet\n");
+#ifdef SMBFS_PARANOIA
+printk("smb_get_length: Invalid NBT packet, code=%x\n", peek_buf[0]);
+#endif
 		return -EIO;
 	}
 
@@ -342,267 +363,265 @@ smb_get_length(struct socket *sock, unsigned char *header)
 	return smb_len(peek_buf);
 }
 
-static struct socket *
-server_sock(struct smb_server *server)
+/*
+ * Since we allocate memory in increments of PAGE_SIZE,
+ * round up the packet length to the next multiple.
+ */
+int
+smb_round_length(int len)
 {
-	struct file *file;
-	struct inode *inode;
-
-	if (server == NULL)
-		return NULL;
-	if ((file = server->sock_file) == NULL)
-		return NULL;
-	if ((inode = file->f_inode) == NULL)
-		return NULL;
-	return &(inode->u.socket_i);
+	return (len + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
 }
-
+ 
 /*
  * smb_receive
  * fs points to the correct segment
  */
 static int
-smb_receive(struct smb_server *server)
+smb_receive(struct smb_sb_info *server)
 {
-	struct socket *sock = server_sock(server);
-	int len;
-	int result;
+	struct socket *socket = server_sock(server);
+	unsigned char * packet = server->packet;
+	int len, result;
 	unsigned char peek_buf[4];
 
-	len = smb_get_length(sock, peek_buf);
-
-	if (len < 0)
-	{
-		return len;
-	}
+	result = smb_get_length(socket, peek_buf);
+	if (result < 0)
+		goto out;
+	len = result;
+	/*
+	 * Some servers do not respect our max_xmit and send
+	 * larger packets.  Try to allocate a new packet,
+	 * but don't free the old one unless we succeed.
+	 */
 	if (len + 4 > server->packet_size)
 	{
-		/* Some servers do not care about our max_xmit. They
-		   send larger packets */
-		DPRINTK("smb_receive: Increase packet size from %d to %d\n",
-			server->packet_size, len + 4);
+		int new_len = smb_round_length(len + 4);
+
+		result = -ENOMEM;
+		packet = smb_vmalloc(new_len);
+		if (packet == NULL)
+			goto out;
 		smb_vfree(server->packet);
-		server->packet = NULL;
-
-		server->packet_size = 0;
-		server->packet = smb_vmalloc(len + 4);
-		if (server->packet == NULL)
-		{
-			return -ENOMEM;
-		}
-		server->packet_size = len + 4;
+		server->packet = packet;
+		server->packet_size = new_len;
 	}
-	memcpy(server->packet, peek_buf, 4);
-	result = smb_receive_raw(sock, server->packet + 4, len);
-
+	memcpy(packet, peek_buf, 4);
+	result = smb_receive_raw(socket, packet + 4, len);
 	if (result < 0)
 	{
-		printk("smb_receive: receive error: %d\n", result);
-		return result;
+#ifdef SMBFS_DEBUG_VERBOSE
+printk("smb_receive: receive error: %d\n", result);
+#endif
+		goto out;
 	}
-	server->rcls = BVAL(server->packet, 9);
-	server->err = WVAL(server->packet, 11);
+	server->rcls = *(packet + smb_rcls);
+	server->err  = WVAL(packet, smb_err);
 
-	if (server->rcls != 0)
-	{
-		DPRINTK("smb_receive: rcls=%d, err=%d\n",
-			server->rcls, server->err);
-	}
+#ifdef SMBFS_DEBUG_VERBOSE
+if (server->rcls != 0)
+printk("smb_receive: rcls=%d, err=%d\n", server->rcls, server->err);
+#endif
+out:
 	return result;
 }
 
+/*
+ * This routine checks first for "fast track" processing, as most
+ * packets won't need to be copied. Otherwise, it allocates a new
+ * packet to hold the incoming data.
+ *
+ * Note that the final server packet must be the larger of the two;
+ * server packets aren't allowed to shrink.
+ */
 static int
-smb_receive_trans2(struct smb_server *server,
+smb_receive_trans2(struct smb_sb_info *server,
 		   int *ldata, unsigned char **data,
-		   int *lparam, unsigned char **param)
+		   int *lparm, unsigned char **parm)
 {
-	int total_data = 0;
-	int total_param = 0;
+	unsigned char *inbuf, *base, *rcv_buf = NULL;
+	unsigned int parm_disp, parm_offset, parm_count, parm_tot, parm_len = 0;
+	unsigned int data_disp, data_offset, data_count, data_tot, data_len = 0;
+	unsigned int total_p = 0, total_d = 0, buf_len = 0;
 	int result;
-	unsigned char *rcv_buf;
-	int buf_len;
-	int data_len = 0;
-	int param_len = 0;
-
-	if ((result = smb_receive(server)) < 0)
-	{
-		return result;
-	}
-	if (server->rcls != 0)
-	{
-		*param = *data = server->packet;
-		*ldata = *lparam = 0;
-		return 0;
-	}
-	total_data = WVAL(server->packet, smb_tdrcnt);
-	total_param = WVAL(server->packet, smb_tprcnt);
-
-	DDPRINTK("smb_receive_trans2: td=%d,tp=%d\n", total_data, total_param);
-
-	if ((total_data > TRANS2_MAX_TRANSFER)
-	    || (total_param > TRANS2_MAX_TRANSFER))
-	{
-		DPRINTK("smb_receive_trans2: data/param too long\n");
-		return -EIO;
-	}
-	buf_len = total_data + total_param;
-	if (server->packet_size > buf_len)
-	{
-		buf_len = server->packet_size;
-	}
-	if ((rcv_buf = smb_vmalloc(buf_len)) == NULL)
-	{
-		DPRINTK("smb_receive_trans2: could not alloc data area\n");
-		return -ENOMEM;
-	}
-	*param = rcv_buf;
-	*data = rcv_buf + total_param;
 
 	while (1)
 	{
-		unsigned char *inbuf = server->packet;
-
-		if (WVAL(inbuf, smb_prdisp) + WVAL(inbuf, smb_prcnt)
-		    > total_param)
-		{
-			DPRINTK("smb_receive_trans2: invalid parameters\n");
-			result = -EIO;
-			goto fail;
-		}
-		memcpy(*param + WVAL(inbuf, smb_prdisp),
-		       smb_base(inbuf) + WVAL(inbuf, smb_proff),
-		       WVAL(inbuf, smb_prcnt));
-		param_len += WVAL(inbuf, smb_prcnt);
-
-		if (WVAL(inbuf, smb_drdisp) + WVAL(inbuf, smb_drcnt)
-		    > total_data)
-		{
-			DPRINTK("smb_receive_trans2: invalid data block\n");
-			result = -EIO;
-			goto fail;
-		}
-		DDPRINTK("target: %X\n",
-			 (unsigned int) *data + WVAL(inbuf, smb_drdisp));
-		DDPRINTK("source: %X\n",
-			 (unsigned int)
-			 smb_base(inbuf) + WVAL(inbuf, smb_droff));
-		DDPRINTK("disp: %d, off: %d, cnt: %d\n",
-			 WVAL(inbuf, smb_drdisp), WVAL(inbuf, smb_droff),
-			 WVAL(inbuf, smb_drcnt));
-
-		memcpy(*data + WVAL(inbuf, smb_drdisp),
-		       smb_base(inbuf) + WVAL(inbuf, smb_droff),
-		       WVAL(inbuf, smb_drcnt));
-		data_len += WVAL(inbuf, smb_drcnt);
-
-		if ((WVAL(inbuf, smb_tdrcnt) > total_data)
-		    || (WVAL(inbuf, smb_tprcnt) > total_param))
-		{
-			printk("smb_receive_trans2: data/params grew!\n");
-			result = -EIO;
-			goto fail;
-		}
-		/* the total lengths might shrink! */
-		total_data = WVAL(inbuf, smb_tdrcnt);
-		total_param = WVAL(inbuf, smb_tprcnt);
-
-		if ((data_len >= total_data) && (param_len >= total_param))
-		{
-			break;
-		}
-		if ((result = smb_receive(server)) < 0)
-		{
-			goto fail;
-		}
+		result = smb_receive(server);
+		if (result < 0)
+			goto out;
+		inbuf = server->packet;
 		if (server->rcls != 0)
 		{
-			result = -EIO;
-			goto fail;
+			*parm = *data = inbuf;
+			*ldata = *lparm = 0;
+			goto out;
 		}
+		/*
+		 * Extract the control data from the packet.
+		 */
+		data_tot    = WVAL(inbuf, smb_tdrcnt);
+		parm_tot    = WVAL(inbuf, smb_tprcnt);
+		parm_disp   = WVAL(inbuf, smb_prdisp);
+		parm_offset = WVAL(inbuf, smb_proff);
+		parm_count  = WVAL(inbuf, smb_prcnt);
+		data_disp   = WVAL(inbuf, smb_drdisp);
+		data_offset = WVAL(inbuf, smb_droff);
+		data_count  = WVAL(inbuf, smb_drcnt);
+		base = smb_base(inbuf);
+
+		/*
+		 * Assume success and increment lengths.
+		 */
+		parm_len += parm_count;
+		data_len += data_count;
+
+		if (!rcv_buf)
+		{
+			/*
+			 * Check for fast track processing ... just this packet.
+			 */
+			if (parm_count == parm_tot && data_count == data_tot)
+			{
+#ifdef SMBFS_DEBUG_VERBOSE
+printk("smb_receive_trans2: fast track, parm=%u %u %u, data=%u %u %u\n",
+parm_disp, parm_offset, parm_count, data_disp, data_offset, data_count);
+#endif
+				*parm  = base + parm_offset;
+				*data  = base + data_offset;
+				goto success;
+			}
+
+			if (parm_tot > TRANS2_MAX_TRANSFER ||
+	  		    data_tot > TRANS2_MAX_TRANSFER)
+				goto out_too_long;
+
+			/*
+			 * Save the total parameter and data length.
+			 */
+			total_d = data_tot;
+			total_p = parm_tot;
+
+			buf_len = total_d + total_p;
+			if (server->packet_size > buf_len)
+				buf_len = server->packet_size;
+			buf_len = smb_round_length(buf_len);
+
+			rcv_buf = smb_vmalloc(buf_len);
+			if (!rcv_buf)
+				goto out_no_mem;
+			*parm = rcv_buf;
+			*data = rcv_buf + total_p;
+		}
+		else if (data_tot > total_d || parm_tot > total_p)
+			goto out_data_grew;
+
+		if (parm_disp + parm_count > total_p)
+			goto out_bad_parm;
+		if (data_disp + data_count > total_d)
+			goto out_bad_data;
+		memcpy(*parm + parm_disp, base + parm_offset, parm_count);
+		memcpy(*data + data_disp, base + data_offset, data_count);
+
+#ifdef SMBFS_PARANOIA
+printk("smb_receive_trans2: copied, parm=%u of %u, data=%u of %u\n",
+parm_len, parm_tot, data_len, data_tot);
+#endif
+		/*
+		 * Check whether we've received all of the data. Note that
+		 * we use the packet totals -- total lengths might shrink!
+		 */
+		if (data_len >= data_tot && parm_len >= parm_tot)
+			break;
 	}
+
+	/*
+	 * Install the new packet.  Note that it's possible, though
+	 * unlikely, that the new packet could be smaller than the
+	 * old one, in which case we just copy the data.
+	 */
+	inbuf = server->packet;
+	if (buf_len >= server->packet_size)
+	{
+		server->packet_size = buf_len;
+		server->packet = rcv_buf;
+		rcv_buf = inbuf;
+	} else
+	{
+#ifdef SMBFS_PARANOIA
+printk("smb_receive_trans2: copying data, old size=%d, new size=%u\n",
+server->packet_size, buf_len);
+#endif
+		memcpy(inbuf, rcv_buf, parm_len + data_len);
+	}
+
+success:
 	*ldata = data_len;
-	*lparam = param_len;
-
-	smb_vfree(server->packet);
-	server->packet = rcv_buf;
-	server->packet_size = buf_len;
-	return 0;
-
-      fail:
-	smb_vfree(rcv_buf);
+	*lparm = parm_len;
+out:
+	if (rcv_buf)
+		smb_vfree(rcv_buf);
 	return result;
+
+out_no_mem:
+#ifdef SMBFS_PARANOIA
+	printk("smb_receive_trans2: couldn't allocate data area\n");
+#endif
+	result = -ENOMEM;
+	goto out;
+out_too_long:
+	printk("smb_receive_trans2: data/param too long, data=%d, parm=%d\n",
+		data_tot, parm_tot);
+	goto out_error;
+out_data_grew:
+	printk("smb_receive_trans2: data/params grew!\n");
+	goto out_error;
+out_bad_parm:
+	printk("smb_receive_trans2: invalid parms, disp=%d, cnt=%d, tot=%d\n",
+		parm_disp, parm_count, parm_tot);
+	goto out_error;
+out_bad_data:
+	printk("smb_receive_trans2: invalid data, disp=%d, cnt=%d, tot=%d\n",
+		data_disp, data_count, data_tot);
+out_error:
+	result = -EIO;
+	goto out;
 }
 
+/*
+ * Called with the server locked
+ */
 int
-smb_release(struct smb_server *server)
+smb_request(struct smb_sb_info *server)
 {
-	struct socket *sock = server_sock(server);
-	int result;
-
-	if (sock == NULL)
-	{
-		return -EINVAL;
-	}
-	result = sock->ops->release(sock, NULL);
-	DPRINTK("smb_release: sock->ops->release = %d\n", result);
-
-	/* inet_release does not set sock->state.  Maybe someone is
-	   confused about sock->state being SS_CONNECTED while there
-	   is nothing behind it, so I set it to SS_UNCONNECTED. */
-	sock->state = SS_UNCONNECTED;
-
-	result = sock->ops->create(sock, 0);
-	DPRINTK("smb_release: sock->ops->create = %d\n", result);
-	return result;
-}
-
-int
-smb_connect(struct smb_server *server)
-{
-	struct socket *sock = server_sock(server);
-	if (sock == NULL)
-	{
-		return -EINVAL;
-	}
-	if (sock->state != SS_UNCONNECTED)
-	{
-		DPRINTK("smb_connect: socket is not unconnected: %d\n",
-			sock->state);
-	}
-	return sock->ops->connect(sock, (struct sockaddr *) &(server->m.addr),
-				  sizeof(struct sockaddr_in), 0);
-}
-
-int
-smb_request(struct smb_server *server)
-{
-	unsigned long old_mask;
-	unsigned short fs;
+	unsigned long flags, sigpipe;
+	mm_segment_t fs;
+	sigset_t old_set;
 	int len, result;
+	unsigned char *buffer;
 
-	unsigned char *buffer = (server == NULL) ? NULL : server->packet;
+	result = -EBADF;
+	buffer = server->packet;
+	if (!buffer)
+		goto bad_no_packet;
 
-	if (buffer == NULL)
-	{
-		printk("smb_request: Bad server!\n");
-		return -EBADF;
-	}
+	result = -EIO;
 	if (server->state != CONN_VALID)
-	{
-		return -EIO;
-	}
+		goto bad_no_conn;
+
 	if ((result = smb_dont_catch_keepalive(server)) != 0)
-	{
-		server->state = CONN_INVALID;
-		smb_invalidate_all_inodes(server);
-		return result;
-	}
+		goto bad_conn;
+
 	len = smb_len(buffer) + 4;
+	pr_debug("smb_request: len = %d cmd = 0x%X\n", len, buffer[8]);
 
-	DPRINTK("smb_request: len = %d cmd = 0x%X\n", len, buffer[8]);
+	spin_lock_irqsave(&current->sigmask_lock, flags);
+	sigpipe = sigismember(&current->signal, SIGPIPE);
+	old_set = current->blocked;
+	siginitsetinv(&current->blocked, sigmask(SIGKILL)|sigmask(SIGSTOP));
+	recalc_sigpending(current);
+	spin_unlock_irqrestore(&current->sigmask_lock, flags);
 
-	old_mask = current->blocked;
-	current->blocked |= ~(_S(SIGKILL) | _S(SIGSTOP));
 	fs = get_fs();
 	set_fs(get_ds());
 
@@ -611,9 +630,15 @@ smb_request(struct smb_server *server)
 	{
 		result = smb_receive(server);
 	}
+
 	/* read/write errors are handled by errno */
-	current->signal &= ~_S(SIGPIPE);
-	current->blocked = old_mask;
+	spin_lock_irqsave(&current->sigmask_lock, flags);
+	if (result == -EPIPE && !sigpipe)
+		sigdelset(&current->signal, SIGPIPE);
+	current->blocked = old_set;
+	recalc_sigpending(current);
+	spin_unlock_irqrestore(&current->sigmask_lock, flags);
+
 	set_fs(fs);
 
 	if (result >= 0)
@@ -621,26 +646,52 @@ smb_request(struct smb_server *server)
 		int result2 = smb_catch_keepalive(server);
 		if (result2 < 0)
 		{
+			printk("smb_request: catch keepalive failed\n");
 			result = result2;
 		}
 	}
 	if (result < 0)
-	{
-		server->state = CONN_INVALID;
-		smb_invalidate_all_inodes(server);
+		goto bad_conn;
+	/*
+	 * Check for fatal server errors ...
+	 */
+	if (server->rcls) {
+		int error = smb_errno(server);
+		if (error == EBADSLT) {
+			printk("smb_request: tree ID invalid\n");
+			result = error;
+			goto bad_conn;
+		}
 	}
-	DDPRINTK("smb_request: result = %d\n", result);
 
+out:
+	pr_debug("smb_request: result = %d\n", result);
 	return result;
+	
+bad_conn:
+#ifdef SMBFS_PARANOIA
+printk("smb_request: result %d, setting invalid\n", result);
+#endif
+	server->state = CONN_INVALID;
+	smb_invalidate_inodes(server);
+	goto out;		
+bad_no_packet:
+	printk("smb_request: no packet!\n");
+	goto out;
+bad_no_conn:
+	printk("smb_request: connection %d not valid!\n", server->state);
+	goto out;
 }
 
 #define ROUND_UP(x) (((x)+3) & ~3)
 static int
-smb_send_trans2(struct smb_server *server, __u16 trans2_command,
+smb_send_trans2(struct smb_sb_info *server, __u16 trans2_command,
 		int ldata, unsigned char *data,
 		int lparam, unsigned char *param)
 {
 	struct socket *sock = server_sock(server);
+	struct scm_cookie scm;
+	int err;
 
 	/* I know the following is very ugly, but I want to build the
 	   smb packet as efficiently as possible. */
@@ -662,7 +713,8 @@ smb_send_trans2(struct smb_server *server, __u16 trans2_command,
 	struct iovec iov[4];
 	struct msghdr msg;
 
-	if ((bcc + oparam) > server->max_xmit)
+	/* N.B. This test isn't valid! packet_size may be < max_xmit */
+	if ((bcc + oparam) > server->opt.max_xmit)
 	{
 		return -ENOMEM;
 	}
@@ -670,6 +722,7 @@ smb_send_trans2(struct smb_server *server, __u16 trans2_command,
 
 	WSET(server->packet, smb_tpscnt, lparam);
 	WSET(server->packet, smb_tdscnt, ldata);
+	/* N.B. these values should reflect out current packet size */
 	WSET(server->packet, smb_mprcnt, TRANS2_MAX_TRANSFER);
 	WSET(server->packet, smb_mdrcnt, TRANS2_MAX_TRANSFER);
 	WSET(server->packet, smb_msrcnt, 0);
@@ -685,6 +738,15 @@ smb_send_trans2(struct smb_server *server, __u16 trans2_command,
 	*p++ = 'D';		/* this was added because OS/2 does it */
 	*p++ = ' ';
 
+
+	msg.msg_name = NULL;
+	msg.msg_namelen = 0;
+	msg.msg_control = NULL;
+	msg.msg_controllen = 0;
+	msg.msg_iov = iov;
+	msg.msg_iovlen = 4;
+	msg.msg_flags = 0;
+	
 	iov[0].iov_base = (void *) server->packet;
 	iov[0].iov_len = oparam;
 	iov[1].iov_base = (param == NULL) ? padding : param;
@@ -694,13 +756,13 @@ smb_send_trans2(struct smb_server *server, __u16 trans2_command,
 	iov[3].iov_base = (data == NULL) ? padding : data;
 	iov[3].iov_len = ldata;
 
-	msg.msg_name = NULL;
-	msg.msg_namelen = 0;
-	msg.msg_control = NULL;
-	msg.msg_iov = iov;
-	msg.msg_iovlen = 4;
-
-	return sock->ops->sendmsg(sock, &msg, packet_length, 0, 0);
+	err = scm_send(sock, &msg, &scm);
+        if (err >= 0)
+	{
+		err = sock->ops->sendmsg(sock, &msg, packet_length, &scm);
+		scm_destroy(&scm);
+	}
+	return err;
 }
 
 /*
@@ -708,31 +770,40 @@ smb_send_trans2(struct smb_server *server, __u16 trans2_command,
  * one packet to send.
  */
 int
-smb_trans2_request(struct smb_server *server, __u16 trans2_command,
+smb_trans2_request(struct smb_sb_info *server, __u16 trans2_command,
 		   int ldata, unsigned char *data,
 		   int lparam, unsigned char *param,
 		   int *lrdata, unsigned char **rdata,
 		   int *lrparam, unsigned char **rparam)
 {
-	unsigned long old_mask;
-	unsigned short fs;
+	sigset_t old_set;
+	unsigned long flags, sigpipe;
+	mm_segment_t fs;
 	int result;
 
-	DPRINTK("smb_trans2_request: com=%d, ld=%d, lp=%d\n",
-		trans2_command, ldata, lparam);
+	pr_debug("smb_trans2_request: com=%d, ld=%d, lp=%d\n",
+		 trans2_command, ldata, lparam);
 
+	/*
+	 * These are initialized in smb_request_ok, but not here??
+	 */
+	server->rcls = 0;
+	server->err = 0;
+
+	result = -EIO;
 	if (server->state != CONN_VALID)
-	{
-		return -EIO;
-	}
+		goto out;
+
 	if ((result = smb_dont_catch_keepalive(server)) != 0)
-	{
-		server->state = CONN_INVALID;
-		smb_invalidate_all_inodes(server);
-		return result;
-	}
-	old_mask = current->blocked;
-	current->blocked |= ~(_S(SIGKILL) | _S(SIGSTOP));
+		goto bad_conn;
+
+	spin_lock_irqsave(&current->sigmask_lock, flags);
+	sigpipe = sigismember(&current->signal, SIGPIPE);
+	old_set = current->blocked;
+	siginitsetinv(&current->blocked, sigmask(SIGKILL)|sigmask(SIGSTOP));
+	recalc_sigpending(current);
+	spin_unlock_irqrestore(&current->sigmask_lock, flags);
+
 	fs = get_fs();
 	set_fs(get_ds());
 
@@ -743,9 +814,15 @@ smb_trans2_request(struct smb_server *server, __u16 trans2_command,
 		result = smb_receive_trans2(server,
 					    lrdata, rdata, lrparam, rparam);
 	}
+
 	/* read/write errors are handled by errno */
-	current->signal &= ~_S(SIGPIPE);
-	current->blocked = old_mask;
+	spin_lock_irqsave(&current->sigmask_lock, flags);
+	if (result == -EPIPE && !sigpipe)
+		sigdelset(&current->signal, SIGPIPE);
+	current->blocked = old_set;
+	recalc_sigpending(current);
+	spin_unlock_irqrestore(&current->sigmask_lock, flags);
+
 	set_fs(fs);
 
 	if (result >= 0)
@@ -757,11 +834,27 @@ smb_trans2_request(struct smb_server *server, __u16 trans2_command,
 		}
 	}
 	if (result < 0)
-	{
-		server->state = CONN_INVALID;
-		smb_invalidate_all_inodes(server);
+		goto bad_conn;
+	/*
+	 * Check for fatal server errors ...
+	 */
+	if (server->rcls) {
+		int error = smb_errno(server);
+		if (error == EBADSLT) {
+			printk("smb_request: tree ID invalid\n");
+			result = error;
+			goto bad_conn;
+		}
 	}
-	DDPRINTK("smb_trans2_request: result = %d\n", result);
 
+out:
 	return result;
+
+bad_conn:
+#ifdef SMBFS_PARANOIA
+printk("smb_trans2_request: result=%d, setting invalid\n", result);
+#endif
+	server->state = CONN_INVALID;
+	smb_invalidate_inodes(server);
+	goto out;
 }
