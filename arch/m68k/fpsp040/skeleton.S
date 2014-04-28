@@ -40,6 +40,7 @@
 
 #include <linux/linkage.h>
 #include <asm/entry.h>
+#include "../kernel/m68k_defs.h"
 
 |SKELETON	idnt    2,1 | Motorola 040 Floating Point Software Package
 
@@ -106,7 +107,7 @@ inex:
 	bnes		not_fmt40
 	fmovel		%fpsr,-(%sp)
 	btstb		#E1,E_BYTE(%a6)		|test for E1 set
-	beqs		not_b1232
+	beq		not_b1232
 	btstb		#snan_bit,2(%sp) |test for snan
 	beq		inex_ckofl
 	addl		#4,%sp
@@ -375,12 +376,12 @@ fpsp_fmt_error:
 	.global	fpsp_done
 fpsp_done:
 	btst	#0x5,%sp@		| supervisor bit set in saved SR?
-	beq	Lnotkern
+	beq	.Lnotkern
 	rte
-Lnotkern:
+.Lnotkern:
 	SAVE_ALL_INT
 	GET_CURRENT(%d0)
-	tstl	%curptr@(LTASK_NEEDRESCHED)
+	tstl	%curptr@(TASK_NEEDRESCHED)
 	jne	SYMBOL_NAME(ret_from_exception)	| deliver signals,
 						| reschedule etc..
 	RESTORE_ALL

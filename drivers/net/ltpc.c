@@ -353,13 +353,12 @@ static int wait_timeout(struct device *dev, int c)
 	/* returns true if it stayed c */
 	/* this uses base+6, but it's ok */
 	int i;
-	int timeout;
 
 	/* twenty second or so total */
 
-	for(i=0;i<20000;i++) {
+	for(i=0;i<200000;i++) {
 		if ( c != inb_p(dev->base_addr+6) ) return 0;
-		for(timeout=loops_per_sec/1000; timeout > 0; timeout--) ;
+		udelay(100);
 	}
 	return 1; /* timed out */
 }
@@ -1335,7 +1334,7 @@ void cleanup_module(void)
 		/* if it's in process, wait a bit for it to finish */
 		timeout = jiffies+HZ; 
 		add_timer(&ltpc_timer);
-		while(del_timer(&ltpc_timer) && (timeout > jiffies))
+		while(del_timer(&ltpc_timer) && time_after(timeout, jiffies))
 		{
 			add_timer(&ltpc_timer);
 			schedule();

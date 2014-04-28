@@ -28,8 +28,7 @@
 #define FIRST_PROCESS_ENTRY 256
 
 static int proc_root_readdir(struct file *, void *, filldir_t);
-static int proc_root_lookup(struct inode *,struct dentry *);
-static int proc_unlink(struct inode *, struct dentry *);
+static struct dentry *proc_root_lookup(struct inode *,struct dentry *);
 
 static unsigned char proc_alloc_map[PROC_NDYNAMIC / 8] = {0};
 
@@ -86,7 +85,7 @@ struct inode_operations proc_dyna_dir_inode_operations = {
 	NULL,			/* create */
 	proc_lookup,		/* lookup */
 	NULL,			/* link	*/
-	proc_unlink,		/* unlink(struct inode *, struct dentry *) */
+	NULL, 			/* unlink(struct inode *, struct dentry *) */
 	NULL,			/* symlink	*/
 	NULL,			/* mkdir */
 	NULL,			/* rmdir */
@@ -181,14 +180,14 @@ struct proc_dir_entry proc_sys_root = {
 #if defined(CONFIG_SUN_OPENPROMFS) || defined(CONFIG_SUN_OPENPROMFS_MODULE)
 
 static int (*proc_openprom_defreaddir_ptr)(struct file *, void *, filldir_t);
-static int (*proc_openprom_deflookup_ptr)(struct inode *, struct dentry *);
+static struct dentry * (*proc_openprom_deflookup_ptr)(struct inode *, struct dentry *);
 void (*proc_openprom_use)(struct inode *, int) = 0;
 static struct openpromfs_dev *proc_openprom_devices = NULL;
 static ino_t proc_openpromdev_ino = PROC_OPENPROMD_FIRST;
 
 struct inode_operations *
 proc_openprom_register(int (*readdir)(struct file *, void *, filldir_t),
-		       int (*lookup)(struct inode *, struct dentry *),
+		       struct dentry * (*lookup)(struct inode *, struct dentry *),
 		       void (*use)(struct inode *, int),
 		       struct openpromfs_dev ***devices)
 {
@@ -250,7 +249,7 @@ proc_openprom_defreaddir(struct file * filp, void * dirent, filldir_t filldir)
 }
 #define OPENPROM_DEFREADDIR proc_openprom_defreaddir
 
-static int 
+static struct dentry *
 proc_openprom_deflookup(struct inode * dir, struct dentry *dentry)
 {
 	request_module("openpromfs");
@@ -258,7 +257,7 @@ proc_openprom_deflookup(struct inode * dir, struct dentry *dentry)
 	    proc_openprom_deflookup)
 		return proc_openprom_inode_operations.lookup 
 				(dir, dentry);
-	return -ENOENT;
+	return ERR_PTR(-ENOENT);
 }
 #define OPENPROM_DEFLOOKUP proc_openprom_deflookup
 #else
@@ -348,6 +347,32 @@ int proc_register(struct proc_dir_entry * dir, struct proc_dir_entry * dp)
 	return 0;
 }
 
+/*
+ * Kill an inode that got unregistered..
+ */
+static void proc_kill_inodes(int ino)
+{
+	struct file *filp;
+
+	/* inuse_filps is protected by the single kernel lock */
+	for (filp = inuse_filps; filp; filp = filp->f_next) {
+		struct dentry * dentry;
+		struct inode * inode;
+
+		dentry = filp->f_dentry;
+		if (!dentry)
+			continue;
+		if (dentry->d_op != &proc_dentry_operations)
+			continue;
+		inode = dentry->d_inode;
+		if (!inode)
+			continue;
+		if (inode->i_ino != ino)
+			continue;
+		filp->f_op = NULL;
+	}
+}
+
 int proc_unregister(struct proc_dir_entry * dir, int ino)
 {
 	struct proc_dir_entry **p = &dir->subdir, *dp;
@@ -362,6 +387,7 @@ int proc_unregister(struct proc_dir_entry * dir, int ino)
 			    ino < PROC_DYNAMIC_FIRST+PROC_NDYNAMIC)
 				clear_bit(ino-PROC_DYNAMIC_FIRST, 
 					  (void *) proc_alloc_map);
+			proc_kill_inodes(ino);
 			return 0;
 		}
 		p = &dp->next;
@@ -428,7 +454,7 @@ struct dentry * proc_follow_link(struct dentry * dentry, struct dentry *base, un
 
 	de = (struct proc_dir_entry *) inode->u.generic_ip;
 	if (!(page = (char*) __get_free_page(GFP_KERNEL)))
-		return NULL;
+		return ERR_PTR(-ENOMEM);
 
 	if (de->readlink_proc)
 		len = de->readlink_proc(de, page);
@@ -490,11 +516,6 @@ static struct proc_dir_entry proc_root_uptime = {
 };
 static struct proc_dir_entry proc_root_meminfo = {
 	PROC_MEMINFO, 7, "meminfo",
-	S_IFREG | S_IRUGO, 1, 0, 0,
-	0, &proc_array_inode_operations
-};
-static struct proc_dir_entry proc_root_swapstats = {
-	PROC_SWAPSTATS, 9, "swapstats",
 	S_IFREG | S_IRUGO, 1, 0, 0,
 	0, &proc_array_inode_operations
 };
@@ -611,6 +632,13 @@ static struct proc_dir_entry proc_root_rtc = {
 	0, &proc_array_inode_operations
 };
 #endif
+#ifdef CONFIG_SGI_DS1286
+static struct proc_dir_entry proc_root_ds1286 = {
+	PROC_RTC, 3, "rtc",
+	S_IFREG | S_IRUGO, 1, 0, 0,
+	0, &proc_array_inode_operations
+};
+#endif
 static struct proc_dir_entry proc_root_locks = {
 	PROC_LOCKS, 5, "locks",
 	S_IFREG | S_IRUGO, 1, 0, 0,
@@ -653,7 +681,6 @@ __initfunc(void proc_root_init(void))
 	proc_register(&proc_root, &proc_root_loadavg);
 	proc_register(&proc_root, &proc_root_uptime);
 	proc_register(&proc_root, &proc_root_meminfo);
-	proc_register(&proc_root, &proc_root_swapstats);
 	proc_register(&proc_root, &proc_root_kmsg);
 	proc_register(&proc_root, &proc_root_version);
 	proc_register(&proc_root, &proc_root_cpuinfo);
@@ -688,6 +715,9 @@ __initfunc(void proc_root_init(void))
 	proc_register(&proc_root, &proc_root_cmdline);
 #ifdef CONFIG_RTC
 	proc_register(&proc_root, &proc_root_rtc);
+#endif
+#ifdef CONFIG_SGI_DS1286
+	proc_register(&proc_root, &proc_root_ds1286);
 #endif
 	proc_register(&proc_root, &proc_root_locks);
 
@@ -748,15 +778,11 @@ struct dentry_operations proc_dentry_operations =
  * Don't create negative dentries here, return -ENOENT by hand
  * instead.
  */
-int proc_lookup(struct inode * dir, struct dentry *dentry)
+struct dentry *proc_lookup(struct inode * dir, struct dentry *dentry)
 {
 	struct inode *inode;
 	struct proc_dir_entry * de;
 	int error;
-
-	error = -ENOTDIR;
-	if (!dir || !S_ISDIR(dir->i_mode))
-		goto out;
 
 	error = -ENOENT;
 	inode = NULL;
@@ -779,13 +805,12 @@ int proc_lookup(struct inode * dir, struct dentry *dentry)
 	if (inode) {
 		dentry->d_op = &proc_dentry_operations;
 		d_add(dentry, inode);
-		error = 0;
+		return NULL;
 	}
-out:
-	return error;
+	return ERR_PTR(error);
 }
 
-static int proc_root_lookup(struct inode * dir, struct dentry * dentry)
+static struct dentry *proc_root_lookup(struct inode * dir, struct dentry * dentry)
 {
 	unsigned int pid, c;
 	struct task_struct *p;
@@ -805,7 +830,7 @@ static int proc_root_lookup(struct inode * dir, struct dentry * dentry)
 	}
 
 	if (!proc_lookup(dir, dentry))
-		return 0;
+		return NULL;
 	
 	pid = 0;
 	name = dentry->d_name.name;
@@ -819,6 +844,7 @@ static int proc_root_lookup(struct inode * dir, struct dentry * dentry)
 		}
 		pid *= 10;
 		pid += c;
+		if (!pid) break;
 		if (pid & 0xffff0000) {
 			pid = 0;
 			break;
@@ -832,13 +858,13 @@ static int proc_root_lookup(struct inode * dir, struct dentry * dentry)
 		unsigned long ino = (pid << 16) + PROC_PID_INO;
 		inode = proc_get_inode(dir->i_sb, ino, &proc_pid);
 		if (!inode)
-			return -EINVAL;
+			return ERR_PTR(-EINVAL);
 		inode->i_flags|=S_IMMUTABLE;
 	}
 
 	dentry->d_op = &proc_dentry_operations;
 	d_add(dentry, inode);
-	return 0;
+	return NULL;
 }
 
 /*
@@ -858,8 +884,6 @@ int proc_readdir(struct file * filp,
 	int i;
 	struct inode *inode = filp->f_dentry->d_inode;
 
-	if (!inode || !S_ISDIR(inode->i_mode))
-		return -ENOTDIR;
 	ino = inode->i_ino;
 	de = (struct proc_dir_entry *) inode->u.generic_ip;
 	if (!de)
@@ -963,17 +987,5 @@ static int proc_root_readdir(struct file * filp,
 			break;
 		filp->f_pos++;
 	}
-	return 0;
-}
-
-static int proc_unlink(struct inode *dir, struct dentry *dentry)
-{
-	struct proc_dir_entry * dp = dir->u.generic_ip;
-
-printk("proc_file_unlink: deleting %s/%s\n", dp->name, dentry->d_name.name);
-
-	remove_proc_entry(dentry->d_name.name, dp);
-	dentry->d_inode->i_nlink = 0;
-	d_delete(dentry);
 	return 0;
 }

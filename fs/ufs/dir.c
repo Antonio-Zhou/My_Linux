@@ -14,6 +14,7 @@
  */
 
 #include <linux/fs.h>
+#include <linux/ufs_fs.h>
 
 #include "swab.h"
 #include "util.h"
@@ -41,13 +42,6 @@ ufs_readdir (struct file * filp, void * dirent, filldir_t filldir)
 	struct super_block * sb;
 	int de_reclen;
 	unsigned flags, swab;
-
-
-	/* Isn't that already done in the upper layer???
-	 * the VFS layer really needs some explicit documentation!
-	 */
-	if (!inode || !S_ISDIR(inode->i_mode))
-		return -EBADF;
 
 	sb = inode->i_sb;
 	swab = sb->u.ufs_sb.s_swab;
@@ -110,19 +104,16 @@ revalidate:
 				brelse(bh);
 				return stored;
 			}
-#if 0 /* XXX */
-			if (!ext2_check_dir_entry ("ext2_readdir", inode, de,
-			/* XXX - beware about de having to be swabped somehow */
+			if (!ufs_check_dir_entry ("ufs_readdir", inode, de,
 						   bh, offset)) {
 				/* On error, skip the f_pos to the
 				   next block. */
-				filp->f_pos = (filp->f_pos &
+				filp->f_pos = (filp->f_pos |
 				              (sb->s_blocksize - 1)) +
-					       sb->s_blocksize;
+					       1;
 				brelse (bh);
 				return stored;
 			}
-#endif /* XXX */
 			offset += SWAB16(de->d_reclen);
 			if (de->d_ino) {
 			/* SWAB16() was unneeded -- compare to 0 */

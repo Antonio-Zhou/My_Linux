@@ -46,7 +46,7 @@ extern __inline__ void set_bit(int nr, volatile void * addr)
 	__asm__ __volatile__( LOCK_PREFIX
 		"btsl %1,%0"
 		:"=m" (ADDR)
-		:"ir" (nr));
+		:"Ir" (nr));
 }
 
 extern __inline__ void clear_bit(int nr, volatile void * addr)
@@ -54,7 +54,7 @@ extern __inline__ void clear_bit(int nr, volatile void * addr)
 	__asm__ __volatile__( LOCK_PREFIX
 		"btrl %1,%0"
 		:"=m" (ADDR)
-		:"ir" (nr));
+		:"Ir" (nr));
 }
 
 extern __inline__ void change_bit(int nr, volatile void * addr)
@@ -62,7 +62,7 @@ extern __inline__ void change_bit(int nr, volatile void * addr)
 	__asm__ __volatile__( LOCK_PREFIX
 		"btcl %1,%0"
 		:"=m" (ADDR)
-		:"ir" (nr));
+		:"Ir" (nr));
 }
 
 extern __inline__ int test_and_set_bit(int nr, volatile void * addr)
@@ -72,7 +72,7 @@ extern __inline__ int test_and_set_bit(int nr, volatile void * addr)
 	__asm__ __volatile__( LOCK_PREFIX
 		"btsl %2,%1\n\tsbbl %0,%0"
 		:"=r" (oldbit),"=m" (ADDR)
-		:"ir" (nr));
+		:"Ir" (nr));
 	return oldbit;
 }
 
@@ -83,7 +83,7 @@ extern __inline__ int test_and_clear_bit(int nr, volatile void * addr)
 	__asm__ __volatile__( LOCK_PREFIX
 		"btrl %2,%1\n\tsbbl %0,%0"
 		:"=r" (oldbit),"=m" (ADDR)
-		:"ir" (nr));
+		:"Ir" (nr));
 	return oldbit;
 }
 
@@ -94,7 +94,7 @@ extern __inline__ int test_and_change_bit(int nr, volatile void * addr)
 	__asm__ __volatile__( LOCK_PREFIX
 		"btcl %2,%1\n\tsbbl %0,%0"
 		:"=r" (oldbit),"=m" (ADDR)
-		:"ir" (nr));
+		:"Ir" (nr));
 	return oldbit;
 }
 
@@ -113,7 +113,7 @@ extern __inline__ int __test_bit(int nr, volatile void * addr)
 	__asm__ __volatile__(
 		"btl %2,%1\n\tsbbl %0,%0"
 		:"=r" (oldbit)
-		:"m" (ADDR),"ir" (nr));
+		:"m" (ADDR),"Ir" (nr));
 	return oldbit;
 }
 
@@ -127,6 +127,7 @@ extern __inline__ int __test_bit(int nr, volatile void * addr)
  */
 extern __inline__ int find_first_zero_bit(void * addr, unsigned size)
 {
+	int d0, d1, d2;
 	int res;
 
 	if (!size)
@@ -142,9 +143,8 @@ extern __inline__ int find_first_zero_bit(void * addr, unsigned size)
 		"1:\tsubl %%ebx,%%edi\n\t"
 		"shll $3,%%edi\n\t"
 		"addl %%edi,%%edx"
-		:"=d" (res)
-		:"c" ((size + 31) >> 5), "D" (addr), "b" (addr)
-		:"ax", "cx", "di");
+		:"=d" (res), "=&c" (d0), "=&D" (d1), "=&a" (d2)
+		:"1" ((size + 31) >> 5), "2" (addr), "b" (addr));
 	return res;
 }
 

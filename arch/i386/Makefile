@@ -35,6 +35,10 @@ ifdef CONFIG_M586
 CFLAGS := $(CFLAGS) -m486 -malign-loops=2 -malign-jumps=2 -malign-functions=2 -DCPU=586
 endif
 
+ifdef CONFIG_M586TSC
+CFLAGS := $(CFLAGS) -m486 -malign-loops=2 -malign-jumps=2 -malign-functions=2 -DCPU=586
+endif
+
 ifdef CONFIG_M686
 CFLAGS := $(CFLAGS) -m486 -malign-loops=2 -malign-jumps=2 -malign-functions=2 -DCPU=686
 endif
@@ -57,6 +61,13 @@ arch/i386/mm: dummy
 	$(MAKE) linuxsubdirs SUBDIRS=arch/i386/mm
 
 MAKEBOOT = $(MAKE) -C arch/$(ARCH)/boot
+
+vmlinux: arch/i386/vmlinux.lds
+
+arch/i386/vmlinux.lds: arch/i386/vmlinux.lds.S FORCE
+	$(CPP) -C -P -I$(HPATH) -imacros $(HPATH)/asm-i386/page_offset.h -Ui386 arch/i386/vmlinux.lds.S >arch/i386/vmlinux.lds
+
+FORCE: ;
 
 zImage: vmlinux
 	@$(MAKEBOOT) zImage
@@ -85,6 +96,7 @@ archclean:
 	@$(MAKEBOOT) clean
 
 archmrproper:
+	rm -f arch/i386/vmlinux.lds
 
 archdep:
 	@$(MAKEBOOT) dep

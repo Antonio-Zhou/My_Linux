@@ -1,9 +1,14 @@
 #ifndef __LINUX_VIDEODEV_H
 #define __LINUX_VIDEODEV_H
 
+#include <linux/types.h>
+#include <linux/version.h>
+
 #ifdef __KERNEL__
 
+#if LINUX_VERSION_CODE >= 0x020100
 #include <linux/poll.h>
+#endif
 
 struct video_device
 {
@@ -16,7 +21,9 @@ struct video_device
 	long (*read)(struct video_device *, char *, unsigned long, int noblock);
 	/* Do we need a write method ? */
 	long (*write)(struct video_device *, const char *, unsigned long, int noblock);
+#if LINUX_VERSION_CODE >= 0x020100
 	unsigned int (*poll)(struct video_device *, struct file *, poll_table *);
+#endif
 	int (*ioctl)(struct video_device *, unsigned int , void *);
 	int (*mmap)(struct video_device *, const char *, unsigned long);
 	int (*initialize)(struct video_device *);	
@@ -48,7 +55,6 @@ extern void video_unregister_device(struct video_device *);
 #define VID_TYPE_SCALES		128	/* Scalable */
 #define VID_TYPE_MONOCHROME	256	/* Monochrome only */
 #define VID_TYPE_SUBCAPTURE	512	/* Can capture subareas of the image */
-#define VID_TYPE_OUTPUT		1024	/* Can output video data */
 
 struct video_capability
 {
@@ -89,6 +95,8 @@ struct video_tuner
 #define VIDEO_TUNER_LOW		8	/* Uses KHz not MHz */
 #define VIDEO_TUNER_NORM	16	/* Tuner can set norm */
 #define VIDEO_TUNER_STEREO_ON	128	/* Tuner is seeing stereo */
+#define VIDEO_TUNER_RDS_ON      256     /* Tuner is seeing an RDS datastream */
+#define VIDEO_TUNER_MBS_ON      512     /* Tuner is seeing an MBS datastream */
 	__u16 mode;			/* PAL/NTSC/SECAM/OTHER */
 #define VIDEO_MODE_PAL		0
 #define VIDEO_MODE_NTSC		1
@@ -120,6 +128,10 @@ struct video_picture
 #define VIDEO_PALETTE_RAW	12	/* RAW capture (BT848) */
 #define VIDEO_PALETTE_YUV422P	13	/* YUV 4:2:2 Planar */
 #define VIDEO_PALETTE_YUV411P	14	/* YUV 4:1:1 Planar */
+#define VIDEO_PALETTE_YUV420P	15	/* YUV 4:2:0 Planar */
+#define VIDEO_PALETTE_YUV410P	16	/* YUV 4:1:0 Planar */
+#define VIDEO_PALETTE_PLANAR	13	/* start of planar entries */
+#define VIDEO_PALETTE_COMPONENT 7	/* start of component entries */
 };
 
 struct video_audio
@@ -138,7 +150,7 @@ struct video_audio
 #define VIDEO_SOUND_STEREO	2
 #define VIDEO_SOUND_LANG1	4
 #define VIDEO_SOUND_LANG2	8
-        __u16   mode;		/* detected audio carriers or one to set */
+        __u16   mode;
         __u16	balance;	/* Stereo balance */
         __u16	step;		/* Step actual volume uses */
 };
@@ -226,7 +238,7 @@ struct video_unit
 #define VIDIOCGPICT		_IOR('v',6,struct video_picture)	/* Get picture properties */
 #define VIDIOCSPICT		_IOW('v',7,struct video_picture)	/* Set picture properties */
 #define VIDIOCCAPTURE		_IOW('v',8,int)				/* Start, end capture */
-#define VIDIOCGWIN		_IOR('v',9, struct video_window)	/* Set the video overlay window */
+#define VIDIOCGWIN		_IOR('v',9, struct video_window)	/* Get the video overlay window */
 #define VIDIOCSWIN		_IOW('v',10, struct video_window)	/* Set the video overlay window - passes clip list for hardware smarts , chromakey etc */
 #define VIDIOCGFBUF		_IOR('v',11, struct video_buffer)	/* Get frame buffer */
 #define VIDIOCSFBUF		_IOW('v',12, struct video_buffer)	/* Set frame buffer - root only */
@@ -261,6 +273,14 @@ struct video_unit
 #define VID_HARDWARE_PERMEDIA2	14	/* Reserved for Permedia2 */
 #define VID_HARDWARE_RIVA128	15	/* Reserved for RIVA 128 */
 #define VID_HARDWARE_PLANB	16	/* PowerMac motherboard video-in */
+#define VID_HARDWARE_BROADWAY	17	/* Broadway project */
+#define VID_HARDWARE_GEMTEK	18
+#define VID_HARDWARE_TYPHOON	19
+#define VID_HARDWARE_VINO	20	/* Reserved for SGI Indy Vino */
+#define VID_HARDWARE_CADET	21	/* Cadet radio */
+#define VID_HARDWARE_TRUST	22	/* Trust FM Radio */
+#define VID_HARDWARE_CPIA	24
+#define VID_HARDWARE_OV511	27
 
 /*
  *	Initialiser list

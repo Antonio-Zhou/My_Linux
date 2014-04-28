@@ -31,6 +31,10 @@
  *             mike@i-Connect.Net                           *
  *	       neuffer@mail.uni-mainz.de	            *
  *							    *
+ *
+ * Changes:
+ * 	Marcelo Tosatti, Jul/8/99 : SMP fixes
+ *
  *  This program is free software; you can redistribute it  *
  *  and/or modify it under the terms of the GNU General	    *
  *  Public License as published by the Free Software	    *
@@ -499,6 +503,7 @@ int eata_queue(Scsi_Cmnd * cmd, void (* done) (Scsi_Cmnd *))
         DBG(DBG_REQSENSE, printk(KERN_DEBUG "Tried to REQUEST SENSE\n"));
 	cmd->result = DID_OK << 16;
 	done(cmd);
+	restore_flags(flags);
 
 	return(0);
     }
@@ -683,7 +688,8 @@ int eata_abort(Scsi_Cmnd * cmd)
 int eata_reset(Scsi_Cmnd * cmd, unsigned int resetflags)
 {
     uint x; 
-    ulong loop = loops_per_sec / 3;
+    /* 10 million PCI reads take at least one third of a second */
+    ulong loop = 10 * 1000 * 1000;
     ulong flags;
     unchar success = FALSE;
     Scsi_Cmnd *sp; 
@@ -777,7 +783,10 @@ int eata_reset(Scsi_Cmnd * cmd, unsigned int resetflags)
 	       x, sp->pid);
 	DBG(DBG_ABNORM && DBG_DELAY, DELAY(1));
 
+
+	spin_lock_irqsave(&io_request_lock, flags);
 	sp->scsi_done(sp);
+	spin_unlock_irqrestore(&io_request_lock, flags);
     }
     
     HD(cmd)->state = FALSE;
@@ -962,7 +971,7 @@ char * get_board_data(u32 base, u32 irq, u32 id)
     eata_send_command((u32) cp, (u32) base, EATA_CMD_DMA_SEND_CP);
     
     i = jiffies + (3 * HZ);
-    while (fake_int_happened == FALSE && jiffies <= i) 
+    while (fake_int_happened == FALSE && time_before_eq(jiffies, i)) 
 	barrier();
     
     DBG(DBG_INTR3, printk(KERN_DEBUG "fake_int_result: %#x hbastat %#x "
@@ -973,7 +982,7 @@ char * get_board_data(u32 base, u32 irq, u32 id)
     scsi_init_free((void *)cp, sizeof(struct eata_ccb));
     scsi_init_free((void *)sp, sizeof(struct eata_sp));
     
-    if ((fake_int_result & HA_SERROR) || jiffies > i){
+    if ((fake_int_result & HA_SERROR) || time_after(jiffies, i)){
 	printk(KERN_WARNING "eata_dma: trying to reset HBA at %x to clear "
 	       "possible blink state\n", base); 
 	/* hard reset the HBA  */

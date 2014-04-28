@@ -1,11 +1,13 @@
 /*
  *  super.c
  *
- *  Copyright (C) 1995-1997 Martin von L?wis
+ *  Copyright (C) 1995-1997, 1999 Martin von L?wis
  *  Copyright (C) 1996-1997 R?gis Duchesne
+ *  Copyright (C) 1999 Steve Dodd
+ *  Copyright (C) 2000 Anton Altparmakov
  */
 
-#include "types.h"
+#include "ntfstypes.h"
 #include "struct.h"
 #include "super.h"
 
@@ -32,7 +34,7 @@
 int ntfs_fixup_record(ntfs_volume *vol, char *record, char *magic, int size)
 {
 	int start, count, offset;
-	unsigned short fixup;
+	ntfs_u16 fixup;
 
 	if(!IS_MAGIC(record,magic))
 		return 0;
@@ -61,7 +63,10 @@ int ntfs_init_volume(ntfs_volume *vol,char *boot)
 	vol->at_standard_information=0x10;
 	vol->at_attribute_list=0x20;
 	vol->at_file_name=0x30;
+	vol->at_volume_version=0x40;
 	vol->at_security_descriptor=0x50;
+	vol->at_volume_name=0x60;
+	vol->at_volume_information=0x70;
 	vol->at_data=0x80;
 	vol->at_index_root=0x90;
 	vol->at_index_allocation=0xA0;
@@ -113,12 +118,14 @@ ntfs_init_upcase(ntfs_inode *upcase)
 	ntfs_io io;
 #define UPCASE_LENGTH  256
 	upcase->vol->upcase = ntfs_malloc(2*UPCASE_LENGTH);
-	upcase->vol->upcase_length = UPCASE_LENGTH;
+	if( !upcase->vol->upcase )
+		return;
 	io.fn_put=ntfs_put;
 	io.fn_get=0;
-	io.param=upcase->vol->upcase;
+	io.param=(char*)upcase->vol->upcase;
 	io.size=2*UPCASE_LENGTH;
 	ntfs_read_attr(upcase,upcase->vol->at_data,0,0,&io);
+	upcase->vol->upcase_length = io.size / 2;
 }
 
 static int
@@ -138,8 +145,18 @@ process_attrdef(ntfs_inode* attrdef,ntfs_u8* def)
 	}else if(ntfs_ua_strncmp(name,"$FILE_NAME",64)==0){
 		vol->at_file_name=type;
 		check_type=0x30;
+	}else if(ntfs_ua_strncmp(name,"$VOLUME_VERSION",64)==0){
+		vol->at_volume_version=type;
+		check_type=0x40;
 	}else if(ntfs_ua_strncmp(name,"$SECURITY_DESCRIPTOR",64)==0){
-		vol->at_file_name=type;
+		vol->at_security_descriptor=type;
+		check_type=0x50;
+	}else if(ntfs_ua_strncmp(name,"$VOLUME_NAME",64)==0){
+		vol->at_volume_name=type;
+		check_type=0x60;
+	}else if(ntfs_ua_strncmp(name,"$VOLUME_INFORMATION",64)==0){
+		vol->at_volume_information=type;
+		check_type=0x70;
 	}else if(ntfs_ua_strncmp(name,"$DATA",64)==0){
 		vol->at_data=type;
 		check_type=0x80;
@@ -152,9 +169,10 @@ process_attrdef(ntfs_inode* attrdef,ntfs_u8* def)
 	}else if(ntfs_ua_strncmp(name,"$BITMAP",64)==0){
 		vol->at_bitmap=type;
 		check_type=0xB0;
-	}else if(ntfs_ua_strncmp(name,"$SYMBOLIC_LINK",64) ||
-		 ntfs_ua_strncmp(name,"$REPARSE_POINT",64)){
+	}else if(ntfs_ua_strncmp(name,"$SYMBOLIC_LINK",64)==0 ||
+		 ntfs_ua_strncmp(name,"$REPARSE_POINT",64)==0){
 		vol->at_symlink=type;
+		check_type=0xC0;
 	}
 	if(check_type && check_type!=type){
 		ntfs_error("Unexpected type %x for %x\n",type,check_type);
@@ -170,7 +188,7 @@ ntfs_init_attrdef(ntfs_inode* attrdef)
 	ntfs_io io;
 	int offset,error,i;
 	ntfs_attribute *data;
-	buf=ntfs_malloc(4096);
+	buf=ntfs_malloc(4050); /* 90*45 */
 	if(!buf)return ENOMEM;
 	io.fn_put=ntfs_put;
 	io.fn_get=ntfs_get;
@@ -183,9 +201,9 @@ ntfs_init_attrdef(ntfs_inode* attrdef)
 	}
 	do{
 		io.param=buf;
-		io.size=4096;
+		io.size=4050;
 		error=ntfs_readwrite_attr(attrdef,data,offset,&io);
-		for(i=0;!error && i<io.size;i+=0xA0)
+		for(i=0;!error && i<io.size-0xA0;i+=0xA0)
 			error=process_attrdef(attrdef,buf+i);
 		offset+=4096;
 	}while(!error && io.size);
@@ -193,37 +211,78 @@ ntfs_init_attrdef(ntfs_inode* attrdef)
 	return error;
 }
 
+/* ntfs_get_version will determine the NTFS version of the 
+   volume and will return the version in a BCD format, with
+   the MSB being the major version number and the LSB the
+   minor one. Otherwise return <0 on error. 
+   Example: version 3.1 will be returned as 0x0301.
+   This has the obvious limitation of not coping with version
+   numbers above 0x80 but that shouldn't be a problem... */
+int ntfs_get_version(ntfs_inode* volume)
+{
+	ntfs_attribute *volinfo;
+
+	volinfo = ntfs_find_attr(volume, volume->vol->at_volume_information, 0);
+	if (!volinfo) 
+		return -EINVAL;
+	if (!volinfo->resident) {
+		ntfs_error("Volume information attribute is not resident!\n");
+		return -EINVAL;
+	}
+	return ((ntfs_u8*)volinfo->d.data)[8] << 8 | ((ntfs_u8*)volinfo->d.data)[9];
+}
+
 int ntfs_load_special_files(ntfs_volume *vol)
 {
 	int error;
-	ntfs_inode upcase,attrdef;
+	ntfs_inode upcase, attrdef, volume;
 
 	vol->mft_ino=(ntfs_inode*)ntfs_calloc(3*sizeof(ntfs_inode));
 	error=ENOMEM;
+	ntfs_debug(DEBUG_BSD,"Going to load MFT\n");
 	if(!vol->mft_ino || (error=ntfs_init_inode(vol->mft_ino,vol,FILE_MFT)))
 	{
 		ntfs_error("Problem loading MFT\n");
 		return error;
 	}
+	ntfs_debug(DEBUG_BSD,"Going to load MIRR\n");
 	vol->mftmirr=vol->mft_ino+1;
 	if((error=ntfs_init_inode(vol->mftmirr,vol,FILE_MFTMIRR))){
 		ntfs_error("Problem %d loading MFTMirr\n",error);
 		return error;
 	}
+	ntfs_debug(DEBUG_BSD,"Going to load BITMAP\n");
 	vol->bitmap=vol->mft_ino+2;
 	if((error=ntfs_init_inode(vol->bitmap,vol,FILE_BITMAP))){
 		ntfs_error("Problem loading Bitmap\n");
 		return error;
 	}
+	ntfs_debug(DEBUG_BSD,"Going to load UPCASE\n");
 	error=ntfs_init_inode(&upcase,vol,FILE_UPCASE);
 	if(error)return error;
 	ntfs_init_upcase(&upcase);
 	ntfs_clear_inode(&upcase);
+	ntfs_debug(DEBUG_BSD,"Going to load ATTRDEF\n");
 	error=ntfs_init_inode(&attrdef,vol,FILE_ATTRDEF);
 	if(error)return error;
 	error=ntfs_init_attrdef(&attrdef);
 	ntfs_clear_inode(&attrdef);
 	if(error)return error;
+
+	/* Check for NTFS version and if Win2k version (ie. 3.0+)
+	   do not allow write access since the driver write support
+	   is broken, especially for Win2k. */
+	ntfs_debug(DEBUG_BSD,"Going to load VOLUME\n");
+	error = ntfs_init_inode(&volume,vol,FILE_VOLUME);
+	if (error) return error;
+	if ((error = ntfs_get_version(&volume)) >= 0x0300) {
+		NTFS_SB(vol)->s_flags |= MS_RDONLY;
+		ntfs_error("Warning! NTFS volume version is Win2k+: Mounting read-only\n");
+	}
+	ntfs_clear_inode(&volume);
+	if (error < 0) return error;
+	ntfs_debug(DEBUG_BSD, "NTFS volume is version %d.%d\n", error >> 8, error & 0xff);
+
 	return 0;
 }
 
@@ -241,11 +300,22 @@ int ntfs_release_volume(ntfs_volume *vol)
 	return 0;
 }
 
-int ntfs_get_volumesize(ntfs_volume *vol)
+/*
+ * Writes the volume size into vol_size. Returns 0 if successful
+ * or error.
+ */
+int ntfs_get_volumesize(ntfs_volume *vol, long *vol_size )
 {
 	ntfs_io io;
-	char *cluster0=ntfs_malloc(vol->clustersize);
-	int size;
+	ntfs_u64 size;
+	char *cluster0;
+
+	if( !vol_size )
+		return EFAULT;
+
+	cluster0=ntfs_malloc(vol->clustersize);
+	if( !cluster0 )
+		return ENOMEM;
 
 	io.fn_put=ntfs_put;
 	io.fn_get=ntfs_get;
@@ -255,8 +325,10 @@ int ntfs_get_volumesize(ntfs_volume *vol)
 	ntfs_getput_clusters(vol,0,0,&io);
 	size=NTFS_GETU64(cluster0+0x28);
 	ntfs_free(cluster0);
-	size/=vol->clusterfactor;
-	return size;
+	/* FIXME: more than 2**32 cluster */
+	/* FIXME: gcc will emit udivdi3 if we don't truncate it */
+	*vol_size = ((unsigned long)size)/vol->clusterfactor;
+	return 0;
 }
 
 static int nc[16]={4,3,3,2,3,2,2,1,3,2,2,1,2,1,1,0};
@@ -323,7 +395,7 @@ void ntfs_insert_fixups(unsigned char *rec, int secsize)
    Return the largest block found in *cnt. Return 0 on success, ENOSPC if
    all bits are used */
 static int 
-search_bits(unsigned char* bits,int *loc,int *cnt,int l)
+search_bits(unsigned char* bits,ntfs_cluster_t *loc,int *cnt,int l)
 {
 	unsigned char c=0;
 	int bc=0;
@@ -331,7 +403,7 @@ search_bits(unsigned char* bits,int *loc,int *cnt,int l)
 	int start,stop=0,in=0;
 	/* special case searching for a single block */
 	if(*cnt==1){
-		while(l && *cnt==0xFF){
+		while(l && *bits==0xFF){
 			bits++;
 			*loc+=8;
 			l--;
@@ -384,7 +456,7 @@ search_bits(unsigned char* bits,int *loc,int *cnt,int l)
 }
 
 int 
-ntfs_set_bitrange(ntfs_inode* bitmap,int loc,int cnt,int bit)
+ntfs_set_bitrange(ntfs_inode* bitmap,ntfs_cluster_t loc,int cnt,int bit)
 {
 	int bsize,locit,error;
 	unsigned char *bits,*it;
@@ -392,13 +464,13 @@ ntfs_set_bitrange(ntfs_inode* bitmap,int loc,int cnt,int bit)
 
 	io.fn_put=ntfs_put;
 	io.fn_get=ntfs_get;
-	bsize=(cnt+loc%8+7)/8; /* round up */
+	bsize=(cnt+(loc & 7)+7) >> 3; /* round up to multiple of 8*/
 	bits=ntfs_malloc(bsize);
 	io.param=bits;
 	io.size=bsize;
 	if(!bits)
 		return ENOMEM;
-	error=ntfs_read_attr(bitmap,bitmap->vol->at_data,0,loc/8,&io);
+	error=ntfs_read_attr(bitmap,bitmap->vol->at_data,0,loc>>3,&io);
 	if(error || io.size!=bsize){
 		ntfs_free(bits);
 		return error?error:EIO;
@@ -412,7 +484,7 @@ ntfs_set_bitrange(ntfs_inode* bitmap,int loc,int cnt,int bit)
 		else
 			*it &= ~(1<<(locit%8));
 		cnt--;locit++;
-		if(locit%8==7)
+		if(locit%8==0)
 			it++;
 	}
 	while(cnt>8){ /*process full bytes */
@@ -431,7 +503,7 @@ ntfs_set_bitrange(ntfs_inode* bitmap,int loc,int cnt,int bit)
 	/* reset to start */
 	io.param=bits;
 	io.size=bsize;
-	error=ntfs_write_attr(bitmap,bitmap->vol->at_data,0,loc/8,&io);
+	error=ntfs_write_attr(bitmap,bitmap->vol->at_data,0,loc>>3,&io);
 	ntfs_free(bits);
 	if(error)return error;
 	if(io.size!=bsize)
@@ -445,21 +517,24 @@ ntfs_set_bitrange(ntfs_inode* bitmap,int loc,int cnt,int bit)
    it does not matter where the clusters are. Result is 0 if
    success, in which case location and count says what they really got */
 int 
-ntfs_search_bits(ntfs_inode* bitmap, int *location, int *count, int flags)
+ntfs_search_bits(ntfs_inode* bitmap, ntfs_cluster_t *location, int *count, int flags)
 {
 	unsigned char *bits;
 	ntfs_io io;
 	int error=0,found=0;
-	int loc,cnt,bloc=-1,bcnt=0;
+	int cnt,bloc=-1,bcnt=0;
 	int start;
+	ntfs_cluster_t loc;
 
 	bits=ntfs_malloc(2048);
+	if( !bits )
+		return ENOMEM;
 	io.fn_put=ntfs_put;
 	io.fn_get=ntfs_get;
 	io.param=bits;
 
 	/* first search within +/- 8192 clusters */
-	start=*location/8;
+	start=*location>>3;
 	start= start>1024 ? start-1024 : 0;
 	io.size=2048;
 	error=ntfs_read_attr(bitmap,bitmap->vol->at_data,0,start,&io);
@@ -483,7 +558,7 @@ ntfs_search_bits(ntfs_inode* bitmap, int *location, int *count, int flags)
 		error=ntfs_read_attr(bitmap,bitmap->vol->at_data,
 				     0,start,&io);
 		if(error)goto fail;
-		if(io.size==0) {
+		if(io.size==0){
 			if(found)
 				goto success;
 			else{
@@ -524,7 +599,7 @@ ntfs_search_bits(ntfs_inode* bitmap, int *location, int *count, int flags)
 	return error;
 }
 
-int ntfs_allocate_clusters(ntfs_volume *vol, int *location, int *count,
+int ntfs_allocate_clusters(ntfs_volume *vol, ntfs_cluster_t *location, int *count,
 	int flags)
 {
 	int error;
@@ -532,7 +607,7 @@ int ntfs_allocate_clusters(ntfs_volume *vol, int *location, int *count,
 	return error;
 }
 
-int ntfs_deallocate_clusters(ntfs_volume *vol, int location, int count)
+int ntfs_deallocate_clusters(ntfs_volume *vol, ntfs_cluster_t location, int count)
 {
 	int error;
 	error=ntfs_set_bitrange(vol->bitmap,location,count,0);

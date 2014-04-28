@@ -27,6 +27,7 @@
 #include <asm/pgtable.h>
 #include <asm/dma.h>
 #include <asm/fixmap.h>
+#include <asm/e820.h>
 
 extern void show_net_buffers(void);
 extern unsigned long init_smp_mappings(unsigned long);
@@ -119,24 +120,28 @@ int do_check_pgt_cache(int low, int high)
 pte_t * __bad_pagetable(void)
 {
 	extern char empty_bad_page_table[PAGE_SIZE];
+	int d0, d1;
 
-	__asm__ __volatile__("cld ; rep ; stosl":
-		:"a" (pte_val(BAD_PAGE)),
-		 "D" ((long) empty_bad_page_table),
-		 "c" (PAGE_SIZE/4)
-		:"di","cx");
+	__asm__ __volatile__("cld ; rep ; stosl"
+			     : "=&D" (d0), "=&c" (d1)
+			     : "a" (pte_val(BAD_PAGE)),
+			     "0" ((long) empty_bad_page_table),
+			     "1" (PAGE_SIZE/4)
+			     : "memory");
 	return (pte_t *) empty_bad_page_table;
 }
 
 pte_t __bad_page(void)
 {
 	extern char empty_bad_page[PAGE_SIZE];
+	int d0, d1;
 
-	__asm__ __volatile__("cld ; rep ; stosl":
-		:"a" (0),
-		 "D" ((long) empty_bad_page),
-		 "c" (PAGE_SIZE/4)
-		:"di","cx");
+	__asm__ __volatile__("cld ; rep ; stosl"
+			     : "=&D" (d0), "=&c" (d1)
+			     : "a" (0),
+			     "0" ((long) empty_bad_page),
+			     "1" (PAGE_SIZE/4)
+			     : "memory");
 	return pte_mkdirty(mk_pte((unsigned long) empty_bad_page, PAGE_SHARED));
 }
 
@@ -164,6 +169,8 @@ void show_mem(void)
 	printk("%d reserved pages\n",reserved);
 	printk("%d pages shared\n",shared);
 	printk("%d pages swap cached\n",cached);
+	printk("%ld pages in file cache\n",page_cache_size-cached);
+	printk("%ld pages in page cache\n",page_cache_size);
 	printk("%ld pages in page table cache\n",pgtable_cache_size);
 	show_buffers();
 #ifdef CONFIG_NET
@@ -178,33 +185,8 @@ extern unsigned long free_area_init(unsigned long, unsigned long);
 extern char _text, _etext, _edata, __bss_start, _end;
 extern char __init_begin, __init_end;
 
-#define X86_CR4_VME		0x0001		/* enable vm86 extensions */
-#define X86_CR4_PVI		0x0002		/* virtual interrupts flag enable */
-#define X86_CR4_TSD		0x0004		/* disable time stamp at ipl 3 */
-#define X86_CR4_DE		0x0008		/* enable debugging extensions */
-#define X86_CR4_PSE		0x0010		/* enable page size extensions */
-#define X86_CR4_PAE		0x0020		/* enable physical address extensions */
-#define X86_CR4_MCE		0x0040		/* Machine check enable */
-#define X86_CR4_PGE		0x0080		/* enable global pages */
-#define X86_CR4_PCE		0x0100		/* enable performance counters at ipl 3 */
-
-/*
- * Save the cr4 feature set we're using (ie
- * Pentium 4MB enable and PPro Global page
- * enable), so that any CPU's that boot up
- * after us can get the correct flags.
- */
 unsigned long mmu_cr4_features __initdata = 0;
 
-static inline void set_in_cr4(unsigned long mask)
-{
-	mmu_cr4_features |= mask;
-	__asm__("movl %%cr4,%%eax\n\t"
-		"orl %0,%%eax\n\t"
-		"movl %%eax,%%cr4\n"
-		: : "irg" (mask)
-		:"ax");
-}
 
 /*
  * allocate page table(s) for compile-time fixed mappings
@@ -275,38 +257,6 @@ __initfunc(unsigned long paging_init(unsigned long start_mem, unsigned long end_
  * kernel.
  * It may also hold the MP configuration table when we are booting SMP.
  */
-#ifdef __SMP__
-	/*
-	 * FIXME: Linux assumes you have 640K of base ram..
-	 * this continues the error...
-	 *
-	 * 1) Scan the bottom 1K for a signature
-	 * 2) Scan the top 1K of base RAM
-	 * 3) Scan the 64K of bios
-	 */
-	if (!smp_scan_config(0x0,0x400) &&
-	    !smp_scan_config(639*0x400,0x400) &&
-	    !smp_scan_config(0xF0000,0x10000)) {
-		/*
-		 * If it is an SMP machine we should know now, unless the
-		 * configuration is in an EISA/MCA bus machine with an
-		 * extended bios data area. 
-		 *
-		 * there is a real-mode segmented pointer pointing to the
-		 * 4K EBDA area at 0x40E, calculate and scan it here.
-		 *
-		 * NOTE! There are Linux loaders that will corrupt the EBDA
-		 * area, and as such this kind of SMP config may be less
-		 * trustworthy, simply because the SMP table may have been
-		 * stomped on during early boot.
-		 */
-		address = *(unsigned short *)phys_to_virt(0x40E);
-		address<<=4;
-		smp_scan_config(address, 0x1000);
-		if (smp_found_config)
-			printk(KERN_WARNING "WARNING: MP table in the EBDA can be UNSAFE, contact linux-smp@vger.rutgers.edu if you experience SMP problems!\n");
-	}
-#endif
 	start_mem = PAGE_ALIGN(start_mem);
 	address = PAGE_OFFSET;
 	pg_dir = swapper_pg_dir;
@@ -403,7 +353,7 @@ __initfunc(void test_wp_bit(void))
 	if (boot_cpu_data.wp_works_ok < 0) {
 		boot_cpu_data.wp_works_ok = 0;
 		printk("No.\n");
-#ifndef CONFIG_M386
+#ifdef CONFIG_X86_WP_WORKS_OK
 		panic("This kernel doesn't support CPU's with broken WP. Recompile it for a 386!");
 #endif
 	} else
@@ -441,20 +391,36 @@ __initfunc(void mem_init(unsigned long start_mem, unsigned long end_mem))
 #endif
 	start_mem = PAGE_ALIGN(start_mem);
 
-	/*
-	 * IBM messed up *AGAIN* in their thinkpad: 0xA0000 -> 0x9F000.
-	 * They seem to have done something stupid with the floppy
-	 * controller as well..
-	 */
-	while (start_low_mem < 0x9f000+PAGE_OFFSET) {
-		clear_bit(PG_reserved, &mem_map[MAP_NR(start_low_mem)].flags);
-		start_low_mem += PAGE_SIZE;
+	for (tmp = __pa(start_low_mem); tmp < __pa(end_mem);
+	     tmp += PAGE_SIZE) {
+		struct page * page = mem_map + (tmp >> PAGE_SHIFT);
+		int i;
+		extern struct e820map e820;
+
+		/* don't include kernel memory and bootmem allocations */
+		if (tmp >= 0x100000 && tmp < __pa(start_mem))
+			continue;
+
+		for (i = 0; i < e820.nr_map; i++) {
+			unsigned long long start, end;
+			/* RAM? */
+			if (e820.map[i].type != E820_RAM)
+				continue;
+			start = e820.map[i].addr;
+			if (start >= 0xffffffff)
+				continue;
+			end = e820.map[i].addr + e820.map[i].size;
+			if (start >= end)
+				continue;
+			if (end > 0xffffffff)
+				end = 0xffffffff;
+
+			/* start and end are valid here */
+			if (start <= tmp && tmp+PAGE_SIZE <= end)
+				clear_bit(PG_reserved, &page->flags);
+		}
 	}
 
-	while (start_mem < end_mem) {
-		clear_bit(PG_reserved, &mem_map[MAP_NR(start_mem)].flags);
-		start_mem += PAGE_SIZE;
-	}
 	for (tmp = PAGE_OFFSET ; tmp < end_mem ; tmp += PAGE_SIZE) {
 		if (tmp >= MAX_DMA_ADDRESS)
 			clear_bit(PG_DMA, &mem_map[MAP_NR(tmp)].flags);

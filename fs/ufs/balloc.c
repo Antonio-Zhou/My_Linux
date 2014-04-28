@@ -93,7 +93,7 @@ void ufs_free_fragments (struct inode * inode, unsigned fragment, unsigned count
 	ufs_fragacct(sb, blkmap, ucg->cg_frsum, 1);
 
 	/*
-	 * Trying to reasembly free fragments into block
+	 * Trying to reassemble free fragments into block
 	 */
 	blkno = ufs_fragstoblks (bbase);
 	if (ubh_isblockset(UCPI_UBH, ucpi->c_freeoff, blkno)) {
@@ -360,14 +360,22 @@ unsigned ufs_new_fragments (struct inode * inode, u32 * p, unsigned fragment,
 	if (result) {
 		for (i = 0; i < oldcount; i++) {
 			bh = bread (sb->s_dev, tmp + i, sb->s_blocksize);
-			mark_buffer_clean (bh);
-			bh->b_blocknr = result + i;
-			mark_buffer_dirty (bh, 0);
-			if (IS_SYNC(inode)) {
-				ll_rw_block (WRITE, 1, &bh);
-				wait_on_buffer (bh);
+			if(bh)
+			{
+				mark_buffer_clean (bh);
+				bh->b_blocknr = result + i;
+				mark_buffer_dirty (bh, 0);
+				if (IS_SYNC(inode)) {
+					ll_rw_block (WRITE, 1, &bh);
+					wait_on_buffer (bh);
+				}
+				brelse (bh);
 			}
-			brelse (bh);
+			else
+			{
+				printk(KERN_ERR "ufs_new_fragments: bread fail\n");
+				return 0;
+			}
 		}
 		*p = SWAB32(result);
 		*err = 0;
@@ -436,7 +444,7 @@ unsigned ufs_add_fragments (struct inode * inode, unsigned fragment,
 	fragsize = i - oldcount;
 	if (!SWAB32(ucg->cg_frsum[fragsize]))
 		ufs_panic (sb, "ufs_add_fragments",
-			"internal error or corruted bitmap on cg %u", cgno);
+			"internal error or corrupted bitmap on cg %u", cgno);
 	DEC_SWAB32(ucg->cg_frsum[fragsize]);
 	if (fragsize != count)
 		INC_SWAB32(ucg->cg_frsum[fragsize - count]);

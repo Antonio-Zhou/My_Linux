@@ -10,6 +10,8 @@
  */
 
 #include <linux/config.h>
+#include <linux/types.h>
+#include <asm/unaligned.h>
 
 #define CONFIG_MSDOS_PARTITION 1
 
@@ -31,17 +33,20 @@
 #define LINUX_EXTENDED_PARTITION 0x85
 #define WIN98_EXTENDED_PARTITION 0x0f
 
-#define LINUX_SWAP_PARTITION	0x82
+#define LINUX_SWAP_PARTITION		0x82
+#define LINUX_RAID_PARTITION		0xfd	/* autodetect RAID partition */
+#define LINUX_OLD_RAID_PARTITION	0x86
 
 #ifdef CONFIG_SOLARIS_X86_PARTITION
 #define SOLARIS_X86_PARTITION	LINUX_SWAP_PARTITION
 #endif
 
 #define DM6_PARTITION		0x54	/* has DDO: use xlated geom & offset */
-#define EZD_PARTITION		0x55	/* EZ-DRIVE:  same as DM6 (we think) */
+#define EZD_PARTITION		0x55	/* EZ-DRIVE: remap sector 1 to 0 */
 #define DM6_AUX1PARTITION	0x51	/* no DDO:  use xlated geom */
 #define DM6_AUX3PARTITION	0x53	/* no DDO:  use xlated geom */
 	
+
 struct partition {
 	unsigned char boot_ind;		/* 0x80 - active */
 	unsigned char head;		/* starting head */
@@ -58,7 +63,31 @@ struct partition {
 struct hd_struct {
 	long start_sect;
 	long nr_sects;
+	int type;		/* RAID or normal */
 };
+
+/*
+ * partition types Linux cares about.
+ *
+ * currently there are 'normal' and RAID types.
+ */
+
+static inline unsigned int ptype (unsigned char raw_type)
+{
+	switch (raw_type) {
+		case LINUX_OLD_RAID_PARTITION:
+			return LINUX_OLD_RAID_PARTITION;
+		case LINUX_RAID_PARTITION:
+			return LINUX_RAID_PARTITION;
+		default:
+	}
+	return 0;
+}
+
+/*
+ * the maximum length a given partition name can take (eg. "scd11")
+ */
+#define MAX_DISKNAME_LEN 32
 
 struct gendisk {
 	int major;			/* major number of driver */
@@ -108,12 +137,21 @@ struct solaris_x86_vtoc {
 #ifdef CONFIG_BSD_DISKLABEL
 /*
  * BSD disklabel support by Yossi Gottlieb <yogo@math.tau.ac.il>
+ * updated by Marc Espie <Marc.Espie@openbsd.org>
  */
+#define FREEBSD_PARTITION	0xa5    /* FreeBSD Partition ID */
+#define OPENBSD_PARTITION	0xa6    /* OpenBSD Partition ID */
+#define NETBSD_PARTITION	0xa9    /* NetBSD Partition ID */
+#define BSDI_PARTITION		0xb7    /* BSDI Partition ID */
 
-#define BSD_PARTITION		0xa5	/* Partition ID */
+/* Ours is not to wonder why.. */
+#define BSD_PARTITION		FREEBSD_PARTITION
+
+/* check against BSD src/sys/sys/disklabel.h for consistency */
 
 #define BSD_DISKMAGIC	(0x82564557UL)	/* The disk magic number */
 #define BSD_MAXPARTITIONS	8
+#define OPENBSD_MAXPARTITIONS	16
 #define BSD_FS_UNUSED		0	/* disklabel unused partition entry ID */
 struct bsd_disklabel {
 	__u32	d_magic;		/* the magic number */
@@ -160,7 +198,75 @@ struct bsd_disklabel {
 
 #endif	/* CONFIG_BSD_DISKLABEL */
 
+#ifdef CONFIG_UNIXWARE_DISKLABEL
+/*
+ * Unixware slices support by Andrzej Krzysztofowicz <ankry@mif.pg.gda.pl>
+ * and Krzysztof G. Baranowski <kgb@knm.org.pl>
+ */
+
+#define UNIXWARE_PARTITION     0x63		/* Partition ID, same as */
+						/* GNU_HURD and SCO Unix */
+#define UNIXWARE_DISKMAGIC     (0xCA5E600DUL)	/* The disk magic number */
+#define UNIXWARE_DISKMAGIC2    (0x600DDEEEUL)	/* The slice table magic nr */
+#define UNIXWARE_NUMSLICE      16
+#define UNIXWARE_FS_UNUSED     0		/* Unused slice entry ID */
+
+struct unixware_slice {
+	__u16   s_label;	/* label */
+	__u16   s_flags;	/* permission flags */
+	__u32   start_sect;	/* starting sector */
+	__u32   nr_sects;	/* number of sectors in slice */
+};
+
+struct unixware_disklabel {
+	__u32   d_type;               	/* drive type */
+	__u32   d_magic;                /* the magic number */
+	__u32   d_version;              /* version number */
+	char    d_serial[12];           /* serial number of the device */
+	__u32   d_ncylinders;           /* # of data cylinders per device */
+	__u32   d_ntracks;              /* # of tracks per cylinder */
+	__u32   d_nsectors;             /* # of data sectors per track */
+	__u32   d_secsize;              /* # of bytes per sector */
+	__u32   d_part_start;           /* # of first sector of this partition */
+	__u32   d_unknown1[12];         /* ? */
+ 	__u32	d_alt_tbl;              /* byte offset of alternate table */
+ 	__u32	d_alt_len;              /* byte length of alternate table */
+ 	__u32	d_phys_cyl;             /* # of physical cylinders per device */
+ 	__u32	d_phys_trk;             /* # of physical tracks per cylinder */
+ 	__u32	d_phys_sec;             /* # of physical sectors per track */
+ 	__u32	d_phys_bytes;           /* # of physical bytes per sector */
+ 	__u32	d_unknown2;             /* ? */
+	__u32   d_unknown3;             /* ? */
+	__u32	d_pad[8];               /* pad */
+
+	struct unixware_vtoc {
+		__u32	v_magic;		/* the magic number */
+		__u32	v_version;		/* version number */
+		char	v_name[8];		/* volume name */
+		__u16	v_nslices;		/* # of slices */
+		__u16	v_unknown1;		/* ? */
+		__u32	v_reserved[10];		/* reserved */
+		struct unixware_slice
+			v_slice[UNIXWARE_NUMSLICE];	/* slice headers */
+	} vtoc;
+
+};  /* 408 */
+
+#endif /* CONFIG_UNIXWARE_DISKLABEL */
+
 extern struct gendisk *gendisk_head;	/* linked list of disks */
+
+#ifdef CONFIG_ARCH_S390
+/*
+ * dasd_device_name(...)
+ * formats the devicename of the indicated disk
+ * into the supplied buffer, and returns a pointer
+ * to that same buffer (for convenience).
+ * Because the S390 DASDs span a larger namespace than other
+ * platforms we need our own function.
+ */
+int (*genhd_dasd_name)(char*,int,int,struct gendisk*); 
+#endif
 
 /*
  * disk_name() is used by genhd.c and md.c.

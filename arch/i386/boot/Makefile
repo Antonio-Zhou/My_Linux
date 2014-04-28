@@ -40,7 +40,7 @@ zlilo: $(CONFIGURE) $(BOOTIMAGE)
 	if [ -x /sbin/lilo ]; then /sbin/lilo; else /etc/lilo/install; fi
 
 install: $(CONFIGURE) $(BOOTIMAGE)
-	sh -x ./install.sh $(VERSION).$(PATCHLEVEL).$(SUBLEVEL) $(BOOTIMAGE) $(TOPDIR)/System.map "$(INSTALL_PATH)"
+	sh -x ./install.sh $(KERNELRELEASE) $(BOOTIMAGE) $(TOPDIR)/System.map "$(INSTALL_PATH)"
 
 tools/build: tools/build.c
 	$(HOSTCC) $(HOSTCFLAGS) -o $@ $< -I$(TOPDIR)/include
@@ -51,7 +51,7 @@ setup: setup.o
 setup.o: setup.s
 	$(AS86) -o $@ $<
 
-setup.s: setup.S video.S Makefile $(BOOT_INCL) $(TOPDIR)/include/linux/version.h
+setup.s: setup.S video.S Makefile $(BOOT_INCL) $(TOPDIR)/include/linux/version.h $(TOPDIR)/include/linux/compile.h
 	$(CPP) -traditional $(SVGA_MODE) $(RAMDISK) $< -o $@
 
 bsetup: bsetup.o
@@ -60,7 +60,7 @@ bsetup: bsetup.o
 bsetup.o: bsetup.s
 	$(AS86) -o $@ $<
 
-bsetup.s: setup.S video.S Makefile $(BOOT_INCL) $(TOPDIR)/include/linux/version.h
+bsetup.s: setup.S video.S Makefile $(BOOT_INCL) $(TOPDIR)/include/linux/version.h $(TOPDIR)/include/linux/compile.h
 	$(CPP) -D__BIG_KERNEL__ -traditional $(SVGA_MODE) $(RAMDISK) $< -o $@
 
 bootsect: bootsect.o

@@ -563,6 +563,7 @@ void scsi_sleep (int timeout)
     struct semaphore sem = MUTEX_LOCKED;
     struct timer_list timer;
 
+    init_timer(&timer);
     timer.data = (unsigned long) &sem;
     timer.expires = jiffies + timeout;
     timer.function = (void (*)(unsigned long))scsi_sleep_done;
@@ -969,7 +970,7 @@ int scsi_decide_disposition (Scsi_Cmnd * SCpnt)
       /*
        * Note - this means that we just report the status back to the
        * top level driver, not that we actually think that it indicates
-       * sucess.
+       * success.
        */
       return SUCCESS;
       /*
@@ -1182,14 +1183,14 @@ STATIC  int scsi_check_sense (Scsi_Cmnd * SCpnt)
       }
 
     if (SCpnt->sense_buffer[2] & 0xe0)
-	return FAILED;
+	return SUCCESS;
 
     switch (SCpnt->sense_buffer[2] & 0xf)
     {
     case NO_SENSE:
 	return SUCCESS;
     case RECOVERED_ERROR:
-	return SOFT_ERROR;
+	return /* SOFT_ERROR */ SUCCESS;
 
     case ABORTED_COMMAND:
 	return NEEDS_RETRY;
@@ -1212,18 +1213,17 @@ STATIC  int scsi_check_sense (Scsi_Cmnd * SCpnt)
     case COPY_ABORTED:
     case VOLUME_OVERFLOW:
     case MISCOMPARE:
+        return SUCCESS;
 
     case MEDIUM_ERROR:
-	return FAILED;
+	return NEEDS_RETRY;
 
     case ILLEGAL_REQUEST:
-	return SUCCESS;
-
     case BLANK_CHECK:
     case DATA_PROTECT:
     case HARDWARE_ERROR:
     default:
-	return FAILED;
+	return SUCCESS;
     }
 }
 
@@ -1926,6 +1926,7 @@ scsi_error_handler(void * data)
 	int	               rtn;
 	struct semaphore sem = MUTEX_LOCKED;
         unsigned long flags;
+        struct fs_struct *fs;
 
 	lock_kernel();
 
@@ -1936,16 +1937,22 @@ scsi_error_handler(void * data)
 	 */
 	exit_mm(current);
 
-
 	current->session = 1;
 	current->pgrp = 1;
-        /*
-         * FIXME(eric) this is still a child process of the one that did the insmod.
-         * This needs to be attached to task[0] instead.
-         */
+	
+	/* Become as one with the init task */
+
+ 	exit_files(current);
+	current->files = init_task.files;
+	atomic_inc(&current->files->count);
+ 		
+	exit_fs(current);	/* current->fs->count--; */
+	fs = init_task.fs;
+	current->fs = fs;
+	atomic_inc(&fs->count);
 
 	siginitsetinv(&current->blocked, SHUTDOWN_SIGS);
-        current->fs->umask = 0;
+
 
 	/*
 	 * Set the name of this process.

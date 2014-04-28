@@ -14,6 +14,7 @@ CONFIG_CHRP=y
 # CONFIG_ALL_PPC is not set
 # CONFIG_APUS is not set
 # CONFIG_MBX is not set
+# CONFIG_SMP is not set
 CONFIG_MACH_SPECIFIC=y
 
 #
@@ -84,7 +85,6 @@ CONFIG_PARIDE_PARPORT=y
 # CONFIG_PACKET is not set
 # CONFIG_NETLINK is not set
 # CONFIG_FIREWALL is not set
-CONFIG_NET_ALIAS=y
 # CONFIG_FILTER is not set
 CONFIG_UNIX=y
 CONFIG_INET=y

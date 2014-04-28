@@ -9,12 +9,13 @@
  *		as published by the Free Software Foundation; either version
  *		2 of the License, or (at your option) any later version.
  *
- * Author:	Alan Cox, <alan@cymru.net>
+ * Author:	Alan Cox, <alan@redhat.com>
  *
  * Fixes:
  */
 
 #include <linux/config.h>
+#include <linux/version.h>
 #include <linux/module.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
@@ -24,12 +25,12 @@
 #include <linux/errno.h>
 #include <linux/videodev.h>
 
+#if LINUX_VERSION_CODE >= 0x020100
 #include <asm/uaccess.h>
+#endif
 #include <asm/system.h>
 
-#ifdef CONFIG_KMOD
 #include <linux/kmod.h>
-#endif
 
 
 #define VIDEO_NUM_DEVICES	256 
@@ -53,6 +54,9 @@ extern int init_colour_qcams(struct video_init *);
 #ifdef CONFIG_VIDEO_BWQCAM
 extern int init_bw_qcams(struct video_init *);
 #endif
+#ifdef CONFIG_VIDEO_CPIA
+extern int cpia_init(struct video_init *);
+#endif
 #ifdef CONFIG_VIDEO_PLANB
 extern int init_planbs(struct video_init *);
 #endif
@@ -62,14 +66,32 @@ extern int aztech_init(struct video_init *);
 #ifdef CONFIG_RADIO_RTRACK
 extern int rtrack_init(struct video_init *);
 #endif
+#ifdef CONFIG_RADIO_RTRACK2
+extern int rtrack2_init(struct video_init *);
+#endif
 #ifdef CONFIG_RADIO_SF16FMI
 extern int fmi_init(struct video_init *);
 #endif
 #ifdef CONFIG_RADIO_MIROPCM20
 extern int pcm20_init(struct video_init *);
 #endif
+#ifdef CONFIG_RADIO_GEMTEK
+extern int gemtek_init(struct video_init *);
+#endif
+#ifdef CONFIG_RADIO_TYPHOON
+extern int typhoon_init(struct video_init *);
+#endif
+#ifdef CONFIG_RADIO_CADET
+extern int cadet_init(struct video_init *);
+#endif
+#ifdef CONFIG_RADIO_TRUST
+extern int trust_init(struct video_init *);
+#endif
 #ifdef CONFIG_VIDEO_PMS
 extern int init_pms_cards(struct video_init *);
+#endif
+#ifdef CONFIG_VIDEO_ZORAN
+extern int init_zoran_cards(struct video_init *);
 #endif
 
 static struct video_init video_init_list[]={
@@ -85,6 +107,9 @@ static struct video_init video_init_list[]={
 #endif	
 #ifdef CONFIG_VIDEO_BWQCAM
 	{"bw-qcam", init_bw_qcams},
+#endif        
+#ifdef CONFIG_VIDEO_CPIA
+        {"cpia", cpia_init},
 #endif	
 #ifdef CONFIG_VIDEO_PMS
 	{"PMS", init_pms_cards}, 
@@ -97,17 +122,35 @@ static struct video_init video_init_list[]={
 #endif	
 #ifdef CONFIG_RADIO_RTRACK
 	{"RTrack", rtrack_init}, 
-#endif	
+#endif 
+#ifdef CONFIG_RADIO_RTRACK2
+	{"RTrack2", rtrack2_init}, 
+#endif
 #ifdef CONFIG_RADIO_SF16FMI
 	{"SF16FMI", fmi_init}, 
-#endif
+#endif	
 #ifdef CONFIG_RADIO_MIROPCM20
 	{"PCM20", pcm20_init}, 
+#endif
+#ifdef CONFIG_RADIO_CADET
+	{"Cadet", cadet_init},
+#endif
+#ifdef CONFIG_RADIO_GEMTEK
+	{"GemTek", gemtek_init},
+#endif
+#ifdef CONFIG_RADIO_TYPHOON
+	{"radio-typhoon", typhoon_init},
+#endif
+#ifdef CONFIG_VIDEO_ZORAN
+	{"zoran", init_zoran_cards},
+#endif	
+#ifdef CONFIG_RADIO_TRUST
+	{"Trust", trust_init}, 
 #endif	
 	{"end", NULL}
 };
 
-
+#if LINUX_VERSION_CODE >= 0x020100
 /*
  *	Read will do some smarts later on. Buffer pin etc.
  */
@@ -121,6 +164,7 @@ static ssize_t video_read(struct file *file,
 	else
 		return -EINVAL;
 }
+
 
 
 /*
@@ -138,7 +182,6 @@ static ssize_t video_write(struct file *file, const char *buf,
 		return 0;
 }
 
-
 /*
  *	Poll to see if we're readable, can probably be used for timing on incoming
  *  frames, etc..
@@ -152,6 +195,32 @@ static unsigned int video_poll(struct file *file, poll_table * wait)
 	else
 		return 0;
 }
+
+
+#else
+static int video_read(struct inode *ino,struct file *file,
+			  char *buf, int count)
+{
+         int err;
+	 struct video_device *vfl=video_device[MINOR(ino->i_rdev)];
+	 if (vfl->read)
+	   return vfl->read(vfl, buf, count, file->f_flags&O_NONBLOCK);
+	 else
+	   return -EINVAL;
+}
+
+static int video_write(struct inode *ino,struct file *file, const char *buf, 
+			int count)
+{
+	int err;
+	struct video_device *vfl=video_device[MINOR(ino->i_rdev)];
+	if (vfl->write)
+	  return vfl->write(vfl, buf, count, file->f_flags&O_NONBLOCK);
+	else
+	  return 0;
+}
+
+#endif
 
 /*
  *	Open a video device.
@@ -168,14 +237,12 @@ static int video_open(struct inode *inode, struct file *file)
 		
 	vfl=video_device[minor];
 	if(vfl==NULL) {
-#ifdef CONFIG_KMOD
 		char modname[20];
 
 		sprintf (modname, "char-major-%d-%d", VIDEO_MAJOR, minor);
 		request_module(modname);
 		vfl=video_device[minor];
 		if (vfl==NULL)
-#endif
 			return -ENODEV;
 	}
 	if(vfl->busy)
@@ -212,11 +279,19 @@ static int video_release(struct inode *inode, struct file *file)
  *	image ?
  */
  
+#if LINUX_VERSION_CODE >= 0x020100
 static long long video_lseek(struct file * file,
 			  long long offset, int origin)
 {
 	return -ESPIPE;
 }
+#else
+static long long video_lseek(struct inode *inode, struct file * file,
+			     long long offset, int origin)
+{
+	return -ESPIPE;
+}
+#endif
 
 
 static int video_ioctl(struct inode *inode, struct file *file,
@@ -240,9 +315,16 @@ static int video_ioctl(struct inode *inode, struct file *file,
  */
  
  
+#if LINUX_VERSION_CODE >= 0x020100
 int video_mmap(struct file *file, struct vm_area_struct *vma)
 {
 	struct video_device *vfl=video_device[MINOR(file->f_dentry->d_inode->i_rdev)];
+#else
+static int video_mmap(struct inode * ino, struct file * file,
+		      struct vm_area_struct * vma)
+{
+	struct video_device *vfl=video_device[MINOR(ino->i_rdev)];
+#endif
 	if(vfl->mmap)
 		return vfl->mmap(vfl, (char *)vma->vm_start, 
 				(unsigned long)(vma->vm_end-vma->vm_start));
@@ -326,11 +408,17 @@ static struct file_operations video_fops=
 	video_read,
 	video_write,
 	NULL,	/* readdir */
+#if LINUX_VERSION_CODE >= 0x020100
 	video_poll,	/* poll */
+#else
+	NULL,
+#endif
 	video_ioctl,
 	video_mmap,
 	video_open,
+#if LINUX_VERSION_CODE >= 0x020100
 	NULL,		/* flush */
+#endif
 	video_release
 };
 
@@ -372,7 +460,15 @@ void cleanup_module(void)
 	unregister_chrdev(VIDEO_MAJOR, "video_capture");
 }
 
+
+
+
+
+
+
 #endif
 
+#if LINUX_VERSION_CODE >= 0x020100
 EXPORT_SYMBOL(video_register_device);
 EXPORT_SYMBOL(video_unregister_device);
+#endif

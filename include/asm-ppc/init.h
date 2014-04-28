@@ -1,7 +1,7 @@
 #ifndef _PPC_INIT_H
 #define _PPC_INIT_H
 
-#if __GNUC__ > 2 || __GNUC_MINOR__ >= 90 /* egcs */
+#if (__GNUC__ > 2) || (__GNUC__ == 2 && __GNUC_MINOR__ >= 90) /* egcs */
 #define __init __attribute__ ((__section__ (".text.init")))
 #define __initdata __attribute__ ((__section__ (".data.init")))
 #define __initfunc(__arginit) \
@@ -31,6 +31,9 @@
 #define __FINIT	.previous
 #define __INITDATA	.section	".data.init",#alloc,#write
 
+#define __cacheline_aligned __attribute__ \
+			 ((__section__ (".data.cacheline_aligned")))
+
 #else /* not egcs */
 
 #define __init
@@ -52,5 +55,7 @@
 #define __openfirmware
 #define __openfirmwaredata
 #define __openfirmwarefunc(x) x
+
+#define __cacheline_aligned
 #endif /* egcs */
 #endif

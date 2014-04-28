@@ -16,6 +16,7 @@
 #include <asm/amigahw.h>
 #include <asm/pgtable.h>
 #include <asm/delay.h>
+#include <asm/io.h>
 
 #include <video/fbcon.h>
 #include <video/fbcon-mfb.h>
@@ -203,8 +204,8 @@ static int  clgen_pan_display(const struct fb_var_screeninfo *var,
 			      struct fb_info_gen *info);
 static int  clgen_blank(int blank_mode, struct fb_info_gen *info);
 
-static void clgen_set_dispsw(const void *par, struct display *disp,
-			     struct fb_info_gen *info);
+static void clgen_set_disp(const void *par, struct display *disp,
+			   struct fb_info_gen *info);
 
 /* function table of the above functions */
 static struct fbgen_hwswitch clgen_hwswitch = 
@@ -219,7 +220,7 @@ static struct fbgen_hwswitch clgen_hwswitch =
     clgen_setcolreg,
     clgen_pan_display,
     clgen_blank,
-    clgen_set_dispsw
+    clgen_set_disp
 };
 
 /* Text console acceleration */
@@ -1371,13 +1372,14 @@ static void switch_monitor(int on)
 	}
 }
 
-static void clgen_set_dispsw(const void *par, struct display *disp,
-			     struct fb_info_gen *info)
+static void clgen_set_disp(const void *par, struct display *disp,
+			   struct fb_info_gen *info)
 {
     struct clgenfb_par *_par = (struct clgenfb_par*) par;
     struct clgenfb_info *info2 = (struct clgenfb_info *)info;
 
-    printk("clgen_get_dispsw(): ");
+    printk("clgen_set_disp(): ");
+    disp->screen_base = info2->fbmem;
     switch (_par->var.bits_per_pixel)
     {
 #ifdef FBCON_HAS_MFB
@@ -1533,15 +1535,13 @@ __initfunc(void clgenfb_init(void))
         /* begin of the board, but the begin of RAM. */
 	/* for P4, map in its address space in 2 chunks (### TEST! ) */
 	/* (note the ugly hardcoded 16M number) */
-	fb_info->regs = (unsigned char *)kernel_map(board_addr, 16777216, 
-	                                      KERNELMAP_NOCACHE_SER, NULL);
+	fb_info->regs = ioremap(board_addr, 16777216);
         DEBUG printk(KERN_INFO "clgen: Virtual address for board set to: $%p\n", fb_info->regs);
 	fb_info->regs += 0x600000;
 	fb_info->fbregs_phys = board_addr + 0x600000;
 
 	fb_info->fbmem_phys = board_addr + 16777216;
-	fb_info->fbmem = kernel_map(fb_info->fbmem_phys, 16777216, 
-			      KERNELMAP_NOCACHE_SER, NULL);
+	fb_info->fbmem = ioremap(fb_info->fbmem_phys, 16777216);
 	DEBUG printk(KERN_INFO "clgen: (RAM start set to: $%lx)\n", fb_info->fbmem);
     }
     else
@@ -1551,8 +1551,7 @@ __initfunc(void clgenfb_init(void))
 
 	fb_info->fbmem_phys = board_addr;
         if (board_addr > 0x01000000)
-	    fb_info->fbmem = kernel_map(board_addr, board_size, 
-				  KERNELMAP_NOCACHE_SER, NULL);
+	    fb_info->fbmem = ioremap(board_addr, board_size);
 	else
 	    fb_info->fbmem = ZTWO_VADDR(board_addr);
 
@@ -1672,7 +1671,7 @@ __initfunc(void clgenfb_setup(char *options, int *ints))
 int init_module(void)
 {
     printk("init_module()\n");
-    clgenfb_init(0);
+    clgenfb_init();
     return 0;
 }
 

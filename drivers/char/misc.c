@@ -43,15 +43,10 @@
 #include <linux/proc_fs.h>
 #include <linux/stat.h>
 #include <linux/init.h>
-#ifdef CONFIG_APM
-#include <linux/apm_bios.h>
-#endif
 
 #include <linux/tty.h>
 #include <linux/selection.h>
-#ifdef CONFIG_KMOD
 #include <linux/kmod.h>
-#endif
 
 /*
  * Head entry for the doubly linked miscdevice list
@@ -75,6 +70,9 @@ extern int adb_mouse_init(void);
 extern void watchdog_init(void);
 extern void wdt_init(void);
 extern void acq_init(void);
+extern void wdt60xx_init(void);
+extern void sbc60xxwdt_init(void);
+extern void dtlk_init(void);
 extern void pcwatchdog_init(void);
 extern int rtc_init(void);
 extern int rtc_DP8570A_init(void);
@@ -85,8 +83,8 @@ extern int radio_init(void);
 extern void hfmodem_init(void);
 extern int pc110pad_init(void);
 extern int pmu_device_init(void);
+extern int tosh_init(void);
 
-#ifdef CONFIG_PROC_FS
 static int misc_read_proc(char *buf, char **start, off_t offset,
 			  int len, int *eof, void *private)
 {
@@ -99,7 +97,6 @@ static int misc_read_proc(char *buf, char **start, off_t offset,
 	return len > offset ? len - offset : 0;
 }
 
-#endif /* PROC_FS */
 
 static int misc_open(struct inode * inode, struct file * file)
 {
@@ -110,7 +107,6 @@ static int misc_open(struct inode * inode, struct file * file)
 	while ((c != &misc_list) && (c->minor != minor))
 		c = c->next;
 	if (c == &misc_list) {
-#ifdef CONFIG_KMOD
 		char modname[20];
 		sprintf(modname, "char-major-%d-%d", MISC_MAJOR, minor);
 		request_module(modname);
@@ -118,7 +114,6 @@ static int misc_open(struct inode * inode, struct file * file)
 		while ((c != &misc_list) && (c->minor != minor))
 			c = c->next;
 		if (c == &misc_list)
-#endif
 			return -ENODEV;
 	}
 
@@ -143,8 +138,17 @@ static struct file_operations misc_fops = {
 
 int misc_register(struct miscdevice * misc)
 {
+	struct miscdevice *c;
+
 	if (misc->next || misc->prev)
 		return -EBUSY;
+	c = misc_list.next;
+
+	while ((c != &misc_list) && (c->minor != misc->minor))
+		c = c->next;
+	if (c != &misc_list)
+		return -EBUSY;
+
 	if (misc->minor == MISC_DYNAMIC_MINOR) {
 		int i = DYNAMIC_MINORS;
 		while (--i >= 0)
@@ -185,17 +189,13 @@ int misc_deregister(struct miscdevice * misc)
 EXPORT_SYMBOL(misc_register);
 EXPORT_SYMBOL(misc_deregister);
 
-#if defined(CONFIG_PROC_FS)
 static struct proc_dir_entry *proc_misc;	
-#endif
 
 int __init misc_init(void)
 {
-#ifdef CONFIG_PROC_FS
 	proc_misc = create_proc_entry("misc", 0, 0);
 	if (proc_misc)
 		proc_misc->read_proc = misc_read_proc;
-#endif /* PROC_FS */
 #ifdef CONFIG_BUSMOUSE
 	bus_mouse_init();
 #endif
@@ -238,11 +238,17 @@ int __init misc_init(void)
 #ifdef CONFIG_ACQUIRE_WDT
 	acq_init();
 #endif
+#ifdef CONFIG_ADVANTECH_WDT
+	advwdt_init();
+#endif
+#ifdef CONFIG_60XX_WDT
+	sbc60xxwdt_init();
+#endif
 #ifdef CONFIG_SOFT_WATCHDOG
 	watchdog_init();
 #endif
-#ifdef CONFIG_APM
-	apm_bios_init();
+#ifdef CONFIG_DTLK
+	dtlk_init();
 #endif
 #ifdef CONFIG_H8
 	h8_init();
@@ -253,7 +259,7 @@ int __init misc_init(void)
 #ifdef CONFIG_BVME6000
 	rtc_DP8570A_init();
 #endif
-#if defined(CONFIG_RTC) || defined(CONFIG_SUN_MOSTEK_RTC)
+#if defined(CONFIG_RTC) || defined(CONFIG_PPC_RTC) || defined(CONFIG_SUN_MOSTEK_RTC)
 	rtc_init();
 #endif
 #ifdef CONFIG_ATARI_DSP56K
@@ -273,6 +279,15 @@ int __init misc_init(void)
 #endif
 #ifdef CONFIG_PMAC_PBOOK
 	pmu_device_init();
+#endif
+#ifdef CONFIG_SGI_NEWPORT_GFX
+	gfx_register ();
+#endif
+#ifdef CONFIG_SGI
+	streamable_init ();
+#endif
+#ifdef CONFIG_TOSHIBA
+	tosh_init();
 #endif
 	if (register_chrdev(MISC_MAJOR,"misc",&misc_fops)) {
 		printk("unable to get major %d for misc devices\n",

@@ -51,7 +51,7 @@ Where the aedsp16 options are the options for this driver while opl3 and
 ad1848 are the corresponding options for the MSS and OPL3 modules.
 
 Loading MSS and OPL3 needs to pre load the aedsp16 module to set up correctly
-the sound card. Installation dependancies must be written in the conf.modules
+the sound card. Installation dependencies must be written in the conf.modules
 file:
 
 pre-install ad1848 modprobe aedsp16
@@ -80,7 +80,7 @@ Follow these steps:
 2) Install your new kernel as the default boot kernel.
 3) Boot MS-DOS and configure the audio card with the boot time device
    driver, for MSS irq10 dma3 in our example.
-4) <ctrl>-<alt>-<del> and boot Linux. This will mantain the DOS configuration
+4) <ctrl>-<alt>-<del> and boot Linux. This will maintain the DOS configuration
    and will boot the new kernel with sound driver. The sound driver will find
    the audio card and will recognize and attach it.
 

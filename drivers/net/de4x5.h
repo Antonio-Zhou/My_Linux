@@ -121,6 +121,7 @@
 #define DC2114x     DC2114x_DID
 #define DC21142     (DC2114x_DID | 0x0010)
 #define DC21143     (DC2114x_DID | 0x0030)
+#define DC2114x_BRK 0x0020           /* CFRV break between DC21142 & DC21143 */
 
 #define is_DC21040 ((vendor == DC21040_VID) && (device == DC21040_DID))
 #define is_DC21041 ((vendor == DC21041_VID) && (device == DC21041_DID))
@@ -1026,3 +1027,5 @@ struct de4x5_ioctl {
 #define DE4X5_GET_REG           0x0e /* Get the DE4X5 Registers */
 
 #define LinuxVersionCode(v, p, s) (((v)<<16)+((p)<<8)+(s))
+
+#define MOTO_SROM_BUG    ((lp->active == 8) && (((le32_to_cpu(get_unaligned(((s32 *)dev->dev_addr))))&0x00ffffff)==0x3e0008))

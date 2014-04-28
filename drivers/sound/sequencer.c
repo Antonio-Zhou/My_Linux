@@ -16,9 +16,7 @@
  */
 #include <linux/config.h>
 
-#ifdef CONFIG_KMOD
 #include <linux/kmod.h>
-#endif
 
 
 #define SEQUENCER_C
@@ -998,10 +996,8 @@ int sequencer_open(int dev, struct file *file)
 	if (dev)		/* Patch manager device (obsolete) */
 		return -ENXIO;
 
-#ifdef CONFIG_KMOD
 	if(synth_devs[dev] == NULL)
 		request_module("synth0");
-#endif
 
 	if (mode == OPEN_READ)
 	{
@@ -1109,7 +1105,7 @@ int sequencer_open(int dev, struct file *file)
 		 */
 
 		for (i = 0; i < max_mididev; i++)
-			if (!midi_opened[i])
+			if (!midi_opened[i] && midi_devs[i])
 			{
 				if ((retval = midi_devs[i]->open(i, mode,
 					sequencer_midi_input, sequencer_midi_output)) >= 0)
@@ -1415,7 +1411,7 @@ int sequencer_ioctl(int dev, struct file *file, unsigned int cmd, caddr_t arg)
 		case SNDCTL_SEQ_TESTMIDI:
 			if (__get_user(midi_dev, (int *)arg))
 				return -EFAULT;
-			if (midi_dev < 0 || midi_dev >= max_mididev)
+			if (midi_dev < 0 || midi_dev >= max_mididev || !midi_devs[midi_dev])
 				return -ENXIO;
 
 			if (!midi_opened[midi_dev] &&
@@ -1533,7 +1529,7 @@ int sequencer_ioctl(int dev, struct file *file, unsigned int cmd, caddr_t arg)
 		case SNDCTL_MIDI_INFO:
 			if (get_user(dev, (int *)(&(((struct midi_info *)arg)->device))))
 				return -EFAULT;
-			if (dev < 0 || dev >= max_mididev)
+			if (dev < 0 || dev >= max_mididev || !midi_devs[dev])
 				return -ENXIO;
 			midi_devs[dev]->info.device = dev;
 			return copy_to_user(arg, &midi_devs[dev]->info, sizeof(struct midi_info))?-EFAULT:0;

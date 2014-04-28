@@ -799,12 +799,12 @@ static int eth16i_receive_probe_packet(int ioaddr)
 		if( (jiffies - starttime) > TX_TIMEOUT) {
 
 			if(eth16i_debug > 1)
-				printk(KERN_DEBUG "Timeout occured waiting transmit packet received\n");
+				printk(KERN_DEBUG "Timeout occurred waiting transmit packet received\n");
 			starttime = jiffies;
 			while((inb(ioaddr + RX_STATUS_REG) & 0x80) == 0) {
 				if( (jiffies - starttime) > TX_TIMEOUT) {
 					if(eth16i_debug > 1)
-						printk(KERN_DEBUG "Timeout occured waiting receive packet\n");
+						printk(KERN_DEBUG "Timeout occurred waiting receive packet\n");
 					return -1;
 				}
 			}
@@ -886,7 +886,7 @@ static int eth16i_check_signature(int ioaddr)
 	creg[0] &= 0x0F;      /* Mask collision cnr */
 	creg[2] &= 0x7F;      /* Mask DCLEN bit */
 
-#ifdef 0
+#if 0
 	/* 
 	   This was removed because the card was sometimes left to state
 	   from which it couldn't be find anymore. If there is need
@@ -1122,9 +1122,19 @@ static int eth16i_tx(struct sk_buff *skb, struct device *dev)
 		status = -1;
 	}
 	else {
-		ushort length = ETH_ZLEN < skb->len ? skb->len : ETH_ZLEN;
+		ushort length = skb->len;
 		unsigned char *buf = skb->data;
 
+		if(length < ETH_ZLEN)
+		{
+			skb = skb_padto(skb, ETH_ZLEN);
+			if(skb == NULL)
+			{
+				dev->tbusy = 0;
+				return 0;
+			}
+			length = ETH_ZLEN;
+		}
 		if( (length + 2) > (lp->tx_buf_size - lp->tx_queue_len)) {
 			if(eth16i_debug > 0) 
 				printk(KERN_WARNING "%s: Transmit buffer full.\n", dev->name);  

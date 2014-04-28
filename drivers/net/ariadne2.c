@@ -33,6 +33,7 @@
 #include <asm/io.h>
 #include <asm/irq.h>
 #include <asm/amigaints.h>
+#include <asm/amigahw.h>
 
 #include "8390.h"
 
@@ -177,6 +178,7 @@ __initfunc(static int ariadne2_init(struct device *dev, unsigned int key,
     name = "NE2000";
 
     dev->base_addr = ioaddr;
+    dev->irq = IRQ_AMIGA_PORTS;
 
     /* Install the Interrupt handler */
     if (request_irq(IRQ_AMIGA_PORTS, ei_interrupt, 0, "AriadNE2 Ethernet",
@@ -191,7 +193,9 @@ __initfunc(static int ariadne2_init(struct device *dev, unsigned int key,
     ((struct ei_device *)dev->priv)->priv = key;
 
     for(i = 0; i < ETHER_ADDR_LEN; i++) {
+#ifdef DEBUG
 	printk(" %2.2x", SA_prom[i]);
+#endif
 	dev->dev_addr[i] = SA_prom[i];
     }
 
@@ -417,7 +421,7 @@ void cleanup_module(void)
     unsigned int key = ((struct ei_device *)ariadne2_dev.priv)->priv;
     free_irq(IRQ_AMIGA_PORTS, &ariadne2_dev);
     unregister_netdev(&ariadne2_dev);
-    zorro_config_board(key, 0);
+    zorro_unconfig_board(key, 0);
     unlock_8390_module();
 }
 

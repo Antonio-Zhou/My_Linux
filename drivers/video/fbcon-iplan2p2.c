@@ -10,7 +10,6 @@
  *  more details.
  */
 
-#include <linux/config.h>
 #include <linux/module.h>
 #include <linux/tty.h>
 #include <linux/console.h>
@@ -18,6 +17,7 @@
 #include <linux/fb.h>
 
 #include <asm/byteorder.h>
+#include <asm/setup.h>
 
 #include <video/fbcon.h>
 #include <video/fbcon-iplan2p2.h>
@@ -43,7 +43,7 @@ static const u8 color_2p[] = { 0, 0, 0, 1, 0, 1, 1, 1, 2, 2, 2, 3, 2, 3, 3, 3 };
 /* Perform the m68k movepw operation.  */
 static inline void movepw(u8 *d, u16 val)
 {
-#if defined __mc68000__ && !defined CONFIG_OPTIMIZE_060
+#if defined __mc68000__ && !defined CPU_M68060_ONLY
     asm volatile ("movepw %1,%0@(0)" : : "a" (d), "d" (val));
 #else
     d[0] = (val >> 16) & 0xff;
@@ -361,12 +361,12 @@ void fbcon_iplan2p2_putcs(struct vc_data *conp, struct display *p,
     else
 	dest0 = (p->screen_base + yy * bytes * fontheight(p) +
 		 (xx>>1)*4 + (xx & 1));
-    fgx = expand2w(COLOR_2P(attr_fgcol(p,*s)));
-    bgx = expand2w(COLOR_2P(attr_bgcol(p,*s)));
+    fgx = expand2w(COLOR_2P(attr_fgcol(p,scr_readw(s))));
+    bgx = expand2w(COLOR_2P(attr_bgcol(p,scr_readw(s))));
     eorx = fgx ^ bgx;
 
     while (count--) {
-	c = *s++ & p->charmask;
+	c = scr_readw(s++) & p->charmask;
 	if (fontheightlog(p))
 	    cdat = p->fontdata + (c << fontheightlog(p));
 	else

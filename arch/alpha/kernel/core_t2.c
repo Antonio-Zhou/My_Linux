@@ -18,6 +18,7 @@
 
 #include <asm/ptrace.h>
 #include <asm/system.h>
+#include <asm/pci.h>
 
 #define __EXTERN_INLINE
 #include <asm/io.h>
@@ -25,6 +26,7 @@
 #undef __EXTERN_INLINE
 
 #include "proto.h"
+#include "bios32.h"
 
 /*
  * NOTE: Herein lie back-to-back mb instructions.  They are magic. 
@@ -143,7 +145,7 @@ static unsigned int
 conf_read(unsigned long addr, unsigned char type1)
 {
 	unsigned long flags;
-	unsigned int stat0, value, cpu;
+	unsigned int value, cpu;
 	unsigned long t2_cfg = 0;
 
 	cpu = smp_processor_id();
@@ -153,11 +155,14 @@ conf_read(unsigned long addr, unsigned char type1)
 	DBG(("conf_read(addr=0x%lx, type1=%d)\n", addr, type1));
 
 #if 0
-	/* Reset status register to avoid losing errors.  */
-	stat0 = *(vulp)T2_IOCSR;
-	*(vulp)T2_IOCSR = stat0;
-	mb();
-	DBG(("conf_read: T2 IOCSR was 0x%x\n", stat0));
+	{
+	  unsigned long stat0;
+	  /* Reset status register to avoid losing errors.  */
+	  stat0 = *(vulp)T2_IOCSR;
+	  *(vulp)T2_IOCSR = stat0;
+	  mb();
+	  DBG(("conf_read: T2 IOCSR was 0x%x\n", stat0));
+	}
 #endif
 
 	/* If Type1 access, must set T2 CFG.  */
@@ -202,7 +207,7 @@ static void
 conf_write(unsigned long addr, unsigned int value, unsigned char type1)
 {
 	unsigned long flags;
-	unsigned int stat0, cpu;
+	unsigned int cpu;
 	unsigned long t2_cfg = 0;
 
 	cpu = smp_processor_id();
@@ -210,11 +215,14 @@ conf_write(unsigned long addr, unsigned int value, unsigned char type1)
 	__save_and_cli(flags);	/* avoid getting hit by machine check */
 
 #if 0
-	/* Reset status register to avoid losing errors.  */
-	stat0 = *(vulp)T2_IOCSR;
-	*(vulp)T2_IOCSR = stat0;
-	mb();
-	DBG(("conf_write: T2 ERR was 0x%x\n", stat0));
+	{
+	  unsigned long stat0;
+	  /* Reset status register to avoid losing errors.  */
+	  stat0 = *(vulp)T2_IOCSR;
+	  *(vulp)T2_IOCSR = stat0;
+	  mb();
+	  DBG(("conf_write: T2 ERR was 0x%x\n", stat0));
+	}
 #endif
 
 	/* If Type1 access, must set T2 CFG.  */
@@ -346,7 +354,6 @@ t2_hose_write_config_dword (u8 bus, u8 device_fn, u8 where, u32 value,
 void __init
 t2_init_arch(unsigned long *mem_start, unsigned long *mem_end)
 {
-	unsigned long t2_err;
 	unsigned int i;
 
 	for (i = 0; i < NR_CPUS; i++) {
@@ -355,13 +362,15 @@ t2_init_arch(unsigned long *mem_start, unsigned long *mem_end)
 	}
 
 #if 0
-	/* 
-	 * Set up error reporting.
-	 */
-	t2_err = *(vulp)T2_IOCSR ;
-	t2_err |= (0x1 << 7) ;   /* master abort */
-	*(vulp)T2_IOCSR = t2_err ;
-	mb() ;
+	{
+	  /* Set up error reporting.  */
+	  unsigned long t2_err;
+
+	  t2_err = *(vulp)T2_IOCSR;
+	  t2_err |= (0x1 << 7);   /* master abort */
+	  *(vulp)T2_IOCSR = t2_err;
+	  mb();
+	}
 #endif
 
 	printk("t2_init: HBASE was 0x%lx\n", *(vulp)T2_HBASE);
@@ -470,6 +479,12 @@ t2_init_arch(unsigned long *mem_start, unsigned long *mem_end)
 		*(vulp)T2_HAE_4 = 0; mb(); /* do not touch this */
 #endif
 	}
+
+	/* Tell userland where I/O space is located.  */
+	default_hose.pci_sparse_io_space = T2_IO - IDENT_ADDR;
+	default_hose.pci_sparse_mem_space = T2_SPARSE_MEM - IDENT_ADDR;
+	default_hose.pci_dense_io_space = 0;
+	default_hose.pci_dense_mem_space = T2_DENSE_MEM - IDENT_ADDR;
 }
 
 #define SIC_SEIC (1UL << 33)    /* System Event Clear */

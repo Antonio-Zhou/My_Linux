@@ -45,6 +45,8 @@
  *      Derived linux/timex.h
  * 1995-08-13    Torsten Duwe
  *      kernel PLL updated to 1994-12-13 specs (rfc-1589)
+ * 1997-08-30    Ulrich Windl
+ *      Added new constant NTP_PHASE_LIMIT
  */
 #ifndef _LINUX_TIMEX_H
 #define _LINUX_TIMEX_H
@@ -102,6 +104,7 @@
 #define MAXTIME (200L << PPS_AVG) /* max PPS error (jitter) (200 us) */
 #define MINSEC 16L              /* min interval between updates (s) */
 #define MAXSEC 1200L            /* max interval between updates (s) */
+#define	NTP_PHASE_LIMIT	(MAXPHASE << 5)	/* beyond max. dispersion */
 
 /*
  * The following defines are used only if a pulse-per-second (PPS)
@@ -133,6 +136,10 @@
  * Pick up the architecture specific timex specifications
  */
 #include <asm/timex.h>
+/*
+ * Pick up the definition of timeval
+ */
+#include <linux/time.h>
 
 /* LATCH is used in the interval timer and ftape setup. */
 #define LATCH  ((CLOCK_TICK_RATE + HZ/2) / HZ)	/* For divider */

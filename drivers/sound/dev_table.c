@@ -437,6 +437,7 @@ int sound_install_audiodrv(int vers, char *name, struct audio_driver *driver,
 	memset((char *) op, 0, sizeof(struct audio_operations));
 	init_waitqueue(&op->in_sleeper);
 	init_waitqueue(&op->out_sleeper);	
+	init_waitqueue(&op->poll_sleeper);
 	if (driver_size < sizeof(struct audio_driver))
 		memset((char *) d, 0, sizeof(struct audio_driver));
 
@@ -524,7 +525,7 @@ void sound_unload_audiodev(int dev)
 
 int sound_alloc_audiodev(void)
 { 
-	int i = register_sound_dsp(&oss_sound_fops);
+	int i = register_sound_dsp(&oss_sound_fops, -1);
 	if(i==-1)
 		return i;
 	i>>=4;
@@ -536,7 +537,7 @@ int sound_alloc_audiodev(void)
 int sound_alloc_mididev(void)
 {
 #ifdef CONFIG_MIDI
-	int i = register_sound_midi(&oss_sound_fops);
+	int i = register_sound_midi(&oss_sound_fops, -1);
 	if(i==-1)
 		return i;
 	i>>=4;
@@ -566,7 +567,7 @@ int sound_alloc_synthdev(void)
 
 int sound_alloc_mixerdev(void)
 {
-	int i = register_sound_mixer(&oss_sound_fops);
+	int i = register_sound_mixer(&oss_sound_fops, -1);
 	if(i==-1)
 		return -1;
 	i>>=4;

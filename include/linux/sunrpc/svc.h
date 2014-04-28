@@ -13,6 +13,7 @@
 #include <linux/sunrpc/types.h>
 #include <linux/sunrpc/xdr.h>
 #include <linux/sunrpc/svcauth.h>
+#include <asm/atomic.h>
 
 /*
  * RPC service.
@@ -29,7 +30,7 @@ struct svc_serv {
 	struct svc_sock *	sv_sockets;	/* pending sockets */
 	struct svc_program *	sv_program;	/* RPC program */
 	struct svc_stat *	sv_stats;	/* RPC statistics */
-	unsigned int		sv_nrthreads;	/* # of server threads */
+	atomic_t		sv_nrthreads;	/* # of server threads */
 	unsigned int		sv_bufsz;	/* datagram buffer size */
 	unsigned int		sv_xdrsize;	/* XDR buffer size */
 
@@ -106,7 +107,8 @@ struct svc_rqst {
 	u32			rq_prot;	/* IP protocol */
 	unsigned short		rq_verfed  : 1,	/* reply has verifier */
 				rq_userset : 1,	/* auth->setuser OK */
-				rq_secure  : 1;	/* secure port */
+				rq_secure  : 1,	/* secure port */
+				rq_auth    : 1;	/* check client */
 
 	void *			rq_argp;	/* decoded arguments */
 	void *			rq_resp;	/* xdr'd results */

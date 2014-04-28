@@ -5,6 +5,7 @@
  *
  *  Cyrix stuff, June 1998 by:
  *	- Rafael R. Reilova (moved everything from head.S),
+ *        <rreilova@ececs.uc.edu>
  *	- Channing Corn (tests & fixes),
  *	- Andrew D. Balsa (code cleanup).
  */
@@ -18,6 +19,7 @@
 
 #include <linux/config.h>
 #include <asm/processor.h>
+#include <asm/msr.h>
 
 #define CONFIG_BUGi386
 
@@ -25,6 +27,13 @@ __initfunc(static void no_halt(char *s, int *ints))
 {
 	boot_cpu_data.hlt_works_ok = 0;
 }
+
+#ifdef CONFIG_MCA
+__initfunc(static void mca_pentium(char *s, int *ints))
+{
+	mca_pentium_flag = 1;
+}
+#endif
 
 __initfunc(static void no_387(char *s, int *ints))
 {
@@ -37,7 +46,7 @@ static char __initdata fpu_error = 0;
 __initfunc(static void copro_timeout(void))
 {
 	fpu_error = 1;
-	timer_table[COPRO_TIMER].expires = jiffies+100;
+	timer_table[COPRO_TIMER].expires = jiffies+HZ;
 	timer_active |= 1<<COPRO_TIMER;
 	printk(KERN_ERR "387 failed: trying to reset\n");
 	send_sig(SIGFPE, current, 1);
@@ -60,6 +69,31 @@ __initfunc(static void check_fpu(void))
 #endif
 		return;
 	}
+	if (mca_pentium_flag) {
+		/* The IBM Model 95 machines with pentiums lock up on
+		 * fpu test, so we avoid it. All pentiums have inbuilt
+		 * FPU and thus should use exception 16. We still do
+		 * the FDIV test, although I doubt there where ever any
+		 * MCA boxes built with non-FDIV-bug cpus.
+		 */
+		__asm__("fninit\n\t"
+			"fldl %1\n\t"
+			"fdivl %2\n\t"
+			"fmull %2\n\t"
+			"fldl %1\n\t"
+			"fsubp %%st,%%st(1)\n\t"
+			"fistpl %0\n\t"
+			"fwait\n\t"
+			"fninit"
+			: "=m" (*&boot_cpu_data.fdiv_bug)
+			: "m" (*&x), "m" (*&y));
+		printk("mca-pentium specified, avoiding FPU coupling test... ");
+		if (!boot_cpu_data.fdiv_bug)
+			printk("??? No FDIV bug? Lucky you...\n");
+		else
+			printk("detected FDIV bug though.\n");
+		return;
+	}
 	/*
 	 * check if exception 16 works correctly.. This is truly evil
 	 * code: it disables the high 8 interrupts to make sure that
@@ -70,7 +104,7 @@ __initfunc(static void check_fpu(void))
 	 * should get there first..
 	 */
 	printk(KERN_INFO "Checking 386/387 coupling... ");
-	timer_table[COPRO_TIMER].expires = jiffies+50;
+	timer_table[COPRO_TIMER].expires = jiffies+HZ/2;
 	timer_table[COPRO_TIMER].fn = copro_timeout;
 	timer_active |= 1<<COPRO_TIMER;
 	__asm__("clts ; fninit ; fnstcw %0 ; fwait":"=m" (*&control_word));
@@ -113,21 +147,6 @@ __initfunc(static void check_hlt(void))
 	printk("OK.\n");
 }
 
-__initfunc(static void check_tlb(void))
-{
-#ifndef CONFIG_M386
-	/*
-	 * The 386 chips don't support TLB finegrained invalidation.
-	 * They will fault when they hit an invlpg instruction.
-	 */
-	if (boot_cpu_data.x86 == 3) {
-		printk(KERN_EMERG "CPU is a 386 and this kernel was compiled for 486 or better.\n");
-		printk("Giving up.\n");
-		for (;;) ;
-	}
-#endif
-}
-
 /*
  *	Most 386 processors have a bug where a POPAD can lock the 
  *	machine even from user space.
@@ -135,15 +154,15 @@ __initfunc(static void check_tlb(void))
  
 __initfunc(static void check_popad(void))
 {
-#ifdef CONFIG_M386
+#ifndef CONFIG_X86_POPAD_OK
 	int res, inp = (int) &res;
 
 	printk(KERN_INFO "Checking for popad bug... ");
 	__asm__ __volatile__( 
 	  "movl $12345678,%%eax; movl $0,%%edi; pusha; popa; movl (%%edx,%%edi),%%ecx "
-	  : "=eax" (res)
-	  : "edx" (inp)
-	  : "eax", "ecx", "edx", "edi" );
+	  : "=&a" (res)
+	  : "d" (inp)
+	  : "ecx", "edi" );
 	/* If this fails, it means that any user program may lock the CPU hard. Too bad. */
 	if (res != 12345678) printk( "Buggy.\n" );
 		        else printk( "OK.\n" );
@@ -169,6 +188,7 @@ __asm__(".align 4\nvide: ret");
 __initfunc(static void check_amd_k6(void))
 {
 	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD &&
+	    boot_cpu_data.x86 == 5 &&
 	    boot_cpu_data.x86_model == 6 &&
 	    boot_cpu_data.x86_mask == 1)
 	{
@@ -187,10 +207,10 @@ __initfunc(static void check_amd_k6(void))
 
 		n = K6_BUG_LOOP;
 		f_vide = vide;
-		__asm__ ("rdtsc" : "=a" (d));
+		rdtscl(d);
 		while (n--) 
 			f_vide();
-		__asm__ ("rdtsc" : "=a" (d2));
+		rdtscl(d2);
 		d = d2-d;
 
 		/* Knock these two lines out if it debugs out ok */
@@ -247,6 +267,76 @@ static inline int test_cyrix_52div(void)
 }
 
 /*
+ * Fix cpuid problems with Cyrix CPU's:
+ *   -- on the Cx686(L) the cpuid is disabled on power up.
+ *   -- braindamaged BIOS disable cpuid on the Cx686MX.
+ */
+
+extern unsigned char Cx86_dir0_msb;  /* exported HACK from cyrix_model() */
+
+__initfunc(static void check_cx686_cpuid(void))
+{
+	if (boot_cpu_data.cpuid_level == -1 &&
+	    ((Cx86_dir0_msb == 5) || (Cx86_dir0_msb == 3))) {
+		int eax, dummy;
+		unsigned char ccr3, ccr4;
+		__u32 old_cap;
+
+		cli();
+		ccr3 = getCx86(CX86_CCR3);
+		setCx86(CX86_CCR3, (ccr3 & 0x0f) | 0x10); /* enable MAPEN  */
+		ccr4 = getCx86(CX86_CCR4);
+		setCx86(CX86_CCR4, ccr4 | 0x80);          /* enable cpuid  */
+		setCx86(CX86_CCR3, ccr3);                 /* disable MAPEN */
+		sti();
+
+		/* we have up to level 1 available on the Cx6x86(L|MX) */
+		boot_cpu_data.cpuid_level = 1;
+		/*  Need to preserve some externally computed capabilities  */
+		old_cap = boot_cpu_data.x86_capability & X86_FEATURE_MTRR;
+		cpuid(1, &eax, &dummy, &dummy,
+		      &boot_cpu_data.x86_capability);
+		boot_cpu_data.x86_capability |= old_cap;
+
+		boot_cpu_data.x86 = (eax >> 8) & 15;
+		/*
+ 		 * we already have a cooked step/rev number from DIR1
+		 * so we don't use the cpuid-provided ones.
+		 */
+	}
+}
+
+/*
+ * Reset the slow-loop (SLOP) bit on the 686(L) which is set by some old
+ * BIOSes for compatability with DOS games.  This makes the udelay loop
+ * work correctly, and improves performance.
+ */
+
+extern void calibrate_delay(void) __init;
+
+__initfunc(static void check_cx686_slop(void))
+{
+	if (Cx86_dir0_msb == 3) {
+		unsigned char ccr3, ccr5;
+
+		cli();
+		ccr3 = getCx86(CX86_CCR3);
+		setCx86(CX86_CCR3, (ccr3 & 0x0f) | 0x10); /* enable MAPEN  */
+		ccr5 = getCx86(CX86_CCR5);
+		if (ccr5 & 2)
+			setCx86(CX86_CCR5, ccr5 & 0xfd);  /* reset SLOP */
+		setCx86(CX86_CCR3, ccr3);                 /* disable MAPEN */
+		sti();
+
+		if (ccr5 & 2) { /* possible wrong calibration done */
+			printk(KERN_INFO "Recalibrating delay loop with SLOP bit reset\n");
+			calibrate_delay();
+			boot_cpu_data.loops_per_jiffy = loops_per_jiffy;
+		}
+	}
+}
+
+/*
  * Cyrix CPUs without cpuid or with cpuid not yet enabled can be detected
  * by the fact that they preserve the flags across the division of 5/2.
  * PII and PPro exhibit this behavior too, but they have cpuid available.
@@ -257,75 +347,86 @@ __initfunc(static void check_cyrix_cpu(void))
 	if ((boot_cpu_data.cpuid_level == -1) && (boot_cpu_data.x86 == 4)
 	    && test_cyrix_52div()) {
 
-		/* default to an unknown Cx486, (we will differentiate later) */
-		/* NOTE:  using 0xff since 0x00 is a valid DIR0 value */
 		strcpy(boot_cpu_data.x86_vendor_id, "CyrixInstead");
-		boot_cpu_data.x86_model = 0xff;
-		boot_cpu_data.x86_mask = 0;
 	}
 }
-
+ 
 /*
- * Fix two problems with the Cyrix 6x86 and 6x86L:
- *   -- the cpuid is disabled on power up, enable it, use it.
- *   -- the SLOP bit needs resetting on some motherboards due to old BIOS,
- *      so that the udelay loop calibration works well.  Recalibrate.
+ * In setup.c's cyrix_model() we have set the boot_cpu_data.coma_bug
+ * on certain processors that we know contain this bug and now we
+ * enable the workaround for it.
  */
 
-extern void calibrate_delay(void) __init;
-
-__initfunc(static void check_cx686_cpuid_slop(void))
+__initfunc(static void check_cyrix_coma(void))
 {
-	if (boot_cpu_data.x86_vendor == X86_VENDOR_CYRIX &&
-	    (boot_cpu_data.x86_model & 0xf0) == 0x30) {  /* 6x86(L) */
-		int dummy;
-		unsigned char ccr3, ccr4, ccr5;
+}
+ 
+/*
+ * Check wether we are able to run this kernel safely on SMP.
+ *
+ * - In order to run on a i386, we need to be compiled for i386
+ *   (for due to lack of "invlpg" and working WP on a i386)
+ * - In order to run on anything without a TSC, we need to be
+ *   compiled for a i486.
+ * - In order to work on a Pentium/SMP machine, we need to be
+ *   compiled for a Pentium or lower, as a PPro config implies
+ *   a properly working local APIC without the need to do extra
+ *   reads from the APIC.
+*/
 
-		cli();
-		ccr3 = getCx86(CX86_CCR3);
-		setCx86(CX86_CCR3, (ccr3 & 0x0f) | 0x10);      /* enable MAPEN  */
-		ccr4 = getCx86(CX86_CCR4);
-		setCx86(CX86_CCR4, ccr4 | 0x80);               /* enable cpuid  */
-		ccr5 = getCx86(CX86_CCR5);
-		if (ccr5 & 2)   /* reset SLOP if needed, old BIOS do this wrong */
-			setCx86(CX86_CCR5, ccr5 & 0xfd);
-		setCx86(CX86_CCR3, ccr3);                      /* disable MAPEN */
-		sti();
+__initfunc(static void check_config(void))
+{
+/*
+ * We'd better not be a i386 if we're configured to use some
+ * i486+ only features! (WP works in supervisor mode and the
+ * new "invlpg" and "bswap" instructions)
+ */
+#if defined(CONFIG_X86_WP_WORKS_OK) || defined(CONFIG_X86_INVLPG) || defined(CONFIG_X86_BSWAP)
+	if (boot_cpu_data.x86 == 3)
+		panic("Kernel requires i486+ for 'invlpg' and other features");
+#endif
 
-		boot_cpu_data.cpuid_level = 1;  /* should cover all 6x86(L) */
-		boot_cpu_data.x86 = 5;
+/*
+ * If we configured ourselves for a TSC, we'd better have one!
+ */
+#ifdef CONFIG_X86_TSC
+	if (!(boot_cpu_data.x86_capability & X86_FEATURE_TSC))
+		panic("Kernel compiled for Pentium+, requires TSC");
+#endif
 
-		/* we know we have level 1 available on the 6x86(L) */
-		cpuid(1, &dummy, &dummy, &dummy,
-		      &boot_cpu_data.x86_capability);
-		/*
-		 * DON'T use the x86_mask and x86_model from cpuid, these are
-		 * not as accurate (or the same) as those from the DIR regs.
-		 * already in place after cyrix_model() in setup.c
-		 */
-
-		if (ccr5 & 2) { /* possible wrong calibration done */
-			printk(KERN_INFO "Recalibrating delay loop with SLOP bit reset\n");
-			calibrate_delay();
-			boot_cpu_data.loops_per_sec = loops_per_sec;
-		}
-	}
+/*
+ * If we were told we had a good APIC for SMP, we'd better be a PPro
+ */
+#if defined(CONFIG_X86_GOOD_APIC) && defined(CONFIG_SMP)
+	if (smp_found_config && boot_cpu_data.x86 <= 5)
+		panic("Kernel compiled for PPro+, assumes local APIC without read-before-write bug");
+#endif
 }
 
 __initfunc(static void check_bugs(void))
 {
 	check_cyrix_cpu();
 	identify_cpu(&boot_cpu_data);
+	check_cx686_cpuid();
+	check_cx686_slop();
 #ifndef __SMP__
 	printk("CPU: ");
 	print_cpu_info(&boot_cpu_data);
 #endif
-	check_cx686_cpuid_slop();
-	check_tlb();
+	check_config();
 	check_fpu();
 	check_hlt();
 	check_popad();
 	check_amd_k6();
 	check_pentium_f00f();
-	system_utsname.machine[1] = '0' + boot_cpu_data.x86;
+	check_cyrix_coma();
+	/*
+	 *	Catch people using stupid model number data
+	 *	(Pentium IV) and report 686 still. The /proc data
+	 *	however does not lie and reports 15 as will cpuid.
+	 */
+	if(boot_cpu_data.x86 > 9)
+		system_utsname.machine[1] = '6';
+	else
+		system_utsname.machine[1] = '0' + boot_cpu_data.x86;
 }

@@ -124,12 +124,12 @@ static int check_free_space(struct file *file)
 	if (acct_active) {
 		if (act < 0) {
 			acct_active = 0;
-			printk(KERN_INFO "Process accounting paused\r\n");
+			printk(KERN_INFO "Process accounting paused\n");
 		}
 	} else {
 		if (act > 0) {
 			acct_active = 1;
-			printk(KERN_INFO "Process accounting resumed\r\n");
+			printk(KERN_INFO "Process accounting resumed\n");
 		}
 	}
 
@@ -194,13 +194,13 @@ asmlinkage int sys_acct(const char *name)
 	}
 	if (old_acct) {
 		do_acct_process(0,old_acct);
-		fput(old_acct);
+		filp_close(old_acct, NULL);
 	}
 out:
 	unlock_kernel();
 	return error;
 out_err:
-	fput(file);
+	filp_close(file, NULL);
 	goto out;
 }
 

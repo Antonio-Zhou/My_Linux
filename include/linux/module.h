@@ -20,6 +20,7 @@
 # endif
 #endif /* __GENKSYMS__ */
 
+#include <asm/atomic.h>
 
 /* Don't need to bring in all of uaccess.h just for this decl.  */
 struct exception_table_entry;
@@ -54,7 +55,12 @@ struct module
 	const char *name;
 	unsigned long size;
 
-	long usecount;
+	union
+	{
+		atomic_t usecount;
+		long pad;
+	} uc;				/* Needs to keep its size - so says rth */
+
 	unsigned long flags;		/* AUTOCLEAN et al */
 
 	unsigned nsyms;
@@ -80,10 +86,10 @@ struct module
 
 struct module_info
 {
-  unsigned long addr;
-  unsigned long size;
-  unsigned long flags;
-	   long usecount;
+	unsigned long addr;
+	unsigned long size;
+	unsigned long flags;
+	long usecount;
 };
 
 /* Bits of module.flags.  */
@@ -95,6 +101,7 @@ struct module_info
 #define MOD_VISITED  		8
 #define MOD_USED_ONCE		16
 #define MOD_JUST_FREED		32
+#define MOD_INITIALIZING	64
 
 /* Values for query_module's which.  */
 
@@ -103,6 +110,9 @@ struct module_info
 #define QM_REFS		3
 #define QM_SYMBOLS	4
 #define QM_INFO		5
+
+/* Can the module be queried? */
+#define MOD_CAN_QUERY(mod) (((mod)->flags & (MOD_RUNNING | MOD_INITIALIZING)) && !((mod)->flags & MOD_DELETED))
 
 /* When struct module is extended, we must test whether the new member
    is present in the header received from insmod before we can use it.  
@@ -114,26 +124,30 @@ struct module_info
 
 /* Backwards compatibility definition.  */
 
-#define GET_USE_COUNT(module)	((module)->usecount)
+#define GET_USE_COUNT(module)	(atomic_read(&(module)->uc.usecount))
 
 /* Poke the use count of a module.  */
 
 #define __MOD_INC_USE_COUNT(mod)					\
-	((mod)->usecount++, (mod)->flags |= MOD_VISITED|MOD_USED_ONCE)
+	(atomic_inc(&(mod)->uc.usecount), (mod)->flags |= MOD_VISITED|MOD_USED_ONCE)
 #define __MOD_DEC_USE_COUNT(mod)					\
-	((mod)->usecount--, (mod)->flags |= MOD_VISITED)
+	(atomic_dec(&(mod)->uc.usecount), (mod)->flags |= MOD_VISITED)
 #define __MOD_IN_USE(mod)						\
 	(mod_member_present((mod), can_unload) && (mod)->can_unload	\
-	 ? (mod)->can_unload() : (mod)->usecount)
+	 ? (mod)->can_unload() : atomic_read(&(mod)->uc.usecount))
 
+extern int try_inc_mod_count(struct module *mod);
 /* Indirect stringification.  */
 
 #define __MODULE_STRING_1(x)	#x
 #define __MODULE_STRING(x)	__MODULE_STRING_1(x)
 
 /* Find a symbol exported by the kernel or another module */
+#ifndef CONFIG_MODULES
+static inline unsigned long get_module_symbol(char *A, char *B) { return 0; };
+#else
 extern unsigned long get_module_symbol(char *, char *);
-
+#endif
 #if defined(MODULE) && !defined(__GENKSYMS__)
 
 /* Embedded module documentation macros.  */
@@ -167,6 +181,9 @@ const char __module_device[] __attribute__((section(".modinfo"))) = 	   \
 	s	string
 */
 
+/* Dummy macro for 2.2/2.4 compatibility */
+#define MODULE_LICENSE(var)
+
 #define MODULE_PARM(var,type)			\
 const char __module_parm_##var[]		\
 __attribute__((section(".modinfo"))) =		\
@@ -185,6 +202,7 @@ __asm__(".section .modinfo\n\t.previous");
 /* Define the module variable, and usage macros.  */
 extern struct module __this_module;
 
+#define THIS_MODULE		(&__this_module)
 #define MOD_INC_USE_COUNT	__MOD_INC_USE_COUNT(&__this_module)
 #define MOD_DEC_USE_COUNT	__MOD_DEC_USE_COUNT(&__this_module)
 #define MOD_IN_USE		__MOD_IN_USE(&__this_module)
@@ -204,8 +222,10 @@ const char __module_using_checksums[] __attribute__((section(".modinfo"))) =
 #define MODULE_AUTHOR(name)
 #define MODULE_DESCRIPTION(desc)
 #define MODULE_SUPPORTED_DEVICE(name)
+#define MODULE_LICENSE(var)
 #define MODULE_PARM(var,type)
 #define MODULE_PARM_DESC(var,desc)
+#define THIS_MODULE		NULL
 
 #ifndef __GENKSYMS__
 

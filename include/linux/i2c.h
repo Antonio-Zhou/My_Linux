@@ -6,7 +6,7 @@
  * There are:
  *
  *     i2c          the basic control module        (like scsi_mod)
- *     bus driver   a driver with a i2c bus         (host adapter driver)
+ *     bus driver   a driver with a i2c bus         (hostadapter driver)
  *     chip driver  a driver for a chip connected
  *                  to a i2c bus                    (cdrom/hd driver)
  *
@@ -30,11 +30,18 @@ struct i2c_bus;
 struct i2c_driver;
 struct i2c_device;
 
-#define I2C_DRIVERID_MSP3400     1
-#define I2C_DRIVERID_TUNER       2
-#define I2C_DRIVERID_VIDEOTEXT	 3
+#define I2C_DRIVERID_MSP3400    	 1
+#define I2C_DRIVERID_TUNER      	 2
+#define I2C_DRIVERID_VIDEOTEXT		 3
+#define I2C_DRIVERID_VIDEODECODER	 4
+#define I2C_DRIVERID_VIDEOENCODER	 5
 
 #define I2C_BUSID_BT848		1	/* I2C bus on a BT848 */
+	/* 2 is used in 2.3.x */
+#define I2C_BUSID_BUZ		3	/* I2C bus on a BUZ */
+#define I2C_BUSID_ZORAN		4	/* I2C bus on a Zoran */
+#define I2C_BUSID_CYBER2000	5	/* I2C bus on a Cyber2000 */
+#define I2C_BUSID_SGIVWFB	6	/* Moved to be unique */
 
 /*
  * struct for a driver for a i2c chip (tuner, soundprocessor,
@@ -87,8 +94,23 @@ struct i2c_driver
 
 /* needed: unsigned long flags */
 
-#define LOCK_I2C_BUS(bus)    spin_lock_irqsave(&(bus->bus_lock),flags);
-#define UNLOCK_I2C_BUS(bus)  spin_unlock_irqrestore(&(bus->bus_lock),flags);
+#include <linux/version.h>
+
+#if LINUX_VERSION_CODE >= 0x020100
+# if 0
+#  define LOCK_FLAGS unsigned long flags;
+#  define LOCK_I2C_BUS(bus)    spin_lock_irqsave(&(bus->bus_lock),flags);
+#  define UNLOCK_I2C_BUS(bus)  spin_unlock_irqrestore(&(bus->bus_lock),flags);
+# else
+#  define LOCK_FLAGS
+#  define LOCK_I2C_BUS(bus)    spin_lock(&(bus->bus_lock));
+#  define UNLOCK_I2C_BUS(bus)  spin_unlock(&(bus->bus_lock));
+# endif
+#else
+# define LOCK_FLAGS unsigned long flags;
+# define LOCK_I2C_BUS(bus)    { save_flags(flags); cli(); }
+# define UNLOCK_I2C_BUS(bus)  { restore_flags(flags);     }
+#endif
 
 struct i2c_bus 
 {
@@ -96,7 +118,9 @@ struct i2c_bus
 	int   id;
 	void  *data;            /* free for use by the bus driver */
 
+#if LINUX_VERSION_CODE >= 0x020100
 	spinlock_t bus_lock;
+#endif
 
 	/* attach/detach inform callbacks */
 	void    (*attach_inform)(struct i2c_bus *bus, int id);
@@ -163,4 +187,5 @@ int     i2c_read(struct i2c_bus *bus, unsigned char addr);
 int     i2c_write(struct i2c_bus *bus, unsigned char addr,
 		  unsigned char b1, unsigned char b2, int both);
 
+int	i2c_init(void);
 #endif /* I2C_H */

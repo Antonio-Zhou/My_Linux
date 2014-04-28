@@ -113,8 +113,11 @@ static void change_termios(struct tty_struct * tty, struct termios * new_termios
 	}
 	sti();
 	if (canon_change && !L_ICANON(tty) && tty->read_cnt)
+	{
 		/* Get characters left over from canonical mode. */
 		wake_up_interruptible(&tty->read_wait);
+		wake_up_interruptible(&tty->poll_wait);
+	}
 
 	/* see if packet mode change of state */
 
@@ -132,6 +135,7 @@ static void change_termios(struct tty_struct * tty, struct termios * new_termios
 			else
 				tty->ctrl_status |= TIOCPKT_NOSTOP;
 			wake_up_interruptible(&tty->link->read_wait);
+			wake_up_interruptible(&tty->link->poll_wait);
 		}
 	}
 
@@ -209,11 +213,12 @@ static int get_sgflags(struct tty_struct * tty)
 {
 	int flags = 0;
 
-	if (!(tty->termios->c_lflag & ICANON))
+	if (!(tty->termios->c_lflag & ICANON)) {
 		if (tty->termios->c_lflag & ISIG)
 			flags |= 0x02;		/* cbreak */
 		else
 			flags |= 0x20;		/* raw */
+	}
 	if (tty->termios->c_lflag & ECHO)
 		flags |= 0x08;			/* echo */
 	if (tty->termios->c_oflag & OPOST)

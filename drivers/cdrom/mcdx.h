@@ -77,7 +77,6 @@
 /* *** make the following line uncommented, if you're sure,
  * *** all configuration is done */
 /* #define I_WAS_HERE */
-#define I_WAS_HERE   /* delete this line, it's for heiko only */
 
 /*	The name of the device */
 #define MCDX "mcdx"	
@@ -177,8 +176,10 @@
 #define MCDX_ST_DRV 0x00ff		/* mask to query the drive status */
 
 #ifndef I_WAS_HERE
+#ifndef MODULE
 #warning You have not edited mcdx.h
 #warning Perhaps irq and i/o settings are wrong.
+#endif
 #endif
 
 /* ex:set ts=4 sw=4: */

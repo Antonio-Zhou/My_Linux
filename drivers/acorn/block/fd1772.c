@@ -114,6 +114,10 @@
  *		  I wish I knew why that timer didn't work.....
  *
  *     16/11/96 - Fiddled and frigged for 2.0.18
+ *
+ * DAG 30/01/99 - Started frobbing for 2.2.1
+ * DAG 20/06/99 - A little more frobbing:
+       Included include/asm/uaccess.h for get_user/put_user
  */
 
 #include <linux/sched.h>
@@ -136,14 +140,16 @@
 #include <asm/dma.h>
 #include <asm/hardware.h>
 #include <asm/io.h>
+#include <asm/ioc.h>
 #include <asm/irq.h>
-#include <asm/irq-no.h>
 #include <asm/pgtable.h>
 #include <asm/segment.h>
+#include <asm/uaccess.h>
+
 
 #define MAJOR_NR FLOPPY_MAJOR
 #define FLOPPY_DMA 0
-#include "blk.h"
+#include <linux/blk.h>
 
 /* Note: FD_MAX_UNITS could be redefined to 2 for the Atari (with
  * little additional rework in this file). But I'm not yet sure if
@@ -1039,7 +1045,7 @@ static void fd_rwsec_done(int status)
 static void fd_times_out(unsigned long dummy)
 {
 	SET_IRQ_HANDLER(NULL);
-	/* If the timeout occured while the readtrack_check timer was
+	/* If the timeout occurred while the readtrack_check timer was
 	 * active, we need to cancel it, else bad things will happen */
 	del_timer( &readtrack_timer ); 
 	FDC1772_WRITE(FDC1772REG_CMD, FDC1772CMD_FORCI);
@@ -1090,7 +1096,7 @@ static void finish_fdc_done(int dummy)
 	NeedSeek = 0;
 
 	if ((timer_active & (1 << FLOPPY_TIMER)) &&
-	    timer_table[FLOPPY_TIMER].expires < jiffies + 5)
+	    time_after(jiffies + 5, timer_table[FLOPPY_TIMER].expires)) 
 		/* If the check for a disk change is done too early after this
 		 * last seek command, the WP bit still reads wrong :-((
 		 */
@@ -1424,7 +1430,7 @@ static int fd_test_drive_present(int drive)
 	FDC1772_WRITE(FDC1772REG_CMD, FDC1772CMD_RESTORE | FDC1772CMDADD_H | FDC1772STEP_6);
 
 	/*printk("fd_test_drive_present: Going into timeout loop\n"); */
-	for (ok = 0, timeout = jiffies + 2 * HZ + HZ / 2; jiffies < timeout;) {
+	for (ok = 0, timeout = jiffies + 2 * HZ + HZ / 2; time_before(jiffies, timeout);) {
 		/*  What does this piece of atariism do? - query for an interrupt? */
 		/*  if (!(mfp.par_dt_reg & 0x20))
 		   break; */
@@ -1598,7 +1604,7 @@ static struct file_operations floppy_fops =
 };
 
 
-int floppy_init(void)
+int fd1772_init(void)
 {
 	int i;
 

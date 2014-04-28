@@ -38,9 +38,6 @@
 * Jan 07, 1997	Gene Kozin	Initial version.
 *****************************************************************************/
 
-#if	!defined(__KERNEL__) || !defined(MODULE)
-#error	This code MUST be compiled as a kernel module!
-#endif
 
 #include <linux/kernel.h>	/* printk(), and other useful stuff */
 #include <linux/stddef.h>	/* offsetof(), etc. */
@@ -498,6 +495,7 @@ static int wpx_exec (struct sdla* card, void* u_cmd, void* u_data)
 
 	if(copy_from_user((void*)&cmd, u_cmd, sizeof(cmd)))
 		return -EFAULT;
+	/* XXX: should check cmd.length against size allocated for mbox->data */
 		
 	/* execute command */
 
@@ -1031,6 +1029,7 @@ static void rx_intr (sdla_t* card)
 		{
 			netif_rx(skb);
 			++chan->ifstats.rx_packets;
+			chan->ifstats.rx_bytes += skb->len;
 		}
 	}
 }
@@ -2125,6 +2124,7 @@ static int chan_send (struct device* dev, struct sk_buff* skb)
 				return 1;
 			}
 			++chan->ifstats.tx_packets;
+			chan->ifstats.tx_bytes += skb->len;
 			break;
 
 		case 0x33:	/* Tx busy */

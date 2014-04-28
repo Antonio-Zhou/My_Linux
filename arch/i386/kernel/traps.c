@@ -34,6 +34,16 @@
 #include <asm/debugreg.h>
 #include <asm/desc.h>
 
+#include <asm/smp.h>
+
+#ifdef CONFIG_X86_VISWS_APIC
+#include <asm/fixmap.h>
+#include <asm/cobalt.h>
+#include <asm/lithium.h>
+#endif
+
+#include "irq.h"
+
 asmlinkage int system_call(void);
 asmlinkage void lcall7(void);
 
@@ -96,9 +106,9 @@ asmlinkage void stack_segment(void);
 asmlinkage void general_protection(void);
 asmlinkage void page_fault(void);
 asmlinkage void coprocessor_error(void);
-asmlinkage void reserved(void);
 asmlinkage void alignment_check(void);
 asmlinkage void spurious_interrupt_bug(void);
+asmlinkage void machine_check(void);
 
 int kstack_depth_to_print = 24;
 
@@ -117,7 +127,6 @@ static void show_registers(struct pt_regs *regs)
 	unsigned long esp;
 	unsigned short ss;
 	unsigned long *stack, addr, module_start, module_end;
-	extern char _stext, _etext;
 
 	esp = (unsigned long) (1+regs);
 	ss = __KERNEL_DS;
@@ -146,40 +155,48 @@ static void show_registers(struct pt_regs *regs)
 		printk("\nStack: ");
 		stack = (unsigned long *) esp;
 		for(i=0; i < kstack_depth_to_print; i++) {
-			if (((long) stack & 4095) == 0)
+			if (((long) stack & 8191) == 0)
 				break;
 			if (i && ((i % 8) == 0))
 				printk("\n       ");
 			printk("%08lx ", *stack++);
 		}
 		printk("\nCall Trace: ");
-		stack = (unsigned long *) esp;
-		i = 1;
-		module_start = PAGE_OFFSET + (max_mapnr << PAGE_SHIFT);
-		module_start = ((module_start + VMALLOC_OFFSET) & ~(VMALLOC_OFFSET-1));
-		module_end = module_start + MODULE_RANGE;
-		while (((long) stack & 4095) != 0) {
-			addr = *stack++;
-			/*
-			 * If the address is either in the text segment of the
-			 * kernel, or in the region which contains vmalloc'ed
-			 * memory, it *may* be the address of a calling
-			 * routine; if so, print it so that someone tracing
-			 * down the cause of the crash will be able to figure
-			 * out the call path that was taken.
-			 */
-			if (((addr >= (unsigned long) &_stext) &&
-			     (addr <= (unsigned long) &_etext)) ||
-			    ((addr >= module_start) && (addr <= module_end))) {
-				if (i && ((i % 8) == 0))
-					printk("\n       ");
-				printk("[<%08lx>] ", addr);
-				i++;
+		if (!esp || (esp & 3))
+			printk("Bad ESP value.");
+		else {
+			stack = (unsigned long *) esp;
+			i = 1;
+			module_start = PAGE_OFFSET + (max_mapnr << PAGE_SHIFT);
+			module_start = ((module_start + VMALLOC_OFFSET) & ~(VMALLOC_OFFSET-1));
+			module_end = module_start + MODULE_RANGE;
+			while (((long) stack & 8191) != 0) {
+				addr = *stack++;
+				/*
+				 * If the address is either in the text segment of the
+				 * kernel, or in the region which contains vmalloc'ed
+				 * memory, it *may* be the address of a calling
+				 * routine; if so, print it so that someone tracing
+				 * down the cause of the crash will be able to figure
+				 * out the call path that was taken.
+				 */
+				if (((addr >= (unsigned long) &_stext) &&
+				     (addr <= (unsigned long) &_etext)) ||
+				    ((addr >= module_start) && (addr <= module_end))) {
+					if (i && ((i % 8) == 0))
+						printk("\n       ");
+					printk("[<%08lx>] ", addr);
+					i++;
+				}
 			}
 		}
 		printk("\nCode: ");
-		for(i=0;i<20;i++)
+		if (!regs->eip || regs->eip==-1)
+			printk("Bad EIP value.");
+		else {
+			for(i=0;i<20;i++)
 			printk("%02x ", ((unsigned char *)regs->eip)[i]);
+		}
 	}
 	printk("\n");
 }	
@@ -228,7 +245,6 @@ DO_ERROR(10, SIGSEGV, "invalid TSS", invalid_TSS, current)
 DO_ERROR(11, SIGBUS,  "segment not present", segment_not_present, current)
 DO_ERROR(12, SIGBUS,  "stack segment", stack_segment, current)
 DO_ERROR(17, SIGSEGV, "alignment check", alignment_check, current)
-DO_ERROR(18, SIGSEGV, "reserved", reserved, current)
 /* I don't have documents for this but it does seem to cover the cache
    flush from user space exception some people get. */
 DO_ERROR(19, SIGSEGV, "cache flush denied", cache_flush_denied, current)
@@ -343,6 +359,7 @@ asmlinkage void do_nmi(struct pt_regs * regs, long error_code)
 asmlinkage void do_debug(struct pt_regs * regs, long error_code)
 {
 	unsigned int condition;
+	unsigned long eip = regs->eip;
 	struct task_struct *tsk = current;
 
 	if (regs->eflags & VM_MASK)
@@ -350,22 +367,29 @@ asmlinkage void do_debug(struct pt_regs * regs, long error_code)
 
 	__asm__ __volatile__("movl %%db6,%0" : "=r" (condition));
 
+	/* If the user set TF, it's simplest to clear it right away. */
+	if ((eip >=PAGE_OFFSET) && (regs->eflags & TF_MASK))
+		goto clear_TF;
+
+	/* Ensure the debug status register is visible to ptrace (or the process itself) */
+	tsk->tss.debugreg[6] = condition;
+
 	/* Mask out spurious TF errors due to lazy TF clearing */
 	if (condition & DR_STEP) {
 		/*
 		 * The TF error should be masked out only if the current
 		 * process is not traced and if the TRAP flag has been set
 		 * previously by a tracing process (condition detected by
-		 * the PF_DTRACE flag); remember that the i386 TRAP flag
+		 * the PT_DTRACE flag); remember that the i386 TRAP flag
 		 * can be modified by the process itself in user mode,
 		 * allowing programs to debug themselves without the ptrace()
 		 * interface.
 		 */
-		if ((tsk->flags & (PF_DTRACE|PF_PTRACED)) == PF_DTRACE)
+		if ((tsk->ptrace & (PT_DTRACE|PT_PTRACED)) == PT_DTRACE)
 			goto clear_TF;
 	}
 
-	/* Mast out spurious debug traps due to lazy DR7 setting */
+	/* Mask out spurious debug traps due to lazy DR7 setting */
 	if (condition & (DR_TRAP0|DR_TRAP1|DR_TRAP2|DR_TRAP3)) {
 		if (!tsk->tss.debugreg[7])
 			goto clear_dr7;
@@ -378,6 +402,7 @@ asmlinkage void do_debug(struct pt_regs * regs, long error_code)
 	/* Ok, finally something we can handle */
 	tsk->tss.trap_no = 1;
 	tsk->tss.error_code = error_code;
+	tsk->tss.debugreg[DR_STATUS] = condition;
 	force_sig(SIGTRAP, tsk);
 	return;
 
@@ -394,7 +419,7 @@ clear_dr7:
 	return;
 
 clear_TF:
-	regs->eflags &= ~TF_MASK;
+	regs->eflags &= ~(TF_MASK|NT_MASK);
 	return;
 }
 
@@ -499,15 +524,18 @@ __initfunc(void trap_init_f00f_bug(void))
 }
 
 #define _set_gate(gate_addr,type,dpl,addr) \
-__asm__ __volatile__ ("movw %%dx,%%ax\n\t" \
-	"movw %2,%%dx\n\t" \
+do { \
+  int __d0, __d1; \
+  __asm__ __volatile__ ("movw %%dx,%%ax\n\t" \
+	"movw %4,%%dx\n\t" \
 	"movl %%eax,%0\n\t" \
 	"movl %%edx,%1" \
 	:"=m" (*((long *) (gate_addr))), \
-	 "=m" (*(1+(long *) (gate_addr))) \
+	 "=m" (*(1+(long *) (gate_addr))), "=&a" (__d0), "=&d" (__d1) \
 	:"i" ((short) (0x8000+(dpl<<13)+(type<<8))), \
-	 "d" ((char *) (addr)),"a" (__KERNEL_CS << 16) \
-	:"ax","dx")
+	 "3" ((char *) (addr)),"2" (__KERNEL_CS << 16)); \
+} while (0)
+
 
 /*
  * This needs to use 'idt_table' rather than 'idt', and
@@ -566,10 +594,98 @@ void set_ldt_desc(unsigned int n, void *addr, unsigned int size)
 	_set_tssldt_desc(gdt_table+FIRST_LDT_ENTRY+(n<<1), (int)addr, ((size << 3) - 1), 0x82);
 }
 
+#ifdef CONFIG_X86_VISWS_APIC
+
+/*
+ * On Rev 005 motherboards legacy device interrupt lines are wired directly
+ * to Lithium from the 307.  But the PROM leaves the interrupt type of each
+ * 307 logical device set appropriate for the 8259.  Later we'll actually use
+ * the 8259, but for now we have to flip the interrupt types to
+ * level triggered, active lo as required by Lithium.
+ */
+
+#define	REG	0x2e	/* The register to read/write */
+#define	DEV	0x07	/* Register: Logical device select */
+#define	VAL	0x2f	/* The value to read/write */
+
+static void
+superio_outb(int dev, int reg, int val)
+{
+	outb(DEV, REG);
+	outb(dev, VAL);
+	outb(reg, REG);
+	outb(val, VAL);
+}
+
+static int __attribute__ ((unused))
+superio_inb(int dev, int reg)
+{
+	outb(DEV, REG);
+	outb(dev, VAL);
+	outb(reg, REG);
+	return inb(VAL);
+}
+
+#define	FLOP	3	/* floppy logical device */
+#define	PPORT	4	/* parallel logical device */
+#define	UART5	5	/* uart2 logical device (not wired up) */
+#define	UART6	6	/* uart1 logical device (THIS is the serial port!) */
+#define	IDEST	0x70	/* int. destination (which 307 IRQ line) reg. */
+#define	ITYPE	0x71	/* interrupt type register */
+
+/* interrupt type bits */
+#define	LEVEL	0x01	/* bit 0, 0 == edge triggered */
+#define	ACTHI	0x02	/* bit 1, 0 == active lo */
+
+static void
+superio_init(void)
+{
+	if (visws_board_type == VISWS_320 && visws_board_rev == 5) {
+		superio_outb(UART6, IDEST, 0);	/* 0 means no intr propagated */
+		printk("SGI 320 rev 5: disabling 307 uart1 interrupt\n");
+	}
+}
+
+static void
+lithium_init(void)
+{
+	set_fixmap(FIX_LI_PCIA, LI_PCI_A_PHYS);
+	printk("Lithium PCI Bridge A, Bus Number: %d\n",
+				li_pcia_read16(LI_PCI_BUSNUM) & 0xff);
+	set_fixmap(FIX_LI_PCIB, LI_PCI_B_PHYS);
+	printk("Lithium PCI Bridge B (PIIX4), Bus Number: %d\n",
+				li_pcib_read16(LI_PCI_BUSNUM) & 0xff);
+
+	/* XXX blindly enables all interrupts */
+	li_pcia_write16(LI_PCI_INTEN, 0xffff);
+	li_pcib_write16(LI_PCI_INTEN, 0xffff);
+}
+
+static void
+cobalt_init(void)
+{
+	/*
+	 * On normal SMP PC this is used only with SMP, but we have to
+	 * use it and set it up here to start the Cobalt clock
+	 */
+	set_fixmap(FIX_APIC_BASE, APIC_PHYS_BASE);
+	printk("Local APIC ID %lx\n", apic_read(APIC_ID));
+	printk("Local APIC Version %lx\n", apic_read(APIC_VERSION));
+
+	set_fixmap(FIX_CO_CPU, CO_CPU_PHYS);
+	printk("Cobalt Revision %lx\n", co_cpu_read(CO_CPU_REV));
+
+	set_fixmap(FIX_CO_APIC, CO_APIC_PHYS);
+	printk("Cobalt APIC ID %lx\n", co_apic_read(CO_APIC_ID));
+
+	/* Enable Cobalt APIC being careful to NOT change the ID! */
+	co_apic_write(CO_APIC_ID, co_apic_read(CO_APIC_ID)|CO_APIC_ENABLE);
+
+	printk("Cobalt APIC enabled: ID reg %lx\n", co_apic_read(CO_APIC_ID));
+}
+#endif
 void __init trap_init(void)
 {
-	int i;
-
 	if (readl(0x0FFFD9) == 'E' + ('I'<<8) + ('S'<<16) + ('A'<<24))
 		EISA_bus = 1;
 	set_call_gate(&default_ldt,lcall7);
@@ -591,9 +707,8 @@ void __init trap_init(void)
 	set_trap_gate(15,&spurious_interrupt_bug);
 	set_trap_gate(16,&coprocessor_error);
 	set_trap_gate(17,&alignment_check);
-	for (i=18;i<48;i++)
-		set_trap_gate(i,&reserved);
-	set_system_gate(0x80,&system_call);
+	set_trap_gate(18,&machine_check);
+	set_system_gate(SYSCALL_VECTOR,&system_call);
 
 	/* set up GDT task & ldt entries */
 	set_tss_desc(0, &init_task.tss);
@@ -603,4 +718,9 @@ void __init trap_init(void)
 	__asm__("pushfl ; andl $0xffffbfff,(%esp) ; popfl");
 	load_TR(0);
 	load_ldt(0);
+#ifdef CONFIG_X86_VISWS_APIC
+	superio_init();
+	lithium_init();
+	cobalt_init();
+#endif
 }

@@ -30,8 +30,19 @@ int coda_debug = 0;
 int coda_print_entry = 0; 
 int coda_access_cache = 1;
 
-/* caller must allocate 36 byte string ! */
+/* print a fid */
 char * coda_f2s(ViceFid *f)
+{
+	static char s[60];
+	if ( f ) {
+		sprintf(s, "(%-#lx,%-#lx,%-#lx)", 
+			 f->Volume, f->Vnode, f->Unique);
+	}
+	return s;
+}
+
+/* print another fid */
+char * coda_f2s2(ViceFid *f)
 {
 	static char s[60];
 	if ( f ) {
@@ -204,6 +215,8 @@ void coda_vattr_to_iattr(struct inode *inode, struct coda_vattr *attr)
         if (attr->va_ctime.tv_sec != -1)
 	        inode->i_ctime = attr->va_ctime.tv_sec;
 }
+
+
 /* 
  * BSD sets attributes that need not be modified to -1. 
  * Linux uses the valid field to indicate what should be

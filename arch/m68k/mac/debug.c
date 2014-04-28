@@ -39,7 +39,7 @@ extern unsigned long mac_rowbytes;
 extern void mac_serial_print(char *);
 
 #define DEBUG_HEADS
-#define DEBUG_SCREEN
+#undef DEBUG_SCREEN
 #define DEBUG_SERIAL
 
 /*
@@ -243,7 +243,7 @@ void mac_scca_console_write (struct console *co, const char *str,
     }
 }
 
-#ifdef CONFIG_SERIAL_CONSOLE
+#if defined(CONFIG_SERIAL_CONSOLE) || defined(DEBUG_SERIAL)
 int mac_sccb_console_wait_key(struct console *co)
 {
     int i;
@@ -385,6 +385,16 @@ void mac_init_scc_port( int cflag, int port )
 }
 #endif /* DEBUG_SERIAL */
 
+void mac_init_scca_port( int cflag )
+{
+	mac_init_scc_port(cflag, 0);
+}
+
+void mac_init_sccb_port( int cflag )
+{
+	mac_init_scc_port(cflag, 1);
+}
+
 __initfunc(void mac_debug_init(void))
 {
 #ifdef CONFIG_KGDB
@@ -397,14 +407,18 @@ __initfunc(void mac_debug_init(void))
 	/* Mac modem port */
 	mac_init_scc_port( B9600|CS8, 0 );
 	mac_console_driver.write = mac_scca_console_write;
+#ifdef CONFIG_SERIAL_CONSOLE
 	mac_console_driver.wait_key = mac_scca_console_wait_key;
+#endif
 	scc_port = 0;
     }
     else if (!strcmp( m68k_debug_device, "ser2" )) {
 	/* Mac printer port */
 	mac_init_scc_port( B9600|CS8, 1 );
 	mac_console_driver.write = mac_sccb_console_write;
+#ifdef CONFIG_SERIAL_CONSOLE
 	mac_console_driver.wait_key = mac_sccb_console_wait_key;
+#endif
 	scc_port = 1;
     }
 #endif

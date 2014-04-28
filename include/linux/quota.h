@@ -86,7 +86,7 @@ extern int max_dquots;
 extern int dquot_root_squash;
 
 #define NR_DQHASH 43            /* Just an arbitrary number */
-#define NR_DQUOTS 256           /* Maximum number of quotas active at one time (Configurable from /proc/sys/fs) */
+#define NR_DQUOTS 1024          /* Maximum number of quotas active at one time (Configurable from /proc/sys/fs) */
 
 /*
  * Command definitions for the 'quotactl' system call.
@@ -155,7 +155,7 @@ struct dqstats {
  * Maximum length of a message generated in the quota system,
  * that needs to be kicked onto the tty.
  */
-#define MAX_QUOTA_MESSAGE 75
+#define MAX_QUOTA_MESSAGE (PAGE_SIZE + 256)
 
 #define DQ_LOCKED     0x01	/* locked for update */
 #define DQ_WANT       0x02	/* wanted for update */

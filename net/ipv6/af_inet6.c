@@ -7,7 +7,7 @@
  *
  *	Adapted from linux/net/ipv4/af_inet.c
  *
- *	$Id: af_inet6.c,v 1.39 1998/10/03 09:38:23 davem Exp $
+ *	$Id: af_inet6.c,v 1.43.2.2 2000/01/13 04:28:23 davem Exp $
  *
  *	This program is free software; you can redistribute it and/or
  *      modify it under the terms of the GNU General Public License
@@ -35,6 +35,7 @@
 #include <linux/proc_fs.h>
 #include <linux/stat.h>
 #include <linux/init.h>
+#include <linux/version.h>
 
 #include <linux/inet.h>
 #include <linux/netdevice.h>
@@ -189,7 +190,7 @@ static int inet6_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 	struct sockaddr_in6 *addr=(struct sockaddr_in6 *)uaddr;
 	struct sock *sk = sock->sk;
 	__u32 v4addr = 0;
-	unsigned short snum = 0;
+	unsigned short snum;
 	int addr_type = 0;
 
 	/* If the socket has its own bind function then use it. */
@@ -202,12 +203,6 @@ static int inet6_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 	    (sk->num != 0))
 		return -EINVAL;
 		
-	snum = ntohs(addr->sin6_port);
-	if (snum == 0) 
-		snum = sk->prot->good_socknum();
-	if (snum < PROT_SOCK && !capable(CAP_NET_BIND_SERVICE))
-		return(-EACCES);
-	
 	addr_type = ipv6_addr_type(&addr->sin6_addr);
 	if ((addr_type & IPV6_ADDR_MULTICAST) && sock->type == SOCK_STREAM)
 		return(-EINVAL);
@@ -240,15 +235,19 @@ static int inet6_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 		memcpy(&sk->net_pinfo.af_inet6.saddr, &addr->sin6_addr, 
 		       sizeof(struct in6_addr));
 
+	snum = ntohs(addr->sin6_port);
+	if (snum && snum < PROT_SOCK && !capable(CAP_NET_BIND_SERVICE))
+		return(-EACCES);
+
 	/* Make sure we are allowed to bind here. */
-	if(sk->prot->verify_bind(sk, snum))
+	if(sk->prot->get_port(sk, snum) != 0)
 		return -EADDRINUSE;
 
-	sk->num = snum;
+	sk->zapped = 0;
 	sk->sport = ntohs(sk->num);
 	sk->dport = 0;
 	sk->daddr = 0;
-	sk->prot->rehash(sk);
+	sk->prot->hash(sk);
 	add_to_prot_sklist(sk);
 
 	return(0);
@@ -291,6 +290,9 @@ int inet6_destroy_sock(struct sock *sk)
 	if ((skb = xchg(&sk->net_pinfo.af_inet6.pktoptions, NULL)) != NULL)
 		kfree_skb(skb);
 
+	/* Free flowlabels */
+	fl6_free_socklist(sk);
+
 	/* Free tx options */
 
 	if ((opt = xchg(&sk->net_pinfo.af_inet6.opt, NULL)) != NULL)
@@ -310,6 +312,7 @@ static int inet6_getname(struct socket *sock, struct sockaddr *uaddr,
 	struct sock *sk;
   
 	sin->sin6_family = AF_INET6;
+	sin->sin6_flowinfo = 0;
 	sk = sock->sk;
 	if (peer) {
 		if (!tcp_connected(sk->state))
@@ -317,6 +320,8 @@ static int inet6_getname(struct socket *sock, struct sockaddr *uaddr,
 		sin->sin6_port = sk->dport;
 		memcpy(&sin->sin6_addr, &sk->net_pinfo.af_inet6.daddr,
 		       sizeof(struct in6_addr));
+		if (sk->net_pinfo.af_inet6.sndflow)
+			sin->sin6_flowinfo = sk->net_pinfo.af_inet6.flow_label;
 	} else {
 		if (ipv6_addr_type(&sk->net_pinfo.af_inet6.rcv_saddr) == IPV6_ADDR_ANY)
 			memcpy(&sin->sin6_addr, 
@@ -477,7 +482,7 @@ int ipv6_unload(void)
 {
 	if (!unloadable) return 1;
 	/* We keep internally 3 raw sockets */
-	return __this_module.usecount - 3;
+	return atomic_read(&(__this_module.uc.usecount)) - 3;
 }
 #endif
 
@@ -502,7 +507,7 @@ __initfunc(void inet6_proto_init(struct net_proto *pro))
 	__this_module.can_unload = &ipv6_unload;
 #endif
 
-	printk(KERN_INFO "IPv6 v0.2 for NET3.037\n");
+	printk(KERN_INFO "IPv6 v0.8 for NET4.0\n");
 
 	if (sizeof(struct inet6_skb_parm) > sizeof(dummy_skb->cb))
 	{
@@ -536,6 +541,7 @@ __initfunc(void inet6_proto_init(struct net_proto *pro))
 	ipv6_netdev_notif_init();
 	ipv6_packet_init();
 	ip6_route_init();
+	ip6_flowlabel_init();
 	addrconf_init();
 	sit_init();
 
@@ -591,6 +597,7 @@ void cleanup_module(void)
 	/* Cleanup code parts. */
 	sit_cleanup();
 	ipv6_netdev_notif_cleanup();
+	ip6_flowlabel_cleanup();
 	addrconf_cleanup();
 	ip6_route_cleanup();
 	ipv6_packet_cleanup();

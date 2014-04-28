@@ -247,10 +247,10 @@ __initfunc(static int seeq8005_probe1(struct device *dev, int ioaddr))
 			outw(0x5a5a, SEEQ_BUFFER);
 		}
 		j=jiffies+HZ;
-		while ( ((inw(SEEQ_STATUS) & SEEQSTAT_FIFO_EMPTY) != SEEQSTAT_FIFO_EMPTY) && jiffies < j )
+		while ( ((inw(SEEQ_STATUS) & SEEQSTAT_FIFO_EMPTY) != SEEQSTAT_FIFO_EMPTY) && time_before(jiffies, j) )
 			mb();
 		outw( 0 , SEEQ_DMAAR);
-		while ( ((inw(SEEQ_STATUS) & SEEQSTAT_WINDOW_INT) != SEEQSTAT_WINDOW_INT) && jiffies < j+HZ)
+		while ( ((inw(SEEQ_STATUS) & SEEQSTAT_WINDOW_INT) != SEEQSTAT_WINDOW_INT) && time_before(jiffies, j+HZ))
 			mb();
 		if ( (inw(SEEQ_STATUS) & SEEQSTAT_WINDOW_INT) == SEEQSTAT_WINDOW_INT)
 			outw( SEEQCMD_WINDOW_INT_ACK | (inw(SEEQ_STATUS)& SEEQCMD_INT_MASK), SEEQ_CMD);
@@ -393,8 +393,19 @@ seeq8005_send_packet(struct sk_buff *skb, struct device *dev)
 	if (test_and_set_bit(0, (void*)&dev->tbusy) != 0)
 		printk("%s: Transmitter access conflict.\n", dev->name);
 	else {
-		short length = ETH_ZLEN < skb->len ? skb->len : ETH_ZLEN;
+		short length = skb->len;
 		unsigned char *buf = skb->data;
+
+		if(length < ETH_ZLEN)
+		{
+			skb = skb_padto(skb, ETH_ZLEN);
+			if(skb == NULL)
+			{
+				dev->tbusy = 0;
+				return 0;
+			}
+			length = ETH_ZLEN;
+		}
 
 		hardware_send_packet(dev, buf, length); 
 		dev->trans_start = jiffies;
@@ -707,7 +718,7 @@ static void hardware_send_packet(struct device * dev, char *buf, int length)
 	
 	/* drain FIFO */
 	tmp = jiffies;
-	while ( (((status=inw(SEEQ_STATUS)) & SEEQSTAT_FIFO_EMPTY) == 0) && (jiffies < tmp + HZ))
+	while ( (((status=inw(SEEQ_STATUS)) & SEEQSTAT_FIFO_EMPTY) == 0) && (jiffies - tmp < HZ))
 		mb();
 	
 	/* doit ! */
@@ -729,13 +740,61 @@ inline void wait_for_buffer(struct device * dev)
 	int status;
 	
 	tmp = jiffies + HZ;
-	while ( ( ((status=inw(SEEQ_STATUS)) & SEEQSTAT_WINDOW_INT) != SEEQSTAT_WINDOW_INT) && jiffies < tmp)
+	while ( ( ((status=inw(SEEQ_STATUS)) & SEEQSTAT_WINDOW_INT) != SEEQSTAT_WINDOW_INT) && time_before(jiffies, tmp))
 		mb();
 		
 	if ( (status & SEEQSTAT_WINDOW_INT) == SEEQSTAT_WINDOW_INT)
 		outw( SEEQCMD_WINDOW_INT_ACK | (status & SEEQCMD_INT_MASK), SEEQ_CMD);
 }
 	
+#ifdef MODULE
+
+static char devicename[9] = { 0, };
+
+static struct device dev_seeq =
+{
+	devicename, /* device name is inserted by linux/drivers/net/net_init.c */
+	0, 0, 0, 0,
+	0x300, 5,
+	0, 0, 0, NULL, seeq8005_probe
+};
+
+static int io=0x320;
+static int irq=10;
+MODULE_PARM(io, "i");
+MODULE_PARM(irq, "i");
+
+int init_module(void)
+{
+	dev_seeq.irq=irq;
+	dev_seeq.base_addr=io;
+	if (register_netdev(&dev_seeq) != 0)
+		return -EIO;
+	return 0;
+}
+
+void cleanup_module(void)
+{
+	/*
+	 *	No need to check MOD_IN_USE, as sys_delete_module() checks.
+	 */
+
+	unregister_netdev(&dev_seeq);
+
+	/*
+	 *	Free up the private structure, or leak memory :-)
+	 */
+
+	kfree(dev_seeq.priv);
+	dev_seeq.priv = NULL;	/* gets re-allocated by el1_probe1 */
+
+	/*
+	 *	If we don't do this, we can't re-insmod it later.
+	 */
+	release_region(dev_seeq.base_addr, EL1_IO_EXTENT);
+}
+
+#endif /* MODULE */
 
 /*
  * Local variables:

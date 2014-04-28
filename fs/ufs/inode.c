@@ -1,5 +1,5 @@
 /*
- *  linux/ufs/ufs/inode.c
+ *  linux/fs/ufs/inode.c
  *
  * Copyright (C) 1998
  * Daniel Pirkl <daniel.pirkl@email.cz>
@@ -254,7 +254,7 @@ repeat:
 			SWAB32(*p), required +  (blockoff - lastblockoff), err);
 	}
 	/*
-	 * We will allocated new block before last allocat block
+	 * We will allocate new block before last allocated block
 	 */
 	else /* (lastblock > block) */ {
 		if (lastblock && (tmp = SWAB32(inode->u.ufs_i.i_u1.i_data[lastblock-1])))
@@ -336,6 +336,7 @@ repeat:
 			goto repeat;
 		}
 		else {
+			brelse (bh);
 			return NULL;
 		}
 	}		
@@ -509,7 +510,7 @@ void ufs_read_inode (struct inode * inode)
 	inode->i_mtime = SWAB32(ufs_inode->ui_mtime.tv_sec);
 	inode->i_blocks = SWAB32(ufs_inode->ui_blocks);
 	inode->i_blksize = PAGE_SIZE;   /* This is the optimal IO size (for stat) */
-	inode->i_version = ++event;
+	inode->i_version = ++global_event;
 
 	inode->u.ufs_i.i_flags = SWAB32(ufs_inode->ui_flags);
 	inode->u.ufs_i.i_gen = SWAB32(ufs_inode->ui_gen);

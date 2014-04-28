@@ -41,8 +41,8 @@
 /*****************************************************************************/
 
 #include <linux/config.h>
-#include <linux/module.h>
 #include <linux/version.h>
+#include <linux/module.h>
 #include <linux/types.h>
 #include <linux/net.h>
 #include <linux/in.h>
@@ -58,10 +58,8 @@
 #include <linux/etherdevice.h>
 #include <linux/skbuff.h>
 #include <linux/hdlcdrv.h>
-#if defined(CONFIG_AX25) || defined(CONFIG_AX25_MODULE)
 /* prototypes for ax25_encapsulate and ax25_rebuild_header */
 #include <net/ax25.h> 
-#endif /* CONFIG_AX25 || CONFIG_AX25_MODULE */
 
 /* make genksyms happy */
 #include <linux/ip.h>
@@ -703,6 +701,8 @@ static int hdlcdrv_ioctl(struct device *dev, struct ifreq *ifr, int cmd)
 		break;		
 
 	case HDLCDRVCTL_CALIBRATE:
+		if(!suser())
+			return -EPERM;
 		s->hdlctx.calibrate = bi.data.calibrate * s->par.bitrate / 16;
 		return 0;
 

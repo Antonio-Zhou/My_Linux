@@ -13,14 +13,7 @@
  * the m68k page table tree.
  */
 
-/* For virtual address to physical address conversion */
-extern unsigned long mm_vtop(unsigned long addr) __attribute__ ((const));
-extern unsigned long mm_ptov(unsigned long addr) __attribute__ ((const));
-
-#include<asm/virtconvert.h>
-
-#define VTOP(addr)  (mm_vtop((unsigned long)(addr)))
-#define PTOV(addr)  (mm_ptov((unsigned long)(addr)))
+#include <asm/virtconvert.h>
 
 /*
  * Cache handling functions
@@ -168,6 +161,7 @@ extern inline void flush_icache_range (unsigned long address,
     }
 }
 
+#define flush_dcache_page(page)			do { } while (0)
 
 /*
  * flush all user-space atc entries.
@@ -405,7 +399,7 @@ extern pte_t * __bad_pagetable(void);
 
 #define BAD_PAGETABLE __bad_pagetable()
 #define BAD_PAGE __bad_page()
-#define ZERO_PAGE empty_zero_page
+#define ZERO_PAGE(vaddr) empty_zero_page
 
 /* number of bits that fit into a memory pointer */
 #define BITS_PER_PTR			(8*sizeof(unsigned long))
@@ -436,34 +430,24 @@ extern inline pte_t pte_modify(pte_t pte, pgprot_t newprot)
 extern inline void pmd_set(pmd_t * pmdp, pte_t * ptep)
 {
 	int i;
-
-	ptep = (pte_t *) virt_to_phys(ptep);
-	for (i = 0; i < 16; i++, ptep += PTRS_PER_PTE/16)
-		pmdp->pmd[i] = _PAGE_TABLE | _PAGE_ACCESSED | (unsigned long)ptep;
-}
-
-/* early termination version of the above */
-extern inline void pmd_set_et(pmd_t * pmdp, pte_t * ptep)
-{
-	int i;
-
-	ptep = (pte_t *) virt_to_phys(ptep);
-	for (i = 0; i < 16; i++, ptep += PTRS_PER_PTE/16)
-		pmdp->pmd[i] = _PAGE_PRESENT | _PAGE_ACCESSED | (unsigned long)ptep;
+	unsigned long ptbl;
+	ptbl = virt_to_phys(ptep);
+	for (i = 0; i < 16; i++, ptbl += sizeof(pte_table)/16)
+		pmdp->pmd[i] = _PAGE_TABLE | _PAGE_ACCESSED | ptbl;
 }
 
 extern inline void pgd_set(pgd_t * pgdp, pmd_t * pmdp)
 { pgd_val(*pgdp) = _PAGE_TABLE | _PAGE_ACCESSED | virt_to_phys(pmdp); }
 
 extern inline unsigned long pte_page(pte_t pte)
-{ return (unsigned long)phys_to_virt((unsigned long)(pte_val(pte) & PAGE_MASK)); }
+{ return (unsigned long)phys_to_virt(pte_val(pte) & PAGE_MASK); }
 
 extern inline unsigned long pmd_page2(pmd_t *pmd)
-{ return (unsigned long)phys_to_virt((unsigned long)(pmd_val(*pmd) & _TABLE_MASK)); }
+{ return (unsigned long)phys_to_virt(pmd_val(*pmd) & _TABLE_MASK); }
 #define pmd_page(pmd) pmd_page2(&(pmd))
 
 extern inline unsigned long pgd_page(pgd_t pgd)
-{ return (unsigned long)phys_to_virt((unsigned long)(pgd_val(pgd) & _TABLE_MASK)); }
+{ return (unsigned long)phys_to_virt(pgd_val(pgd) & _TABLE_MASK); }
 
 extern inline int pte_none(pte_t pte)		{ return !pte_val(pte); }
 extern inline int pte_present(pte_t pte)	{ return pte_val(pte) & (_PAGE_PRESENT | _PAGE_FAKE_SUPER); }
@@ -524,6 +508,7 @@ extern inline void SET_PAGE_DIR(struct task_struct * tsk, pgd_t * pgdir)
 	if (tsk == current) {
 		if (CPU_IS_040_OR_060)
 			__asm__ __volatile__ (".chip 68040\n\t"
+					      "pflushan\n\t"
 					      "movec %0,%%urp\n\t"
 					      ".chip 68k"
 					      : : "r" (tsk->tss.crp[1]));
@@ -531,10 +516,22 @@ extern inline void SET_PAGE_DIR(struct task_struct * tsk, pgd_t * pgdir)
 			unsigned long tmp;
 			__asm__ __volatile__ ("movec  %%cacr,%0\n\t"
 					      "orw #0x0808,%0\n\t"
-					      "movec %0,%%cacr\n\t"
-					      "pmove %1,%%crp\n\t"
-					      : "=d" (tmp)
-					      : "m" (tsk->tss.crp[0]));
+					      "movec %0,%%cacr"
+					      : "=d" (tmp));
+			/* For a 030-only kernel, avoid flushing the whole
+			   ATC, we only need to flush the user entries.
+			   The 68851 does this by itself.  Avoid a runtime
+			   check here.  */
+			__asm__ __volatile__ (
+#ifdef CPU_M68030_ONLY
+					      ".chip 68030\n\t"
+					      "pmovefd %0,%%crp\n\t"
+					      ".chip 68k\n\t"
+					      "pflush #0,#4"
+#else
+					      "pmove %0,%%crp"
+#endif
+					      : : "m" (tsk->tss.crp[0]));
 		}
 	}
 }
@@ -547,7 +544,7 @@ extern inline pgd_t * pgd_offset(struct mm_struct * mm, unsigned long address)
 	return mm->pgd + (address >> PGDIR_SHIFT);
 }
 
-extern pgd_t swapper_pg_dir[128];
+#define swapper_pg_dir kernel_pg_dir
 extern pgd_t kernel_pg_dir[128];
 
 extern inline pgd_t * pgd_offset_k(unsigned long address)
@@ -625,8 +622,6 @@ extern pmd_t *get_pmd_slow(pgd_t *pgd, unsigned long offset);
 
 extern pmd_t *get_pointer_table(void);
 extern int free_pointer_table(pmd_t *);
-extern pmd_t *get_kpointer_table(void);
-extern void free_kpointer_table(pmd_t *);
 
 extern __inline__ pte_t *get_pte_fast(void)
 {
@@ -754,29 +749,12 @@ extern inline pte_t * pte_alloc_kernel(pmd_t * pmd, unsigned long address)
 
 extern inline void pmd_free_kernel(pmd_t * pmd)
 {
-	free_kpointer_table(pmd);
+	free_pmd_fast(pmd);
 }
 
 extern inline pmd_t * pmd_alloc_kernel(pgd_t * pgd, unsigned long address)
 {
-	address = (address >> PMD_SHIFT) & (PTRS_PER_PMD - 1);
-	if (pgd_none(*pgd)) {
-		pmd_t *page = get_kpointer_table();
-		if (pgd_none(*pgd)) {
-			if (page) {
-				pgd_set(pgd, page);
-				return page + address;
-			}
-			pgd_set(pgd, (pmd_t *)BAD_PAGETABLE);
-			return NULL;
-		}
-		free_kpointer_table(page);
-	}
-	if (pgd_bad(*pgd)) {
-		__bad_pmd(pgd);
-		return NULL;
-	}
-	return (pmd_t *) pgd_page(*pgd) + address;
+	return pmd_alloc(pgd, address);
 }
 
 extern inline void pgd_free(pgd_t * pgd)
@@ -815,26 +793,7 @@ extern inline int mm_end_of_chunk (unsigned long addr, int len)
 int mm_end_of_chunk (unsigned long addr, int len);
 #endif
 
-/*
- * Map some physical address range into the kernel address space.
- */
-extern unsigned long kernel_map(unsigned long paddr, unsigned long size,
-				int nocacheflag, unsigned long *memavailp );
-/*
- * Unmap a region alloced by kernel_map().
- */
-extern void kernel_unmap( unsigned long addr );
-/*
- * Change the cache mode of some kernel address range.
- */
-extern void kernel_set_cachemode( unsigned long address, unsigned long size,
-				  unsigned cmode );
-
-/* Values for nocacheflag and cmode */
-#define	KERNELMAP_FULL_CACHING		0
-#define	KERNELMAP_NOCACHE_SER		1
-#define	KERNELMAP_NOCACHE_NONSER	2
-#define	KERNELMAP_NO_COPYBACK		3
+extern void kernel_set_cachemode(void *addr, unsigned long size, int cmode);
 
 /*
  * The m68k doesn't have any external MMU info: the kernel page
@@ -868,5 +827,6 @@ extern inline void update_mmu_cache(struct vm_area_struct * vma,
 
 /* Needs to be defined here and not in linux/mm.h, as it is arch dependent */
 #define PageSkip(page)		(0)
+#define kern_addr_valid(addr)	(1)
 
 #endif /* _M68K_PGTABLE_H */

@@ -10,6 +10,8 @@
 #include <linux/string.h>
 #include <linux/types.h>
 #include <linux/malloc.h>
+#include <linux/init.h>
+#include <linux/pagemap.h>
 
 #include <asm/setup.h>
 #include <asm/segment.h>
@@ -92,10 +94,34 @@ typedef struct page ptable_desc;
 static ptable_desc ptable_list = { &ptable_list, &ptable_list };
 
 #define PD_MARKBITS(dp) (*(unsigned char *)&(dp)->offset)
-#define PD_PAGE(dp) (PAGE_OFFSET + ((dp)->map_nr << PAGE_SHIFT))
 #define PAGE_PD(page) ((ptable_desc *)&mem_map[MAP_NR(page)])
 
 #define PTABLE_SIZE (PTRS_PER_PMD * sizeof(pmd_t))
+
+__initfunc(void init_pointer_table(unsigned long ptable))
+{
+	ptable_desc *dp;
+	unsigned long page = ptable & PAGE_MASK;
+	unsigned char mask = 1 << ((ptable - page)/PTABLE_SIZE);
+
+	dp = PAGE_PD(page);
+	if (!(PD_MARKBITS(dp) & mask)) {
+		PD_MARKBITS(dp) = 0xff;
+		(dp->prev = ptable_list.prev)->next = dp;
+		(dp->next = &ptable_list)->prev = dp;
+	}
+
+	PD_MARKBITS(dp) &= ~mask;
+#ifdef DEBUG
+	printk("init_pointer_table: %lx, %x\n", ptable, PD_MARKBITS(dp));
+#endif
+
+	/* unreserve the page so it's possible to free that page */
+	dp->flags &= ~(1 << PG_reserved);
+	atomic_set(&dp->count, 1);
+
+	return;
+}
 
 pmd_t *get_pointer_table (void)
 {
@@ -140,7 +166,7 @@ pmd_t *get_pointer_table (void)
 		(dp->next = last->next)->prev = dp;
 		(dp->prev = last)->next = dp;
 	}
-	return (pmd_t *) (PD_PAGE(dp) + off);
+	return (pmd_t *) (page_address(dp) + off);
 }
 
 int free_pointer_table (pmd_t *ptable)
@@ -176,103 +202,6 @@ int free_pointer_table (pmd_t *ptable)
 	return 0;
 }
 
-/* maximum pages used for kpointer tables */
-#define KPTR_PAGES      4
-/* # of reserved slots */
-#define RESERVED_KPTR	4
-extern pmd_tablepage kernel_pmd_table; /* reserved in head.S */
-
-static struct kpointer_pages {
-        pmd_tablepage *page[KPTR_PAGES];
-        u_char alloced[KPTR_PAGES];
-} kptr_pages;
-
-void init_kpointer_table(void) {
-	short i = KPTR_PAGES-1;
-
-	/* first page is reserved in head.S */
-	kptr_pages.page[i] = &kernel_pmd_table;
-	kptr_pages.alloced[i] = ~(0xff>>RESERVED_KPTR);
-	for (i--; i>=0; i--) {
-		kptr_pages.page[i] = NULL;
-		kptr_pages.alloced[i] = 0;
-	}
-}
-
-pmd_t *get_kpointer_table (void)
-{
-	/* For pointer tables for the kernel virtual address space,
-	 * use the page that is reserved in head.S that can hold up to
-	 * 8 pointer tables. 3 of these tables are always reserved
-	 * (kernel_pg_dir, swapper_pg_dir and kernel pointer table for
-	 * the first 16 MB of RAM). In addition, the 4th pointer table
-	 * in this page is reserved. On Amiga and Atari, it is used to
-	 * map in the hardware registers. It may be used for other
-	 * purposes on other 68k machines. This leaves 4 pointer tables
-	 * available for use by the kernel. 1 of them are usually used
-	 * for the vmalloc tables. This allows mapping of 3 * 32 = 96 MB
-	 * of physical memory. But these pointer tables are also used
-	 * for other purposes, like kernel_map(), so further pages can
-	 * now be allocated.
-	 */
-	pmd_tablepage *page;
-	pmd_table *table;
-	long nr, offset = -8;
-	short i;
-
-	for (i=KPTR_PAGES-1; i>=0; i--) {
-		asm volatile("bfffo %1{%2,#8},%0"
-			: "=d" (nr)
-			: "d" ((u_char)~kptr_pages.alloced[i]), "d" (offset));
-		if (nr)
-			break;
-	}
-	if (i < 0) {
-		printk("No space for kernel pointer table!\n");
-		return NULL;
-	}
-	if (!(page = kptr_pages.page[i])) {
-		if (!(page = (pmd_tablepage *)get_free_page(GFP_KERNEL))) {
-			printk("No space for kernel pointer table!\n");
-			return NULL;
-		}
-		flush_tlb_kernel_page((unsigned long) page);
-		nocache_page((u_long)(kptr_pages.page[i] = page));
-	}
-	asm volatile("bfset %0@{%1,#1}"
-		: /* no output */
-		: "a" (&kptr_pages.alloced[i]), "d" (nr-offset));
-	table = &(*page)[nr-offset];
-	memset(table, 0, sizeof(pmd_table));
-	return ((pmd_t *)table);
-}
-
-void free_kpointer_table (pmd_t *pmdp)
-{
-	pmd_table *table = (pmd_table *)pmdp;
-	pmd_tablepage *page = (pmd_tablepage *)((u_long)table & PAGE_MASK);
-	long nr;
-	short i;
-
-	for (i=KPTR_PAGES-1; i>=0; i--) {
-		if (kptr_pages.page[i] == page)
-			break;
-	}
-	nr = ((u_long)table - (u_long)page) / sizeof(pmd_table);
-	if (!table || i < 0 || (i == KPTR_PAGES-1 && nr < RESERVED_KPTR)) {
-		printk("Attempt to free invalid kernel pointer table: %p\n", table);
-		return;
-	}
-	asm volatile("bfclr %0@{%1,#1}"
-		: /* no output */
-		: "a" (&kptr_pages.alloced[i]), "d" (nr));
-	if (!kptr_pages.alloced[i]) {
-		kptr_pages.page[i] = 0;
-		cache_page ((u_long)page);
-		free_page ((u_long)page);
-	}
-}
-
 static unsigned long transp_transl_matches( unsigned long regval,
 					    unsigned long vaddr )
 {
@@ -286,8 +215,8 @@ static unsigned long transp_transl_matches( unsigned long regval,
 	/* function code match? */
 	base = (regval >> 4) & 7;
 	mask = ~(regval & 7);
-	if ((SUPER_DATA & mask) != (base & mask))
-	    return( 0 );
+	if (((SUPER_DATA ^ base) & mask) != 0)
+	    return 0;
     }
     else {
 	/* must not be user-only */
@@ -297,8 +226,8 @@ static unsigned long transp_transl_matches( unsigned long regval,
 
     /* address match? */
     base = regval & 0xff000000;
-    mask = ~((regval << 8) & 0xff000000);
-    return( (vaddr & mask) == (base & mask) );
+    mask = ~(regval << 8) & 0xff000000;
+    return ((vaddr ^ base) & mask) == 0;
 }
 
 #ifndef CONFIG_SINGLE_MEMORY_CHUNK
@@ -308,7 +237,6 @@ static unsigned long transp_transl_matches( unsigned long regval,
  */
 unsigned long mm_vtop (unsigned long vaddr)
 {
-#ifndef CONFIG_SINGLE_MEMORY_CHUNK
 	int i=0;
 	unsigned long voff = vaddr;
 	unsigned long offset = 0;
@@ -324,10 +252,6 @@ unsigned long mm_vtop (unsigned long vaddr)
 			offset += m68k_memory[i].size;
 		i++;
 	}while (i < m68k_num_memory);
-#else
-	if (vaddr < m68k_memory[0].size)
-		return m68k_memory[0].addr + vaddr;
-#endif
 
 	return mm_vtop_fallback(vaddr);
 }
@@ -449,7 +373,6 @@ unsigned long mm_vtop_fallback (unsigned long vaddr)
 #ifndef CONFIG_SINGLE_MEMORY_CHUNK
 unsigned long mm_ptov (unsigned long paddr)
 {
-#ifndef CONFIG_SINGLE_MEMORY_CHUNK
 	int i = 0;
 	unsigned long offset = 0;
 
@@ -466,11 +389,6 @@ unsigned long mm_ptov (unsigned long paddr)
 			offset += m68k_memory[i].size;
 		i++;
 	}while (i < m68k_num_memory);
-#else
-	unsigned long base = m68k_memory[0].addr;
-	if (paddr >= base && paddr < (base + m68k_memory[0].size))
-		return (paddr - base);
-#endif
 
 	/*
 	 * assume that the kernel virtual address is the same as the
@@ -560,7 +478,7 @@ unsigned long mm_ptov (unsigned long paddr)
  *	Jes was worried about performance (urhh ???) so its optional
  */
  
-extern void (*mach_l2_flush)(int) = NULL;
+void (*mach_l2_flush)(int) = NULL;
 #endif
  
 /*

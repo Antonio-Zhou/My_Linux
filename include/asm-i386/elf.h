@@ -7,6 +7,7 @@
 
 #include <asm/ptrace.h>
 #include <asm/user.h>
+#include <linux/utsname.h>
 
 typedef unsigned long elf_greg_t;
 
@@ -32,8 +33,16 @@ typedef struct user_i387_struct elf_fpregset_t;
    This provides a mean for the dynamic linker to call DT_FINI functions for
    shared libraries that have been loaded before the code runs.
 
-   A value of 0 tells we have no such handler.  */
-#define ELF_PLAT_INIT(_r)	_r->edx = 0
+   A value of 0 tells we have no such handler. 
+
+   We might as well make sure everything else is cleared too (except for %esp),
+   just to make things more deterministic.
+ */
+#define ELF_PLAT_INIT(_r)	do { \
+	_r->ebx = 0; _r->ecx = 0; _r->edx = 0; \
+	_r->esi = 0; _r->edi = 0; _r->ebp = 0; \
+	_r->eax = 0; \
+} while (0)
 
 #define USE_ELF_CORE_DUMP
 #define ELF_EXEC_PAGESIZE	4096
@@ -43,7 +52,9 @@ typedef struct user_i387_struct elf_fpregset_t;
    the loader.  We need to make sure that it is out of the way of the program
    that it will "exec", and that there is sufficient room for the brk.  */
 
-#define ELF_ET_DYN_BASE         (2 * TASK_SIZE / 3)
+#define ELF_ET_DYN_BASE         ((TASK_SIZE & 0x80000000) \
+				 ? TASK_SIZE / 3 * 2 \
+				 : 2 * TASK_SIZE / 3)
 
 /* Wow, the "main" arch needs arch dependent functions too.. :) */
 
@@ -83,7 +94,7 @@ typedef struct user_i387_struct elf_fpregset_t;
    For the moment, we have only optimizations for the Intel generations,
    but that could change... */
 
-#define ELF_PLATFORM  ("i386\0i486\0i586\0i686"+((boot_cpu_data.x86-3)*5))
+#define ELF_PLATFORM (system_utsname.machine)
 
 #ifdef __KERNEL__
 #define SET_PERSONALITY(ex, ibcs2) \

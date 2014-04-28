@@ -375,6 +375,12 @@ ssize_t fat_file_write(
 		*ppos = inode->i_size;
 	if (count == 0)
 		return 0;
+	if (*ppos + count > 0x7FFFFFFFLL) {
+		count = 0x7FFFFFFFLL-*ppos;
+		if (!count)
+			return -EFBIG;
+	}
+
 	error = carry = 0;
 	for (start = buf; count || carry; count -= size) {
 		while (!(sector = fat_smap(inode,*ppos >> SECTOR_BITS)))
@@ -450,6 +456,10 @@ void fat_truncate(struct inode *inode)
 	/* Why no return value?  Surely the disk could fail... */
 	if (IS_IMMUTABLE(inode))
 		return /* -EPERM */;
+	if(inode->i_sb->s_flags&MS_RDONLY) {
+		printk("FAT: fat_truncate called though fs is read-only, uhh...\n");
+		return /* -EROFS */;
+	}
 	cluster = SECTOR_SIZE*MSDOS_SB(inode->i_sb)->cluster_size;
 	(void) fat_free(inode,(inode->i_size+(cluster-1))/cluster);
 	MSDOS_I(inode)->i_attrs |= ATTR_ARCH;

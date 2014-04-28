@@ -46,6 +46,9 @@
 
 #define DEFAULT_CURSOR_BLINK_RATE       (2*HZ/5)
 
+#define CURSOR_SHAPE			1
+#define CURSOR_BLINK			2
+
     /*
      *  Interface used by the world
      */
@@ -226,7 +229,12 @@ static int sbusfb_mmap(struct fb_info *info, struct file *file,
 		for (i = 0; fb->mmap_map[i].size; i++)
 			if (fb->mmap_map[i].voff == vma->vm_offset+page) {
 				map_size = sbusfb_mmapsize(fb,fb->mmap_map[i].size);
-				map_offset = (fb->physbase + fb->mmap_map[i].poff) & PAGE_MASK;
+#ifdef __sparc_v9__
+#define POFF_MASK	(PAGE_MASK|0x1UL)
+#else
+#define POFF_MASK	(PAGE_MASK)
+#endif				
+				map_offset = (fb->physbase + fb->mmap_map[i].poff) & POFF_MASK;
 				break;
 			}
 		if (!map_size){
@@ -241,8 +249,6 @@ static int sbusfb_mmap(struct fb_info *info, struct file *file,
 		page += map_size;
 	}
 	
-	vma->vm_file = file;
-	file->f_count++;
 	vma->vm_flags |= VM_IO;
 	if (!fb->mmaped) {
 		int lastconsole = 0;
@@ -358,9 +364,29 @@ static int sbusfb_get_var(struct fb_var_screeninfo *var, int con,
      */
 
 static int sbusfb_set_var(struct fb_var_screeninfo *var, int con,
-			struct fb_info *info)
+			  struct fb_info *info)
 {
-	return -EINVAL;
+       struct display *display;
+       int activate = var->activate;
+
+       if(con >= 0)
+               display = &fb_display[con];
+       else
+               display = info->disp;
+
+       /* simple check for equality until fully implemented -E */
+       if ((activate & FB_ACTIVATE_MASK) == FB_ACTIVATE_NOW) {
+               if (display->var.xres != var->xres ||
+                       display->var.yres != var->yres ||
+                       display->var.xres_virtual != var->xres_virtual ||
+                       display->var.yres_virtual != var->yres_virtual ||
+                       display->var.bits_per_pixel != var->bits_per_pixel ||
+                       display->var.accel_flags != var->accel_flags) {
+                       return -EINVAL;
+               }
+       }
+       return 0;
+
 }
 
     /*
@@ -457,7 +483,7 @@ sbusfb_cursor_timer_handler(unsigned long dev_addr)
         
 	if (!fb->setcursor) return;
                                 
-	if (fb->cursor.mode != 2) {
+	if (fb->cursor.mode & CURSOR_BLINK) {
 		fb->cursor.enable ^= 1;
 		fb->setcursor(fb);
 	}
@@ -472,14 +498,14 @@ static void sbusfb_cursor(struct display *p, int mode, int x, int y)
 	
 	switch (mode) {
 	case CM_ERASE:
-		fb->cursor.mode = 2;
+		fb->cursor.mode &= ~CURSOR_BLINK;
 		fb->cursor.enable = 0;
 		(*fb->setcursor)(fb);
 		break;
 				  
 	case CM_MOVE:
 	case CM_DRAW:
-		if (fb->cursor.mode) {
+		if (fb->cursor.mode & CURSOR_SHAPE) {
 			fb->cursor.size.fbx = fontwidth(p);
 			fb->cursor.size.fby = fontheight(p);
 			fb->cursor.chot.fbx = 0;
@@ -492,8 +518,8 @@ static void sbusfb_cursor(struct display *p, int mode, int x, int y)
 			fb->cursor.bits[1][fontheight(p) - 1] = (0xffffffff << (32 - fontwidth(p)));
 			(*fb->setcursormap) (fb, hw_cursor_cmap, hw_cursor_cmap, hw_cursor_cmap);
 			(*fb->setcurshape) (fb);
-			fb->cursor.mode = 0;
 		}
+		fb->cursor.mode = CURSOR_BLINK;
 		if (fontwidthlog(p))
 			fb->cursor.cpos.fbx = (x << fontwidthlog(p)) + fb->x_margin;
 		else
@@ -514,7 +540,7 @@ static void sbusfb_cursor(struct display *p, int mode, int x, int y)
 static int sbusfb_get_cmap(struct fb_cmap *cmap, int kspc, int con,
 			 struct fb_info *info)
 {
-	if (con == currcon) /* current console? */
+	if (!info->display_fg || con == info->display_fg->vc_num) /* current console? */
 		return fb_get_cmap(cmap, kspc, sbusfb_getcolreg, info);
 	else if (fb_display[con].cmap.len) /* non default colormap? */
 		fb_copy_cmap(&fb_display[con].cmap, cmap, kspc ? 0 : 2);
@@ -531,9 +557,14 @@ static int sbusfb_set_cmap(struct fb_cmap *cmap, int kspc, int con,
 			 struct fb_info *info)
 {
 	int err;
+	struct display *disp;
 
-	if (!fb_display[con].cmap.len) {	/* no colormap allocated? */
-		if ((err = fb_alloc_cmap(&fb_display[con].cmap, 1<<fb_display[con].var.bits_per_pixel, 0)))
+	if (con >= 0)
+		disp = &fb_display[con];
+	else
+		disp = info->disp;
+	if (!disp->cmap.len) {	/* no colormap allocated? */
+		if ((err = fb_alloc_cmap(&disp->cmap, 1<<disp->var.bits_per_pixel, 0)))
 			return err;
 	}
 	if (con == currcon) {			/* current console? */
@@ -546,7 +577,7 @@ static int sbusfb_set_cmap(struct fb_cmap *cmap, int kspc, int con,
 		}
 		return err;
 	} else
-		fb_copy_cmap(cmap, &fb_display[con].cmap, kspc ? 0 : 1);
+		fb_copy_cmap(cmap, &disp->cmap, kspc ? 0 : 1);
 	return 0;
 }
 
@@ -684,7 +715,7 @@ static int sbusfb_ioctl(struct inode *inode, struct file *file, u_int cmd,
  			lastconsole = info->display_fg->vc_num; 
  			if (vt_cons[lastconsole]->vc_mode == KD_TEXT)
  				return -EINVAL; /* Don't let graphics programs hide our nice text cursor */
-			fb->cursor.mode = 2; /* Forget state of our text cursor */
+			fb->cursor.mode = CURSOR_SHAPE; /* Forget state of our text cursor */
 		}
 		return sbus_hw_scursor ((struct fbcursor *) arg, fb);
 
@@ -761,7 +792,7 @@ static int sbusfbcon_switch(int con, struct fb_info *info)
 		if (lastconsole != con && 
 		    (fontwidth(&fb_display[lastconsole]) != fontwidth(&fb_display[con]) ||
 		     fontheight(&fb_display[lastconsole]) != fontheight(&fb_display[con])))
-			fb->cursor.mode = 1;
+			fb->cursor.mode |= CURSOR_SHAPE;
 	}
 	x_margin = (fb_display[con].var.xres_virtual - fb_display[con].var.xres) / 2;
 	y_margin = (fb_display[con].var.yres_virtual - fb_display[con].var.yres) / 2;
@@ -889,7 +920,7 @@ static int sbusfb_set_font(struct display *p, int width, int height)
 	p->var.xres = w - 2*x_margin;
 	p->var.yres = h - 2*y_margin;
 	
-	fb->cursor.mode = 1;
+	fb->cursor.mode |= CURSOR_SHAPE;
 	
 	if (fb->margins)
 		fb->margins(fb, p, x_margin, y_margin);
@@ -956,6 +987,7 @@ __initfunc(static void sbusfb_init_fb(int node, int parent, int fbtype,
 	disp = &fb->disp;
 	type = &fb->type;
 	
+	spin_lock_init(&fb->lock);
 	fb->prom_node = node;
 	fb->prom_parent = parent;
 	fb->sbdp = sbdp;
@@ -1076,6 +1108,7 @@ sizechange:
 			add_timer(&fb->cursor.timer);
 		}
 	}
+	fb->cursor.mode = CURSOR_SHAPE;
 	fb->dispsw.set_font = sbusfb_set_font;
 	fb->setup = fb->dispsw.setup;
 	fb->dispsw.setup = sbusfb_disp_setup;

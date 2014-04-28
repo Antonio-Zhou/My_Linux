@@ -67,7 +67,11 @@ caddr_t         sound_mem_blocks[1024];
 int             sound_nblocks = 0;
 
 /* Persistent DMA buffers */
-int		sound_dmap_flag = 0;	/* Off by default */
+#ifdef CONFIG_SOUND_DMAP
+int		sound_dmap_flag = 1;
+#else
+int		sound_dmap_flag = 0;
+#endif
 
 static int      soundcard_configured = 0;
 
@@ -456,13 +460,11 @@ static int sound_open(struct inode *inode, struct file *file)
 
 	case SND_DEV_CTL:
 		dev >>= 4;
-#ifdef CONFIG_KMOD
 		if (dev >= 0 && dev < MAX_MIXER_DEV && mixer_devs[dev] == NULL) {
 			char modname[20];
 			sprintf(modname, "mixer%d", dev);
 			request_module(modname);
 		}
-#endif
 		if (dev && (dev >= num_mixers || mixer_devs[dev] == NULL))
 			return -ENXIO;
 		break;
@@ -578,14 +580,12 @@ static int sound_mixer_ioctl(int mixdev, unsigned int cmd, caddr_t arg)
 {
  	if (mixdev < 0 || mixdev >= MAX_MIXER_DEV)
  		return -ENXIO;
-#ifdef CONFIG_KMOD
  	/* Try to load the mixer... */
  	if (mixer_devs[mixdev] == NULL) {
  		char modname[20];
  		sprintf(modname, "mixer%d", mixdev);
  		request_module(modname);
  	}
-#endif	/* CONFIG_KMOD */
  	if (mixdev >= num_mixers || !mixer_devs[mixdev])
  		return -ENXIO;
 	if (cmd == SOUND_MIXER_INFO)
@@ -755,9 +755,6 @@ static int sound_mmap(struct file *file, struct vm_area_struct *vma)
 		vma->vm_page_prot))
 		return -EAGAIN;
 
-	vma->vm_file = file;
-	file->f_count++;
-
 	dmap->mapping_flags |= DMA_MAP_MAPPED;
 
 	if( audio_devs[dev]->d->mmap)
@@ -806,13 +803,6 @@ bad1:
 	return -1;
 }
 
-static void destroy_special_devices(void)
-{
-	unregister_sound_special(6);
-	unregister_sound_special(1);
-	unregister_sound_special(8);
-}
-
 #ifdef MODULE
 static void
 #else
@@ -853,11 +843,18 @@ soundcard_init(void)
 #endif		
 }
 
+#ifdef MODULE
+
+static void destroy_special_devices(void)
+{
+	unregister_sound_special(6);
+	unregister_sound_special(1);
+	unregister_sound_special(8);
+}
+
 static int      sound[20] = {
 	0
 };
-
-#ifdef MODULE
 
 int traceinit = 0;
 static int dmabuf = 0;
@@ -909,8 +906,10 @@ void cleanup_module(void)
 	{
 		return;
 	}
+#ifdef CONFIG_PROC_FS	
         if (proc_unregister(&proc_root, PROC_SOUND))
 		printk(KERN_ERR "sound: unregistering /proc/sound failed\n");
+#endif		
 	if (chrdev_registered)
 		destroy_special_devices();
 

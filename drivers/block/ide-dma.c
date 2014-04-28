@@ -68,8 +68,9 @@
  *       SIIG's UltraIDE Pro CN-2449
  * TTI   HPT343 Chipset "Modified SCSI Class" but reports as an
  *       unknown storage device.
- * NEW	check_drive_lists(ide_drive_t *drive, int good_bad)
+ * NEW	 check_drive_lists(ide_drive_t *drive, int good_bad)
  */
+
 #include <linux/config.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
@@ -91,17 +92,26 @@
  */
 const char *good_dma_drives[] = {"Micropolis 2112A",
 				 "CONNER CTMA 4000",
+				 "CONNER CTT8000-A",
 				 "ST34342A",	/* for Sun Ultra */
-				 "WDC AC2340F",	/* DMA mode1 */
-				 "WDC AC2340H",	/* DMA mode1 */
 				 NULL};
 
 /*
  * bad_dma_drives() lists the model names (from "hdparm -i")
  * of drives which supposedly support (U)DMA but which are
  * known to corrupt data with this interface under Linux.
+ *
+ * This is an empirical list. Its generated from bug reports. That means
+ * while it reflects actual problem distributions it doesn't answer whether
+ * the drive or the controller, or cabling, or software, or some combination
+ * thereof is the fault. If you don't happen to agree with the kernel's 
+ * opinion of your drive - use hdparm to turn DMA on.
  */
-const char *bad_dma_drives[] = {"WDC AC22100H",
+const char *bad_dma_drives[] = {"WDC AC11000H",
+				"WDC AC22100H",
+				"WDC AC32500H",
+				"WDC AC33100H",
+				"WDC AC31600H",
  				NULL};
 
 /*
@@ -126,7 +136,7 @@ const char *bad_dma_drives[] = {"WDC AC22100H",
 /*
  * dma_intr() is the handler for disk read/write DMA interrupts
  */
-void ide_dma_intr (ide_drive_t *drive)
+ide_startstop_t ide_dma_intr (ide_drive_t *drive)
 {
 	int i;
 	byte stat, dma_stat;
@@ -141,12 +151,11 @@ void ide_dma_intr (ide_drive_t *drive)
 				i -= rq->current_nr_sectors;
 				ide_end_request(1, HWGROUP(drive));
 			}
-			return;
+			return ide_stopped;
 		}
 		printk("%s: dma_intr: bad DMA status\n", drive->name);
 	}
-	ide__sti();	/* local CPU only */
-	ide_error(drive, "dma_intr", stat);
+	return ide_error(drive, "dma_intr", stat);
 }
 
 /*
@@ -208,6 +217,20 @@ int ide_build_dmatable (ide_drive_t *drive)
 				xcount = bcount & 0xffff;
 				if (is_trm290_chipset)
 					xcount = ((xcount >> 2) - 1) << 16;
+				if (xcount == 0x0000) {
+					/* 
+					 * Most chipsets correctly interpret a length of 0x0000 as 64KB,
+					 * but at least one (e.g. CS5530) misinterprets it as zero (!).
+					 * So here we break the 64KB entry into two 32KB entries instead.
+					 */
+					if (count++ >= PRD_ENTRIES) {
+						printk("%s: DMA table too small\n", drive->name);
+						return 0; /* revert to PIO for this request */
+					}
+					*table++ = cpu_to_le32(0x8000);
+					*table++ = cpu_to_le32(addr + 0x8000);
+					xcount = 0x8000;
+				}
 				*table++ = cpu_to_le32(xcount);
 				addr += bcount;
 				size -= bcount;
@@ -243,7 +266,7 @@ int check_drive_lists (ide_drive_t *drive, int good_bad)
 		list = bad_dma_drives;
 		while (*list) {
 			if (!strcmp(*list++,id->model)) {
-				printk("%s: (U)DMA capability is broken for %s\n",
+				printk("%s: Disabling (U)DMA for %s\n",
 					drive->name, id->model);
 				return 1;
 			}
@@ -319,7 +342,7 @@ int ide_dmaproc (ide_dma_action_t func, ide_drive_t *drive)
 			drive->waiting_for_dma = 1;
 			if (drive->media != ide_disk)
 				return 0;
-			ide_set_handler(drive, &ide_dma_intr, WAIT_CMD);/* issue cmd to drive */
+			ide_set_handler(drive, &ide_dma_intr, WAIT_CMD, NULL);/* issue cmd to drive */
 			OUT_BYTE(reading ? WIN_READDMA : WIN_WRITEDMA, IDE_COMMAND_REG);
 		case ide_dma_begin:
 			/* Note that this is done *after* the cmd has
@@ -331,8 +354,8 @@ int ide_dmaproc (ide_dma_action_t func, ide_drive_t *drive)
 			return 0;
 		case ide_dma_end: /* returns 1 on error, 0 otherwise */
 			drive->waiting_for_dma = 0;
-			dma_stat = inb(dma_base+2);
-			outb(inb(dma_base)&~1, dma_base);		/* stop DMA */
+			outb(inb(dma_base)&~1, dma_base);	/* stop DMA */
+			dma_stat = inb(dma_base+2);		/* get DMA status */
 			outb(dma_stat|6, dma_base+2);	/* clear the INTR & ERROR bits */
 			return (dma_stat & 7) != 4;	/* verify good DMA status */
 		case ide_dma_test_irq: /* returns 1 if dma irq issued, 0 otherwise */
@@ -359,7 +382,11 @@ int ide_release_dma (ide_hwif_t *hwif)
 	return 1;
 }
 
-__initfunc(void ide_setup_dma (ide_hwif_t *hwif, unsigned long dma_base, unsigned int num_ports))
+/*
+ *	This can be called for a dynamically installed interface. Don't initfunc it
+ */
+ 
+void ide_setup_dma (ide_hwif_t *hwif, unsigned long dma_base, unsigned int num_ports)
 {
 	static unsigned long dmatable = 0;
 	static unsigned leftover = 0;
@@ -411,7 +438,7 @@ __initfunc(unsigned long ide_get_or_set_dma_base (ide_hwif_t *hwif, int extra, c
 	} else {
 		dma_base = dev->base_address[4] & PCI_BASE_ADDRESS_IO_MASK;
 		if (!dma_base || dma_base == PCI_BASE_ADDRESS_IO_MASK) {
-			printk("%s: dma_base is invalid (0x%04lx, BIOS problem), please report to <mj@ucw.cz>\n", name, dma_base);
+			printk("%s: dma_base is invalid (0x%04lx)\n", name, dma_base);
 			dma_base = 0;
 		}
 	}
@@ -420,6 +447,12 @@ __initfunc(unsigned long ide_get_or_set_dma_base (ide_hwif_t *hwif, int extra, c
 			request_region(dma_base+16, extra, name);
 		dma_base += hwif->channel ? 8 : 0;
 		hwif->dma_extra = extra;
+		
+		/* ====== ALI M5229 ================================*/
+		if( hwif->pci_dev->device == PCI_DEVICE_ID_AL_M5229)
+			outb(inb(dma_base+2) & 0x60, dma_base+2);           
+		/* =================================================*/
+		
 		if (inb(dma_base+2) & 0x80) {
 			printk("%s: simplex device:  DMA disabled\n", name);
 			dma_base = 0;

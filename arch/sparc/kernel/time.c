@@ -1,4 +1,4 @@
-/* $Id: time.c,v 1.39 1998/09/29 09:46:15 davem Exp $
+/* $Id: time.c,v 1.43 1999/03/15 22:13:31 davem Exp $
  * linux/arch/sparc/kernel/time.c
  *
  * Copyright (C) 1995 David S. Miller (davem@caip.rutgers.edu)
@@ -11,6 +11,9 @@
  * Support for MicroSPARC-IIep, PCI CPU.
  *
  * This file handles the Sparc specific time handling details.
+ *
+ * 1997-09-10	Updated NTP code according to technical memorandum Jan '96
+ *		"A Kernel Model for Precision Timekeeping" by Dave Mills
  */
 #include <linux/config.h>
 #include <linux/errno.h>
@@ -35,6 +38,8 @@
 #include <asm/machines.h>
 #include <asm/sun4paddr.h>
 #include <asm/page.h>
+
+extern rwlock_t xtime_lock;
 
 enum sparc_clock_type sp_clock_typ;
 struct mostek48t02 *mstk48t02_regs = 0;
@@ -77,7 +82,7 @@ void timer_interrupt(int irq, void *dev_id, struct pt_regs * regs)
 
 #ifdef CONFIG_SUN4
 	if((idprom->id_machtype == (SM_SUN4 | SM_4_260)) ||
-   (idprom->id_machtype == (SM_SUN4 | SM_4_110))) {
+	   (idprom->id_machtype == (SM_SUN4 | SM_4_110))) {
 		int temp;
         	intersil_read_intr(intersil_clock, temp);
 		/* re-enable the irq */
@@ -86,17 +91,21 @@ void timer_interrupt(int irq, void *dev_id, struct pt_regs * regs)
 #endif
 	clear_clock_irq();
 
+	write_lock(&xtime_lock);
+
 	do_timer(regs);
 
 	/* Determine when to update the Mostek clock. */
-	if (time_state != TIME_BAD && xtime.tv_sec > last_rtc_update + 660 &&
-	    xtime.tv_usec > 500000 - (tick >> 1) &&
-	    xtime.tv_usec < 500000 + (tick >> 1)) {
+	if ((time_status & STA_UNSYNC) == 0 &&
+	    xtime.tv_sec > last_rtc_update + 660 &&
+	    xtime.tv_usec >= 500000 - ((unsigned) tick) / 2 &&
+	    xtime.tv_usec <= 500000 + ((unsigned) tick) / 2) {
 	  if (set_rtc_mmss(xtime.tv_sec) == 0)
 	    last_rtc_update = xtime.tv_sec;
 	  else
 	    last_rtc_update = xtime.tv_sec - 600; /* do it again in 60 s */
 	}
+	write_unlock(&xtime_lock);
 }
 
 /* Converts Gregorian date to seconds since 1970-01-01 00:00:00.
@@ -432,6 +441,9 @@ extern __inline__ unsigned long do_gettimeoffset(void)
 	return offset + count;
 }
 
+/* This need not obtain the xtime_lock as it is coded in
+ * an implicitly SMP safe way already.
+ */
 void do_gettimeofday(struct timeval *tv)
 {
 #if CONFIG_AP1000
@@ -481,12 +493,13 @@ void do_gettimeofday(struct timeval *tv)
 
 void do_settimeofday(struct timeval *tv)
 {
+	write_lock_irq(&xtime_lock);
 	bus_do_settimeofday(tv);
+	write_unlock_irq(&xtime_lock);
 }
 
 static void sbus_do_settimeofday(struct timeval *tv)
 {
-	cli();
 #if !CONFIG_AP1000
 	tv->tv_usec -= do_gettimeoffset();
 	if(tv->tv_usec < 0) {
@@ -495,12 +508,16 @@ static void sbus_do_settimeofday(struct timeval *tv)
 	}
 #endif
 	xtime = *tv;
-	time_state = TIME_BAD;
-	time_maxerror = 0x70000000;
-	time_esterror = 0x70000000;
-	sti();
+	time_adjust = 0;		/* stop active adjtime() */
+	time_status |= STA_UNSYNC;
+	time_maxerror = NTP_PHASE_LIMIT;
+	time_esterror = NTP_PHASE_LIMIT;
 }
 
+/*
+ * BUG: This routine does not handle hour overflow properly; it just
+ *      sets the minutes. Usually you won't notice until after reboot!
+ */
 static int set_rtc_mmss(unsigned long nowtime)
 {
 	int real_seconds, real_minutes, mostek_minutes;
@@ -531,9 +548,13 @@ static int set_rtc_mmss(unsigned long nowtime)
 				iregs->clk.int_sec=real_seconds;
 				iregs->clk.int_min=real_minutes;
 				intersil_start(iregs);
-			} else 
+			} else {
+				printk(KERN_WARNING
+			       "set_rtc_mmss: can't update from %d to %d\n",
+				       mostek_minutes, real_minutes);
 				return -1;
-
+			}
+			
 			return 0;
 		}
 #endif

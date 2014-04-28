@@ -7,6 +7,7 @@
  * impossible at the moment.
  */
 
+#include <linux/config.h>
 #include <linux/version.h>
 #include <linux/types.h>
 #include <linux/linkage.h>
@@ -38,8 +39,10 @@ rpc_register_sysctl(void)
 	if (!sunrpc_table_header) {
 		sunrpc_table_header = register_sysctl_table(sunrpc_table, 1);
 #ifdef MODULE
+#ifdef CONFIG_PROC_FS
 		if (sunrpc_table[0].de)
 			sunrpc_table[0].de->fill_inode = rpc_modcount;
+#endif
 #endif
 	}
 			
@@ -96,9 +99,8 @@ proc_dodebug(ctl_table *table, int write, struct file *file,
 			left--, p++;
 		*(unsigned int *) table->data = value;
 		/* Display the RPC tasks on writing to rpc_debug */
-		if (table->ctl_name == CTL_RPCDEBUG) {
+		if (table->ctl_name == CTL_RPCDEBUG)
 			rpc_show_tasks();
-		}
 	} else {
 		if (!access_ok(VERIFY_WRITE, buffer, left))
 			return -EFAULT;

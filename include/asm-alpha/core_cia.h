@@ -77,14 +77,24 @@
 #define CIA_MEM_R2_MASK 0x07ffffff  /* SPARSE Mem region 2 mask is 27 bits */
 #define CIA_MEM_R3_MASK 0x03ffffff  /* SPARSE Mem region 3 mask is 26 bits */
 
-#define CIA_DMA_WIN_BASE_DEFAULT	(1024*1024*1024)
-#define CIA_DMA_WIN_SIZE_DEFAULT	(1024*1024*1024)
+#define CIA_DMA_WIN_BASE_DEFAULT	(1024*1024*1024U)
+#define CIA_DMA_WIN_SIZE_DEFAULT	(2*1024*1024*1024U)
+
+/* window 0 at 1GB size 1GB mapping to 0 */
+#define CIA_DMA_WIN0_BASE_DEFAULT	(1024*1024*1024U)
+#define CIA_DMA_WIN0_SIZE_DEFAULT	(1024*1024*1024U)
+#define CIA_DMA_WIN0_TRAN_DEFAULT	(0U)
+
+/* window 1 at 2GB size 1GB mapping to 1GB */
+#define CIA_DMA_WIN1_BASE_DEFAULT	(2*1024*1024*1024U)
+#define CIA_DMA_WIN1_SIZE_DEFAULT	(1024*1024*1024U)
+#define CIA_DMA_WIN1_TRAN_DEFAULT	(1024*1024*1024U)
 
 #if defined(CONFIG_ALPHA_GENERIC) || defined(CONFIG_ALPHA_SRM_SETUP)
 #define CIA_DMA_WIN_BASE		alpha_mv.dma_win_base
 #define CIA_DMA_WIN_SIZE		alpha_mv.dma_win_size
 #else
-#define CIA_DMA_WIN_BASE		CIA_DMA_WIN_SIZE_DEFAULT
+#define CIA_DMA_WIN_BASE		CIA_DMA_WIN_BASE_DEFAULT
 #define CIA_DMA_WIN_SIZE		CIA_DMA_WIN_SIZE_DEFAULT
 #endif
 
@@ -326,9 +336,9 @@ __EXTERN_INLINE unsigned int cia_inb(unsigned long addr)
 
 __EXTERN_INLINE void cia_outb(unsigned char b, unsigned long addr)
 {
-	unsigned int w = __kernel_insbl(b, addr & 3);
+	unsigned long w = __kernel_insbl(b, addr & 3);
 	*(vuip) ((addr << 5) + CIA_IO + 0x00) = w;
-	wmb();
+	mb();
 }
 
 __EXTERN_INLINE unsigned int cia_inw(unsigned long addr)
@@ -340,9 +350,9 @@ __EXTERN_INLINE unsigned int cia_inw(unsigned long addr)
 
 __EXTERN_INLINE void cia_outw(unsigned short b, unsigned long addr)
 {
-	unsigned int w = __kernel_inswl(b, addr & 3);
+	unsigned long w = __kernel_inswl(b, addr & 3);
 	*(vuip) ((addr << 5) + CIA_IO + 0x08) = w;
-	wmb();
+	mb();
 }
 
 __EXTERN_INLINE unsigned int cia_inl(unsigned long addr)
@@ -353,7 +363,7 @@ __EXTERN_INLINE unsigned int cia_inl(unsigned long addr)
 __EXTERN_INLINE void cia_outl(unsigned int b, unsigned long addr)
 {
 	*(vuip) ((addr << 5) + CIA_IO + 0x18) = b;
-	wmb();
+	mb();
 }
 
 

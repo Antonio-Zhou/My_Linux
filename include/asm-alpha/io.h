@@ -3,7 +3,6 @@
 
 #include <linux/config.h>
 #include <asm/system.h>
-#include <asm/machvec.h>
 
 /* We don't use IO slowdowns on the Alpha, but.. */
 #define __SLOW_DOWN_IO	do { } while (0)
@@ -19,6 +18,7 @@
 #endif
 
 #ifdef __KERNEL__
+#include <asm/machvec.h>
 
 /*
  * We try to avoid hae updates (thus the cache), but when we
@@ -29,15 +29,16 @@
  */
 static inline void __set_hae(unsigned long new_hae)
 {
-	unsigned long ipl = swpipl(7);
+	unsigned long flags;
+	__save_and_cli(flags);
 
 	alpha_mv.hae_cache = new_hae;
 	*alpha_mv.hae_register = new_hae;
 	mb();
-
 	/* Re-read to make sure it was written.  */
 	new_hae = *alpha_mv.hae_register;
-	setipl(ipl);
+
+	__restore_flags(flags);
 }
 
 static inline void set_hae(unsigned long new_hae)
@@ -78,6 +79,7 @@ extern void _sethae (unsigned long addr);	/* cached version */
  * There are different chipsets to interface the Alpha CPUs to the world.
  */
 
+#ifdef __KERNEL__
 #ifdef CONFIG_ALPHA_GENERIC
 
 /* In a generic kernel, we always go through the machine vector.  */
@@ -140,6 +142,12 @@ extern void _sethae (unsigned long addr);	/* cached version */
 # include <asm/core_tsunami.h>
 #elif defined(CONFIG_ALPHA_JENSEN)
 # include <asm/jensen.h>
+#elif defined(CONFIG_ALPHA_RX164)
+# include <asm/core_polaris.h>
+#elif defined(CONFIG_ALPHA_LX164)
+# include <asm/core_pyxis.h>
+#elif defined(CONFIG_ALPHA_IRONGATE)
+# include <asm/core_irongate.h>
 #else
 #error "What system is this?"
 #endif
@@ -147,6 +155,7 @@ extern void _sethae (unsigned long addr);	/* cached version */
 #undef __WANT_IO_DEF
 
 #endif /* GENERIC */
+#endif /* __KERNEL__ */
 
 /*
  * The convention used for inb/outb etc. is that names starting with
@@ -172,6 +181,7 @@ extern void		_writew(unsigned short b, unsigned long addr);
 extern void		_writel(unsigned int b, unsigned long addr);
 extern void		_writeq(unsigned long b, unsigned long addr);
 
+#ifdef __KERNEL__
 /*
  * The platform header files may define some of these macros to use
  * the inlined versions where appropriate.  These macros may also be
@@ -216,6 +226,27 @@ extern void		_writeq(unsigned long b, unsigned long addr);
 # define outl_p		outl
 #endif
 
+#else 
+
+/* Userspace declarations.  */
+
+extern unsigned int	inb (unsigned long port);
+extern unsigned int	inw (unsigned long port);
+extern unsigned int	inl (unsigned long port);
+extern void		outb (unsigned char b,unsigned long port);
+extern void		outw (unsigned short w,unsigned long port);
+extern void		outl (unsigned int l,unsigned long port);
+extern unsigned long	readb(unsigned long addr);
+extern unsigned long	readw(unsigned long addr);
+extern unsigned long	readl(unsigned long addr);
+extern void		writeb(unsigned char b, unsigned long addr);
+extern void		writew(unsigned short b, unsigned long addr);
+extern void		writel(unsigned int b, unsigned long addr);
+
+#endif /* __KERNEL__ */
+
+#ifdef __KERNEL__
+
 /*
  * The "address" in IO memory space is not clearly either an integer or a
  * pointer. We will accept both, thus the casts.
@@ -231,6 +262,8 @@ static inline void * ioremap(unsigned long offset, unsigned long size)
 static inline void iounmap(void *addr)
 {
 }
+
+#define ioremap_nocache(offset, size) ioremap((offset),(size))
 
 #ifndef readb
 # define readb(a)	_readb((unsigned long)(a))
@@ -257,13 +290,11 @@ static inline void iounmap(void *addr)
 # define writeq(v,a)	_writeq((v),(unsigned long)(a))
 #endif
 
-#ifdef __KERNEL__
-
 /*
  * String version of IO memory access ops:
  */
 extern void _memcpy_fromio(void *, unsigned long, long);
-extern void _memcpy_toio(unsigned long, void *, long);
+extern void _memcpy_toio(unsigned long, const void *, long);
 extern void _memset_c_io(unsigned long, unsigned long, long);
 
 #define memcpy_fromio(to,from,len) \

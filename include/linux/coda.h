@@ -1,8 +1,59 @@
+/* 
+   You may distribute this file under either of the two licenses that
+   follow at your discretion.
+*/
+
+/* BLURB lgpl
+
+                           Coda File System
+                              Release 5
+
+          Copyright (c) 1987-1999 Carnegie Mellon University
+                  Additional copyrights listed below
+
+This code is distributed "AS IS" without warranty of any kind under
+the terms of the GNU Library General Public Licence Version 2, as
+shown in the file LICENSE, or under the license shown below. The
+technical and financial contributors to Coda are listed in the file
+CREDITS.
+
+                        Additional copyrights 
+*/
+
+/*
+
+            Coda: an Experimental Distributed File System
+                             Release 4.0
+
+          Copyright (c) 1987-1999 Carnegie Mellon University
+                         All Rights Reserved
+
+Permission  to  use, copy, modify and distribute this software and its
+documentation is hereby granted,  provided  that  both  the  copyright
+notice  and  this  permission  notice  appear  in  all  copies  of the
+software, derivative works or  modified  versions,  and  any  portions
+thereof, and that both notices appear in supporting documentation, and
+that credit is given to Carnegie Mellon University  in  all  documents
+and publicity pertaining to direct or indirect use of this code or its
+derivatives.
+
+CODA IS AN EXPERIMENTAL SOFTWARE SYSTEM AND IS  KNOWN  TO  HAVE  BUGS,
+SOME  OF  WHICH MAY HAVE SERIOUS CONSEQUENCES.  CARNEGIE MELLON ALLOWS
+FREE USE OF THIS SOFTWARE IN ITS "AS IS" CONDITION.   CARNEGIE  MELLON
+DISCLAIMS  ANY  LIABILITY  OF  ANY  KIND  FOR  ANY  DAMAGES WHATSOEVER
+RESULTING DIRECTLY OR INDIRECTLY FROM THE USE OF THIS SOFTWARE  OR  OF
+ANY DERIVATIVE WORK.
+
+Carnegie  Mellon  encourages  users  of  this  software  to return any
+improvements or extensions that  they  make,  and  to  grant  Carnegie
+Mellon the rights to redistribute these changes without encumbrance.
+*/
 
 /*
  *
  * Based on cfs.h from Mach, but revamped for increased simplicity.
- * Linux modifications by Peter Braam, Aug 1996
+ * Linux modifications by 
+ * Peter Braam, Aug 1996
  */
 
 #ifndef _CODA_HEADER_
@@ -49,20 +100,33 @@ typedef unsigned long long u_quad_t;
 
 #if defined(__linux__)
 #define cdev_t u_quad_t
+#ifndef __KERNEL__
 #if !defined(_UQUAD_T_) && (!defined(__GLIBC__) || __GLIBC__ < 2)
 #define _UQUAD_T_ 1
 typedef unsigned long long u_quad_t;
 #endif
+#else /*__KERNEL__ */
+typedef unsigned long long u_quad_t;
+#endif /* __KERNEL__ */
 #else
 #define cdev_t dev_t
 #endif
 
 #ifdef __CYGWIN32__
-typedef unsigned char u_int8_t;
 struct timespec {
         time_t  tv_sec;         /* seconds */
         long    tv_nsec;        /* nanoseconds */
 };
+#endif
+
+#ifndef __BIT_TYPES_DEFINED__
+#define __BIT_TYPES_DEFINED__
+typedef signed char	      int8_t;
+typedef unsigned char	    u_int8_t;
+typedef short		     int16_t;
+typedef unsigned short	   u_int16_t;
+typedef int		     int32_t;
+typedef unsigned int	   u_int32_t;
 #endif
 
 
@@ -100,8 +164,8 @@ struct timespec {
 struct venus_dirent {
         unsigned long	d_fileno;		/* file number of entry */
         unsigned short	d_reclen;		/* length of this record */
-        char 		d_type;			/* file type, see below */
-        char		d_namlen;		/* length of string in d_name */
+        unsigned char 	d_type;			/* file type, see below */
+        unsigned char	d_namlen;		/* length of string in d_name */
         char		d_name[CODA_MAXNAMLEN + 1];/* name must be no longer than this */
 };
 #undef DIRSIZ
@@ -164,11 +228,6 @@ static __inline__ ino_t  coda_f2i(struct ViceFid *fid)
 #endif
 
 
-#ifndef __BIT_TYPES_DEFINED__
-#define u_int32_t unsigned int
-#endif
-
-
 #ifndef _VUID_T_
 #define _VUID_T_
 typedef u_int32_t vuid_t;
@@ -191,7 +250,7 @@ struct coda_cred {
 enum coda_vtype	{ C_VNON, C_VREG, C_VDIR, C_VBLK, C_VCHR, C_VLNK, C_VSOCK, C_VFIFO, C_VBAD };
 
 struct coda_vattr {
-	int     	va_type;	/* vnode type (for create) */
+	long     	va_type;	/* vnode type (for create) */
 	u_short		va_mode;	/* files access mode and type */
 	short		va_nlink;	/* number of references to file */
 	vuid_t		va_uid;		/* owner user id */
@@ -210,6 +269,15 @@ struct coda_vattr {
 };
 
 #endif 
+
+/* structure used by CODA_STATFS for getting cache information from venus */
+struct coda_statfs {
+    int32_t f_blocks;
+    int32_t f_bfree;
+    int32_t f_bavail;
+    int32_t f_files;
+    int32_t f_ffree;
+};
 
 /*
  * Kernel <--> Venus communications.
@@ -246,7 +314,8 @@ struct coda_vattr {
 #define CODA_OPEN_BY_PATH 31
 #define CODA_RESOLVE     32
 #define CODA_REINTEGRATE 33
-#define CODA_NCALLS 34
+#define CODA_STATFS	 34
+#define CODA_NCALLS 35
 
 #define DOWNCALL(opcode) (opcode >= CODA_REPLACE && opcode <= CODA_PURGEFID)
 
@@ -620,6 +689,16 @@ struct coda_open_by_path_out {
 	int path;
 };
 
+/* coda_statfs: NO_IN */
+struct coda_statfs_in {
+    struct coda_in_hdr in;
+};
+
+struct coda_statfs_out {
+    struct coda_out_hdr oh;
+    struct coda_statfs stat;
+};
+
 /* 
  * Occasionally, we don't cache the fid returned by CODA_LOOKUP. 
  * For instance, if the fid is inconsistent. 
@@ -649,7 +728,8 @@ union inputArgs {
     struct coda_inactive_in coda_inactive;
     struct coda_vget_in coda_vget;
     struct coda_rdwr_in coda_rdwr;
-	struct coda_open_by_path_in coda_open_by_path;
+    struct coda_open_by_path_in coda_open_by_path;
+    struct coda_statfs_in coda_statfs;
 };
 
 union outputArgs {
@@ -671,7 +751,8 @@ union outputArgs {
     struct coda_purgefid_out coda_purgefid;
     struct coda_rdwr_out coda_rdwr;
     struct coda_replace_out coda_replace;
-	struct coda_open_by_path_out coda_open_by_path;
+    struct coda_open_by_path_out coda_open_by_path;
+    struct coda_statfs_out coda_statfs;
 };    
 
 union coda_downcalls {
@@ -697,20 +778,11 @@ struct ViceIoctl {
         short out_size;         /* Maximum size of output buffer, <= 2K */
 };
 
-#if defined(__CYGWIN32__) || defined(DJGPP)
-struct PioctlData {
-	unsigned long cmd;
-        const char *path;
-        int follow;
-        struct ViceIoctl vi;
-};
-#else
 struct PioctlData {
         const char *path;
         int follow;
         struct ViceIoctl vi;
 };
-#endif
 
 #define	CODA_CONTROL		".CONTROL"
 #define CODA_CONTROLLEN           8

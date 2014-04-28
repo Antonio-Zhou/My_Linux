@@ -63,7 +63,6 @@
 #include <linux/proc_fs.h>
 #include <net/ip.h>
 #include <net/arp.h>
-#include <linux/if_arp.h>
 #include <linux/init.h>
 
 int nr_ndevs = 4;
@@ -408,6 +407,9 @@ static int nr_getsockopt(struct socket *sock, int level, int optname,
 	if (get_user(len, optlen))
 		return -EFAULT;
 
+	if (len < 0)
+		return -EINVAL;
+		
 	switch (optname) {
 		case NETROM_T1:
 			val = sk->protinfo.nr->t1 / HZ;
@@ -892,11 +894,18 @@ int nr_rx_frame(struct sk_buff *skb, struct device *dev)
 	 */
 	if (frametype != NR_CONNREQ) {
 		/*
+		 * Here it would be nice to be able to send a reset but
+		 * NET/ROM doesn't have one. The following hack would
+		 * have been a way to extend the protocol but apparently
+		 * it kills BPQ boxes... :-(
+		 */
+#if 0
+		/*
 		 * Never reply to a CONNACK/CHOKE.
 		 */
 		if (frametype != NR_CONNACK || flags != NR_CHOKE_FLAG)
 			nr_transmit_refusal(skb, 1);
-
+#endif
 		return 0;
 	}
 
@@ -1304,6 +1313,11 @@ __initfunc(void nr_proto_init(struct net_proto *pro))
 
 	for (i = 0; i < nr_ndevs; i++) {
 		dev_nr[i].name = kmalloc(20, GFP_KERNEL);
+		if(dev_nr[i].name==NULL)
+		{
+			printk(KERN_ERR "Netrom: unable to register devices.\n");
+			break;
+		}
 		sprintf(dev_nr[i].name, "nr%d", i);
 		dev_nr[i].init = nr_init;
 		register_netdev(&dev_nr[i]);

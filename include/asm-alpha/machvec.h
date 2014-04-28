@@ -4,6 +4,12 @@
 #include <linux/config.h>
 #include <linux/types.h>
 
+/*
+ *	This file gets pulled in by asm/io.h from user space. We don't
+ *	want most of this escaping.
+ */
+ 
+#ifdef __KERNEL__
 
 /* The following structure vectors all of the I/O and IRQ manipulation
    from the generic kernel to the hardware specific backend.  */
@@ -26,7 +32,6 @@ struct alpha_machine_vector
 	int rtc_port;
 	int max_asn;
 	unsigned long max_dma_address;
-	unsigned long mmu_context_mask;
 	unsigned long irq_probe_mask;
 	unsigned long iack_sc;
 
@@ -122,4 +127,5 @@ extern int alpha_use_srm_setup;
 #endif
 #endif /* GENERIC */
 
+#endif
 #endif /* __ALPHA_MACHVEC_H */

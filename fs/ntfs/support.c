@@ -7,7 +7,10 @@
  *
  */
 
-#include "types.h"
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+#include "ntfstypes.h"
 #include "struct.h"
 #include "support.h"
 
@@ -86,14 +89,17 @@ void ntfs_bzero(void *s, int n)
 	memset(s, 0, n);
 }
 
-void *ntfs_memcpy(void *dest, const void *src, ntfs_size_t n)
+/* These functions deliberately return no value. It is dest, anyway,
+   and not used anywhere in the NTFS code.  */
+
+void ntfs_memcpy(void *dest, const void *src, ntfs_size_t n)
 {
-	return memcpy(dest, src, n);
+	memcpy(dest, src, n);
 }
 
-void *ntfs_memmove(void *dest, const void *src, ntfs_size_t n)
+void ntfs_memmove(void *dest, const void *src, ntfs_size_t n)
 {
-	return memmove(dest, src, n);
+	memmove(dest, src, n);
 }
 
 /* Warn that an error occurred. */
@@ -212,7 +218,7 @@ int ntfs_dupuni2map(ntfs_volume *vol, ntfs_u16 *in, int in_len, char **out,
   int *out_len)
 {
 	int i,o,val;
-	char *result,*buf;
+	char *result,*buf,tmp[20];
 	struct nls_table* nls=vol->nls_map;
 
 	result=ntfs_malloc(in_len+1);
@@ -231,15 +237,26 @@ int ntfs_dupuni2map(ntfs_volume *vol, ntfs_u16 *in, int in_len, char **out,
 				continue;
 			}
 		}else{
-			uni_page=nls->page_uni2charset[ch];
-			if(uni_page && uni_page[cl]){
-				result[o++]=uni_page[cl];
-				continue;
+			int len, i1;
+			nls->uni2char(ch, cl, tmp, 20, &len);
+			if (len > 1){
+				buf=ntfs_malloc(*out_len + len - 1);
+				memcpy(buf, result, o);
+				ntfs_free(result);
+				result=buf;
+				*out_len+=(len-1);
 			}
+			for (i1=0;i1<len;i1++)
+				result[o++] = tmp[i1];
+			continue;
 		}
 		if(!(vol->nct & nct_uni_xlate))goto inval;
 		/* realloc */
 		buf=ntfs_malloc(*out_len+3);
+		if( !buf ) {
+			ntfs_free( result );
+			return ENOMEM;
+		}
 		memcpy(buf,result,o);
 		ntfs_free(result);
 		result=buf;
@@ -280,11 +297,16 @@ int ntfs_dupmap2uni(ntfs_volume *vol, char* in, int in_len, ntfs_u16 **out,
 	*out=result=ntfs_malloc(2*in_len);
 	if(!result)return ENOMEM;
 	*out_len=in_len;
-	for(i=o=0;i<in_len;i++,o++){
-		unsigned short cl,ch;
+	for(i=o=0;i<in_len;i++, o++){
+		unsigned short cl=0,ch=0;
 		if(in[i]!=':' || (vol->nct & nct_uni_xlate)==0){
-			cl=nls->charset2uni[(unsigned char)in[i]].uni1;
-			ch=nls->charset2uni[(unsigned char)in[i]].uni2;
+			int len;
+			unsigned char clc=cl, chc=ch;
+			nls->char2uni(&in[i], &len, &chc, &clc);
+			cl = chc;
+			ch = clc;
+			*out_len -= (len-1);
+			i += (len-1);
 		}else{
 			unsigned char c1,c2,c3;
 			*out_len-=3;

@@ -2,15 +2,15 @@
  * the Iomega ZIP drive
  * 
  * (c) 1996     Grant R. Guenther  grant@torque.net
- *		David Campbell	   campbell@torque.net
+ *              David Campbell     campbell@torque.net
  *
- *	All comments to David.
+ *      All comments to David.
  */
 
 #ifndef _PPA_H
 #define _PPA_H
 
-#define   PPA_VERSION   "2.01"
+#define   PPA_VERSION   "2.07 (for Linux 2.2.x)"
 
 /* 
  * this driver has been hacked by Matteo Frigo (athena@theory.lcs.mit.edu)
@@ -26,25 +26,47 @@
  *
  * Corrected ppa.h for 2.1.x kernels (>=2.1.85)
  * Modified "Nat Semi Kludge" for extended chipsets
- *							[1.41]
+ *                                                      [1.41]
  *
  * Fixed id_probe for EPP 1.9 chipsets (misdetected as EPP 1.7)
- *							[1.42]
+ *                                                      [1.42]
  *
  * Development solely for 2.1.x kernels from now on!
- *							[2.00]
+ *                                                      [2.00]
  *
  * Hack and slash at the init code (EPP device check routine)
  * Added INSANE option.
- *							[2.01]
+ *                                                      [2.01]
  *
  * Patch applied to sync against the 2.1.x kernel code
  * Included qboot_zip.sh
- *							[2.02]
+ *                                                      [2.02]
+ *
+ * Cleaned up the mess left by someone else trying to fix the
+ * asm section to keep egcc happy. The asm section no longer
+ * exists, the nibble code is *almost* as fast as the asm code
+ * providing it is compiled with egcc.
+ *
+ * Other clean ups include the follow changes:
+ *    CONFIG_SCSI_PPA_HAVE_PEDANTIC => CONFIG_SCSI_IZIP_EPP16
+ *    added CONFIG_SCSI_IZIP_SLOW_CTR option
+ *                                                      [2.03]
+ *
+ * Use ppa_wait() to check for ready AND connected status bits
+ * Busy wait for connected status bit in ppa_completion()
+ *  in order to cope with some hardware that has this bit low
+ *  for short periods of time.
+ * Add udelay() to ppa_select()
+ *  by Dr. Peter Cherriman and
+ *     Oleg Makarenko <omakarenko@cyberplat.ru>
+ *                                                      [2.04a]
+ *
+ * Fix kernel panic on scsi timeout, 2000-08-18		[2.07]
  */
 /* ------ END OF USER CONFIGURABLE PARAMETERS ----- */
 
 #ifdef PPA_CODE
+#include  <linux/config.h>
 #include  <linux/stddef.h>
 #include  <linux/module.h>
 #include  <linux/kernel.h>
@@ -80,7 +102,11 @@ static char *PPA_MODE_STRING[] =
     "PS/2",
     "EPP 8 bit",
     "EPP 16 bit",
+#ifdef CONFIG_SCSI_IZIP_EPP16
+    "EPP 16 bit",
+#else
     "EPP 32 bit",
+#endif
     "Unknown"};
 
 /* This is a global option */
@@ -91,6 +117,7 @@ int ppa_sg = SG_ALL;		/* enable/disable scatter-gather. */
 #define PPA_BURST_SIZE	512	/* data burst size */
 #define PPA_SELECT_TMO  5000	/* how long to wait for target ? */
 #define PPA_SPIN_TMO    50000	/* ppa_wait loop limiter */
+#define PPA_RECON_TMO   500	/* scsi reconnection loop limiter */
 #define PPA_DEBUG	0	/* debuging option */
 #define IN_EPP_MODE(x) (x == PPA_EPP_8 || x == PPA_EPP_16 || x == PPA_EPP_32)
 
@@ -98,37 +125,25 @@ int ppa_sg = SG_ALL;		/* enable/disable scatter-gather. */
 #define CONNECT_EPP_MAYBE 1
 #define CONNECT_NORMAL  0
 
-/* INSANE code */
-#define PPA_INSANE 0
-#if PPA_INSANE > 0
-#define r_dtr(x)        (unsigned char)inb_p((x))
-#define r_str(x)        (unsigned char)inb_p((x)+1)
-#define r_ctr(x)        (unsigned char)inb_p((x)+2)
-#define r_epp(x)        (unsigned char)inb_p((x)+4)
-#define r_fifo(x)       (unsigned char)inb_p((x)+0x400)
-#define r_ecr(x)        (unsigned char)inb_p((x)+0x402)
-
-#define w_dtr(x,y)      outb_p(y, (x))
-#define w_str(x,y)      outb_p(y, (x)+1)
-#define w_ctr(x,y)      outb_p(y, (x)+2)
-#define w_epp(x,y)      outb_p(y, (x)+4)
-#define w_fifo(x,y)     outb_p(y, (x)+0x400)
-#define w_ecr(x,y)      outb_p(y, (x)+0x402)
-#else /* PPA_INSANE */
 #define r_dtr(x)        (unsigned char)inb((x))
 #define r_str(x)        (unsigned char)inb((x)+1)
 #define r_ctr(x)        (unsigned char)inb((x)+2)
 #define r_epp(x)        (unsigned char)inb((x)+4)
-#define r_fifo(x)       (unsigned char)inb((x)+0x400)
-#define r_ecr(x)        (unsigned char)inb((x)+0x402)
+#define r_fifo(x)       (unsigned char)inb((x)) /* x must be base_hi */
+					/* On PCI is base+0x400 != base_hi */
+#define r_ecr(x)        (unsigned char)inb((x)+0x2) /* x must be base_hi */
 
 #define w_dtr(x,y)      outb(y, (x))
 #define w_str(x,y)      outb(y, (x)+1)
-#define w_ctr(x,y)      outb(y, (x)+2)
 #define w_epp(x,y)      outb(y, (x)+4)
-#define w_fifo(x,y)     outb(y, (x)+0x400)
-#define w_ecr(x,y)      outb(y, (x)+0x402)
-#endif	/* PPA_INSANE */
+#define w_fifo(x,y)     outb(y, (x))	/* x must be base_hi */
+#define w_ecr(x,y)      outb(y, (x)+0x2)/* x must be base_hi */
+
+#ifdef CONFIG_SCSI_IZIP_SLOW_CTR
+#define w_ctr(x,y)      outb_p(y, (x)+2)
+#else
+#define w_ctr(x,y)      outb(y, (x)+2)
+#endif
 
 static int ppa_engine(ppa_struct *, Scsi_Cmnd *);
 static int ppa_in(int, char *, int);
@@ -154,7 +169,7 @@ int ppa_biosparam(Disk *, kdev_t, int *);
 
 #define PPA {	proc_dir:			&proc_scsi_ppa,		\
 		proc_info:			ppa_proc_info,		\
-		name:				"Iomega parport ZIP drive",\
+		name:				"Iomega VPI0 (ppa) interface",\
 		detect:				ppa_detect,		\
 		release:			ppa_release,		\
 		command:			ppa_command,		\
@@ -163,6 +178,7 @@ int ppa_biosparam(Disk *, kdev_t, int *);
 		eh_device_reset_handler:	NULL,			\
 		eh_bus_reset_handler:		ppa_reset,		\
 		eh_host_reset_handler:		ppa_reset,		\
+		use_new_eh_code:		1,			\
 		bios_param:			ppa_biosparam,		\
 		this_id:			-1,			\
 		sg_tablesize:			SG_ALL,			\

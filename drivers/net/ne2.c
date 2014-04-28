@@ -43,6 +43,9 @@
    - Added code that unregisters irq and proc-info
    - Version# bump
 
+   Mon Nov 16 15:28:23 CET 1998 (Wim Dumon)
+   - pass 'dev' as last parameter of request_irq in stead of 'NULL'   
+   
    *    WARNING
 	-------
 	This is alpha-test software.  It is not guaranteed to work. As a
@@ -51,8 +54,7 @@
 	If it doesn't work, be sure to send me a mail with the problems !
 */
 
-static const char *version =
-"ne2.c:v0.90 Oct 14 1998 David Weinehall <tao@acc.umu.se>\n";
+static const char *version = "ne2.c:v0.91 Nov 16 1998 Wim Dumon <wimpie@kotnet.org>\n";
 
 #include <linux/module.h>
 #include <linux/version.h>
@@ -73,7 +75,6 @@ static const char *version =
 #include <asm/dma.h>
 #include <linux/errno.h>
 #include <linux/init.h>
-#include <linux/ioport.h>
 #include <linux/mca.h>
 
 #include <linux/netdevice.h>
@@ -109,16 +110,16 @@ static const char *version =
 #define NESM_STOP_PG	0x80	/* Last page +1 of RX ring */
 
 /* From the .ADF file: */
-static unsigned int addresses[7]=
+static unsigned int addresses[7] __initdata =
 		{0x1000, 0x2020, 0x8020, 0xa0a0, 0xb0b0, 0xc0c0, 0xc3d0};
-static int irqs[4] = {3, 4, 5, 9};
+static int irqs[4] __initdata = {3, 4, 5, 9};
 
 struct ne2_adapters_t {
 	unsigned int	id;
 	char		*name;
 };
 
-const struct ne2_adapters_t ne2_adapters[] = {
+static struct ne2_adapters_t ne2_adapters[] __initdata = {
 	{ 0x6354, "Arco Ethernet Adapter AE/2" },
 	{ 0x70DE, "Compex ENET-16 MC/P" },
 	{ 0x7154, "Novell Ethernet Adapter NE/2" },
@@ -317,7 +318,7 @@ __initfunc (static int ne2_probe1(struct device *dev, int slot))
 	   share and the board will usually be enabled. */
 	{
 		int irqval = request_irq(dev->irq, ei_interrupt, 
-				0, name, NULL);
+				0, name, dev);
 		if (irqval) {
 			printk (" unable to get IRQ %d (irqval=%d).\n", 
 					dev->irq, +irqval);
@@ -330,7 +331,7 @@ __initfunc (static int ne2_probe1(struct device *dev, int slot))
 	/* Allocate dev->priv and fill in 8390 specific dev fields. */
 	if (ethdev_init(dev)) {
 		printk (" unable to get memory for dev->priv.\n");
-		free_irq(dev->irq, NULL);
+		free_irq(dev->irq, dev);
 		return -ENOMEM;
 	}
 

@@ -10,7 +10,6 @@
  *  more details.
  */
 
-#include <linux/config.h>
 #include <linux/module.h>
 #include <linux/tty.h>
 #include <linux/console.h>
@@ -18,6 +17,7 @@
 #include <linux/fb.h>
 
 #include <asm/byteorder.h>
+#include <asm/setup.h>
 
 #include <video/fbcon.h>
 #include <video/fbcon-iplan2p8.h>
@@ -40,7 +40,7 @@
 /* Perform the m68k movepl operation extended to 64 bits.  */
 static inline void movepl2(u8 *d, u32 val1, u32 val2)
 {
-#if defined __mc68000__ && !defined CONFIG_OPTIMIZE_060
+#if defined __mc68000__ && !defined CPU_M68060_ONLY
     asm volatile ("movepl %1,%0@(0); movepl %2,%0@(8)"
 		  : : "a" (d), "d" (val1), "d" (val2));
 #else
@@ -404,8 +404,8 @@ void fbcon_iplan2p8_putcs(struct vc_data *conp, struct display *p,
 	dest0 = (p->screen_base + yy * bytes * fontheight(p) +
 		 (xx>>1)*16 + (xx & 1));
 
-    expand8dl(attr_fgcol(p,*s), &fgx1, &fgx2);
-    expand8dl(attr_bgcol(p,*s), &bgx1, &bgx2);
+    expand8dl(attr_fgcol(p,scr_readw(s)), &fgx1, &fgx2);
+    expand8dl(attr_bgcol(p,scr_readw(s)), &bgx1, &bgx2);
     eorx1 = fgx1 ^ bgx1; eorx2  = fgx2 ^ bgx2;
 
     while (count--) {
@@ -417,7 +417,7 @@ void fbcon_iplan2p8_putcs(struct vc_data *conp, struct display *p,
 	* cache :-(
 	*/
 
-	c = *s++ & p->charmask;
+	c = scr_readw(s++) & p->charmask;
 	if (fontheightlog(p))
 	    cdat = p->fontdata + (c << fontheightlog(p));
 	else

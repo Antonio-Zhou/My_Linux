@@ -33,7 +33,7 @@
  * APM screenblank bug fixed Takashi Manabe <manabe@roy.dsl.tutics.tut.jp>
  *
  * Merge with the abstract console driver by Geert Uytterhoeven
- * <Geert.Uytterhoeven@cs.kuleuven.ac.be>, Jan 1997.
+ * <geert@linux-m68k.org>, Jan 1997.
  *
  *   Original m68k console driver modifications by
  *
@@ -85,16 +85,12 @@
 #include <linux/selection.h>
 #include <linux/console_struct.h>
 #include <linux/kbd_kern.h>
-#include <linux/vt_kern.h>
 #include <linux/consolemap.h>
 #include <linux/timer.h>
 #include <linux/interrupt.h>
 #include <linux/config.h>
 #include <linux/version.h>
 #include <linux/tqueue.h>
-#ifdef CONFIG_APM
-#include <linux/apm_bios.h>
-#endif
 
 #include <asm/io.h>
 #include <asm/system.h>
@@ -189,6 +185,12 @@ DECLARE_TASK_QUEUE(con_task_queue);
 static int scrollback_delta = 0;
 
 /*
+ * Hook so that the power management routines can (un)blank
+ * the console on our behalf.
+ */
+int (*console_blank_hook)(int) = NULL;
+
+/*
  *	Low-Level Functions
  */
 
@@ -203,7 +205,14 @@ static int scrollback_delta = 0;
 
 static inline unsigned short *screenpos(int currcons, int offset, int viewed)
 {
-	unsigned short *p = (unsigned short *)(visible_origin + offset);
+	unsigned short *p;
+	
+	if (!viewed)
+		p = (unsigned short *)(origin + offset);
+	else if (!sw->con_screen_pos)
+		p = (unsigned short *)(visible_origin + offset);
+	else
+		p = sw->con_screen_pos(vc_cons[currcons].d, offset);
 	return p;
 }
 
@@ -253,16 +262,16 @@ static void do_update_region(int currcons, unsigned long start, int count)
 	unsigned int xx, yy, offset;
 	u16 *p;
 
-	if (start < origin) {
-		count -= origin - start;
-		start = origin;
-	}
-	if (count <= 0)
-		return;
-	offset = (start - origin) / 2;
-	xx = offset % video_num_columns;
-	yy = offset / video_num_columns;
 	p = (u16 *) start;
+	if (!sw->con_getxy) {
+		offset = (start - origin) / 2;
+		xx = offset % video_num_columns;
+		yy = offset / video_num_columns;
+	} else {
+		int nxx, nyy;
+		start = sw->con_getxy(vc_cons[currcons].d, start, &nxx, &nyy);
+		xx = nxx; yy = nyy;
+	}
 	for(;;) {
 		u16 attrib = scr_readw(p) & 0xff00;
 		int startx = xx;
@@ -285,6 +294,10 @@ static void do_update_region(int currcons, unsigned long start, int count)
 			break;
 		xx = 0;
 		yy++;
+		if (sw->con_getxy) {
+			p = (u16 *)start;
+			start = sw->con_getxy(vc_cons[currcons].d, start, NULL, NULL);
+		}
 	}
 #endif
 }
@@ -345,7 +358,7 @@ static u8 build_attr(int currcons, u8 _color, u8 _intensity, u8 _blink, u8 _unde
 static void update_attr(int currcons)
 {
 	attr = build_attr(currcons, color, intensity, blink, underline, reverse ^ decscnm);
-	video_erase_char = (build_attr(currcons, color, 1, 0, 0, decscnm) << 8) | ' ';
+	video_erase_char = (build_attr(currcons, color, 1, blink, 0, decscnm) << 8) | ' ';
 }
 
 /* Note: inverting the screen twice should revert to the original state */
@@ -562,10 +575,12 @@ void redraw_screen(int new_console, int is_switch)
 	}
 
 	if (redraw) {
+		int update;
+		
 		set_origin(currcons);
+		update = sw->con_switch(vc_cons[currcons].d);
 		set_palette(currcons);
-		if (sw->con_switch(vc_cons[currcons].d) && vcmode != KD_GRAPHICS)
-			/* Update the screen contents */
+		if (update && vcmode != KD_GRAPHICS)
 			do_update_region(currcons, origin, screenbuf_size/2);
 	}
 	set_cursor(currcons);
@@ -671,7 +686,7 @@ int vc_resize(unsigned int lines, unsigned int cols,
 		else {
 			unsigned short *p = (unsigned short *) kmalloc(ss, GFP_USER);
 			if (!p) {
-				for (i = 0; i< currcons; i++)
+				for (i = first; i< currcons; i++)
 					if (newscreens[i])
 						kfree_s(newscreens[i], ss);
 				return -ENOMEM;
@@ -1029,7 +1044,7 @@ static void csi_m(int currcons)
 				  */
 				translate = set_translate(charset == 0
 						? G0_charset
-						: G1_charset);
+						: G1_charset,currcons);
 				disp_ctrl = 0;
 				toggle_meta = 0;
 				break;
@@ -1037,7 +1052,7 @@ static void csi_m(int currcons)
 				  * Select first alternate font, lets
 				  * chars < 32 be displayed as ROM chars.
 				  */
-				translate = set_translate(IBMPC_MAP);
+				translate = set_translate(IBMPC_MAP,currcons);
 				disp_ctrl = 1;
 				toggle_meta = 0;
 				break;
@@ -1045,7 +1060,7 @@ static void csi_m(int currcons)
 				  * Select second alternate font, toggle
 				  * high bit before displaying as ROM char.
 				  */
-				translate = set_translate(IBMPC_MAP);
+				translate = set_translate(IBMPC_MAP,currcons);
 				disp_ctrl = 1;
 				toggle_meta = 1;
 				break;
@@ -1221,6 +1236,8 @@ static void setterm_command(int currcons)
 			break;
 		case 8:	/* store colors as defaults */
 			def_color = attr;
+			if (hi_font_mask == 0x100)
+				def_color >>= 1;
 			default_attr(currcons);
 			update_attr(currcons);
 			break;
@@ -1328,7 +1345,7 @@ static void restore_cur(int currcons)
 	color		= s_color;
 	G0_charset	= saved_G0;
 	G1_charset	= saved_G1;
-	translate	= set_translate(charset ? G1_charset : G0_charset);
+	translate	= set_translate(charset ? G1_charset : G0_charset,currcons);
 	update_attr(currcons);
 	need_wrap = 0;
 }
@@ -1343,7 +1360,7 @@ static void reset_terminal(int currcons, int do_clear)
 	bottom		= video_num_lines;
 	vc_state	= ESnormal;
 	ques		= 0;
-	translate	= set_translate(LAT1_MAP);
+	translate	= set_translate(LAT1_MAP,currcons);
 	G0_charset	= LAT1_MAP;
 	G1_charset	= GRAF_MAP;
 	charset		= 0;
@@ -1426,12 +1443,12 @@ static void do_con_trol(struct tty_struct *tty, unsigned int currcons, int c)
 		return;
 	case 14:
 		charset = 1;
-		translate = set_translate(G1_charset);
+		translate = set_translate(G1_charset,currcons);
 		disp_ctrl = 1;
 		return;
 	case 15:
 		charset = 0;
-		translate = set_translate(G0_charset);
+		translate = set_translate(G0_charset,currcons);
 		disp_ctrl = 0;
 		return;
 	case 24: case 26:
@@ -1738,7 +1755,7 @@ static void do_con_trol(struct tty_struct *tty, unsigned int currcons, int c)
 		else if (c == 'K')
 			G0_charset = USER_MAP;
 		if (charset == 0)
-			translate = set_translate(G0_charset);
+			translate = set_translate(G0_charset,currcons);
 		vc_state = ESnormal;
 		return;
 	case ESsetG1:
@@ -1751,7 +1768,7 @@ static void do_con_trol(struct tty_struct *tty, unsigned int currcons, int c)
 		else if (c == 'K')
 			G1_charset = USER_MAP;
 		if (charset == 1)
-			translate = set_translate(G1_charset);
+			translate = set_translate(G1_charset,currcons);
 		vc_state = ESnormal;
 		return;
 	default:
@@ -1894,7 +1911,7 @@ static int do_con_write(struct tty_struct * tty, int from_user,
 			if (decim)
 				insert_char(currcons, 1);
 			scr_writew(himask ?
-				     ((attr & ~himask) << 8) + ((tc & 0x100) ? himask : 0) + (tc & 0xff) :
+				     ((attr << 8) & ~himask) + ((tc & 0x100) ? himask : 0) + (tc & 0xff) :
 				     (attr << 8) + tc,
 				   (u16 *) pos);
 			if (DO_UPDATE && draw_x < 0) {
@@ -1972,7 +1989,7 @@ void vt_console_print(struct console *co, const char * b, unsigned count)
 	static unsigned long printing = 0;
 	const ushort *start;
 	ushort cnt = 0;
-	ushort myx = x;
+	ushort myx;
 
 	/* console busy or not yet initialized */
 	if (!printable || test_and_set_bit(0, &printing))
@@ -1980,6 +1997,10 @@ void vt_console_print(struct console *co, const char * b, unsigned count)
 
 	if (kmsg_redirect && vc_cons_allocated(kmsg_redirect - 1))
 		currcons = kmsg_redirect - 1;
+
+	/* read `x' only after setting currecons properly (otherwise
+	   the `x' macro will read the x of the foreground console). */
+	myx = x;
 
 	if (!vc_cons_allocated(currcons)) {
 		/* impossible */
@@ -2080,6 +2101,8 @@ int tioclinux(struct tty_struct *tty, unsigned long arg)
 		return -EINVAL;
 	if (current->tty != tty && !suser())
 		return -EPERM;
+	/* Further code uses __put_user() relying on this get_user() having
+	 * done the address range checking. */
 	if (get_user(type, (char *)arg))
 		return -EFAULT;
 	switch (type)
@@ -2231,6 +2254,12 @@ static int con_open(struct tty_struct *tty, struct file * filp)
 	return 0;
 }
 
+static void con_close(struct tty_struct *tty, struct file * filp)
+{
+	if (tty->count == 1)
+		tty->driver_data = 0;
+}
+
 static void vc_init(unsigned int currcons, unsigned int rows, unsigned int cols, int do_clear)
 {
 	int j, k ;
@@ -2292,6 +2321,7 @@ __initfunc(unsigned long con_init(unsigned long kmem_start))
 	console_driver.termios_locked = console_termios_locked;
 
 	console_driver.open = con_open;
+	console_driver.close = con_close;
 	console_driver.write = con_write;
 	console_driver.write_room = con_write_room;
 	console_driver.put_char = con_put_char;
@@ -2516,10 +2546,8 @@ void do_blank_screen(int entering_gfx)
 	if (i)
 		set_origin(currcons);
 
-#ifdef CONFIG_APM
-	if (apm_display_blank())
+	if (console_blank_hook && console_blank_hook(1))
 		return;
-#endif
     	if (vesa_blank_mode)
 		sw->con_blank(vc_cons[currcons].d, vesa_blank_mode + 1);
 }
@@ -2543,9 +2571,9 @@ void unblank_screen(void)
 
 	currcons = fg_console;
 	console_blanked = 0;
-#ifdef CONFIG_APM
-	apm_display_unblank();
-#endif
+	if (console_blank_hook)
+		console_blank_hook(0);
+	set_palette(currcons);
 	if (sw->con_blank(vc_cons[currcons].d, 0))
 		/* Low-level driver cannot restore -> do it ourselves */
 		update_screen(fg_console);
@@ -2769,7 +2797,7 @@ void putconsxy(int currcons, char *p)
 	set_cursor(currcons);
 }
 
-u16 vcs_scr_readw(int currcons, u16 *org)
+u16 vcs_scr_readw(int currcons, const u16 *org)
 {
 	if ((unsigned long)org == pos && softcursor_original != -1)
 		return softcursor_original;
@@ -2797,6 +2825,7 @@ EXPORT_SYMBOL(default_blu);
 EXPORT_SYMBOL(video_font_height);
 EXPORT_SYMBOL(video_scan_lines);
 EXPORT_SYMBOL(vc_resize);
+EXPORT_SYMBOL(fg_console);
 
 #ifndef VT_SINGLE_DRIVER
 EXPORT_SYMBOL(take_over_console);

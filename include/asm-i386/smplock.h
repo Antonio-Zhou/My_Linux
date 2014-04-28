@@ -15,8 +15,6 @@ extern spinlock_t kernel_flag;
 do { \
 	if (task->lock_depth >= 0) \
 		spin_unlock(&kernel_flag); \
-	release_irqlock(cpu); \
-	__sti(); \
 } while (0)
 
 /*
@@ -51,7 +49,7 @@ extern __inline__ void unlock_kernel(void)
 {
 	__asm__ __volatile__(
 		"decl %1\n\t"
-		"jns 9f\n"
+		"jns 9f\n\t"
 		spin_unlock_string
 		"\n9:"
 		:"=m" (__dummy_lock(&kernel_flag)),

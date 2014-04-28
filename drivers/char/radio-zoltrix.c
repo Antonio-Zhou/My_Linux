@@ -5,13 +5,24 @@
  *  Due to the inconsistancy in reading from the signal flags
  *  it is difficult to get an accurate tuned signal.
  *
- *  There seems to be a problem with the volume setting that I must still
- *  figure out. 
- *  It seems that the card has is not linear to 0 volume. It cuts off
- *  at a low frequency, and it is not possible (at least I have not found)
+ *  It seems that the card is not linear to 0 volume. It cuts off
+ *  at a low volume, and it is not possible (at least I have not found)
  *  to get fine volume control over the low volume range.
  *
- *  Some code derived from code by Frans Brinkman
+ *  Some code derived from code by Romolo Manfredini
+ *				   romolo@bicnet.it
+ *
+ * 1999-05-06 - (C. van Schaik)
+ *	      - Make signal strength and stereo scans
+ *	        kinder to cpu while in delay
+ * 1999-01-05 - (C. van Schaik)
+ *	      - Changed tuning to 1/160Mhz accuracy
+ *	      - Added stereo support
+ *		(card defaults to stereo)
+ *		(can explicitly force mono on the card)
+ *		(can detect if station is in stereo)
+ *	      - Added unmute function
+ *	      - Reworked ioctl functions
  */
 
 #include <linux/module.h>	/* Modules                        */
@@ -35,23 +46,36 @@ struct zol_device {
 	int curvol;
 	unsigned long curfreq;
 	int muted;
+	unsigned int stereo;
 };
 
 
 /* local things */
 
-static void sleep_delay(long n)
+static void sleep_delay(void)
 {
-	/* Sleep nicely for 'n' uS */
-	int d = n / (1000000 / HZ);
-	if (!d)
-		udelay(n);
-	else {
-		/* Yield CPU time */
-		unsigned long x = jiffies;
-		while ((jiffies - x) <= d)
-			schedule();
+	/* Sleep nicely for +/- 10 mS */
+	schedule();
+}
+
+static int zol_setvol(struct zol_device *dev, int vol)
+{
+	dev->curvol = vol;
+	if (dev->muted)
+		return 0;
+
+	if (vol == 0) {
+		outb(0, io);
+		outb(0, io);
+		inb(io + 3);    /* Zoltrix needs to be read to confirm */
+		return 0;
 	}
+
+	outb(dev->curvol-1, io);
+	sleep_delay();
+	inb(io + 2);
+
+	return 0;
 }
 
 static void zol_mute(struct zol_device *dev)
@@ -59,71 +83,53 @@ static void zol_mute(struct zol_device *dev)
 	dev->muted = 1;
 	outb(0, io);
 	outb(0, io);
-	inb(io + 3);		/* Zoltrix needs to be read to confirm */
+	inb(io + 3);            /* Zoltrix needs to be read to confirm */
 }
 
-static void zol_on(int vol)
+static void zol_unmute(struct zol_device *dev)
 {
-        int l;
-        outb(vol, io);
-        sleep_delay(10000);
-        l = inb(io + 2);
-}
-
-static int zol_setvol(struct zol_device *dev, int vol)
-{
-	if (vol == dev->curvol) {	/* requested volume = current */
-		if (dev->muted) {	/* user is unmuting the card  */
-			dev->muted = 0;
-                        zol_on(vol);
-		}
-		return 0;
-	}
-	if (vol == 0) {		/* volume = 0 means mute the card */
-                zol_mute(dev);
-		return 0;
-	}
 	dev->muted = 0;
-	dev->curvol = vol;
-
-	zol_on(vol);
-
-	return 0;
+	zol_setvol(dev, dev->curvol);
 }
 
 static int zol_setfreq(struct zol_device *dev, unsigned long freq)
 {
 	/* tunes the radio to the desired frequency */
 	unsigned long long bitmask, f, m;
+	unsigned int stereo = dev->stereo;
 	int i;
 
-	m = (freq * 25 / 4 - 8800) * 2;
+	if (freq == 0)
+		return 1;
+	m = (freq / 160 - 8800) * 2;
 	f = (unsigned long long) m + 0x4d1c;
 
 	bitmask = 0xc480402c10080000ull;
 	i = 45;
 
-	zol_mute(dev);
+	outb(0, io);
+	outb(0, io);
+	inb(io + 3);            /* Zoltrix needs to be read to confirm */
 
 	outb(0x40, io);
 	outb(0xc0, io);
 
-	bitmask = (bitmask ^ ((f & 0xff) << 47) ^ ((f & 0xff00) << 30) ^ ( /*stereo */ 0 << 31));
+	bitmask = (bitmask ^ ((f & 0xff) << 47) ^ ((f & 0xff00) << 30) ^ ( stereo << 31));
 	while (i--) {
 		if ((bitmask & 0x8000000000000000ull) != 0) {
 			outb(0x80, io);
-			sleep_delay(50);
+			udelay(50);
 			outb(0x00, io);
-			sleep_delay(50);
+			udelay(50);
 			outb(0x80, io);
-			sleep_delay(50);
+			udelay(50);
 		} else {
 			outb(0xc0, io);
-			sleep_delay(50);
+			udelay(50);
 			outb(0x40, io);
-			sleep_delay(50);
+			udelay(50);
 			outb(0xc0, io);
-			sleep_delay(50);
+			udelay(50);
 		}
 		bitmask *= 2;
 	}
@@ -131,7 +137,18 @@ static int zol_setfreq(struct zol_device *dev, unsigned long freq)
 	outb(0x80, io);
 	outb(0xc0, io);
 	outb(0x40, io);
-        zol_on(dev->curvol);
+	udelay(1000);
+	inb(io+2);
+
+        udelay(1000);
+	if (dev->muted)
+	{
+		outb(0, io);
+		outb(0, io);
+		inb(io + 3);
+		udelay(1000);
+	} else
+        zol_setvol(dev, dev->curvol);
 	return 0;
 }
 
@@ -143,33 +160,50 @@ int zol_getsigstr(struct zol_device *dev)
 
 	outb(0x00, io);         /* This stuff I found to do nothing */
 	outb(dev->curvol, io);
-	sleep_delay(20000);
+	sleep_delay();
+	sleep_delay();
 
 	a = inb(io);
-	sleep_delay(1000);
+	sleep_delay();
 	b = inb(io);
 
-        if ((a == b) && (a == 0xdf))  /* I found this out by playing */
-                                      /* with a binary scanner on the card io */
-		return (1);
-	else
+	if (a != b)
 		return (0);
 
-	if (inb(io) & 2)	/* bit set = no signal present    */
-		return 0;
-	return 1;		/* signal present               */
+        if ((a == 0xcf) || (a == 0xdf)  /* I found this out by playing */
+		|| (a == 0xef))       /* with a binary scanner on the card io */
+		return (1);
+ 	return (0);
+}
+
+int zol_is_stereo (struct zol_device *dev)
+{
+	int x1, x2;
+
+	outb(0x00, io);
+	outb(dev->curvol, io);
+	sleep_delay();
+	sleep_delay();
+
+	x1 = inb(io);
+	sleep_delay();
+	x2 = inb(io);
+
+	if ((x1 == x2) && (x1 == 0xcf))
+		return 1;
+	return 0;
 }
 
 static int zol_ioctl(struct video_device *dev, unsigned int cmd, void *arg)
 {
-	struct zol_device *rt = dev->priv;
+	struct zol_device *zol = dev->priv;
 
 	switch (cmd) {
 	case VIDIOCGCAP:
 		{
 			struct video_capability v;
 			v.type = VID_TYPE_TUNER;
-			v.channels = 1;
+			v.channels = 1 + zol->stereo;
 			v.audios = 1;
 			/* No we don't do pictures */
 			v.maxwidth = 0;
@@ -184,15 +218,18 @@ static int zol_ioctl(struct video_device *dev, unsigned int cmd, void *arg)
 	case VIDIOCGTUNER:
 		{
 			struct video_tuner v;
-			if (copy_from_user(&v, arg, sizeof(v)) != 0)
+			if (copy_from_user(&v, arg, sizeof(v)))
 				return -EFAULT;
-			if (v.tuner)	/* Only 1 tuner */
+			if (v.tuner)	
 				return -EINVAL;
-			v.rangelow = (int) (88.0 * 16);
-			v.rangehigh = (int) (108.0 * 16);
-			v.flags = 0;
+			strcpy(v.name, "FM");
+			v.rangelow = (int) (88.0 * 16000);
+			v.rangehigh = (int) (108.0 * 16000);
+			v.flags = zol_is_stereo(zol)
+					? VIDEO_TUNER_STEREO_ON : 0;
+			v.flags |= VIDEO_TUNER_LOW;
 			v.mode = VIDEO_MODE_AUTO;
-			v.signal = 0xFFFF * zol_getsigstr(rt);
+			v.signal = 0xFFFF * zol_getsigstr(zol);
 			if (copy_to_user(arg, &v, sizeof(v)))
 				return -EFAULT;
 			return 0;
@@ -208,22 +245,24 @@ static int zol_ioctl(struct video_device *dev, unsigned int cmd, void *arg)
 			return 0;
 		}
 	case VIDIOCGFREQ:
-		if (copy_to_user(arg, &rt->curfreq, sizeof(rt->curfreq)))
+		if (copy_to_user(arg, &zol->curfreq, sizeof(zol->curfreq)))
 			return -EFAULT;
 		return 0;
 	case VIDIOCSFREQ:
-		if (copy_from_user(&rt->curfreq, arg, sizeof(rt->curfreq)))
+		if (copy_from_user(&zol->curfreq, arg, sizeof(zol->curfreq)))
 			return -EFAULT;
-		zol_setfreq(rt, rt->curfreq);
+		zol_setfreq(zol, zol->curfreq);
 		return 0;
 	case VIDIOCGAUDIO:
 		{
 			struct video_audio v;
 			memset(&v, 0, sizeof(v));
 			v.flags |= VIDEO_AUDIO_MUTABLE | VIDEO_AUDIO_VOLUME;
-			v.volume = rt->curvol * 4096;
+			v.mode != zol_is_stereo(zol)
+				? VIDEO_SOUND_STEREO : VIDEO_SOUND_MONO;
+			v.volume = zol->curvol * 4096;
 			v.step = 4096;
-			strcpy(v.name, "Radio");
+			strcpy(v.name, "Zoltrix Radio");
 			if (copy_to_user(arg, &v, sizeof(v)))
 				return -EFAULT;
 			return 0;
@@ -237,9 +276,23 @@ static int zol_ioctl(struct video_device *dev, unsigned int cmd, void *arg)
 				return -EINVAL;
 
 			if (v.flags & VIDEO_AUDIO_MUTE)
-				zol_mute(rt);
+				zol_mute(zol);
 			else
-				zol_setvol(rt, v.volume / 4096);
+			{
+				zol_unmute(zol);
+				zol_setvol(zol, v.volume / 4096);
+			}
+
+			if (v.mode & VIDEO_SOUND_STEREO)
+			{
+				zol->stereo = 1;
+				zol_setfreq(zol, zol->curfreq);
+			}
+			if (v.mode & VIDEO_SOUND_MONO)
+			{
+				zol->stereo = 0;
+				zol_setfreq(zol, zol->curfreq);
+			}
 
 			return 0;
 		}
@@ -286,6 +339,10 @@ __initfunc(int zoltrix_init(struct video_init *v))
 		printk(KERN_ERR "zoltrix: port 0x%x already in use\n", io);
 		return -EBUSY;
 	}
+	if ((io != 0x20c) && (io != 0x30c)) {
+		printk(KERN_ERR "zoltrix: invalid port, try 0x20c or 0x30c\n");
+		return -ENXIO;
+	}
 	zoltrix_radio.priv = &zoltrix_unit;
 
 	if (video_register_device(&zoltrix_radio, VFL_TYPE_RADIO) == -1)
@@ -300,10 +357,12 @@ __initfunc(int zoltrix_init(struct video_init *v))
 
 	outb(0, io);
 	outb(0, io);
-	sleep_delay(20000);
+	sleep_delay();
+	sleep_delay();
 	inb(io + 3);
 
 	zoltrix_unit.curvol = 0;
+	zoltrix_unit.stereo = 1;
 
 	return 0;
 }

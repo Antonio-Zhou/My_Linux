@@ -101,17 +101,8 @@ not be guaranteed. There are several ways to assure this:
 		cmd[1] = (cmd[1] & ~0xe0) | (lun)<<5;	\
 	} while(0)
 
-#define	START_TIMER(to)							\
-    do {										\
-        del_timer( &slm_timer );				\
-        slm_timer.expires = jiffies + (to);			\
-        add_timer( &slm_timer );				\
-	} while(0)
-
-#define	STOP_TIMER()							\
-    do {										\
-        del_timer( &slm_timer );				\
-	} while(0)
+#define	START_TIMER(to)	mod_timer(&slm_timer, jiffies + (to))
+#define	STOP_TIMER()	del_timer(&slm_timer)
 
 
 static char slmreqsense_cmd[6] = { 0x03, 0, 0, 0, 0, 0 };
@@ -422,8 +413,8 @@ static void start_print( int device )
 
 	CMDSET_TARG_LUN( slmprint_cmd, sip->target, sip->lun );
 	cmd = slmprint_cmd;
-	paddr = VTOP( SLMBuffer );
-	dma_cache_maintenance( paddr, VTOP(BufferP)-paddr, 1 );
+	paddr = virt_to_phys( SLMBuffer );
+	dma_cache_maintenance( paddr, virt_to_phys(BufferP)-paddr, 1 );
 	DISABLE_IRQ();
 
 	/* Low on A1 */
@@ -475,7 +466,7 @@ static void slm_interrupt(int irc, void *data, struct pt_regs *fp)
 	addr = get_dma_addr();
 	stat = acsi_getstatus();
 	SLMError = (stat < 0)             ? SLMSTAT_ACSITO :
-		       (addr < VTOP(BufferP)) ? SLMSTAT_NOTALL :
+		       (addr < virt_to_phys(BufferP)) ? SLMSTAT_NOTALL :
 									    stat;
 
 	dma_wd.dma_mode_status = 0x80;

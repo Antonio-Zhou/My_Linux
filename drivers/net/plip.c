@@ -21,6 +21,10 @@
  *		  - Make sure other end is OK, before sending a packet.
  *		  - Fix immediate timer problem.
  *
+ *		Al Viro
+ *		  - Changed {enable,disable}_irq handling to make it work
+ *		    with new ("stack") semantics.
+ *
  *		This program is free software; you can redistribute it and/or
  *		modify it under the terms of the GNU General Public License
  *		as published by the Free Software Foundation; either version
@@ -119,6 +123,9 @@ static const char *version = "NET3 PLIP version 2.3-parport gniibe@mri.co.jp\n";
 #define NET_DEBUG 1
 #endif
 static unsigned int net_debug = NET_DEBUG;
+
+#define ENABLE(irq) enable_irq(irq)
+#define DISABLE(irq) disable_irq(irq)
 
 /* In micro second */
 #define PLIP_DELAY_UNIT		   1
@@ -333,6 +340,7 @@ static int plip_bh_timeout_error(struct device *dev, struct net_local *nl,
 #define OK        0
 #define TIMEOUT   1
 #define ERROR     2
+#define HS_TIMEOUT	3
 
 typedef int (*plip_func)(struct device *dev, struct net_local *nl,
 			 struct plip_local *snd, struct plip_local *rcv);
@@ -371,13 +379,22 @@ plip_bh_timeout_error(struct device *dev, struct net_local *nl,
 		      int error)
 {
 	unsigned char c0;
+	/*
+	 * This is tricky. If we got here from the beginning of send (either
+	 * with ERROR or HS_TIMEOUT) we have IRQ enabled. Otherwise it's
+	 * already disabled. With the old variant of {enable,disable}_irq()
+	 * extra disable_irq() was a no-op. Now it became mortal - it's
+	 * unbalanced and thus we'll never re-enable IRQ (until rmmod plip,
+	 * that is). So we have to treat HS_TIMEOUT and ERROR from send
+	 * in a special way.
+	 */
 
 	spin_lock_irq(&nl->lock);
 	if (nl->connection == PLIP_CN_SEND) {
 
 		if (error != ERROR) { /* Timeout */
 			nl->timeout_count++;
-			if ((snd->state == PLIP_PK_TRIGGER
+			if ((error == HS_TIMEOUT
 			     && nl->timeout_count <= 10)
 			    || nl->timeout_count <= 3) {
 				spin_unlock_irq(&nl->lock);
@@ -387,7 +404,8 @@ plip_bh_timeout_error(struct device *dev, struct net_local *nl,
 			c0 = inb(PAR_STATUS(dev));
 			printk(KERN_WARNING "%s: transmit timeout(%d,%02x)\n",
 			       dev->name, snd->state, c0);
-		}
+		} else
+			error = HS_TIMEOUT;
 		nl->enet_stats.tx_errors++;
 		nl->enet_stats.tx_aborted_errors++;
 	} else if (nl->connection == PLIP_CN_RECEIVE) {
@@ -419,8 +437,10 @@ plip_bh_timeout_error(struct device *dev, struct net_local *nl,
 		snd->skb = NULL;
 	}
 	spin_unlock_irq(&nl->lock);
-	disable_irq(dev->irq);
-	synchronize_irq();
+	if (error == HS_TIMEOUT) {
+		DISABLE(dev->irq);
+		synchronize_irq();
+	}
 	outb(PAR_INTR_OFF, PAR_CONTROL(dev));
 	dev->tbusy = 1;
 	nl->connection = PLIP_CN_ERROR;
@@ -487,6 +507,61 @@ plip_receive(unsigned short nibble_timeout, unsigned short status_addr,
 	return OK;
 }
 
+/*
+ *	Determine the packet's protocol ID. The rule here is that we 
+ *	assume 802.3 if the type field is short enough to be a length.
+ *	This is normal practice and works for any 'now in use' protocol.
+ *
+ *	PLIP is ethernet ish but the daddr might not be valid if unicast.
+ *	PLIP fortunately has no bus architecture (its Point-to-point).
+ *
+ *	We can't fix the daddr thing as that quirk (more bug) is embedded
+ *	in far too many old systems not all even running Linux.
+ */
+ 
+static unsigned short plip_type_trans(struct sk_buff *skb, struct device *dev)
+{
+	struct ethhdr *eth;
+	unsigned char *rawp;
+	
+	skb->mac.raw=skb->data;
+	skb_pull(skb,dev->hard_header_len);
+	eth= skb->mac.ethernet;
+	
+	if(*eth->h_dest&1)
+	{
+		if(memcmp(eth->h_dest,dev->broadcast, ETH_ALEN)==0)
+			skb->pkt_type=PACKET_BROADCAST;
+		else
+			skb->pkt_type=PACKET_MULTICAST;
+	}
+	
+	/*
+	 *	This ALLMULTI check should be redundant by 1.4
+	 *	so don't forget to remove it.
+	 */
+	 
+	if (ntohs(eth->h_proto) >= 1536)
+		return eth->h_proto;
+		
+	rawp = skb->data;
+	
+	/*
+	 *	This is a magic hack to spot IPX packets. Older Novell breaks
+	 *	the protocol design and runs IPX over 802.3 without an 802.2 LLC
+	 *	layer. We look for FFFF which isn't a used 802.2 SSAP/DSAP. This
+	 *	won't work for fault tolerant netware but does for the rest.
+	 */
+	if (*(unsigned short *)rawp == 0xFFFF)
+		return htons(ETH_P_802_3);
+		
+	/*
+	 *	Real 802.2 LLC
+	 */
+	return htons(ETH_P_802_2);
+}
+
+
 /* PLIP_RECEIVE_PACKET --- receive a packet */
 static int
 plip_receive_packet(struct device *dev, struct net_local *nl,
@@ -498,7 +573,7 @@ plip_receive_packet(struct device *dev, struct net_local *nl,
 
 	switch (rcv->state) {
 	case PLIP_PK_TRIGGER:
-		disable_irq(dev->irq);
+		DISABLE(dev->irq);
 		/* Don't need to synchronize irq, as we can safely ignore it */
 		outb(PAR_INTR_OFF, PAR_CONTROL(dev));
 		dev->interrupt = 0;
@@ -518,7 +593,7 @@ plip_receive_packet(struct device *dev, struct net_local *nl,
 				nl->connection = PLIP_CN_SEND;
 				queue_task(&nl->deferred, &tq_timer);
 				outb(PAR_INTR_ON, PAR_CONTROL(dev));
-				enable_irq(dev->irq);
+				ENABLE(dev->irq);
 				return OK;
 			}
 		} else {
@@ -575,7 +650,7 @@ plip_receive_packet(struct device *dev, struct net_local *nl,
 
 	case PLIP_PK_DONE:
 		/* Inform the upper layer for the arrival of a packet. */
-		rcv->skb->protocol=eth_type_trans(rcv->skb, dev);
+		rcv->skb->protocol=plip_type_trans(rcv->skb, dev);
 		netif_rx(rcv->skb);
 		nl->enet_stats.rx_bytes += rcv->length.h;
 		nl->enet_stats.rx_packets++;
@@ -592,13 +667,13 @@ plip_receive_packet(struct device *dev, struct net_local *nl,
 			queue_task(&nl->immediate, &tq_immediate);
 			mark_bh(IMMEDIATE_BH);
 			outb(PAR_INTR_ON, PAR_CONTROL(dev));
-			enable_irq(dev->irq);
+			ENABLE(dev->irq);
 			return OK;
 		} else {
 			nl->connection = PLIP_CN_NONE;
 			spin_unlock_irq(&nl->lock);
 			outb(PAR_INTR_ON, PAR_CONTROL(dev));
-			enable_irq(dev->irq);
+			ENABLE(dev->irq);
 			return OK;
 		}
 	}
@@ -674,7 +749,7 @@ plip_send_packet(struct device *dev, struct net_local *nl,
 	switch (snd->state) {
 	case PLIP_PK_TRIGGER:
 		if ((inb(PAR_STATUS(dev)) & 0xf8) != 0x80)
-			return TIMEOUT;
+			return HS_TIMEOUT;
 
 		/* Trigger remote rx interrupt. */
 		outb(0x08, data_addr);
@@ -691,12 +766,16 @@ plip_send_packet(struct device *dev, struct net_local *nl,
 			c0 = inb(PAR_STATUS(dev));
 			if (c0 & 0x08) {
 				spin_unlock_irq(&nl->lock);
-				disable_irq(dev->irq);
+				DISABLE(dev->irq);
 				synchronize_irq();
 				if (nl->connection == PLIP_CN_RECEIVE) {
 					/* Interrupted.
 					   We don't need to enable irq,
 					   as it is soon disabled.    */
+					/* Yes, we do. New variant of
+					   {enable,disable}_irq *counts*
+					   them.  -- AV  */
+					ENABLE(dev->irq);
 					nl->enet_stats.collisions++;
 					return OK;
 				}
@@ -711,7 +790,7 @@ plip_send_packet(struct device *dev, struct net_local *nl,
 			spin_unlock_irq(&nl->lock);
 			if (--cx == 0) {
 				outb(0x00, data_addr);
-				return TIMEOUT;
+				return HS_TIMEOUT;
 			}
 		}
 
@@ -760,7 +839,7 @@ plip_send_packet(struct device *dev, struct net_local *nl,
 		nl->is_deferred = 1;
 		queue_task(&nl->deferred, &tq_timer);
 		outb(PAR_INTR_ON, PAR_CONTROL(dev));
-		enable_irq(dev->irq);
+		ENABLE(dev->irq);
 		return OK;
 	}
 	return OK;
@@ -800,7 +879,7 @@ plip_error(struct device *dev, struct net_local *nl,
 		dev->tbusy = 0;
 		dev->interrupt = 0;
 		outb(PAR_INTR_ON, PAR_CONTROL(dev));
-		enable_irq(dev->irq);
+		ENABLE(dev->irq);
 		mark_bh(NET_BH);
 	} else {
 		nl->is_deferred = 1;
@@ -1000,7 +1079,7 @@ plip_close(struct device *dev)
 
 	dev->tbusy = 1;
 	dev->start = 0;
-	disable_irq(dev->irq);
+	DISABLE(dev->irq);
 	synchronize_irq();
 
 #ifdef NOTDEF
@@ -1119,6 +1198,8 @@ plip_ioctl(struct device *dev, struct ifreq *rq, int cmd)
 		pc->nibble  = nl->nibble;
 		break;
 	case PLIP_SET_TIMEOUT:
+		if(!capable(CAP_NET_ADMIN))
+			return -EPERM;
 		nl->trigger = pc->trigger;
 		nl->nibble  = pc->nibble;
 		break;
@@ -1193,7 +1274,7 @@ static int inline
 plip_searchfor(int list[], int a)
 {
 	int i;
-	for (i = 0; i < 3 && list[i] != -1; i++) {
+	for (i = 0; i < PLIP_MAX && list[i] != -1; i++) {
 		if (list[i] == a) return 1;
 	}
 	return 0;
@@ -1203,7 +1284,6 @@ __initfunc(int
 plip_init(void))
 {
 	struct parport *pb = parport_enumerate();
-	int devices=0;
 	int i=0;
 
 	if (parport[0] == -2)
@@ -1214,10 +1294,10 @@ plip_init(void))
 		timid = 0;
 	}
 
-	/* When user feeds parameters, use them */
+	/* If the user feeds parameters, use them */
 	while (pb) {
 		if ((parport[0] == -1 && (!timid || !pb->devices)) || 
-		    plip_searchfor(parport, i)) {
+		    plip_searchfor(parport, pb->number)) {
 			if (i == PLIP_MAX) {
 				printk(KERN_ERR "plip: too many devices\n");
 				break;
@@ -1234,6 +1314,7 @@ plip_init(void))
 			if (!dev_plip[i]->name) {
 				printk(KERN_ERR "plip: memory squeeze.\n");
 				kfree(dev_plip[i]);
+				dev_plip[i] = NULL;
 				break;
 			}
 			sprintf(dev_plip[i]->name, "plip%d", i);
@@ -1241,15 +1322,15 @@ plip_init(void))
 			if (plip_init_dev(dev_plip[i],pb) || register_netdev(dev_plip[i])) {
 				kfree(dev_plip[i]->name);
 				kfree(dev_plip[i]);
+				dev_plip[i] = NULL;
 			} else {
-				devices++;
+				i++;
 			}
 		}
-		i++;
 		pb = pb->next;
   	}
 
-	if (devices == 0) {
+	if (i == 0) {
 		printk(KERN_INFO "plip: no devices registered\n");
 		return -EIO;
 	}

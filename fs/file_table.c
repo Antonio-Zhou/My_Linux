@@ -13,20 +13,18 @@
 static kmem_cache_t *filp_cache;
 
 /* sysctl tunables... */
-int nr_files = 0;	/* read only */
-int nr_free_files = 0;	/* read only */
-int max_files = NR_FILE;/* tunable */
+struct files_stat_struct files_stat = {0, 0, NR_FILE};
 
 /* Free list management, if you are here you must have f_count == 0 */
 static struct file * free_filps = NULL;
 
-void insert_file_free(struct file *file)
+static void insert_file_free(struct file *file)
 {
 	if((file->f_next = free_filps) != NULL)
 		free_filps->f_pprev = &file->f_next;
 	free_filps = file;
 	file->f_pprev = &free_filps;
-	nr_free_files++;
+	files_stat.nr_free_files++;
 }
 
 /* The list of in-use filp's must be exported (ugh...) */
@@ -39,6 +37,15 @@ static inline void put_inuse(struct file *file)
 	inuse_filps = file;
 	file->f_pprev = &inuse_filps;
 }
+
+/* It does not matter which list it is on. */
+static inline void remove_filp(struct file *file)
+{
+	if(file->f_next)
+		file->f_next->f_pprev = file->f_pprev;
+	*file->f_pprev = file->f_next;
+}
+
 
 void __init file_table_init(void)
 {
@@ -63,38 +70,40 @@ struct file * get_empty_filp(void)
 	static int old_max = 0;
 	struct file * f;
 
-	if (nr_free_files > NR_RESERVED_FILES) {
+	if (files_stat.nr_free_files > NR_RESERVED_FILES) {
 	used_one:
 		f = free_filps;
 		remove_filp(f);
-		nr_free_files--;
+		files_stat.nr_free_files--;
 	new_one:
 		memset(f, 0, sizeof(*f));
 		f->f_count = 1;
-		f->f_version = ++event;
+		f->f_version = ++global_event;
+		f->f_uid = current->fsuid;
+		f->f_gid = current->fsgid;
 		put_inuse(f);
 		return f;
 	}
 	/*
 	 * Use a reserved one if we're the superuser
 	 */
-	if (nr_free_files && !current->euid)
+	if (files_stat.nr_free_files && !current->euid)
 		goto used_one;
 	/*
 	 * Allocate a new one if we're below the limit.
 	 */
-	if (nr_files < max_files) {
+	if (files_stat.nr_files < files_stat.max_files) {
 		f = kmem_cache_alloc(filp_cache, SLAB_KERNEL);
 		if (f) {
-			nr_files++;
+			files_stat.nr_files++;
 			goto new_one;
 		}
 		/* Big problems... */
 		printk("VFS: filp allocation failed\n");
 
-	} else if (max_files > old_max) {
-		printk("VFS: file-max limit %d reached\n", max_files);
-		old_max = max_files;
+	} else if (files_stat.max_files > old_max) {
+		printk("VFS: file-max limit %d reached\n", files_stat.max_files);
+		old_max = files_stat.max_files;
 	}
 	return NULL;
 }
@@ -110,9 +119,33 @@ int init_private_file(struct file *filp, struct dentry *dentry, int mode)
 	filp->f_mode   = mode;
 	filp->f_count  = 1;
 	filp->f_dentry = dentry;
+	filp->f_uid    = current->fsuid;
+	filp->f_gid    = current->fsgid;
 	filp->f_op     = dentry->d_inode->i_op->default_file_ops;
 	if (filp->f_op->open)
 		return filp->f_op->open(dentry->d_inode, filp);
 	else
 		return 0;
+}
+
+void fput(struct file *file)
+{
+	int count = file->f_count-1;
+
+	if (!count) {
+		locks_remove_flock(file);
+		__fput(file);
+		file->f_count = 0;
+		remove_filp(file);
+		insert_file_free(file);
+	} else
+		file->f_count = count;
+}
+
+void put_filp(struct file *file)
+{
+	if(--file->f_count == 0) {
+		remove_filp(file);
+		insert_file_free(file);
+	}
 }

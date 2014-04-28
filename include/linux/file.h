@@ -6,7 +6,6 @@
 #define __LINUX_FILE_H
 
 extern void __fput(struct file *);
-extern void insert_file_free(struct file *file);
 
 /*
  * Check whether the specified task has the fd open. Since the task
@@ -42,6 +41,15 @@ extern inline struct file * fget(unsigned int fd)
 	return file;
 }
 
+extern int get_unused_fd(void);   /* in fs/open.c */
+
+static inline void put_unused_fd(unsigned int fd)
+{
+	FD_CLR(fd, current->files->open_fds);
+	if (fd < current->files->next_fd)
+		current->files->next_fd = fd;
+}
+
 /*
  * Install a file pointer in the fd array.
  */
@@ -50,34 +58,23 @@ extern inline void fd_install(unsigned int fd, struct file *file)
 	current->files->fd[fd] = file;
 }
 
-/* It does not matter which list it is on. */
-extern inline void remove_filp(struct file *file)
-{
-	if(file->f_next)
-		file->f_next->f_pprev = file->f_pprev;
-	*file->f_pprev = file->f_next;
-}
-
-extern inline void fput(struct file *file)
-{
-	int count = file->f_count-1;
-
-	if (!count) {
-		locks_remove_flock(file);
-		__fput(file);
-		file->f_count = 0;
-		remove_filp(file);
-		insert_file_free(file);
-	} else
-		file->f_count = count;
-}
-
-extern inline void put_filp(struct file *file)
-{
-	if(--file->f_count == 0) {
-		remove_filp(file);
-		insert_file_free(file);
-	}
-}
+/*
+ * 23/12/1998 Marcin Dalecki <dalecki@cs.net.pl>: 
+ * 
+ * Since those functions where calling other functions, it was compleatly 
+ * bogous to make them all "extern inline".
+ *
+ * The removal of this pseudo optimization saved me scandaleous:
+ *
+ * 		3756 (i386 arch) 
+ *
+ * precious bytes from my kernel, even without counting all the code compiled
+ * as module!
+ *
+ * I suspect there are many other similar "optimizations" across the
+ * kernel...
+ */
+extern void fput(struct file *file); 
+extern void put_filp(struct file *file);
 
 #endif

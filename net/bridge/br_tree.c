@@ -7,6 +7,7 @@
 #include <linux/string.h>
 #include <linux/malloc.h>
 #include <linux/skbuff.h>
+#include <linux/netdevice.h>
 
 #include <net/br.h>
 #define _DEBUG_AVL
@@ -27,6 +28,10 @@ static struct fdb fdb_head;
 static struct fdb *fhp = &fdb_head;
 static struct fdb **fhpp = &fhp;
 static int fdb_inited = 0;
+
+#ifdef DEBUG_AVL
+static void printk_avl (struct fdb * tree);
+#endif
 
 static int addr_cmp(unsigned char *a1, unsigned char *a2);
 
@@ -80,7 +85,7 @@ struct fdb *br_avl_find_addr(unsigned char addr[6])
 		addr[4],
 		addr[5]);
 #endif /* DEBUG_AVL */
-	for (tree = &fdb_head ; ; ) {
+	for (tree = fhp ; ; ) {
 		if (tree == avl_br_empty) {
 #if (DEBUG_AVL)
 			printk("search failed, returning node 0x%x\n", (unsigned int)result);
@@ -446,10 +451,10 @@ void sprintf_avl (char **pbuffer, struct fdb * tree, off_t *pos,
 		/* don't write the local device */
 		if(tree->port != 0){
 			size = sprintf(*pbuffer,
-				   "%02x:%02x:%02x:%02x:%02x:%02x     eth%d       %d         %d\n",
+				   "%02x:%02x:%02x:%02x:%02x:%02x     %s       %d         %ld\n",
 				   tree->ula[0],tree->ula[1],tree->ula[2],
 				   tree->ula[3],tree->ula[4],tree->ula[5], 
-				   tree->port-1, tree->flags,CURRENT_TIME-tree->timer);
+				   port_info[tree->port].dev->name, tree->flags,CURRENT_TIME-tree->timer);
 
 			(*pos)+=size;
 			(*len)+=size;
@@ -468,4 +473,29 @@ void sprintf_avl (char **pbuffer, struct fdb * tree, off_t *pos,
 	}
 
 	return;
+}
+
+/*
+ * Delete all nodes learnt by the port
+ */
+void br_avl_delete_by_port(int port)
+{
+        struct fdb *fdb, *next;
+
+	if (!fdb_inited)
+		fdb_init();
+
+        for(fdb = port_info[port].fdb; fdb != NULL; fdb = next) {
+                next = fdb->fdb_next;
+                br_avl_remove(fdb);
+        }
+        port_info[port].fdb = NULL;
+
+        /* remove the local mac too */
+/*        next = br_avl_find_addr(port_info[port].dev->dev_addr); */
+        next = br_avl_find_addr(port_info[port].ifmac.BRIDGE_ID_ULA);
+        if (next != NULL)
+                br_avl_remove(next);
+
+        return;
 }

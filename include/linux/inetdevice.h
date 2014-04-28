@@ -16,6 +16,8 @@ struct ipv4_devconf
 	int	log_martians;
 	int	forwarding;
 	int	mc_forwarding;
+	int	hidden;
+	int	arp_filter; 
 	void	*sysctl;
 };
 
@@ -40,6 +42,7 @@ struct in_device
 
 #define IN_DEV_LOG_MARTIANS(in_dev)	(ipv4_devconf.log_martians || (in_dev)->cnf.log_martians)
 #define IN_DEV_PROXY_ARP(in_dev)	(ipv4_devconf.proxy_arp || (in_dev)->cnf.proxy_arp)
+#define IN_DEV_HIDDEN(in_dev)		((in_dev)->cnf.hidden && ipv4_devconf.hidden)
 #define IN_DEV_SHARED_MEDIA(in_dev)	(ipv4_devconf.shared_media || (in_dev)->cnf.shared_media)
 #define IN_DEV_TX_REDIRECTS(in_dev)	(ipv4_devconf.send_redirects || (in_dev)->cnf.send_redirects)
 #define IN_DEV_SEC_REDIRECTS(in_dev)	(ipv4_devconf.secure_redirects || (in_dev)->cnf.secure_redirects)
@@ -49,6 +52,9 @@ struct in_device
 	  (ipv4_devconf.accept_redirects && (in_dev)->cnf.accept_redirects)) \
 	 || (!IN_DEV_FORWARD(in_dev) && \
 	  (ipv4_devconf.accept_redirects || (in_dev)->cnf.accept_redirects)))
+
+#define IN_DEV_ARPFILTER(in_dev)	(ipv4_devconf.arp_filter || \
+					 (in_dev)->cnf.arp_filter)
 
 struct in_ifaddr
 {
@@ -76,8 +82,6 @@ extern struct in_device *inetdev_init(struct device *dev);
 extern struct in_device	*inetdev_by_index(int);
 extern u32		inet_select_addr(struct device *dev, u32 dst, int scope);
 extern struct in_ifaddr *inet_ifa_byprefix(struct in_device *in_dev, u32 prefix, u32 mask);
-extern int		inet_add_bootp_addr(struct device *dev);
-extern void		inet_del_bootp_addr(struct device *dev);
 extern void		inet_forward_change(void);
 
 extern __inline__ int inet_ifa_match(u32 addr, struct in_ifaddr *ifa)

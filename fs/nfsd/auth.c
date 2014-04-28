@@ -10,6 +10,7 @@
 #include <linux/sunrpc/svcauth.h>
 #include <linux/nfsd/nfsd.h>
 
+#define	CAP_NFSD_MASK (CAP_FS_MASK|CAP_TO_MASK(CAP_SYS_RESOURCE))
 void
 nfsd_setuser(struct svc_rqst *rqstp, struct svc_export *exp)
 {
@@ -50,11 +51,10 @@ nfsd_setuser(struct svc_rqst *rqstp, struct svc_export *exp)
 	current->ngroups = i;
 
 	if ((cred->cr_uid)) {
-		cap_lower(current->cap_effective, CAP_DAC_OVERRIDE);
-		cap_lower(current->cap_effective, CAP_DAC_READ_SEARCH);
+		cap_t(current->cap_effective) &= ~CAP_NFSD_MASK;
 	} else {
-		cap_raise(current->cap_effective, CAP_DAC_OVERRIDE);
-		cap_raise(current->cap_effective, CAP_DAC_READ_SEARCH);
+		cap_t(current->cap_effective) |= (CAP_NFSD_MASK &
+						  current->cap_permitted);
 	}
 
 	rqstp->rq_userset = 1;

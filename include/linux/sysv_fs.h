@@ -98,7 +98,9 @@ struct xenix_super_block {
 	char		s_fill[371];
 	s32		s_magic;	/* version of file system */
 	s32		s_type;		/* type of file system: 1 for 512 byte blocks
-								2 for 1024 byte blocks */
+								2 for 1024 byte blocks
+								3 for 2048 byte blocks */
+								
 };
 
 /* Xenix free list block on disk */
@@ -365,7 +367,7 @@ sv_bread (struct super_block *sb, kdev_t dev, unsigned int block)
  * Function prototypes
  */
 
-extern int sysv_lookup(struct inode * dir, struct dentry * dentry);
+extern struct dentry *sysv_lookup(struct inode * dir, struct dentry * dentry);
 extern int sysv_create(struct inode * dir, struct dentry * dentry, int mode);
 extern int sysv_mkdir(struct inode * dir, struct dentry * dentry, int mode);
 extern int sysv_rmdir(struct inode * dir, struct dentry * dentry);
@@ -396,7 +398,6 @@ extern void sysv_write_super(struct super_block *);
 extern void sysv_read_inode(struct inode *);
 extern int sysv_notify_change(struct dentry *, struct iattr *);
 extern void sysv_write_inode(struct inode *);
-extern void sysv_put_inode(struct inode *);
 extern int sysv_statfs(struct super_block *, struct statfs *, int);
 extern int sysv_sync_inode(struct inode *);
 extern int sysv_sync_file(struct file *, struct dentry *);

@@ -52,8 +52,7 @@ enum root_directory_inos {
 	PROC_STRAM,
 	PROC_SOUND,
 	PROC_MTRR, /* whether enabled or not */
-	PROC_FS,
-	PROC_SWAPSTATS
+	PROC_FS
 };
 
 enum pid_directory_inos {
@@ -147,6 +146,7 @@ enum net_directory_inos {
 	PROC_NET_IPFW_CHAIN_NAMES,
 	PROC_NET_AT_AARP,
 	PROC_NET_BRIDGE,
+	PROC_NET_PNP,
 	PROC_NET_LAST
 };
 
@@ -175,6 +175,7 @@ enum scsi_directory_inos {
 	PROC_SCSI_SEAGATE,
 	PROC_SCSI_T128,
 	PROC_SCSI_NCR53C7xx,
+	PROC_SCSI_SYM53C8XX,
 	PROC_SCSI_NCR53C8XX,
 	PROC_SCSI_ULTRASTOR,
 	PROC_SCSI_7000FASST,
@@ -185,6 +186,7 @@ enum scsi_directory_inos {
 	PROC_SCSI_AM53C974,
 	PROC_SCSI_SSC,
 	PROC_SCSI_NCR53C406A,
+	PROC_SCSI_SYM53C416,
 	PROC_SCSI_MEGARAID,
 	PROC_SCSI_PPA,
 	PROC_SCSI_ATP870U,
@@ -193,16 +195,25 @@ enum scsi_directory_inos {
 	PROC_SCSI_AMIGA7XX,
 	PROC_SCSI_MVME16x,
 	PROC_SCSI_BVME6000,
+	PROC_SCSI_SIM710,
 	PROC_SCSI_A3000,
 	PROC_SCSI_A2091,
 	PROC_SCSI_GVP11,
 	PROC_SCSI_ATARI,
 	PROC_SCSI_MAC,
 	PROC_SCSI_IDESCSI,
+	PROC_SCSI_SGIWD93,
 	PROC_SCSI_MESH,
 	PROC_SCSI_53C94,
 	PROC_SCSI_PLUTO,
 	PROC_SCSI_INI9100U,
+	PROC_SCSI_INIA100,
+ 	PROC_SCSI_IPH5526_FC,
+	PROC_SCSI_FCAL,
+	PROC_SCSI_I2O,
+	PROC_SCSI_3W_XXXX,
+	PROC_SCSI_USB_SCSI,
+	PROC_SCSI_CPQFCTS,
 	PROC_SCSI_SCSI_DEBUG,	
 	PROC_SCSI_NOT_PRESENT,
 	PROC_SCSI_FILE,                        /* I'm assuming here that we */
@@ -297,6 +308,8 @@ typedef	int (write_proc_t)(struct file *file, const char *buffer,
 extern int (* dispatch_scsi_info_ptr) (int ino, char *buffer, char **start,
 				off_t offset, int length, int inout);
 
+#ifdef CONFIG_PROC_FS
+
 extern struct proc_dir_entry proc_root;
 extern struct proc_dir_entry proc_root_fs;
 extern struct proc_dir_entry *proc_net;
@@ -377,7 +390,7 @@ extern int proc_match(int, const char *,struct proc_dir_entry *);
  * of the /proc/<pid> subdirectories.
  */
 extern int proc_readdir(struct file *, void *, filldir_t);
-extern int proc_lookup(struct inode *, struct dentry *);
+extern struct dentry *proc_lookup(struct inode *, struct dentry *);
 
 struct openpromfs_dev {
  	struct openpromfs_dev *next;
@@ -389,7 +402,7 @@ struct openpromfs_dev {
 };
 extern struct inode_operations *
 proc_openprom_register(int (*readdir)(struct file *, void *, filldir_t),
-		       int (*lookup)(struct inode *, struct dentry *),
+		       struct dentry * (*lookup)(struct inode *, struct dentry *),
 		       void (*use)(struct inode *, int),
 		       struct openpromfs_dev ***);
 extern void proc_openprom_deregister(void);
@@ -424,6 +437,12 @@ struct proc_dir_entry *create_proc_entry(const char *name, mode_t mode,
 					 struct proc_dir_entry *parent);
 void remove_proc_entry(const char *name, struct proc_dir_entry *parent);
 
+#define create_proc_info_entry(n, m, b, g) \
+	{ \
+		struct proc_dir_entry *r = create_proc_entry(n, m, b); \
+		if (r) r->get_info = g; \
+	}
+
 /*
  * proc_tty.c
  */
@@ -435,5 +454,38 @@ extern void proc_tty_unregister_driver(struct tty_driver *driver);
  * proc_devtree.c
  */
 extern void proc_device_tree_init(void);
+
+#else
+
+extern inline int proc_register(struct proc_dir_entry *a, struct proc_dir_entry *b) { return 0; };
+extern inline int proc_unregister(struct proc_dir_entry *a, int b) { return 0; };
+extern inline int proc_net_register(struct proc_dir_entry *a) { return 0; };
+extern inline int proc_net_unregister(int x) { return 0; };
+extern inline int proc_scsi_register(struct proc_dir_entry *b, struct proc_dir_entry *c) { return 0; };
+extern inline int proc_scsi_unregister(struct proc_dir_entry *a, int x) { return 0; };
+
+extern inline struct proc_dir_entry *create_proc_entry(const char *name, mode_t mode,
+					 struct proc_dir_entry *parent)
+{
+	return NULL;
+}
+
+#define create_proc_info_entry(n, m, b, g) \
+	{ \
+		struct proc_dir_entry *r = create_proc_entry(n, m, b); \
+		if (r) r->get_info = g; \
+	}
+
+
+extern inline void remove_proc_entry(const char *name, struct proc_dir_entry *parent) {};
+
+extern inline void proc_tty_register_driver(struct tty_driver *driver) {};
+extern inline void proc_tty_unregister_driver(struct tty_driver *driver) {};
+
+extern struct proc_dir_entry proc_root;
+
+#endif /* CONFIG_PROC_FS */
+
+#define proc_mkdir(buf, usbdir)	create_proc_entry(buf, S_IFDIR, usbdir)
 
 #endif /* _LINUX_PROC_FS_H */

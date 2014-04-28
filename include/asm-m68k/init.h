@@ -3,7 +3,7 @@
 
 #include <linux/config.h>
 
-#ifndef CONFIG_KGDB
+#if !defined(CONFIG_KGDB) && !defined(CONFIG_FTRACE)
 
 #define __init __attribute__ ((__section__ (".text.init")))
 #define __initdata __attribute__ ((__section__ (".data.init")))
@@ -14,6 +14,9 @@
 #define __INIT		.section	".text.init",#alloc,#execinstr
 #define __FINIT		.previous
 #define __INITDATA	.section	".data.init",#alloc,#write
+
+#define __cacheline_aligned __attribute__ \
+		((__aligned__(16), __section__ (".data.cacheline_aligned")))
 
 #else
 
@@ -27,7 +30,8 @@
 #define __INIT
 #define __FINIT
 #define __INITDATA
+#define __cacheline_aligned __attribute__ ((__aligned__(16)))
 
 #endif /* CONFIG_KGDB */
-	
+
 #endif

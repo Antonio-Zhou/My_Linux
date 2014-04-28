@@ -31,9 +31,7 @@
 #include <linux/smp.h>
 #include <linux/reboot.h>
 #include <linux/init.h>
-#if defined(CONFIG_APM) && defined(CONFIG_APM_POWER_OFF)
-#include <linux/apm_bios.h>
-#endif
+#include <linux/mc146818rtc.h>
 
 #include <asm/uaccess.h>
 #include <asm/pgtable.h>
@@ -52,14 +50,19 @@ spinlock_t semaphore_wake_lock = SPIN_LOCK_UNLOCKED;
 
 asmlinkage void ret_from_fork(void) __asm__("ret_from_fork");
 
-#ifdef CONFIG_APM
-extern int  apm_do_idle(void);
-extern void apm_do_busy(void);
-#endif
-
-static int hlt_counter=0;
+int hlt_counter=0;
 
 #define HARD_IDLE_TIMEOUT (HZ / 3)
+
+/*
+ * Powermanagement idle function, if any..
+ */
+void (*acpi_idle)(void) = NULL;
+
+/*
+ * Power off function, if any
+ */
+void (*acpi_power_off)(void) = NULL;
 
 void disable_hlt(void)
 {
@@ -71,34 +74,7 @@ void enable_hlt(void)
 	hlt_counter--;
 }
 
-#ifndef __SMP__
-
-static void hard_idle(void)
-{
-	while (!current->need_resched) {
-		if (boot_cpu_data.hlt_works_ok && !hlt_counter) {
-#ifdef CONFIG_APM
-				/* If the APM BIOS is not enabled, or there
-				 is an error calling the idle routine, we
-				 should hlt if possible.  We need to check
-				 need_resched again because an interrupt
-				 may have occurred in apm_do_idle(). */
-			start_bh_atomic();
-			if (!apm_do_idle() && !current->need_resched)
-				__asm__("hlt");
-			end_bh_atomic();
-#else
-			__asm__("hlt");
-#endif
-	        }
- 		if (current->need_resched) 
- 			break;
-		schedule();
-	}
-#ifdef CONFIG_APM
-	apm_do_busy();
-#endif
-}
+#ifndef CONFIG_SMP
 
 /*
  * The idle loop on a uniprocessor i386..
@@ -111,12 +87,13 @@ static int cpu_idle(void *unused)
 	/* endless idle loop with no priority at all */
 	current->priority = 0;
 	current->counter = -100;
+
 	for (;;) {
 		if (work)
 			start_idle = jiffies;
 
-		if (jiffies - start_idle > HARD_IDLE_TIMEOUT) 
-			hard_idle();
+		if (acpi_idle && (jiffies - start_idle > HARD_IDLE_TIMEOUT))
+			acpi_idle();
 		else  {
 			if (boot_cpu_data.hlt_works_ok && !hlt_counter && !current->need_resched)
 		        	__asm__("hlt");
@@ -139,11 +116,19 @@ int cpu_idle(void *unused)
 	/* endless idle loop with no priority at all */
 	current->priority = 0;
 	current->counter = -100;
+
 	while(1) {
-		if (current_cpu_data.hlt_works_ok && !hlt_counter && !current->need_resched)
+		if (current_cpu_data.hlt_works_ok && !hlt_counter &&
+				 !current->need_resched)
 			__asm__("hlt");
-		schedule();
-		check_pgt_cache();
+		/*
+		 * although we are an idle CPU, we do not want to
+		 * get into the scheduler unnecessarily.
+		 */
+		if (current->need_resched) {
+			schedule();
+			check_pgt_cache();
+		}
 	}
 }
 
@@ -246,7 +231,10 @@ static unsigned char real_mode_switch [] =
 	0x74, 0x02,				/*    jz    f                */
 	0x0f, 0x08,				/*    invd                   */
 	0x24, 0x10,				/* f: andb  $0x10,al         */
-	0x66, 0x0f, 0x22, 0xc0,			/*    movl  %eax,%cr0        */
+	0x66, 0x0f, 0x22, 0xc0			/*    movl  %eax,%cr0        */
+};
+static unsigned char jump_to_bios [] =
+{
 	0xea, 0x00, 0x00, 0xff, 0xff		/*    ljmp  $0xffff,$0x0000  */
 };
 
@@ -259,34 +247,17 @@ static inline void kb_wait(void)
 			break;
 }
 
-void machine_restart(char * __unused)
+/*
+ * Switch to real mode and then execute the code
+ * specified by the code and length parameters.
+ * We assume that length will aways be less that 100!
+ */
+void machine_real_restart(unsigned char *code, int length)
 {
-#if __SMP__
-	/*
-	 * turn off the IO-APIC, so we can do a clean reboot
-	 */
-	init_pic_mode();
-#endif
-
-	if(!reboot_thru_bios) {
-		/* rebooting needs to touch the page at absolute addr 0 */
-		*((unsigned short *)__va(0x472)) = reboot_mode;
-		for (;;) {
-			int i;
-			for (i=0; i<100; i++) {
-				kb_wait();
-				udelay(50);
-				outb(0xfe,0x64);         /* pulse reset low */
-				udelay(50);
-			}
-			/* That didn't work - force a triple fault.. */
-			__asm__ __volatile__("lidt %0": :"m" (no_idt));
-			__asm__ __volatile__("int3");
-		}
-	}
-
+	unsigned long flags;
+	
 	cli();
-
+	
 	/* Write zero to CMOS register number 0x0f, which the BIOS POST
 	   routine will recognize as telling it to do a proper reboot.  (Well
 	   that's what this book in front of me says -- it may only apply to
@@ -296,8 +267,9 @@ void machine_restart(char * __unused)
 	   `outb_p' is needed instead of just `outb'.  Use it to be on the
 	   safe side. */
 
-	outb_p (0x8f, 0x70);
-	outb_p (0x00, 0x71);
+	spin_lock_irqsave(&rtc_lock, flags);
+	CMOS_WRITE(0x00, 0x8f);
+	spin_unlock_irqrestore(&rtc_lock, flags);
 
 	/* Remap the kernel at virtual address zero, as well as offset zero
 	   from the kernel segment.  This assumes the kernel segment starts at
@@ -309,7 +281,7 @@ void machine_restart(char * __unused)
 	/* Make sure the first page is mapped to the start of physical memory.
 	   It is normally not mapped, to trap kernel NULL pointer dereferences. */
 
-	pg0[0] = 7;
+	pg0[0] = _PAGE_RW | _PAGE_PRESENT;
 
 	/*
 	 * Use `swapper_pg_dir' as our page directory.  We bother with
@@ -334,8 +306,9 @@ void machine_restart(char * __unused)
 	   off paging.  Copy it near the end of the first page, out of the way
 	   of BIOS variables. */
 
-	memcpy ((void *) (0x1000 - sizeof (real_mode_switch)),
+	memcpy ((void *) (0x1000 - sizeof (real_mode_switch) - 100),
 		real_mode_switch, sizeof (real_mode_switch));
+	memcpy ((void *) (0x1000 - 100), code, length);
 
 	/* Set up the IDT for real mode. */
 
@@ -366,7 +339,36 @@ void machine_restart(char * __unused)
 
 	__asm__ __volatile__ ("ljmp $0x0008,%0"
 				:
-				: "i" ((void *) (0x1000 - sizeof (real_mode_switch))));
+				: "i" ((void *) (0x1000 - sizeof (real_mode_switch) - 100)));
+}
+
+void machine_restart(char * __unused)
+{
+#if CONFIG_SMP
+	/*
+	 * turn off the IO-APIC, so we can do a clean reboot
+	 */
+	init_pic_mode();
+#endif
+
+	if(!reboot_thru_bios) {
+		/* rebooting needs to touch the page at absolute addr 0 */
+		*((unsigned short *)__va(0x472)) = reboot_mode;
+		for (;;) {
+			int i;
+			for (i=0; i<100; i++) {
+				kb_wait();
+				udelay(50);
+				outb(0xfe,0x64);         /* pulse reset low */
+				udelay(50);
+			}
+			/* That didn't work - force a triple fault.. */
+			__asm__ __volatile__("lidt %0": :"m" (no_idt));
+			__asm__ __volatile__("int3");
+		}
+	}
+
+	machine_real_restart(jump_to_bios, sizeof(jump_to_bios));
 }
 
 void machine_halt(void)
@@ -375,9 +377,8 @@ void machine_halt(void)
 
 void machine_power_off(void)
 {
-#if defined(CONFIG_APM) && defined(CONFIG_APM_POWER_OFF)
-	apm_power_off();
-#endif
+	if (acpi_power_off)
+		acpi_power_off();
 }
 
 
@@ -423,7 +424,7 @@ void show_regs(struct pt_regs * regs)
  *  - if you use SMP you have a beefy enough machine that
  *    this shouldn't matter..
  */
-#ifndef __SMP__
+#ifndef CONFIG_SMP
 #define EXTRA_TASK_STRUCT	16
 static struct task_struct * task_struct_stack[EXTRA_TASK_STRUCT];
 static int task_struct_stack_ptr = -1;
@@ -468,22 +469,25 @@ void free_task_struct(struct task_struct *p)
 
 void release_segments(struct mm_struct *mm)
 {
+	if (mm->segments) {
+		void * ldt = mm->segments;
+		mm->segments = NULL;
+		vfree(ldt);
+	}
+}
+
+void forget_segments(void)
+{
 	/* forget local segments */
 	__asm__ __volatile__("movl %w0,%%fs ; movl %w0,%%gs"
 		: /* no outputs */
 		: "r" (0));
-	if (mm->segments) {
-		void * ldt = mm->segments;
 
-		/*
-		 * Get the LDT entry from init_task.
-		 */
-		current->tss.ldt = _LDT(0);
-		load_ldt(0);
-
-		mm->segments = NULL;
-		vfree(ldt);
-	}
+	/*
+	 * Get the LDT entry from init_task.
+	 */
+	current->tss.ldt = _LDT(0);
+	load_ldt(0);
 }
 
 /*
@@ -540,6 +544,7 @@ void flush_thread(void)
 
 void release_thread(struct task_struct *dead_task)
 {
+    release_x86_irqs(dead_task);
 }
 
 /*
@@ -775,6 +780,21 @@ asmlinkage int sys_clone(struct pt_regs regs)
 }
 
 /*
+ * This is trivial, and on the face of it looks like it
+ * could equally well be done in user mode.
+ *
+ * Not so, for quite unobvious reasons - register pressure.
+ * In user mode vfork() cannot have a stack frame, and if
+ * done by calling the "clone()" system call directly, you
+ * do not have enough call-clobbered registers to hold all
+ * the information you need.
+ */
+asmlinkage int sys_vfork(struct pt_regs regs)
+{
+	return do_fork(CLONE_VFORK | CLONE_VM | SIGCHLD, regs.esp, &regs);
+}
+
+/*
  * sys_execve() executes a new program.
  */
 asmlinkage int sys_execve(struct pt_regs regs)
@@ -789,7 +809,7 @@ asmlinkage int sys_execve(struct pt_regs regs)
 		goto out;
 	error = do_execve(filename, (char **) regs.ecx, (char **) regs.edx, &regs);
 	if (error == 0)
-		current->flags &= ~PF_DTRACE;
+		current->ptrace &= ~PT_DTRACE;
 	putname(filename);
 out:
 	unlock_kernel();

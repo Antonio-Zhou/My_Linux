@@ -42,7 +42,7 @@
  */
 
 /*
- *  ==FILEVERSION 981004==
+ *  ==FILEVERSION 20000223==
  *
  *  NOTE TO MAINTAINERS:
  *   If you modify this file at all, please set the above date.
@@ -61,7 +61,8 @@
 #define NP_IP	0		/* Internet Protocol */
 #define NP_IPX	1		/* IPX protocol */
 #define NP_AT	2		/* Appletalk protocol */
-#define NUM_NP	3		/* Number of NPs. */
+#define NP_IPV6	3		/* Internet Protocol */
+#define NUM_NP	4		/* Number of NPs. */
 
 #define OBUFSIZE	256	/* # chars of output buffering */
 
@@ -85,9 +86,9 @@ struct ppp {
 	/* Information specific to using ppp on async serial lines. */
 	struct tty_struct *tty;		/* ptr to TTY structure	*/
 	struct tty_struct *backup_tty;	/* TTY to use if tty gets closed */
+	unsigned long	state;		/* state flags, use atomic ops  */
 	__u8		escape;		/* 0x20 if prev char was PPP_ESC */
 	__u8		toss;		/* toss this frame		*/
-	volatile __u8	tty_pushing;	/* internal state flag		*/
 	__u32		xmit_async_map[8]; /* 1 bit means that given control 
 					   character is quoted on output*/
 	__u32		recv_async_map; /* 1 bit means that given control 

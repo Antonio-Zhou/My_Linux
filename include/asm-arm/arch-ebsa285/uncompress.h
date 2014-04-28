@@ -1,30 +1,37 @@
 /*
- * linux/include/asm-arm/arch-ebsa110/uncompress.h
+ * linux/include/asm-arm/arch-ebsa285/uncompress.h
  *
- * Copyright (C) 1996,1997,1998 Russell King
+ * Copyright (C) 1996-1999 Russell King
  */
+
+/*
+ * Note! This could cause problems on the NetWinder
+ */
+#define DC21285_BASE ((volatile unsigned int *)0x42000160)
+#define SER0_BASE    ((volatile unsigned char *)0x7c0003f8)
+
+static __inline__ void putc(char c)
+{
+	if (machine_is_netwinder()) {
+		while ((SER0_BASE[5] & 0x60) != 0x60);
+		SER0_BASE[0] = c;
+	} else {
+		while (DC21285_BASE[6] & 8);
+		DC21285_BASE[0] = c;
+	}
+}
 
 /*
  * This does not append a newline
  */
 static void puts(const char *s)
 {
-	__asm__ __volatile__("
-	ldrb	%0, [%2], #1
-	teq	%0, #0
-	beq	3f
-1:	strb	%0, [%3]
-2:	ldrb	%1, [%3, #0x14]
-	and	%1, %1, #0x60
-	teq	%1, #0x60
-	bne	2b
-	teq	%0, #'\n'
-	moveq	%0, #'\r'
-	beq	1b
-	ldrb	%0, [%2], #1
-	teq	%0, #0
-	bne	1b
-3:	" : : "r" (0), "r" (0), "r" (s), "r" (0xf0000be0) : "cc");
+	while (*s) {
+		putc(*s);
+		if (*s == '\n')
+			putc('\r');
+		s++;
+	}
 }
 
 /*

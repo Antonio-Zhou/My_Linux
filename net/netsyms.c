@@ -11,21 +11,31 @@
 #include <linux/types.h>
 #include <linux/net.h>
 #include <linux/in.h>
-#include <net/sock.h>
-#include <net/dst.h>
-#include <net/checksum.h>
-#include <net/pkt_sched.h>
 #include <linux/netdevice.h>
-#include <linux/etherdevice.h>
+#include <linux/inetdevice.h>
 #include <linux/fddidevice.h>
 #include <linux/trdevice.h>
+#include <linux/fcdevice.h>
 #include <linux/ioport.h>
 #include <net/neighbour.h>
 #include <net/snmp.h>
+#include <net/dst.h>
+#include <net/checksum.h>
+#include <linux/etherdevice.h>
+#include <net/route.h>
+#ifdef CONFIG_HIPPI
+#include <linux/hippidevice.h>
+#endif
+#include <net/pkt_sched.h>
+#include <net/scm.h>
 
 #ifdef CONFIG_BRIDGE
 #include <net/br.h>
 #endif
+
+#ifdef CONFIG_NET_DIVERT
+#include <linux/divert.h>
+#endif /* CONFIG_NET_DIVERT */
 
 #ifdef CONFIG_INET
 #include <linux/ip.h>
@@ -36,44 +46,46 @@
 #include <net/tcp.h>
 #include <net/icmp.h>
 #include <net/route.h>
-#include <net/scm.h>
 #include <net/inet_common.h>
 #include <linux/inet.h>
 #include <linux/mroute.h>
 #include <linux/igmp.h>
 
 extern struct net_proto_family inet_family_ops;
-
-#ifdef CONFIG_DLCI_MODULE
-extern int (*dlci_ioctl_hook)(unsigned int, void *);
-EXPORT_SYMBOL(dlci_ioctl_hook);
-#endif
-
-#endif
+extern __u32 sysctl_wmem_max;
+extern __u32 sysctl_rmem_max;
 
 #if defined(CONFIG_IPV6) || defined (CONFIG_IPV6_MODULE)
 #include <linux/in6.h>
 #include <linux/icmpv6.h>
 #include <net/ipv6.h>
 #include <net/ndisc.h>
-#include <net/dst.h>
 #include <net/transp_v6.h>
 
 extern int tcp_tw_death_row_slot;
+extern int sysctl_local_port_range[2];
+extern int tcp_port_rover;
+extern int udp_port_rover;
 #endif
 
+#endif
 
 #include <linux/rtnetlink.h>
-
-#include <net/scm.h>
 
 #if	defined(CONFIG_ULTRA)	||	defined(CONFIG_WD80x3)		|| \
 	defined(CONFIG_EL2)	||	defined(CONFIG_NE2000)		|| \
 	defined(CONFIG_E2100)	||	defined(CONFIG_HPLAN_PLUS)	|| \
 	defined(CONFIG_HPLAN)	||	defined(CONFIG_AC3200)		|| \
 	defined(CONFIG_ES3210)	||	defined(CONFIG_ULTRA32)		|| \
-	defined(CONFIG_LNE390)	||	defined(CONFIG_NE3210)
+	defined(CONFIG_LNE390)	||	defined(CONFIG_NE3210)		|| \
+	defined(CONFIG_NE2K_PCI) ||	defined(CONFIG_APNE)		|| \
+	defined(CONFIG_DAYNAPORT)
 #include "../drivers/net/8390.h"
+#endif
+
+#if defined(CONFIG_HDLC)
+#include "../drivers/net/syncppp.h"
+#include <linux/hdlc.h>
 #endif
 
 extern int (*rarp_ioctl_hook)(int,void*);
@@ -91,6 +103,7 @@ extern void destroy_8023_client(struct datalink_proto *);
 
 #ifdef CONFIG_SYSCTL
 extern int sysctl_max_syn_backlog;
+extern int sysctl_ip_always_defrag;
 #endif
 
 EXPORT_SYMBOL(dev_lockct);
@@ -136,6 +149,9 @@ EXPORT_SYMBOL(sock_no_sendmsg);
 EXPORT_SYMBOL(sock_no_recvmsg);
 EXPORT_SYMBOL(sock_rfree);
 EXPORT_SYMBOL(sock_wfree);
+EXPORT_SYMBOL(sock_wmalloc);
+EXPORT_SYMBOL(sock_rmalloc);
+EXPORT_SYMBOL(sock_rspace);
 EXPORT_SYMBOL(skb_recv_datagram);
 EXPORT_SYMBOL(skb_free_datagram);
 EXPORT_SYMBOL(skb_copy_datagram);
@@ -173,6 +189,7 @@ EXPORT_SYMBOL(neigh_destroy);
 EXPORT_SYMBOL(neigh_parms_alloc);
 EXPORT_SYMBOL(neigh_parms_release);
 EXPORT_SYMBOL(neigh_rand_reach_time);
+EXPORT_SYMBOL(neigh_compat_output); 
 
 /*	dst_entry	*/
 EXPORT_SYMBOL(dst_alloc);
@@ -191,7 +208,7 @@ EXPORT_SYMBOL(__scm_send);
 
 /* Needed by unix.o */
 EXPORT_SYMBOL(scm_fp_dup);
-EXPORT_SYMBOL(max_files);
+EXPORT_SYMBOL(files_stat);
 EXPORT_SYMBOL(do_mknod);
 EXPORT_SYMBOL(memcpy_toiovec);
 EXPORT_SYMBOL(csum_partial);
@@ -212,16 +229,22 @@ EXPORT_SYMBOL(scm_detach_fds);
 EXPORT_SYMBOL(br_ioctl);
 #endif
 
+#ifdef CONFIG_NET_DIVERT
+EXPORT_SYMBOL(alloc_divert_blk);
+EXPORT_SYMBOL(free_divert_blk);
+EXPORT_SYMBOL(divert_ioctl);
+#endif /* CONFIG_NET_DIVERT */
+
 #ifdef CONFIG_INET
 /* Internet layer registration */
 EXPORT_SYMBOL(inet_add_protocol);
 EXPORT_SYMBOL(inet_del_protocol);
 EXPORT_SYMBOL(rarp_ioctl_hook);
-EXPORT_SYMBOL(init_etherdev);
 EXPORT_SYMBOL(ip_route_output);
 EXPORT_SYMBOL(icmp_send);
 EXPORT_SYMBOL(ip_options_compile);
 EXPORT_SYMBOL(arp_send);
+EXPORT_SYMBOL(arp_broken_ops);
 EXPORT_SYMBOL(ip_id_count);
 EXPORT_SYMBOL(ip_send_check);
 EXPORT_SYMBOL(ip_fragment);
@@ -233,12 +256,20 @@ EXPORT_SYMBOL(__ip_finish_output);
 EXPORT_SYMBOL(inet_dgram_ops);
 EXPORT_SYMBOL(ip_cmsg_recv);
 EXPORT_SYMBOL(__release_sock);
-EXPORT_SYMBOL(arp_find);
-EXPORT_SYMBOL(ip_rcv);
-EXPORT_SYMBOL(arp_rcv);
+EXPORT_SYMBOL(inet_addr_type); 
+
+/* Route manipulation */
+EXPORT_SYMBOL(ip_rt_ioctl);
+EXPORT_SYMBOL(devinet_ioctl);
 
 /* needed for ip_gre -cw */
 EXPORT_SYMBOL(ip_statistics);
+
+#ifdef CONFIG_DLCI_MODULE
+extern int (*dlci_ioctl_hook)(unsigned int, void *);
+EXPORT_SYMBOL(dlci_ioctl_hook);
+#endif
+
 
 #ifdef CONFIG_IPV6
 EXPORT_SYMBOL(ipv6_addr_type);
@@ -260,11 +291,11 @@ EXPORT_SYMBOL(inet_sendmsg);
 EXPORT_SYMBOL(inet_recvmsg);
 
 /* Socket demultiplexing. */
-EXPORT_SYMBOL(tcp_good_socknum);
-EXPORT_SYMBOL(tcp_established_hash);
+EXPORT_SYMBOL(tcp_ehash_size);
+EXPORT_SYMBOL(tcp_ehash);
 EXPORT_SYMBOL(tcp_listening_hash);
-EXPORT_SYMBOL(tcp_bound_hash);
-EXPORT_SYMBOL(udp_good_socknum);
+EXPORT_SYMBOL(tcp_bhash_size);
+EXPORT_SYMBOL(tcp_bhash);
 EXPORT_SYMBOL(udp_hash);
 
 EXPORT_SYMBOL(destroy_sock);
@@ -273,7 +304,6 @@ EXPORT_SYMBOL(memcpy_fromiovecend);
 EXPORT_SYMBOL(csum_partial_copy_fromiovecend);
 EXPORT_SYMBOL(net_timer);
 /* UDP/TCP exported functions for TCPv6 */
-EXPORT_SYMBOL(sock_rspace);
 EXPORT_SYMBOL(udp_ioctl);
 EXPORT_SYMBOL(udp_connect);
 EXPORT_SYMBOL(udp_sendmsg);
@@ -306,11 +336,12 @@ EXPORT_SYMBOL(tcp_v4_send_check);
 EXPORT_SYMBOL(tcp_v4_conn_request);
 EXPORT_SYMBOL(tcp_create_openreq_child);
 EXPORT_SYMBOL(tcp_bucket_create);
-EXPORT_SYMBOL(tcp_bucket_unlock);
+EXPORT_SYMBOL(__tcp_put_port);
+EXPORT_SYMBOL(tcp_put_port);
+EXPORT_SYMBOL(tcp_inherit_port);
 EXPORT_SYMBOL(tcp_v4_syn_recv_sock);
 EXPORT_SYMBOL(tcp_v4_do_rcv);
 EXPORT_SYMBOL(tcp_v4_connect);
-EXPORT_SYMBOL(inet_addr_type);
 EXPORT_SYMBOL(net_reset_timer);
 EXPORT_SYMBOL(net_delete_timer);
 EXPORT_SYMBOL(udp_prot);
@@ -322,6 +353,9 @@ EXPORT_SYMBOL(tcp_transmit_skb);
 EXPORT_SYMBOL(tcp_connect);
 EXPORT_SYMBOL(tcp_make_synack);
 EXPORT_SYMBOL(tcp_tw_death_row_slot);
+EXPORT_SYMBOL(sysctl_local_port_range);
+EXPORT_SYMBOL(tcp_port_rover);
+EXPORT_SYMBOL(udp_port_rover);
 EXPORT_SYMBOL(tcp_sync_mss);
 EXPORT_SYMBOL(net_statistics); 
 
@@ -333,6 +367,7 @@ EXPORT_SYMBOL(tcp_regs);
 
 #ifdef CONFIG_SYSCTL
 EXPORT_SYMBOL(sysctl_max_syn_backlog);
+EXPORT_SYMBOL(sysctl_ip_always_defrag);
 #endif
 #endif
 
@@ -362,23 +397,34 @@ EXPORT_SYMBOL(neigh_add);
 EXPORT_SYMBOL(neigh_dump_info);
 #endif
 
-EXPORT_SYMBOL(dev_set_allmulti);
-EXPORT_SYMBOL(dev_set_promiscuity);
-EXPORT_SYMBOL(sklist_remove_socket);
 EXPORT_SYMBOL(rtnl_wait);
 EXPORT_SYMBOL(rtnl_rlockct);
 EXPORT_SYMBOL(rtnl_lock);
 EXPORT_SYMBOL(rtnl_unlock);
 
-EXPORT_SYMBOL(sock_wmalloc);
-EXPORT_SYMBOL(sock_rmalloc);
+                  
+/* Used by at least ipip.c.  */
+EXPORT_SYMBOL(ipv4_config);
+EXPORT_SYMBOL(dev_open);
+
+/* Used by other modules */
+EXPORT_SYMBOL(in_ntoa);
+
+EXPORT_SYMBOL(ip_rcv);
+EXPORT_SYMBOL(arp_rcv);
+EXPORT_SYMBOL(arp_tbl);
+EXPORT_SYMBOL(arp_find);
+
+#endif  /* CONFIG_INET */
 
 #if	defined(CONFIG_ULTRA)	||	defined(CONFIG_WD80x3)		|| \
 	defined(CONFIG_EL2)	||	defined(CONFIG_NE2000)		|| \
 	defined(CONFIG_E2100)	||	defined(CONFIG_HPLAN_PLUS)	|| \
 	defined(CONFIG_HPLAN)	||	defined(CONFIG_AC3200)		|| \
 	defined(CONFIG_ES3210)	||	defined(CONFIG_ULTRA32)		|| \
-	defined(CONFIG_LNE390)	||	defined(CONFIG_NE3210)
+	defined(CONFIG_LNE390)	||	defined(CONFIG_NE3210)		|| \
+	defined(CONFIG_NE2K_PCI) ||	defined(CONFIG_APNE)		|| \
+	defined(CONFIG_DAYNAPORT)
 /* If 8390 NIC support is built in, we will need these. */
 EXPORT_SYMBOL(ei_open);
 EXPORT_SYMBOL(ei_close);
@@ -395,16 +441,28 @@ EXPORT_SYMBOL(unregister_trdev);
 EXPORT_SYMBOL(init_trdev);
 EXPORT_SYMBOL(tr_freedev);
 #endif
-                  
-/* Used by at least ipip.c.  */
-EXPORT_SYMBOL(ipv4_config);
-EXPORT_SYMBOL(dev_open);
 
-#endif  /* CONFIG_INET */
+#ifdef CONFIG_NET_FC
+EXPORT_SYMBOL(fc_setup); 
+EXPORT_SYMBOL(register_fcdev); 
+EXPORT_SYMBOL(unregister_fcdev);
+EXPORT_SYMBOL(init_fcdev);  
+EXPORT_SYMBOL(fc_freedev);
+#endif
+
+#ifdef CONFIG_HDLC
+EXPORT_SYMBOL(hdlc_netif_rx);
+EXPORT_SYMBOL(register_hdlc_device);
+EXPORT_SYMBOL(unregister_hdlc_device);
+#endif
 
 /* Device callback registration */
 EXPORT_SYMBOL(register_netdevice_notifier);
 EXPORT_SYMBOL(unregister_netdevice_notifier);
+#ifdef CONFIG_INET
+EXPORT_SYMBOL(register_inetaddr_notifier);
+EXPORT_SYMBOL(unregister_inetaddr_notifier);
+#endif
 
 /* support for loadable net drivers */
 #ifdef CONFIG_NET
@@ -413,18 +471,25 @@ EXPORT_SYMBOL(register_netdevice);
 EXPORT_SYMBOL(unregister_netdevice);
 EXPORT_SYMBOL(register_netdev);
 EXPORT_SYMBOL(unregister_netdev);
+EXPORT_SYMBOL(netdev_state_change);
 EXPORT_SYMBOL(ether_setup);
 EXPORT_SYMBOL(dev_new_index);
 EXPORT_SYMBOL(dev_get_by_index);
 EXPORT_SYMBOL(eth_type_trans);
+EXPORT_SYMBOL(init_etherdev);
+EXPORT_SYMBOL(dev_set_allmulti);
+EXPORT_SYMBOL(dev_set_promiscuity);
+EXPORT_SYMBOL(sklist_remove_socket);
 #ifdef CONFIG_FDDI
 EXPORT_SYMBOL(fddi_type_trans);
+EXPORT_SYMBOL(fddi_setup);
 #endif /* CONFIG_FDDI */
 EXPORT_SYMBOL(eth_copy_and_sum);
 EXPORT_SYMBOL(alloc_skb);
 EXPORT_SYMBOL(__kfree_skb);
 EXPORT_SYMBOL(skb_clone);
 EXPORT_SYMBOL(skb_copy);
+EXPORT_SYMBOL(skb_pad);
 EXPORT_SYMBOL(netif_rx);
 EXPORT_SYMBOL(dev_add_pack);
 EXPORT_SYMBOL(dev_remove_pack);
@@ -445,12 +510,24 @@ EXPORT_SYMBOL(netdev_fc_xoff);
 EXPORT_SYMBOL(dev_base);
 EXPORT_SYMBOL(dev_close);
 EXPORT_SYMBOL(dev_mc_add);
+EXPORT_SYMBOL(dev_mc_delete);
+EXPORT_SYMBOL(dev_mc_upload);
 EXPORT_SYMBOL(n_tty_ioctl);
 EXPORT_SYMBOL(tty_register_ldisc);
 EXPORT_SYMBOL(kill_fasync);
-EXPORT_SYMBOL(dev_mc_delete);
 
 EXPORT_SYMBOL(if_port_text);
+
+#ifdef CONFIG_HIPPI
+EXPORT_SYMBOL(hippi_type_trans);
+EXPORT_SYMBOL(init_hippi_dev);
+EXPORT_SYMBOL(unregister_hipdev);
+#endif
+
+#ifdef CONFIG_INET
+EXPORT_SYMBOL(sysctl_wmem_max);
+EXPORT_SYMBOL(sysctl_rmem_max);
+#endif
 
 #if defined(CONFIG_ATALK) || defined(CONFIG_ATALK_MODULE) 
 #include<linux/if_ltalk.h>
@@ -466,6 +543,7 @@ EXPORT_SYMBOL(qdisc_head);
 EXPORT_SYMBOL(qdisc_create_dflt);
 EXPORT_SYMBOL(noop_qdisc);
 #ifdef CONFIG_NET_SCHED
+PSCHED_EXPORTLIST;
 EXPORT_SYMBOL(pfifo_qdisc_ops);
 EXPORT_SYMBOL(register_qdisc);
 EXPORT_SYMBOL(unregister_qdisc);

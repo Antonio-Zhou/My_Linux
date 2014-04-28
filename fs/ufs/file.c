@@ -41,9 +41,6 @@
 #define MIN(a,b) (((a)<(b))?(a):(b))
 #define MAX(a,b) (((a)>(b))?(a):(b))
 
-#include <linux/fs.h>
-#include <linux/ufs_fs.h>
-
 static long long ufs_file_lseek(struct file *, long long, int);
 static ssize_t ufs_file_write (struct file *, const char *, size_t, loff_t *);
 static int ufs_release_file (struct inode *, struct file *);
@@ -114,7 +111,7 @@ static long long ufs_file_lseek(
 		if (offset != file->f_pos) {
 			file->f_pos = offset;
 			file->f_reada = 0;
-			file->f_version = ++event;
+			file->f_version = ++global_event;
 		}
 		retval = offset;
 	}

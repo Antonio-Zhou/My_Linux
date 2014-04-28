@@ -69,7 +69,7 @@
  * increased.  The larger it is, though, the longer it will be between
  * necessary transmits - don't set this too large.
  */
-#define TX_TIMEOUT 20
+#define TX_TIMEOUT (20*HZ/100)
 
 
 /* Display warnings about the driver being an ALPHA version.
@@ -192,7 +192,7 @@ extern int arcnet_debug;
 
 
 
-#define JIFFER(time) for (delayval=jiffies+time; jiffies<delayval;) ;
+#define JIFFER(time) for (delayval=jiffies+time; time_before(jiffies,delayval);) ;
 
 	/* a complete ARCnet packet */
 union ArcPacket

@@ -1,7 +1,7 @@
 /*
  * linux/include/asm-arm/arch-arc/system.h
  *
- * Copyright (c) 1996 Russell King and Dave Gilbert
+ * Copyright (c) 1996-1999 Russell King and Dave Gilbert
  */
 #ifndef __ASM_ARCH_SYSTEM_H
 #define __ASM_ARCH_SYSTEM_H
@@ -23,25 +23,22 @@
 
 #endif
 
-extern __inline__ void arch_hard_reset (void)
+#define arch_do_idle()		do { } while (0)
+
+extern __inline__ void arch_reset(char mode)
 {
-	extern void ecard_reset (int card);
+	extern void ecard_reset(int card);
 
 	/*
 	 * Reset all expansion cards.
 	 */
-	ecard_reset (-1);
+	ecard_reset(-1);
 
 	/*
 	 * copy branch instruction to reset location and call it
 	 */
 	*(unsigned long *)0 = *(unsigned long *)0x03800000;
 	((void(*)(void))0)();
-
-	/*
-	 * If that didn't work, loop endlessly
-	 */
-	while (1);
 }
 
 #endif

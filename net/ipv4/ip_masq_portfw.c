@@ -2,7 +2,7 @@
  *		IP_MASQ_PORTFW masquerading module
  *
  *
- *	$Id: ip_masq_portfw.c,v 1.2 1998/08/29 23:51:11 davem Exp $
+ *	$Id: ip_masq_portfw.c,v 1.3.2.2 1999/08/13 18:26:29 davem Exp $
  *
  * Author:	Steven Clarke <steven.clarke@monmouth.demon.co.uk>
  *
@@ -51,9 +51,7 @@ MODULE_PARM(debug, "i");
 /*
  *	Lock
  */
-#ifdef __SMP__
-static spinlock_t portfw_lock = SPIN_LOCK_UNLOCKED;
-#endif
+static rwlock_t portfw_lock = RW_LOCK_UNLOCKED;
 
 static struct list_head portfw_list[2];
 static __inline__ int portfw_idx(int protocol)
@@ -87,7 +85,8 @@ static __inline__ int ip_portfw_del(__u16 protocol, __u16 lport, __u32 laddr, __
 				(!laddr || n->laddr == laddr) &&
 				(!raddr || n->raddr == raddr) && 
 				(!rport || n->rport == rport)) {
-			list_del(entry);
+			entry = n->list.prev;
+			list_del(&n->list);
 			ip_masq_mod_dec_nent(mmod_self);
 			kfree_s(n, sizeof(struct ip_portfw));
 			MOD_DEC_USE_COUNT;
@@ -269,15 +268,18 @@ static __inline__ int portfw_ctl(int optname, struct ip_masq_ctl *mctl, int optl
 	IP_MASQ_DEBUG(1-debug, "ip_masq_portfw_ctl(cmd=%d)\n", cmd);
 
 
-        if (cmd != IP_MASQ_CMD_FLUSH) {
-		if (htons(mm->lport) < IP_PORTFW_PORT_MIN 
-				|| htons(mm->lport) > IP_PORTFW_PORT_MAX)
-			return EINVAL;
+	switch (cmd) {
+		case IP_MASQ_CMD_NONE:
+			return 0;
+		case IP_MASQ_CMD_FLUSH:
+			break;
+		default:
+			if (htons(mm->lport) < IP_PORTFW_PORT_MIN || htons(mm->lport) > IP_PORTFW_PORT_MAX)
+				return EINVAL;
 
-                if (mm->protocol!=IPPROTO_TCP && mm->protocol!=IPPROTO_UDP)
-                        return EINVAL;
-        }
-
+			if (mm->protocol!=IPPROTO_TCP && mm->protocol!=IPPROTO_UDP)
+				return EINVAL;
+	}
 
 	switch(cmd) {
 	case IP_MASQ_CMD_ADD:
@@ -421,14 +423,14 @@ static struct ip_masq * portfw_in_create(const struct sk_buff *skb, const struct
 				raddr, rport,
 				iph->saddr, portp[0],
 				0);
-		ip_masq_listen(ms);
-
 		if (!ms || atomic_read(&mmod_self->mmod_nent) <= 1 
 			/* || ip_masq_nlocks(&portfw_lock) != 1 */ )
 				/*
 				 *	Maybe later...
 				 */
 				goto out;
+
+		ip_masq_listen(ms);
 
 		/*
 		 *	Entry created, lock==1.

@@ -12,6 +12,8 @@
  *      precision CMOS clock update
  * 1996-05-03    Ingo Molnar
  *      fixed time warps in do_[slow|fast]_gettimeoffset()
+ * 1997-09-10	Updated NTP code according to technical memorandum Jan '96
+ *		"A Kernel Model for Precision Timekeeping" by Dave Mills
  * 1998-09-05    (Various)
  *	More robust do_fast_gettimeoffset() algorithm implemented
  *	(works with APM, Cyrix 6x86MX and Centaur C6),
@@ -22,22 +24,11 @@
  *	ported from 2.0.35 Jumbo-9 by Michael Krause <m.krause@tu-harburg.de>).
  * 1998-12-16    Andrea Arcangeli
  *	Fixed Jumbo-9 code in 2.1.131: do_gettimeofday was missing 1 jiffy
- *	because was not accounting lost_ticks. I also removed some ugly
- *	not needed global cli() and where needed I used a disable_irq(0).
+ *	because was not accounting lost_ticks.
+ * 1998-12-24 Copyright (C) 1998  Andrea Arcangeli
+ *	Fixed a xtime SMP race (we need the xtime_lock rw spinlock to
+ *	serialize accesses to xtime/lost_ticks).
  */
-
-/* What about the "updated NTP code" stuff in 2.0 time.c? It's not in
- * 2.1, perhaps it should be ported, too.
- *
- * What about the BUGGY_NEPTUN_TIMER stuff in do_slow_gettimeoffset()?
- * Whatever it fixes, is it also fixed in the new code from the Jumbo
- * patch, so that that code can be used instead?
- *
- * The CPU Hz should probably be displayed in check_bugs() together
- * with the CPU vendor and type. Perhaps even only in MHz, though that
- * takes away some of the fun of the new code :)
- *
- * - Michael Krause */
 
 #include <linux/errno.h>
 #include <linux/sched.h>
@@ -56,19 +47,22 @@
 #include <asm/io.h>
 #include <asm/irq.h>
 #include <asm/delay.h>
+#include <asm/msr.h>
 
 #include <linux/mc146818rtc.h>
 #include <linux/timex.h>
 #include <linux/config.h>
+
+#include <asm/fixmap.h>
+#include <asm/cobalt.h>
 
 /*
  * for x86_do_profile()
  */
 #include "irq.h"
 
-extern int setup_x86_irq(int, struct irqaction *);
 
-unsigned long cpu_hz;	/* Detected as we calibrate the TSC */
+unsigned long cpu_khz;	/* Detected as we calibrate the TSC */
 
 /* Number of usecs that the last interrupt was delayed */
 static int delay_at_last_interrupt;
@@ -80,19 +74,23 @@ static unsigned long last_tsc_low; /* lsb 32 bits of Time Stamp Counter */
  * Equal to 2^32 * (1 / (clocks per usec) ).
  * Initialized in time_init.
  */
-static unsigned long fast_gettimeoffset_quotient=0;
+unsigned long fast_gettimeoffset_quotient=0;
 
-static unsigned long do_fast_gettimeoffset(void)
+extern rwlock_t xtime_lock;
+extern volatile unsigned long lost_ticks;
+
+spinlock_t rtc_lock = SPIN_LOCK_UNLOCKED;
+
+static inline unsigned long do_fast_gettimeoffset(void)
 {
 	register unsigned long eax asm("ax");
 	register unsigned long edx asm("dx");
 
 	/* Read the Time Stamp Counter */
-	__asm__("rdtsc"
-		:"=a" (eax), "=d" (edx));
+
+	rdtsc(eax,edx);
 
 	/* .. relative to previous jiffy (32 bits is enough) */
-	edx = 0;
 	eax -= last_tsc_low;	/* tsc_low delta */
 
 	/*
@@ -106,12 +104,18 @@ static unsigned long do_fast_gettimeoffset(void)
 
 	__asm__("mull %2"
 		:"=a" (eax), "=d" (edx)
-		:"r" (fast_gettimeoffset_quotient),
-		 "0" (eax), "1" (edx));
+		:"g" (fast_gettimeoffset_quotient),
+		 "0" (eax));
 
 	/* our adjusted time offset in microseconds */
-	return edx + delay_at_last_interrupt;
+	return delay_at_last_interrupt + edx;
 }
+
+#define TICK_SIZE tick
+
+#ifndef CONFIG_X86_TSC
+
+spinlock_t i8253_lock = SPIN_LOCK_UNLOCKED;
 
 /* This function must be called with interrupts disabled 
  * It was inspired by Steve McCanne's microtime-i386 for BSD.  -- jrs
@@ -145,8 +149,6 @@ static unsigned long do_fast_gettimeoffset(void)
  * comp.protocols.time.ntp!
  */
 
-#define TICK_SIZE tick
-
 static unsigned long do_slow_gettimeoffset(void)
 {
 	int count;
@@ -159,6 +161,8 @@ static unsigned long do_slow_gettimeoffset(void)
 	 */
 	unsigned long jiffies_t;
 
+	/* gets recalled with irq locally disabled */
+	spin_lock(&i8253_lock);
 	/* timer count may underflow right here */
 	outb_p(0x00, 0x43);	/* latch the count ASAP */
 
@@ -172,6 +176,14 @@ static unsigned long do_slow_gettimeoffset(void)
 
 	count |= inb_p(0x40) << 8;
 
+	/* VIA686a test code... reset the latch if count > max */
+ 	if (count > LATCH-1) {
+		outb_p(0x34, 0x43);
+		outb_p(LATCH & 0xff, 0x40);
+		outb(LATCH >> 8, 0x40);
+		count = LATCH - 1;
+	}	
+	
 	/*
 	 * avoiding timer inconsistencies (they are rare, but they happen)...
 	 * there are two kinds of problems that must be avoided here:
@@ -217,6 +229,7 @@ static unsigned long do_slow_gettimeoffset(void)
 		}
 	} else
 		jiffies_p = jiffies_t;
+	spin_unlock(&i8253_lock);
 
 	count_p = count;
 
@@ -228,30 +241,44 @@ static unsigned long do_slow_gettimeoffset(void)
 
 static unsigned long (*do_gettimeoffset)(void) = do_slow_gettimeoffset;
 
+#else
+
+#define do_gettimeoffset()	do_fast_gettimeoffset()
+
+#endif
+
 /*
  * This version of gettimeofday has microsecond resolution
  * and better than microsecond precision on fast x86 machines with TSC.
  */
 void do_gettimeofday(struct timeval *tv)
 {
-	extern volatile unsigned long lost_ticks;
 	unsigned long flags;
+	unsigned long usec, sec;
 
-	save_flags(flags); cli();
-	*tv = xtime;
-	tv->tv_usec += do_gettimeoffset();
-	if (lost_ticks)
-		tv->tv_usec += lost_ticks * (1000000/HZ);
-	restore_flags(flags);
-	while (tv->tv_usec >= 1000000) {
-		tv->tv_usec -= 1000000;
-		tv->tv_sec++;
+	read_lock_irqsave(&xtime_lock, flags);
+	usec = do_gettimeoffset();
+	{
+		unsigned long lost = lost_ticks;
+		if (lost)
+			usec += lost * (1000000 / HZ);
 	}
+	sec = xtime.tv_sec;
+	usec += xtime.tv_usec;
+	read_unlock_irqrestore(&xtime_lock, flags);
+
+	while (usec >= 1000000) {
+		usec -= 1000000;
+		sec++;
+	}
+
+	tv->tv_sec = sec;
+	tv->tv_usec = usec;
 }
 
 void do_settimeofday(struct timeval *tv)
 {
-	cli();
+	write_lock_irq(&xtime_lock);
 	/* This is revolting. We need to set the xtime.tv_usec
 	 * correctly. However, the value in this location is
 	 * is value at the last tick.
@@ -259,6 +286,7 @@ void do_settimeofday(struct timeval *tv)
 	 * would have done, and then undo it!
 	 */
 	tv->tv_usec -= do_gettimeoffset();
+	tv->tv_usec -= lost_ticks * (1000000 / HZ);
 
 	while (tv->tv_usec < 0) {
 		tv->tv_usec += 1000000;
@@ -266,10 +294,11 @@ void do_settimeofday(struct timeval *tv)
 	}
 
 	xtime = *tv;
-	time_state = TIME_BAD;
-	time_maxerror = MAXPHASE;
-	time_esterror = MAXPHASE;
-	sti();
+	time_adjust = 0;		/* stop active adjtime() */
+	time_status |= STA_UNSYNC;
+	time_maxerror = NTP_PHASE_LIMIT;
+	time_esterror = NTP_PHASE_LIMIT;
+	write_unlock_irq(&xtime_lock);
 }
 
 /*
@@ -288,6 +317,8 @@ static int set_rtc_mmss(unsigned long nowtime)
 	int real_seconds, real_minutes, cmos_minutes;
 	unsigned char save_control, save_freq_select;
 
+	/* gets recalled with irq locally disabled */
+	spin_lock(&rtc_lock);
 	save_control = CMOS_READ(RTC_CONTROL); /* tell the clock it's being set */
 	CMOS_WRITE((save_control|RTC_SET), RTC_CONTROL);
 
@@ -333,6 +364,7 @@ static int set_rtc_mmss(unsigned long nowtime)
 	 */
 	CMOS_WRITE(save_control, RTC_CONTROL);
 	CMOS_WRITE(save_freq_select, RTC_FREQ_SELECT);
+	spin_unlock(&rtc_lock);
 
 	return retval;
 }
@@ -344,8 +376,12 @@ static long last_rtc_update = 0;
  * timer_interrupt() needs to keep up the real-time clock,
  * as well as call the "do_timer()" routine every clocktick
  */
-static inline void timer_interrupt(int irq, void *dev_id, struct pt_regs *regs)
+static inline void do_timer_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 {
+#ifdef CONFIG_VISWS
+	/* Clear the interrupt */
+	co_cpu_write(CO_CPU_STAT,co_cpu_read(CO_CPU_STAT) & ~CO_STAT_TIMEINTR);
+#endif
 	do_timer(regs);
 /*
  * In the SMP case we use the local APIC timer interrupt to do the
@@ -365,21 +401,15 @@ static inline void timer_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 	 * CMOS clock accordingly every ~11 minutes. Set_rtc_mmss() has to be
 	 * called as close as possible to 500 ms before the new second starts.
 	 */
-	if (time_state != TIME_BAD && xtime.tv_sec > last_rtc_update + 660 &&
-	    xtime.tv_usec > 500000 - (tick >> 1) &&
-	    xtime.tv_usec < 500000 + (tick >> 1)) {
+	if ((time_status & STA_UNSYNC) == 0 &&
+	    xtime.tv_sec > last_rtc_update + 660 &&
+	    xtime.tv_usec >= 500000 - ((unsigned) tick) / 2 &&
+	    xtime.tv_usec <= 500000 + ((unsigned) tick) / 2) {
 		if (set_rtc_mmss(xtime.tv_sec) == 0)
 			last_rtc_update = xtime.tv_sec;
 		else
 			last_rtc_update = xtime.tv_sec - 600; /* do it again in 60 s */
 	}
-#if 0
-	/* As we return to user mode fire off the other CPU schedulers.. this is 
-	   basically because we don't yet share IRQ's around. This message is
-	   rigged to be safe on the 386 - basically it's a hack, so don't look
-	   closely for now.. */
-	smp_message_pass(MSG_ALL_BUT_SELF, MSG_RESCHEDULE, 0L, 0);
-#endif
 	    
 #ifdef CONFIG_MCA
 	if( MCA_bus ) {
@@ -398,37 +428,82 @@ static inline void timer_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 #endif
 }
 
+static int use_tsc = 0;
+
 /*
  * This is the same as the above, except we _also_ save the current
  * Time Stamp Counter value at the time of the timer interrupt, so that
  * we later on can estimate the time of day more exactly.
  */
-static void pentium_timer_interrupt(int irq, void *dev_id, struct pt_regs *regs)
+static void timer_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 {
 	int count;
 
-	/* It is important that these two operations happen almost at the
-	 * same time. We do the RDTSC stuff first, since it's faster. To
-         * avoid any inconsistencies, we need interrupts disabled locally.
-         */
-
 	/*
-	 * Interrupts are just disabled locally since the timer irq has the
-	 * SA_INTERRUPT flag set. -arca
+	 * Here we are in the timer irq handler. We just have irqs locally
+	 * disabled but we don't know if the timer_bh is running on the other
+	 * CPU. We need to avoid to SMP race with it. NOTE: we don' t need
+	 * the irq version of write_lock because as just said we have irq
+	 * locally disabled. -arca
 	 */
+	write_lock(&xtime_lock);
+
+	if (use_tsc)
+	{
+		/*
+		 * It is important that these two operations happen almost at
+		 * the same time. We do the RDTSC stuff first, since it's
+		 * faster. To avoid any inconsistencies, we need interrupts
+		 * disabled locally.
+		 */
+
+		/*
+		 * Interrupts are just disabled locally since the timer irq
+		 * has the SA_INTERRUPT flag set. -arca
+		 */
 	
-	/* read Pentium cycle counter */
-	__asm__("rdtsc" : "=a" (last_tsc_low) : : "edx");
+		/* read Pentium cycle counter */
 
-	outb_p(0x00, 0x43);     /* latch the count ASAP */
+		rdtscl(last_tsc_low);
 
-	count = inb_p(0x40);    /* read the latched count */
-	count |= inb(0x40) << 8;
+#if 0 /*
+       * SUBTLE: this is not necessary from here because it's implicit in the
+       * write xtime_lock.
+       */
+		spin_lock(&i8253_lock);
+#endif
+		outb_p(0x00, 0x43);     /* latch the count ASAP */
 
-	count = ((LATCH-1) - count) * TICK_SIZE;
-	delay_at_last_interrupt = (count + LATCH/2) / LATCH;
+		count = inb_p(0x40);    /* read the latched count */
+		count |= inb(0x40) << 8;
+
+		/* VIA686a test code... reset the latch if count > max */
+		if (count > LATCH-1) {
+			static int last_whine;
+			outb_p(0x34, 0x43);
+			outb_p(LATCH & 0xff, 0x40);
+			outb(LATCH >> 8, 0x40);
+			count = LATCH - 1;
+			if(time_after(jiffies, last_whine))
+			{
+				printk(KERN_WARNING "probable hardware bug: clock timer configuration lost - probably a VIA686a.\n");
+				printk(KERN_WARNING "probable hardware bug: restoring chip configuration.\n");
+				last_whine = jiffies + HZ;
+			}			
+		}	
+
+#if 0
+		spin_unlock(&i8253_lock);
+#endif
+
+		count = ((LATCH-1) - count) * TICK_SIZE;
+		delay_at_last_interrupt = (count + LATCH/2) / LATCH;
+	}
  
-	timer_interrupt(irq, NULL, regs);
+	do_timer_interrupt(irq, NULL, regs);
+
+	write_unlock(&xtime_lock);
+
 }
 
 /* Converts Gregorian date to seconds since 1970-01-01 00:00:00.
@@ -513,71 +588,75 @@ static struct irqaction irq0  = { timer_interrupt, SA_INTERRUPT, 0, "timer", NUL
  * device.
  */
 
+#define CALIBRATE_LATCH	(5 * LATCH)
+#define CALIBRATE_TIME	(5 * 1000020/HZ)
+
 __initfunc(static unsigned long calibrate_tsc(void))
 {
-       unsigned long retval;
+       /* Set the Gate high, disable speaker */
+	outb((inb(0x61) & ~0x02) | 0x01, 0x61);
 
-       __asm__( /* set the Gate high, program CTC channel 2 for mode 0
-		 * (interrupt on terminal count mode), binary count, 
-		 * load 5 * LATCH count, (LSB and MSB)
-		 * to begin countdown, read the TSC and busy wait.
-		 * BTW LATCH is calculated in timex.h from the HZ value
-		 */
+	/*
+	 * Now let's take care of CTC channel 2
+	 *
+	 * Set the Gate high, program CTC channel 2 for mode 0,
+	 * (interrupt on terminal count mode), binary count,
+	 * load 5 * LATCH count, (LSB and MSB) to begin countdown.
+	 */
+	outb(0xb0, 0x43);			/* binary, mode 0, LSB/MSB, Ch 2 */
+	outb(CALIBRATE_LATCH & 0xff, 0x42);	/* LSB of count */
+	outb(CALIBRATE_LATCH >> 8, 0x42);	/* MSB of count */
 
-	       /* Set the Gate high, disable speaker */
-	       "inb  $0x61, %%al\n\t" /* Read port */
-	       "andb $0xfd, %%al\n\t" /* Turn off speaker Data */
-	       "orb  $0x01, %%al\n\t" /* Set Gate high */
-	       "outb %%al, $0x61\n\t" /* Write port */
+	{
+		unsigned long startlow, starthigh;
+		unsigned long endlow, endhigh;
+		unsigned long count;
 
-	       /* Now let's take care of CTC channel 2 */
-	       "movb $0xb0, %%al\n\t" /* binary, mode 0, LSB/MSB, ch 2*/
-	       "outb %%al, $0x43\n\t" /* Write to CTC command port */
-	       "movl %1, %%eax\n\t"
-	       "outb %%al, $0x42\n\t" /* LSB of count */
-	       "shrl $8, %%eax\n\t"
-	       "outb %%al, $0x42\n\t" /* MSB of count */
+		rdtsc(startlow,starthigh);
+		count = 0;
+		do {
+			count++;
+		} while ((inb(0x61) & 0x20) == 0);
+		rdtsc(endlow,endhigh);
 
-               /* Read the TSC; counting has just started */
-               "rdtsc\n\t"
-               /* Move the value for safe-keeping. */
-               "movl %%eax, %%ebx\n\t"
-               "movl %%edx, %%ecx\n\t"
+		last_tsc_low = endlow;
 
-	       /* Busy wait. Only 50 ms wasted at boot time. */
-               "0: inb $0x61, %%al\n\t" /* Read Speaker Output Port */
-	       "testb $0x20, %%al\n\t" /* Check CTC channel 2 output (bit 5) */
-               "jz 0b\n\t"
+		/* Error: ECTCNEVERSET */
+		if (count <= 1)
+			goto bad_ctc;
 
-               /* And read the TSC.  5 jiffies (50.00077ms) have elapsed. */
-               "rdtsc\n\t"
+		/* 64-bit subtract - gcc just messes up with long longs */
+		__asm__("subl %2,%0\n\t"
+			"sbbl %3,%1"
+			:"=a" (endlow), "=d" (endhigh)
+			:"g" (startlow), "g" (starthigh),
+			 "0" (endlow), "1" (endhigh));
 
-               /* Great.  So far so good.  Store last TSC reading in
-                * last_tsc_low (only 32 lsb bits needed) */
-               "movl %%eax, last_tsc_low\n\t"
-               /* And now calculate the difference between the readings. */
-               "subl %%ebx, %%eax\n\t"
-               "sbbl %%ecx, %%edx\n\t" /* 64-bit subtract */
-	       /* but probably edx = 0 at this point (see below). */
-               /* Now we have 5 * (TSC counts per jiffy) in eax.  We want
-                * to calculate TSC->microsecond conversion factor. */
+		/* Error: ECPUTOOFAST */
+		if (endhigh)
+			goto bad_ctc;
 
-               /* Note that edx (high 32-bits of difference) will now be 
-                * zero iff CPU clock speed is less than 85 GHz.  Moore's
-                * law says that this is likely to be true for the next
-                * 12 years or so.  You will have to change this code to
-                * do a real 64-by-64 divide before that time's up. */
-               "movl %%eax, %%ecx\n\t"
-               "xorl %%eax, %%eax\n\t"
-               "movl %2, %%edx\n\t"
-               "divl %%ecx\n\t" /* eax= 2^32 / (1 * TSC counts per microsecond) */
-	       /* Return eax for the use of fast_gettimeoffset */
-               "movl %%eax, %0\n\t"
-               : "=r" (retval)
-               : "r" (5 * LATCH), "r" (5 * 1000020/HZ)
-               : /* we clobber: */ "ax", "bx", "cx", "dx", "cc", "memory");
-       return retval;
+		/* Error: ECPUTOOSLOW */
+		if (endlow <= CALIBRATE_TIME)
+			goto bad_ctc;
+
+		__asm__("divl %2"
+			:"=a" (endlow), "=d" (endhigh)
+			:"r" (endlow), "0" (0), "1" (CALIBRATE_TIME));
+
+		return endlow;
+	}
+
+	/*
+	 * The CTC wasn't reliable: we got a hit on the very first read,
+	 * or the CPU was so fast/slow that the quotient wouldn't fit in
+	 * 32 bits..
+	 */
+bad_ctc:
+	return 0;
 }
+
+extern int x86_udelay_tsc;
 
 __initfunc(void time_init(void))
 {
@@ -598,23 +677,63 @@ __initfunc(void time_init(void))
  * to disk; this won't break the kernel, though, 'cuz we're
  * smart.  See arch/i386/kernel/apm.c.
  */
+ 	/*
+ 	 *	Firstly we have to do a CPU check for chips with
+ 	 * 	a potentially buggy TSC. At this point we haven't run
+ 	 *	the ident/bugs checks so we must run this hook as it
+ 	 *	may turn off the TSC flag.
+ 	 *
+ 	 *	NOTE: this doesnt yet handle SMP 486 machines where only
+ 	 *	some CPU's have a TSC. Thats never worked and nobody has
+ 	 *	moaned if you have the only one in the world - you fix it!
+ 	 */
+ 
+ 	dodgy_tsc();
+ 	
 	if (boot_cpu_data.x86_capability & X86_FEATURE_TSC) {
-		do_gettimeoffset = do_fast_gettimeoffset;
-		do_get_fast_time = do_gettimeofday;
-		irq0.handler = pentium_timer_interrupt;
-		fast_gettimeoffset_quotient = calibrate_tsc();
-		
-		/* report CPU clock rate in Hz.
-		 * The formula is (10^6 * 2^32) / (2^32 * 1 / (clocks/us)) =
-		 * clock/second. Our precision is about 100 ppm.
-		 */
-		{	unsigned long eax=0, edx=1000000;
-			__asm__("divl %2"
-	       		:"=a" (cpu_hz), "=d" (edx)
-               		:"r" (fast_gettimeoffset_quotient),
-                	"0" (eax), "1" (edx));
-			printk("Detected %ld Hz processor.\n", cpu_hz);
+		unsigned long tsc_quotient = calibrate_tsc();
+		if (tsc_quotient) {
+			fast_gettimeoffset_quotient = tsc_quotient;
+			use_tsc = 1;
+			/*
+			 *	We should be more selective here I suspect
+			 *	and just enable this for the new intel chips ?
+			 */
+			x86_udelay_tsc = 1;
+#ifndef do_gettimeoffset
+			do_gettimeoffset = do_fast_gettimeoffset;
+#endif
+			do_get_fast_time = do_gettimeofday;
+
+			/* report CPU clock rate in Hz.
+			 * The formula is (10^6 * 2^32) / (2^32 * 1 / (clocks/us)) =
+			 * clock/second. Our precision is about 100 ppm.
+			 */
+			{	unsigned long eax=0, edx=1000;
+				__asm__("divl %2"
+		       		:"=a" (cpu_khz), "=d" (edx)
+        	       		:"r" (tsc_quotient),
+	                	"0" (eax), "1" (edx));
+				printk("Detected %ld kHz processor.\n", cpu_khz);
+			}
 		}
 	}
+
+#ifdef CONFIG_VISWS
+	printk("Starting Cobalt Timer system clock\n");
+
+	/* Set the countdown value */
+	co_cpu_write(CO_CPU_TIMEVAL, CO_TIME_HZ/HZ);
+
+	/* Start the timer */
+	co_cpu_write(CO_CPU_CTRL, co_cpu_read(CO_CPU_CTRL) | CO_CTRL_TIMERUN);
+
+	/* Enable (unmask) the timer interrupt */
+	co_cpu_write(CO_CPU_CTRL, co_cpu_read(CO_CPU_CTRL) & ~CO_CTRL_TIMEMASK);
+
+	/* Wire cpu IDT entry to s/w handler (and Cobalt APIC to IDT) */
+	setup_x86_irq(CO_IRQ_TIMER, &irq0);
+#else
 	setup_x86_irq(0, &irq0);
+#endif
 }

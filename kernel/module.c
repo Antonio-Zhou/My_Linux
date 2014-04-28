@@ -5,6 +5,7 @@
 #include <linux/vmalloc.h>
 #include <linux/smp_lock.h>
 #include <asm/pgtable.h>
+#include <linux/init.h>
 
 /*
  * Originally by Anonymous (as far as I know...)
@@ -12,6 +13,7 @@
  * 0.99.14 version by Jon Tombs <jon@gtex02.us.es>,
  * Heavily modified by Bjorn Ekwall <bj0rn@blox.se> May 1994 (C)
  * Rewritten by Richard Henderson <rth@tamu.edu> Dec 1996
+ * Add MOD_INITIALIZING Keith Owens <kaos@ocs.com.au> Nov 1999
  *
  * This source is covered by the GNU GPL, the same as all kernel sources.
  */
@@ -30,7 +32,7 @@ static struct module kernel_module =
 	NULL,			/* next */
 	"",			/* name */
 	0,			/* size */
-	1,			/* usecount */
+	{ATOMIC_INIT(1)},	/* usecount */
 	MOD_RUNNING,		/* flags */
 	0,			/* nsyms -- to filled in in init_modules */
 	0,			/* ndeps */
@@ -56,7 +58,7 @@ static void free_module(struct module *, int tag_freed);
  * Called at boot time
  */
 
-void init_modules(void)
+__initfunc(void init_modules(void))
 {
 	kernel_module.nsyms = __stop___ksymtab - __start___ksymtab;
 
@@ -328,16 +330,18 @@ sys_init_module(const char *name_user, struct module *mod_user)
 	put_mod_name(name);
 
 	/* Initialize the module.  */
-	mod->usecount = 1;
+	mod->flags |= MOD_INITIALIZING;
+	atomic_set(&mod->uc.usecount,1);
 	if (mod->init && mod->init() != 0) {
-		mod->usecount = 0;
+		atomic_set(&mod->uc.usecount,0);
+		mod->flags &= ~MOD_INITIALIZING;
 		error = -EBUSY;
 		goto err0;
 	}
-	mod->usecount--;
+	atomic_dec(&mod->uc.usecount);
 
 	/* And set it running.  */
-	mod->flags |= MOD_RUNNING;
+	mod->flags = (mod->flags | MOD_RUNNING) & ~MOD_INITIALIZING;
 	error = 0;
 	goto err0;
 
@@ -350,6 +354,21 @@ err1:
 err0:
 	unlock_kernel();
 	return error;
+}
+
+static spinlock_t unload_lock = SPIN_LOCK_UNLOCKED;
+int try_inc_mod_count(struct module *mod)
+{
+	int res = 1;
+	if (mod) {
+		spin_lock(&unload_lock);
+		if (mod->flags & MOD_DELETED)
+			res = 0;
+		else
+			__MOD_INC_USE_COUNT(mod);
+		spin_unlock(&unload_lock);
+	}
+	return res;
 }
 
 asmlinkage int
@@ -379,11 +398,18 @@ sys_delete_module(const char *name_user)
 		}
 		put_mod_name(name);
 		error = -EBUSY;
- 		if (mod->refs != NULL || __MOD_IN_USE(mod))
+		if (mod->refs != NULL)
 			goto out;
 
-		free_module(mod, 0);
-		error = 0;
+		spin_lock(&unload_lock);
+ 		if (!__MOD_IN_USE(mod)) {
+			mod->flags |= MOD_DELETED;
+			spin_unlock(&unload_lock);
+			free_module(mod, 0);
+			error = 0;
+		} else {
+			spin_unlock(&unload_lock);
+		}
 		goto out;
 	}
 
@@ -392,6 +418,7 @@ restart:
 	something_changed = 0;
 	for (mod = module_list; mod != &kernel_module; mod = next) {
 		next = mod->next;
+		spin_lock(&unload_lock);
 		if (mod->refs == NULL
 		    && (mod->flags & MOD_AUTOCLEAN)
 		    && (mod->flags & MOD_RUNNING)
@@ -400,11 +427,16 @@ restart:
 		    && !__MOD_IN_USE(mod)) {
 			if ((mod->flags & MOD_VISITED)
 			    && !(mod->flags & MOD_JUST_FREED)) {
+				spin_unlock(&unload_lock);
 				mod->flags &= ~MOD_VISITED;
 			} else {
+				mod->flags |= MOD_DELETED;
+				spin_unlock(&unload_lock);
 				free_module(mod, 1);
 				something_changed = 1;
 			}
+		} else {
+			spin_unlock(&unload_lock);
 		}
 	}
 	if (something_changed)
@@ -461,7 +493,7 @@ qm_deps(struct module *mod, char *buf, size_t bufsize, size_t *ret)
 
 	if (mod == &kernel_module)
 		return -EINVAL;
-	if ((mod->flags & (MOD_RUNNING | MOD_DELETED)) != MOD_RUNNING)
+	if (!MOD_CAN_QUERY(mod))
 		if (put_user(0, ret))
 			return -EFAULT;
 		else
@@ -505,7 +537,7 @@ qm_refs(struct module *mod, char *buf, size_t bufsize, size_t *ret)
 
 	if (mod == &kernel_module)
 		return -EINVAL;
-	if ((mod->flags & (MOD_RUNNING | MOD_DELETED)) != MOD_RUNNING)
+	if (!MOD_CAN_QUERY(mod))
 		if (put_user(0, ret))
 			return -EFAULT;
 		else
@@ -549,7 +581,7 @@ qm_symbols(struct module *mod, char *buf, size_t bufsize, size_t *ret)
 	char *strings;
 	unsigned long *vals;
 
-	if ((mod->flags & (MOD_RUNNING | MOD_DELETED)) != MOD_RUNNING)
+	if (!MOD_CAN_QUERY(mod))
 		if (put_user(0, ret))
 			return -EFAULT;
 		else
@@ -614,7 +646,7 @@ qm_info(struct module *mod, char *buf, size_t bufsize, size_t *ret)
 		info.size = mod->size;
 		info.flags = mod->flags;
 		info.usecount = (mod_member_present(mod, can_unload)
-				 && mod->can_unload ? -1 : mod->usecount);
+				 && mod->can_unload ? -1 : atomic_read(&mod->uc.usecount));
 
 		if (copy_to_user(buf, &info, sizeof(struct module_info)))
 			return -EFAULT;
@@ -715,7 +747,7 @@ sys_get_kernel_syms(struct kernel_sym *table)
 		struct module_symbol *msym;
 		unsigned int j;
 
-		if ((mod->flags & (MOD_RUNNING|MOD_DELETED)) != MOD_RUNNING)
+		if (!MOD_CAN_QUERY(mod))
 			continue;
 
 		/* magic: write module info as a pseudo symbol */
@@ -777,7 +809,6 @@ free_module(struct module *mod, int tag_freed)
 
 	/* Let the module clean up.  */
 
-	mod->flags |= MOD_DELETED;
 	if (mod->flags & MOD_RUNNING) 
 	{
 		if(mod->cleanup)
@@ -853,7 +884,7 @@ int get_module_list(char *p)
 			len = sprintf(tmpstr, "%4ld",
 				      (mod_member_present(mod, can_unload)
 				       && mod->can_unload
-				       ? -1 : mod->usecount));
+				       ? -1L : (long)atomic_read(&mod->uc.usecount)));
 			safe_copy_str(tmpstr, len);
 		}
 
@@ -864,7 +895,10 @@ int get_module_list(char *p)
 				safe_copy_cstr(" (autoclean)");
 			if (!(mod->flags & MOD_USED_ONCE))
 				safe_copy_cstr(" (unused)");
-		} else
+		}
+		else if (mod->flags & MOD_INITIALIZING)
+			safe_copy_cstr(" (initializing)");
+		else
 			safe_copy_cstr(" (uninitialized)");
 
 		if ((ref = mod->refs) != NULL) {
@@ -903,12 +937,17 @@ get_ksyms_list(char *buf, char **start, off_t offset, int length)
 	int len     = 0;	/* code from  net/ipv4/proc.c */
 	off_t pos   = 0;
 	off_t begin = 0;
+	off_t end;
+
+	end = offset + length;	/* XXX: undefined on overflow per ISO C99 */
+	if (end < offset)
+		return -EINVAL;
 
 	for (mod = module_list; mod; mod = mod->next) {
 		unsigned i;
 		struct module_symbol *sym;
 
-		if (!(mod->flags & MOD_RUNNING) || (mod->flags & MOD_DELETED))
+		if (!MOD_CAN_QUERY(mod))
 			continue;
 
 		for (i = mod->nsyms, sym = mod->syms; i > 0; --i, ++sym) {
@@ -929,7 +968,7 @@ get_ksyms_list(char *buf, char **start, off_t offset, int length)
 				begin = pos;
 			}
 			pos = begin + len;
-			if (pos > offset+length)
+			if (pos > end)
 				goto leave_the_loop;
 		}
 	}
@@ -956,7 +995,7 @@ get_module_symbol(char *modname, char *symname)
 
 	for (mp = module_list; mp; mp = mp->next) {
 		if (((modname == NULL) || (strcmp(mp->name, modname) == 0)) &&
-			(mp->flags & (MOD_RUNNING | MOD_DELETED)) == MOD_RUNNING &&
+			MOD_CAN_QUERY(mp) &&
 			(mp->nsyms > 0)) {
 			for (i = mp->nsyms, sym = mp->syms;
 				i > 0; --i, ++sym) {
@@ -1008,6 +1047,11 @@ asmlinkage int
 sys_get_kernel_syms(struct kernel_sym *table)
 {
 	return -ENOSYS;
+}
+
+int try_inc_mod_count(struct module *mod)
+{
+	return 1;
 }
 
 #endif	/* CONFIG_MODULES */

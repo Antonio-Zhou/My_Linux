@@ -82,7 +82,7 @@ ruffian_device_interrupt(unsigned long vector, struct pt_regs *regs)
 	 * then all the PCI slots/INTXs (12-31) 
 	 * flash(5) :DWH:
 	 */
-        pld &= 0x00000000ffffff9fUL; /* was ffff7f */
+	pld &= 0x00000000ffffff9fUL; /* was ffff7f */
 
 	/*
 	 * Now for every possible bit set, work through them and call
@@ -92,6 +92,12 @@ ruffian_device_interrupt(unsigned long vector, struct pt_regs *regs)
 		i = ffz(~pld);
 		pld &= pld - 1; /* clear least bit set */
 		if (i == 7) { /* if ISA int */
+			/* Ruffian does not have the RTC connected to 
+			   the CPU timer interrupt.  Instead, it uses the
+			   PIT connected to IRQ 0.  So we must detect that
+			   and route that specifically to where we expected
+			   to find the timer interrupt come in.  */
+
 			/* Copy this code from isa_device_interrupt because
 			   we need to hook into int 0 for the timer.  I
 			   refuse to soil device_interrupt with ifdefs.  */
@@ -107,17 +113,17 @@ ruffian_device_interrupt(unsigned long vector, struct pt_regs *regs)
 			if (j == 7 && !(inb(0x20) & 0x80)) {
 				/* It's only a passive release... */
 			} else if (j == 0) {
-			  	handle_irq(8, -1, regs); /* fake it */
+			  	handle_irq(TIMER_IRQ, -1, regs);
 				ruffian_ack_irq(0);
 			} else {
 				handle_irq(j, j, regs);
 			}
-                } else { /* if not an ISA int */
+		} else { /* if not an ISA int */
 			handle_irq(16 + i, 16 + i, regs);
 		}
 
-                *(vulp)PYXIS_INT_REQ = 1UL << i; mb();
-                *(vulp)PYXIS_INT_REQ; /* read to force the write */
+		*(vulp)PYXIS_INT_REQ = 1UL << i; mb();
+		*(vulp)PYXIS_INT_REQ; /* read to force the write */
 	}
 }
 
@@ -157,16 +163,91 @@ ruffian_init_irq(void)
 	enable_irq(2);		/* enable 2nd PIC cascade */
 }
 
+/*
+ *  Interrupt routing:
+ *
+ *		Primary bus
+ *	  IdSel		INTA	INTB	INTC	INTD
+ * 21052   13		  -	  -	  -	  -
+ * SIO	   14		 23	  -	  -	  -
+ * 21143   15		 44	  -	  -	  -
+ * Slot 0  17		 43	 42	 41	 40
+ *
+ *		Secondary bus
+ *	  IdSel		INTA	INTB	INTC	INTD
+ * Slot 0   8 (18)	 19	 18	 17	 16
+ * Slot 1   9 (19)	 31	 30	 29	 28
+ * Slot 2  10 (20)	 27	 26	 25	 24
+ * Slot 3  11 (21)	 39	 38	 37	 36
+ * Slot 4  12 (22)	 35	 34	 33	 32
+ * 53c875  13 (23)	 20	  -	  -	  -
+ *
+ */
+
+static int __init
+ruffian_map_irq(struct pci_dev *dev, int slot, int pin)
+{
+        static char irq_tab[11][5] __initdata = {
+	      /*INT  INTA INTB INTC INTD */
+		{-1,  -1,  -1,  -1,  -1},  /* IdSel 13,  21052	     */
+		{-1,  -1,  -1,  -1,  -1},  /* IdSel 14,  SIO	     */
+		{44,  44,  44,  44,  44},  /* IdSel 15,  21143	     */
+		{-1,  -1,  -1,  -1,  -1},  /* IdSel 16,  none	     */
+		{43,  43,  42,  41,  40},  /* IdSel 17,  64-bit slot */
+		/* the next 6 are actually on PCI bus 1, across the bridge */
+		{19,  19,  18,  17,  16},  /* IdSel  8,  slot 0	     */
+		{31,  31,  30,  29,  28},  /* IdSel  9,  slot 1	     */
+		{27,  27,  26,  25,  24},  /* IdSel 10,  slot 2	     */
+		{39,  39,  38,  37,  36},  /* IdSel 11,  slot 3	     */
+		{35,  35,  34,  33,  32},  /* IdSel 12,  slot 4	     */
+		{20,  20,  20,  20,  20},  /* IdSel 13,  53c875	     */
+        };
+	const long min_idsel = 13, max_idsel = 23, irqs_per_slot = 5;
+	return COMMON_TABLE_LOOKUP;
+}
+
+static int __init
+ruffian_swizzle(struct pci_dev *dev, int *pinp)
+{
+	int slot, pin = *pinp;
+
+	if (dev->bus->number == 0) {
+		slot = PCI_SLOT(dev->devfn);
+	}		
+	/* Check for the built-in bridge.  */
+	else if (PCI_SLOT(dev->bus->self->devfn) == 13) {
+		slot = PCI_SLOT(dev->devfn) + 10;
+	}
+	else 
+	{
+		/* Must be a card-based bridge.  */
+		do {
+			if (PCI_SLOT(dev->bus->self->devfn) == 13) {
+				slot = PCI_SLOT(dev->devfn) + 10;
+				break;
+			}
+			pin = bridge_swizzle(pin, PCI_SLOT(dev->devfn));
+
+			/* Move up the chain of bridges.  */
+			dev = dev->bus->self;
+			/* Slot of the next bridge.  */
+			slot = PCI_SLOT(dev->devfn);
+		} while (dev->bus->self);
+	}
+	*pinp = pin;
+	return slot;
+}
 
 /*
  * For RUFFIAN, we do not want to make any modifications to the PCI
- * setup.  But we may need to do some kind of init.
+ * setup, except IRQ assignment.  But we may need to do some kind of init.
  */
 
 static void __init
 ruffian_pci_fixup(void)
 {
 	/* layout_all_busses(DEFAULT_IO_BASE, DEFAULT_MEM_BASE); */
+	common_pci_fixup(ruffian_map_irq, ruffian_swizzle);
 }
 
 
@@ -216,7 +297,7 @@ ruffian_init_arch(unsigned long *mem_start, unsigned long *mem_end)
 
 	pyxis_enable_errors();
 	if (!pyxis_srm_window_setup()) {
-	        printk("ruffian_init_arch: Skipping window register rewrites."
+		printk("ruffian_init_arch: Skipping window register rewrites."
 		       "\n... Trust DeskStation firmware!\n");
 	}
 	pyxis_finish_init_arch();
@@ -227,7 +308,10 @@ ruffian_init_pit (void)
 {
 	/* Ruffian depends on the system timer established in MILO! */
 	request_region(0x70, 0x10, "timer");
-	init_pit_rest();
+
+	outb(0xb6, 0x43);       /* pit counter 2: speaker */
+	outb(0x31, 0x42);
+	outb(0x13, 0x42);
 }
 
 static void

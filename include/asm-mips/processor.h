@@ -1,4 +1,4 @@
-/* $Id: processor.h,v 1.18 1998/10/14 20:31:12 ralf Exp $
+/* $Id: processor.h,v 1.15 1999/02/15 02:22:12 ralf Exp $
  *
  * This file is subject to the terms and conditions of the GNU General Public
  * License.  See the file "COPYING" in the main directory of this archive
@@ -139,8 +139,8 @@ struct thread_struct {
 
 #endif /* !defined (_LANGUAGE_ASSEMBLY) */
 
-#define INIT_MMAP { &init_mm, KSEG0, KSEG1, PAGE_SHARED, \
-                    VM_READ | VM_WRITE | VM_EXEC, NULL, &init_mm.mmap }
+#define INIT_MMAP { &init_mm, KSEG0, KSEG1, NULL, PAGE_SHARED, \
+                    VM_READ | VM_WRITE | VM_EXEC, 1, NULL, NULL }
 
 #define INIT_TSS  { \
         /* \
@@ -174,10 +174,12 @@ struct thread_struct {
 
 /* Free all resources held by a thread. */
 extern void release_thread(struct task_struct *);
+extern pid_t kernel_thread(int (*fn)(void *), void * arg, unsigned long flags);
 
 /* Copy and release all segment info associated with a VM */
 #define copy_segments(nr, p, mm) do { } while(0)
 #define release_segments(mm) do { } while(0)
+#define forget_segments()		do { } while (0)
 
 /*
  * Return saved PC of a blocked thread.

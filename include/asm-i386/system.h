@@ -9,56 +9,50 @@
 struct task_struct;	/* one of the stranger aspects of C forward declarations.. */
 extern void FASTCALL(__switch_to(struct task_struct *prev, struct task_struct *next));
 
-/*
- * We do most of the task switching in C, but we need
- * to do the EIP/ESP switch in assembly..
- */
-#define switch_to(prev,next) do {					\
-	unsigned long eax, edx, ecx;					\
-	asm volatile("pushl %%ebx\n\t"					\
-		     "pushl %%esi\n\t"					\
+#define switch_to(prev,next,last) do {					\
+	asm volatile("pushl %%esi\n\t"					\
 		     "pushl %%edi\n\t"					\
 		     "pushl %%ebp\n\t"					\
 		     "movl %%esp,%0\n\t"	/* save ESP */		\
-		     "movl %5,%%esp\n\t"	/* restore ESP */	\
+		     "movl %3,%%esp\n\t"	/* restore ESP */	\
 		     "movl $1f,%1\n\t"		/* save EIP */		\
-		     "pushl %6\n\t"		/* restore EIP */	\
+		     "pushl %4\n\t"		/* restore EIP */	\
 		     "jmp __switch_to\n"				\
 		     "1:\t"						\
 		     "popl %%ebp\n\t"					\
 		     "popl %%edi\n\t"					\
 		     "popl %%esi\n\t"					\
-		     "popl %%ebx"					\
 		     :"=m" (prev->tss.esp),"=m" (prev->tss.eip),	\
-		      "=a" (eax), "=d" (edx), "=c" (ecx)		\
+		      "=b" (last)					\
 		     :"m" (next->tss.esp),"m" (next->tss.eip),		\
-		      "a" (prev), "d" (next)); 				\
+		      "a" (prev), "d" (next),				\
+		      "b" (prev));					\
 } while (0)
 
-#define _set_base(addr,base) \
-__asm__("movw %%dx,%0\n\t" \
+#define _set_base(addr,base) do { unsigned long __pr; \
+__asm__ __volatile__ ("movw %%dx,%1\n\t" \
 	"rorl $16,%%edx\n\t" \
-	"movb %%dl,%1\n\t" \
-	"movb %%dh,%2" \
-	: /* no output */ \
+	"movb %%dl,%2\n\t" \
+	"movb %%dh,%3" \
+	:"=&d" (__pr) \
 	:"m" (*((addr)+2)), \
 	 "m" (*((addr)+4)), \
 	 "m" (*((addr)+7)), \
-	 "d" (base) \
-	:"dx")
+         "0" (base) \
+        ); } while(0)
 
-#define _set_limit(addr,limit) \
-__asm__("movw %%dx,%0\n\t" \
+#define _set_limit(addr,limit) do { unsigned long __lr; \
+__asm__ __volatile__ ("movw %%dx,%1\n\t" \
 	"rorl $16,%%edx\n\t" \
-	"movb %1,%%dh\n\t" \
+	"movb %2,%%dh\n\t" \
 	"andb $0xf0,%%dh\n\t" \
 	"orb %%dh,%%dl\n\t" \
-	"movb %%dl,%1" \
-	: /* no output */ \
+	"movb %%dl,%2" \
+	:"=&d" (__lr) \
 	:"m" (*(addr)), \
 	 "m" (*((addr)+6)), \
-	 "d" (limit) \
-	:"dx")
+	 "0" (limit) \
+        ); } while(0)
 
 #define set_base(ldt,base) _set_base( ((char *)&(ldt)) , (base) )
 #define set_limit(ldt,limit) _set_limit( ((char *)&(ldt)) , ((limit)-1)>>12 )
@@ -136,7 +130,7 @@ struct __xchg_dummy { unsigned long a[100]; };
 /*
  * Note: no "lock" prefix even on SMP: xchg always implies lock anyway
  */
-static inline unsigned long __xchg(unsigned long x, void * ptr, int size)
+static inline unsigned long __xchg(unsigned long x, volatile void * ptr, int size)
 {
 	switch (size) {
 		case 1:
@@ -165,8 +159,19 @@ static inline unsigned long __xchg(unsigned long x, void * ptr, int size)
  * Force strict CPU ordering.
  * And yes, this is required on UP too when we're talking
  * to devices.
+ *
+ * For now, "wmb()" doesn't actually do anything, as all
+ * Intel CPU's follow what Intel calls a *Processor Order*,
+ * in which all writes are seen in the program order even
+ * outside the CPU.
+ *
+ * I expect future Intel CPU's to have a weaker ordering,
+ * but I'd also expect them to finally get their act together
+ * and add some real memory barriers if so.
  */
 #define mb() 	__asm__ __volatile__ ("lock; addl $0,0(%%esp)": : :"memory")
+#define rmb()	mb()
+#define wmb()	__asm__ __volatile__ ("": : :"memory")
 
 /* interrupt control.. */
 #define __sti() __asm__ __volatile__ ("sti": : :"memory")

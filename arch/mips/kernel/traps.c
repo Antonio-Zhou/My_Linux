@@ -1,4 +1,4 @@
-/* $Id: traps.c,v 1.20 1998/10/14 20:26:26 ralf Exp $
+/* $Id: traps.c,v 1.20 1999/06/13 16:30:34 ralf Exp $
  *
  * This file is subject to the terms and conditions of the GNU General Public
  * License.  See the file "COPYING" in the main directory of this archive
@@ -6,6 +6,7 @@
  *
  * Copyright 1994, 1995, 1996, 1997, 1998 by Ralf Baechle
  * Modified for R3000 by Paul M. Antoine, 1995, 1996
+ * Complete output from die() by Ulf Carlsson, 1998
  */
 #include <linux/config.h>
 #include <linux/init.h>
@@ -80,50 +81,61 @@ int kstack_depth_to_print = 24;
  * This routine abuses get_user()/put_user() to reference pointers
  * with at least a bit of error checking ...
  */
-void show_registers(char * str, struct pt_regs * regs, long err)
+void show_stack(unsigned int *sp)
 {
-	int	i;
-	int	*stack;
-	u32	*sp, *pc, addr, module_start, module_end;
-	extern	char start_kernel, _etext;
+	int i;
+	unsigned int *stack;
 
-	sp = (u32 *)regs->regs[29];
-	pc = (u32 *)regs->cp0_epc;
+	stack = sp;
+	i = 0;
 
-	show_regs(regs);
+	printk("Stack:");
+	while ((unsigned long) stack & (PAGE_SIZE - 1)) {
+		unsigned long stackdata;
 
-	/*
-	 * Dump the stack
-	 */
-	printk("Process %s (pid: %ld, stackpage=%08lx)\nStack: ",
-		current->comm, current->pid, (unsigned long)current);
-	for(i=0;i<5;i++)
-		printk("%08x ", *sp++);
-	stack = (int *) sp;
-
-	for(i=0; i < kstack_depth_to_print; i++) {
-		unsigned int stackdata;
-
-		if (((u32) stack & (PAGE_SIZE -1)) == 0)
-			break;
-		if (i && ((i % 8) == 0))
-			printk("\n       ");
-		if (get_user(stackdata, stack++) < 0) {
-			printk("(Bad stack address)");
+		if (__get_user(stackdata, stack++)) {
+			printk(" (Bad stack address)");
 			break;
 		}
-		printk("%08x ", stackdata);
+
+		printk(" %08lx", stackdata);
+
+		if (++i > 40) {
+			printk(" ...");
+			break;
+		}
+
+		if (i % 8 == 0)
+			printk("\n      ");
 	}
-	printk("\nCall Trace: ");
-	stack = (int *)sp;
-	i = 1;
+}
+
+void show_trace(unsigned int *sp)
+{
+	int i;
+	unsigned int *stack;
+	unsigned long kernel_start, kernel_end;
+	unsigned long module_start, module_end;
+	extern char _stext, _etext;
+
+	stack = sp;
+	i = 0;
+
+	kernel_start = (unsigned long) &_stext;
+	kernel_end = (unsigned long) &_etext;
 	module_start = VMALLOC_START;
 	module_end = module_start + MODULE_RANGE;
-	while (((unsigned long)stack & (PAGE_SIZE -1)) != 0) {
-		if (get_user(addr, stack++) < 0) {
-			printk("(Bad address)\n");
+
+	printk("\nCall Trace:");
+
+	while ((unsigned long) stack & (PAGE_SIZE -1)) {
+		unsigned long addr;
+
+		if (__get_user(addr, stack++)) {
+			printk(" (Bad stack address)\n");
 			break;
 		}
+
 		/*
 		 * If the address is either in the text segment of the
 		 * kernel, or in the region which contains vmalloc'ed
@@ -132,26 +144,33 @@ void show_registers(char * str, struct pt_regs * regs, long err)
 		 * down the cause of the crash will be able to figure
 		 * out the call path that was taken.
 		 */
-		if (((addr >= (u32) &start_kernel) &&
-		     (addr <= (u32) &_etext)) ||
-		    ((addr >= module_start) && (addr <= module_end))) {
-			if (i && ((i % 8) == 0))
-				printk("\n       ");
-			printk("%08x ", addr);
-			i++;
+
+		if ((addr >= kernel_start && addr < kernel_end) ||
+		    (addr >= module_start && addr < module_end)) { 
+
+			printk(" [<%08lx>]", addr);
+			if (++i > 40) {
+				printk(" ...");
+				break;
+			}
 		}
 	}
+}
 
-	printk("\nCode : ");
-	if ((KSEGX(pc) == KSEG0 || KSEGX(pc) == KSEG1) &&
-	    (((unsigned long) pc & 3) == 0))
-	{
-		for(i=0;i<5;i++)
-			printk("%08x ", *pc++);
-		printk("\n");
+void show_code(unsigned int *pc)
+{
+	long i;
+
+	printk("\nCode:");
+
+	for(i = -3 ; i < 6 ; i++) {
+		unsigned long insn;
+		if (__get_user(insn, pc + i)) {
+			printk(" (Bad address in epc)\n");
+			break;
+		}
+		printk("%c%08lx%c",(i?' ':'<'),insn,(i?' ':'>'));
 	}
-	else
-		printk("(Bad address in epc)\n");
 }
 
 void die(const char * str, struct pt_regs * regs, unsigned long err)
@@ -162,6 +181,12 @@ void die(const char * str, struct pt_regs * regs, unsigned long err)
 	console_verbose();
 	printk("%s: %04lx\n", str, err & 0xffff);
 	show_regs(regs);
+	printk("Process %s (pid: %ld, stackpage=%08lx)\n",
+		current->comm, current->pid, (unsigned long) current);
+	show_stack((unsigned int *) regs->regs[29]);
+	show_trace((unsigned int *) regs->regs[29]);
+	show_code((unsigned int *) regs->cp0_epc);
+	printk("\n");
 	do_exit(SIGSEGV);
 }
 
@@ -177,17 +202,16 @@ static void default_be_board_handler(struct pt_regs *regs)
 	 * Assume it would be too dangerous to continue ...
 	 */
 	force_sig(SIGBUS, current);
+show_regs(regs); while(1);
 }
 
 void do_ibe(struct pt_regs *regs)
 {
-show_regs(regs); while(1);
 	ibe_board_handler(regs);
 }
 
 void do_dbe(struct pt_regs *regs)
 {
-show_regs(regs); while(1);
 	dbe_board_handler(regs);
 }
 
@@ -300,7 +324,7 @@ void do_bp(struct pt_regs *regs)
 	/*
 	 * (A short test says that IRIX 5.3 sends SIGTRAP for all break
 	 * insns, even for break codes that indicate arithmetic failures.
-	 * Wiered ...)
+	 * Weird ...)
 	 */
 	force_sig(SIGTRAP, current);
 }
@@ -316,7 +340,7 @@ void do_tr(struct pt_regs *regs)
 	/*
 	 * (A short test says that IRIX 5.3 sends SIGTRAP for all break
 	 * insns, even for break codes that indicate arithmetic failures.
-	 * Wiered ...)
+	 * Weird ...)
 	 */
 	force_sig(SIGTRAP, current);
 }
@@ -440,8 +464,8 @@ extern asmlinkage void r4k_restore_fp_context(struct sigcontext *sc);
 extern asmlinkage void r2300_restore_fp_context(struct sigcontext *sc);
 extern asmlinkage void r6000_restore_fp_context(struct sigcontext *sc);
 
-extern asmlinkage void r4xx0_resume(void *tsk);
-extern asmlinkage void r2300_resume(void *tsk);
+extern asmlinkage void *r4xx0_resume(void *last, void *next);
+extern asmlinkage void *r2300_resume(void *last, void *next);
 
 __initfunc(void trap_init(void))
 {

@@ -67,7 +67,7 @@
 #define __NR_getpgrp		 63
 #define __NR_getpagesize	 64
 #define __NR_osf_mremap		 65	/* not implemented */
-#define __NR_osf_vfork		 66
+#define __NR_vfork		 66
 #define __NR_stat		 67
 #define __NR_lstat		 68
 #define __NR_osf_sbrk		 69	/* not implemented */
@@ -307,8 +307,15 @@
 #define __NR_getcwd			367
 #define __NR_capget			368
 #define __NR_capset			369
+#define __NR_sendfile			370
+#define __NR_setresgid			371	/* implemented in 2.3 */
+#define __NR_getresgid			372	/* implemented in 2.3 */
+#define __NR_dipc			373	/* implemented in 2.3 */
+#define __NR_pivot_root			374	/* implemented in 2.3 */
+#define __NR_mincore			375	/* implemented in 2.3 */
+#define __NR_pciconfig_iobase		376
 
-#if defined(__LIBRARY__) && defined(__GNUC__)
+#if defined(__GNUC__)
 
 #define _syscall_return(type)						\
 	return (_sc_err ? errno = _sc_ret, _sc_ret = -1L : 0), (type) _sc_ret
@@ -488,19 +495,12 @@ type name (type1 arg1,type2 arg2,type3 arg3,type4 arg4,type5 arg5, type6 arg6)\
 	_syscall_return(type);						\
 }
 
-#endif /* __LIBRARY__ && __GNUC__ */
+#endif /* __GNUC__ */
 
 #ifdef __KERNEL_SYSCALLS__
 
 #include <linux/string.h>
 #include <linux/signal.h>
-
-extern long __kernel_thread(unsigned long, int (*)(void *), void *);
-
-static inline long kernel_thread(int (*fn)(void *), void * arg, unsigned long flags)
-{
-	return __kernel_thread(flags | CLONE_VM, fn, arg);
-}
 
 extern void sys_idle(void);
 static inline void idle(void)
