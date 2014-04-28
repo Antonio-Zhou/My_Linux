@@ -117,7 +117,7 @@
  *
  * DAG 30/01/99 - Started frobbing for 2.2.1
  * DAG 20/06/99 - A little more frobbing:
-       Included include/asm/uaccess.h for get_user/put_user
+ *     Included include/asm/uaccess.h for get_user/put_user
  */
 
 #include <linux/sched.h>
@@ -273,7 +273,7 @@ static int MotorOn = 0, MotorOffTrys;
 
 /* Synchronization of FDC1772 access. */
 static volatile int fdc_busy = 0;
-static struct wait_queue *fdc_wait = NULL;
+static DECLARE_WAIT_QUEUE_HEAD(fdc_wait);
 
 
 static unsigned int changed_floppies = 0xff, fake_change = 0;
@@ -303,11 +303,9 @@ static unsigned int changed_floppies = 0xff, fake_change = 0;
         timer_active |= (1 << FLOPPY_TIMER);			\
 	} while(0)
 
-#define	START_TIMEOUT()					\
-    do {						\
-        del_timer( &timeout_timer );			\
-        timeout_timer.expires = jiffies + FLOPPY_TIMEOUT;	\
-        add_timer( &timeout_timer );			\
+#define	START_TIMEOUT()					     \
+    do {						     \
+        mod_timer(&timeout_timer, jiffies+FLOPPY_TIMEOUT); \
 	} while(0)
 
 #define	STOP_TIMEOUT()					\
@@ -591,7 +589,7 @@ static void fd_error(void)
 {
 	printk("FDC1772: fd_error\n");
 	/*panic("fd1772: fd_error"); *//* DAG tmp */
-	if (!CURRENT)
+	if (QUEUE_EMPTY)
 		return;
 	CURRENT->errors++;
 	if (CURRENT->errors >= MAX_ERRORS) {
@@ -1230,14 +1228,14 @@ static void redo_fd_request(void)
 
 	DPRINT(("redo_fd_request: CURRENT=%08lx CURRENT->rq_dev=%04x CURRENT->sector=%ld\n",
 		(unsigned long) CURRENT, CURRENT ? CURRENT->rq_dev : 0,
-		CURRENT ? CURRENT->sector : 0));
+		!QUEUE_EMPTY ? CURRENT->sector : 0));
 
-	if (CURRENT && CURRENT->rq_status == RQ_INACTIVE)
+	if (!QUEUE_EMPTY && CURRENT->rq_status == RQ_INACTIVE)
 		goto the_end;
 
       repeat:
 
-	if (!CURRENT)
+	if (QUEUE_EMPTY)
 		goto the_end;
 
 	if (MAJOR(CURRENT->rq_dev) != MAJOR_NR)
@@ -1350,10 +1348,6 @@ static int invalidate_drive(int rdev)
 static int fd_ioctl(struct inode *inode, struct file *filp,
 		    unsigned int cmd, unsigned long param)
 {
-#define IOCTL_MODE_BIT 8
-#define OPEN_WRITE_BIT 16
-#define IOCTL_ALLOWED (filp && (filp->f_mode & IOCTL_MODE_BIT))
-
 	int drive, device;
 
 	device = inode->i_rdev;
@@ -1361,8 +1355,6 @@ static int fd_ioctl(struct inode *inode, struct file *filp,
 		RO_IOCTLS(inode->i_rdev, param);
 	}
 	drive = MINOR(device);
-	if (!IOCTL_ALLOWED)
-		return -EPERM;
 	switch (cmd) {
 	case FDFMTBEG:
 		return 0;
@@ -1544,12 +1536,6 @@ static int floppy_open(struct inode *inode, struct file *filp)
 	if (old_dev && old_dev != inode->i_rdev)
 		invalidate_buffers(old_dev);
 
-	/* Allow ioctls if we have write-permissions even if read-only open */
-	if (filp->f_mode & 2 || permission(inode, 2) == 0)
-		filp->f_mode |= IOCTL_MODE_BIT;
-	if (filp->f_mode & 2)
-		filp->f_mode |= OPEN_WRITE_BIT;
-
 	if (filp->f_flags & O_NDELAY)
 		return 0;
 
@@ -1568,14 +1554,7 @@ static int floppy_open(struct inode *inode, struct file *filp)
 
 static void floppy_release(struct inode *inode, struct file *filp)
 {
-	int drive;
-
-	drive = inode->i_rdev & 3;
-
-	if (!filp || (filp->f_mode & (2 | OPEN_WRITE_BIT)))
-		/* if the file is mounted OR (writable now AND writable at open
-		   time) Linus: Does this cover all cases? */
-		block_fsync(inode, filp);
+	int drive = MINOR(inode->i_rdev) & 3;
 
 	if (fd_ref[drive] < 0)
 		fd_ref[drive] = 0;
@@ -1585,22 +1564,13 @@ static void floppy_release(struct inode *inode, struct file *filp)
 	}
 }
 
-static struct file_operations floppy_fops =
+static struct block_device_operations floppy_fops =
 {
-	NULL,			/* lseek - default */
-	block_read,		/* read - general block-dev read */
-	block_write,		/* write - general block-dev write */
-	NULL,			/* readdir - bad */
-	NULL,			/* select */
-	fd_ioctl,		/* ioctl */
-	NULL,			/* mmap */
-	floppy_open,		/* open */
-	NULL,			/* flush */
-	floppy_release,		/* release */
-	block_fsync,		/* fsync */
-	NULL,			/* fasync */
-	check_floppy_change,	/* media_change */
-	floppy_revalidate,	/* revalidate */
+	open:			floppy_open,
+	release:		floppy_release,
+	ioctl:			fd_ioctl,
+	check_media_change:	check_floppy_change,
+	revalidate:		floppy_revalidate,
 };
 
 

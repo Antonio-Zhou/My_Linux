@@ -12,11 +12,8 @@
 #
 # Copyright (C) 1995-1999 by Russell King
 
-LD		:= $(CROSS_COMPILE)ld
 OBJCOPY		:= $(CROSS_COMPILE)objcopy -O binary -R .note -R .comment -S
-OBJDUMP		 = $(CROSS_COMPILE)objdump
 CPP		:= $(CC) -E
-PERL		:= perl
 LINKFLAGS	:= -p -X -T arch/arm/vmlinux.lds
 ARCHCC		:= $(word 1,$(CC))
 
@@ -36,11 +33,10 @@ endif
 NEW_LINKER	:= $(shell if $(LD) --gc-sections --version >/dev/null 2>&1; then echo y; else echo n; fi)
 
 ifneq ($(NEW_LINKER),y)
-dummy:;		@echo '*** 2.2 kernels no longer build correctly with old versions of binutils.'
+dummy:;		@echo '*** 2.3 kernels no longer build correctly with old versions of binutils.'
 		@echo '*** Please upgrade your binutils to 2.9.5.'
 		@false
 endif
-
 
 # GCC 2.7 uses different options to later compilers; sort out which we have
 NEW_GCC		:= $(shell if $(CC) --version 2>&1 | grep '^2\.7' > /dev/null; then echo n; else echo y; fi)
@@ -55,13 +51,16 @@ CFLAGS_PROC_CPU_32v3	:= -march=armv3
 CFLAGS_PROC_CPU_32v4	:= -march=armv4
 CFLAGS_ARM6		:= -mtune=arm6
 CFLAGS_ARM7		:= -mtune=arm7
+CFLAGS_ARM720		:= -mtune=arm7tdmi
 CFLAGS_SA110		:= -mtune=strongarm110
 else
+CFLAGS			+= -DNO_TEXT_SECTIONS
 CFLAGS_PROC_CPU_26	:= -m3
 CFLAGS_PROC_CPU_32v3	:=
 CFLAGS_PROC_CPU_32v4	:=
 CFLAGS_ARM6		:= -m6
 CFLAGS_ARM7		:= -m6
+CFLAGS_ARM720		:= -m6
 CFLAGS_SA110		:= -m6
 endif
 
@@ -94,14 +93,24 @@ ifeq ($(CONFIG_CPU_32),y)
  ifeq ($(CONFIG_CPU_ARM7),y)
   CFLAGS	+= $(CFLAGS_ARM7)
  else
+ ifeq ($(CONFIG_CPU_ARM720),y)
+  CFLAGS	+= $(CFLAGS_ARM720)
+ else
  ifeq ($(CONFIG_CPU_SA110),y)
   CFLAGS	+= $(CFLAGS_SA110)
+ else
+ ifeq ($(CONFIG_CPU_SA1100),y)
+  CFLAGS	+= $(CFLAGS_SA110)
+ endif
+ endif
  endif
  endif
  endif
 endif
 
-GCCLIB		:= $(shell $(CC) $(CFLAGS) --print-libgcc-file-name)
+LIBGCC		:= $(shell $(CC) $(CFLAGS) --print-libgcc-file-name)
+
+export	LIBGCC MACHINE PROCESSOR TEXTADDR
 
 ifeq ($(CONFIG_ARCH_A5K),y)
 MACHINE		 = a5k
@@ -123,6 +132,11 @@ MACHINE		 = ebsa110
 ARCHDIR		 = ebsa110
 endif
 
+ifeq ($(CONFIG_ARCH_CLPS7500),y)
+MACHINE		 = clps7500
+ARCHDIR		 = cl7500
+endif
+
 ifeq ($(CONFIG_FOOTBRIDGE),y)
 MACHINE		 = footbridge
 ARCHDIR		 = ebsa285
@@ -137,24 +151,44 @@ MACHINE		 = nexuspci
 ARCHDIR		 = nexuspci
 endif
 
+ifeq ($(CONFIG_ARCH_SHARK),y)
+MACHINE		 = shark
+ARCHDIR		 = shark
+endif
+
+ifeq ($(CONFIG_ARCH_SA1100),y)
+MACHINE		 = sa1100
+ARCHDIR		 = sa1100
+endif
+
+ifeq ($(CONFIG_ARCH_L7200),y)
+MACHINE		 = l7200
+ARCHDIR		 = l7200
+endif
+
 HEAD		:= arch/arm/kernel/head-$(PROCESSOR).o \
 		   arch/arm/kernel/init_task.o
 SUBDIRS		+= arch/arm/kernel arch/arm/mm arch/arm/lib \
 		   arch/arm/special arch/arm/nwfpe
 CORE_FILES	:= arch/arm/kernel/kernel.o arch/arm/mm/mm.o $(CORE_FILES)
-LIBS		:= arch/arm/lib/lib.o arch/arm/lib/lib.a $(LIBS) $(GCCLIB)
+LIBS		:= arch/arm/lib/lib.o arch/arm/lib/lib.a $(LIBS) $(LIBGCC)
 DRIVERS		+= arch/arm/special/special.a
 
 ifeq ($(CONFIG_NWFPE),y)
-LIBS		:= arch/arm/nwfpe/math-emu.a $(LIBS)
+LIBS		:= arch/arm/nwfpe/math-emu.o $(LIBS)
 endif
 
 ifeq ($(CONFIG_ARCH_ACORN),y)
 SUBDIRS		+= drivers/acorn
 DRIVERS		+= drivers/acorn/block/acorn-block.a
-DRIVERS		+= drivers/acorn/char/acorn-char.a
-DRIVERS		+= drivers/acorn/net/acorn-net.a
+DRIVERS		+= drivers/acorn/char/acorn-char.o
+DRIVERS		+= drivers/acorn/net/acorn-net.o
 DRIVERS		+= drivers/acorn/scsi/acorn-scsi.a
+endif
+
+ifeq ($(CONFIG_ARCH_CLPS7500),y)
+SUBDIRS		+= drivers/acorn/char
+DRIVERS		+= drivers/acorn/char/acorn-char.o
 endif
 
 MAKEBOOT	 = $(MAKE) -C arch/$(ARCH)/boot
@@ -197,7 +231,7 @@ archclean:
 	@$(MAKEBOOT) clean
 	$(RM) arch/arm/lib/constants.h arch/arm/vmlinux.lds
 
-archdep:
+archdep: symlinks
 	@$(MAKEBOOT) dep
 
 # My testing targets (that short circuit a few dependencies)
@@ -226,3 +260,30 @@ rpc_config:
 	$(RM) arch/arm/defconfig
 	cp arch/arm/def-configs/rpc arch/arm/defconfig
 
+brutus_config:
+	$(RM) arch/arm/defconfig
+	cp arch/arm/def-configs/brutus arch/arm/defconfig
+
+victor_config:
+	$(RM) arch/arm/defconfig
+	cp arch/arm/def-configs/victor arch/arm/defconfig
+
+empeg_config:
+	$(RM) arch/arm/defconfig
+	cp arch/arm/def-configs/empeg arch/arm/defconfig
+
+thinclient_config:
+	$(RM) arch/arm/defconfig
+	cp arch/arm/def-configs/thinclient arch/arm/defconfig
+
+assabet_config:
+	$(RM) arch/arm/defconfig
+	cp arch/arm/def-configs/assabet arch/arm/defconfig
+
+lart_config:
+	$(RM) arch/arm/defconfig
+	cp arch/arm/def-configs/lart arch/arm/defconfig
+
+l7200_config:
+	$(RM) arch/arm/defconfig
+	cp arch/arm/def-configs/lusl7200 arch/arm/defconfig

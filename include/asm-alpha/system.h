@@ -112,21 +112,13 @@ struct el_common_EV6_mcheck {
 
 extern void halt(void) __attribute__((noreturn));
 
-#ifdef CONFIG_SMP
-#define ctx_cli()	__cli()
-#define ctx_sti()	__sti()
-#else
-#define ctx_cli()	do { } while(0)
-#define ctx_sti()	do { } while(0)
-#endif
-
+#define prepare_to_switch()	do { } while(0)
 #define switch_to(prev,next,last)			\
 do {							\
 	unsigned long pcbb;				\
 	current = (next);				\
-	pcbb = virt_to_phys(&current->tss);		\
+	pcbb = virt_to_phys(&current->thread);		\
 	(last) = alpha_switch_to(pcbb, (prev));		\
-	ctx_sti();					\
 } while (0)
 
 extern struct task_struct* alpha_switch_to(unsigned long, struct task_struct*);
@@ -140,14 +132,20 @@ __asm__ __volatile__("mb": : :"memory")
 #define wmb() \
 __asm__ __volatile__("wmb": : :"memory")
 
+#define set_mb(var, value) \
+do { var = value; mb(); } while (0)
+
+#define set_rmb(var, value) \
+do { var = value; rmb(); } while (0)
+
+#define set_wmb(var, value) \
+do { var = value; wmb(); } while (0)
+
 #define imb() \
 __asm__ __volatile__ ("call_pal %0 #imb" : : "i" (PAL_imb) : "memory")
 
 #define draina() \
 __asm__ __volatile__ ("call_pal %0 #draina" : : "i" (PAL_draina) : "memory")
-
-#define __halt() \
-__asm__ __volatile__ ("call_pal %0 #halt" : : "i" (PAL_halt))
 
 enum implver_enum {
 	IMPLVER_EV4,
@@ -247,6 +245,7 @@ static inline RTYPE NAME(TYPE0 arg0, TYPE1 arg1)		\
 	return __r0;						\
 }
 
+__CALL_PAL_W1(cflush, unsigned long);
 __CALL_PAL_R0(rdmces, unsigned long);
 __CALL_PAL_R0(rdps, unsigned long);
 __CALL_PAL_R0(rdusp, unsigned long);
@@ -260,13 +259,38 @@ __CALL_PAL_RW2(wrperfmon, unsigned long, unsigned long, unsigned long);
 __CALL_PAL_W1(wrusp, unsigned long);
 __CALL_PAL_W1(wrvptptr, unsigned long);
 
-#define __cli()			((void) swpipl(7))
-#define __sti()			((void) swpipl(0))
-#define __save_flags(flags)	((flags) = rdps())
-#define __save_and_cli(flags)	((flags) = swpipl(7))
-#define __restore_flags(flags)	((void) swpipl(flags))
+#define IPL_MIN		0
+#define IPL_SW0		1
+#define IPL_SW1		2
+#define IPL_DEV0	3
+#define IPL_DEV1	4
+#define IPL_TIMER	5
+#define IPL_PERF	6
+#define IPL_POWERFAIL	6
+#define IPL_MCHECK	7
+#define IPL_MAX		7
 
-#ifdef __SMP__
+#ifdef CONFIG_ALPHA_BROKEN_IRQ_MASK
+#undef IPL_MIN
+#define IPL_MIN		__min_ipl
+extern int __min_ipl;
+#endif
+
+#define getipl()		(rdps() & 7)
+#define setipl(ipl)		((void) swpipl(ipl))
+
+#define __cli()			setipl(IPL_MAX)
+#define __sti()			setipl(IPL_MIN)
+#define __save_flags(flags)	((flags) = rdps())
+#define __save_and_cli(flags)	((flags) = swpipl(IPL_MAX))
+#define __restore_flags(flags)	setipl(flags)
+
+#define local_irq_save(flags)		__save_and_cli(flags)
+#define local_irq_restore(flags)	__restore_flags(flags)
+#define local_irq_disable()		__cli()
+#define local_irq_enable()		__sti()
+
+#ifdef CONFIG_SMP
 
 extern int global_irq_holder;
 
@@ -282,7 +306,7 @@ extern void __global_restore_flags(unsigned long flags);
 #define save_flags(flags)	((flags) = __global_save_flags())
 #define restore_flags(flags)    __global_restore_flags(flags)
 
-#else /* __SMP__ */
+#else /* CONFIG_SMP */
 
 #define cli()			__cli()
 #define sti()			__sti()
@@ -290,7 +314,7 @@ extern void __global_restore_flags(unsigned long flags);
 #define save_and_cli(flags)	__save_and_cli(flags)
 #define restore_flags(flags)	__restore_flags(flags)
 
-#endif /* __SMP__ */
+#endif /* CONFIG_SMP */
 
 /*
  * TB routines..
@@ -314,12 +338,11 @@ extern void __global_restore_flags(unsigned long flags);
 #define tbia()		__tbi(-2, /* no second argument */)
 
 /*
- * Give prototypes to shut up gcc.
+ * Atomic exchange.
  */
-extern __inline__ unsigned long xchg_u32(volatile int *m, unsigned long val);
-extern __inline__ unsigned long xchg_u64(volatile long *m, unsigned long val);
 
-extern __inline__ unsigned long xchg_u32(volatile int *m, unsigned long val)
+extern __inline__ unsigned long
+__xchg_u32(volatile int *m, unsigned long val)
 {
 	unsigned long dummy;
 
@@ -329,7 +352,7 @@ extern __inline__ unsigned long xchg_u32(volatile int *m, unsigned long val)
 	"	stl_c %1,%2\n"
 	"	beq %1,2f\n"
 	"	mb\n"
-	".section .text2,\"ax\"\n"
+	".subsection 2\n"
 	"2:	br 1b\n"
 	".previous"
 	: "=&r" (val), "=&r" (dummy), "=m" (*m)
@@ -338,7 +361,8 @@ extern __inline__ unsigned long xchg_u32(volatile int *m, unsigned long val)
 	return val;
 }
 
-extern __inline__ unsigned long xchg_u64(volatile long * m, unsigned long val)
+extern __inline__ unsigned long
+__xchg_u64(volatile long *m, unsigned long val)
 {
 	unsigned long dummy;
 
@@ -348,7 +372,7 @@ extern __inline__ unsigned long xchg_u64(volatile long * m, unsigned long val)
 	"	stq_c %1,%2\n"
 	"	beq %1,2f\n"
 	"	mb\n"
-	".section .text2,\"ax\"\n"
+	".subsection 2\n"
 	"2:	br 1b\n"
 	".previous"
 	: "=&r" (val), "=&r" (dummy), "=m" (*m)
@@ -357,43 +381,36 @@ extern __inline__ unsigned long xchg_u64(volatile long * m, unsigned long val)
 	return val;
 }
 
-/*
- * This function doesn't exist, so you'll get a linker error
- * if something tries to do an invalid xchg().
- *
- * This only works if the compiler isn't horribly bad at optimizing.
- * gcc-2.5.8 reportedly can't handle this, but as that doesn't work
- * too well on the alpha anyway..
- */
+/* This function doesn't exist, so you'll get a linker error
+   if something tries to do an invalid xchg().  */
 extern void __xchg_called_with_bad_pointer(void);
 
 static __inline__ unsigned long
-__xchg(unsigned long x, volatile void * ptr, int size)
+__xchg(volatile void *ptr, unsigned long x, int size)
 {
 	switch (size) {
 		case 4:
-			return xchg_u32(ptr, x);
+			return __xchg_u32(ptr, x);
 		case 8:
-			return xchg_u64(ptr, x);
+			return __xchg_u64(ptr, x);
 	}
 	__xchg_called_with_bad_pointer();
 	return x;
 }
 
-#define xchg(ptr,x) \
-  ((__typeof__(*(ptr)))__xchg((unsigned long)(x),(ptr),sizeof(*(ptr))))
+#define xchg(ptr,x)							     \
+  ({									     \
+     __typeof__(*(ptr)) _x_ = (x);					     \
+     (__typeof__(*(ptr))) __xchg((ptr), (unsigned long)_x_, sizeof(*(ptr))); \
+  })
+
 #define tas(ptr) (xchg((ptr),1))
-#define gethere() ({ here: && here;  })
+
 
 /* 
  * Atomic compare and exchange.  Compare OLD with MEM, if identical,
  * store NEW in MEM.  Return the initial value in MEM.  Success is
  * indicated by comparing RETURN with OLD.
- *
- * The memory barrier should be placed in SMP only when we actually
- * make the change. If we don't change anything (so if the returned
- * prev is equal to old) then we aren't acquiring anything new and
- * we don't need any memory barrier as far I can tell.
  */
 
 #define __HAVE_ARCH_CMPXCHG 1
@@ -404,21 +421,18 @@ __cmpxchg_u32(volatile int *m, int old, int new)
 	unsigned long prev, cmp;
 
 	__asm__ __volatile__(
-	"1:	ldl_l %0,%5\n"
+	"1:	ldl_l %0,%2\n"
 	"	cmpeq %0,%3,%1\n"
 	"	beq %1,2f\n"
 	"	mov %4,%1\n"
 	"	stl_c %1,%2\n"
 	"	beq %1,3f\n"
-#ifdef CONFIG_SMP
-	"	mb\n"
-#endif
-	"2:\n"
+	"2:	mb\n"
 	".subsection 2\n"
 	"3:	br 1b\n"
 	".previous"
 	: "=&r"(prev), "=&r"(cmp), "=m"(*m)
-	: "r"((long) old), "r"(new), "m"(*m) : "memory");
+	: "r"((long) old), "r"(new), "m"(*m));
 
 	return prev;
 }
@@ -429,21 +443,18 @@ __cmpxchg_u64(volatile long *m, unsigned long old, unsigned long new)
 	unsigned long prev, cmp;
 
 	__asm__ __volatile__(
-	"1:	ldq_l %0,%5\n"
+	"1:	ldq_l %0,%2\n"
 	"	cmpeq %0,%3,%1\n"
 	"	beq %1,2f\n"
 	"	mov %4,%1\n"
 	"	stq_c %1,%2\n"
 	"	beq %1,3f\n"
-#ifdef CONFIG_SMP
-	"	mb\n"
-#endif
-	"2:\n"
+	"2:	mb\n"
 	".subsection 2\n"
 	"3:	br 1b\n"
 	".previous"
 	: "=&r"(prev), "=&r"(cmp), "=m"(*m)
-	: "r"((long) old), "r"(new), "m"(*m) : "memory");
+	: "r"((long) old), "r"(new), "m"(*m));
 
 	return prev;
 }

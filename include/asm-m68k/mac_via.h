@@ -6,8 +6,8 @@
  *	is a bit incomplete as the Mac documentation doesnt cover this well
  */
  
-#ifndef _ASM_VIA6522_H_
-#define _ASM_VIA6522_H_
+#ifndef _ASM_MAC_VIA_H_
+#define _ASM_MAC_VIA_H_
 
 /*
  * Base addresses for the VIAs. There are two in every machine,
@@ -255,46 +255,13 @@ extern volatile __u8 *via1,*via2;
 extern int rbv_present,via_alt_mapping;
 extern __u8 rbv_clear;
 
-#if 0
-/*
- *	The 6522 via is a 2MHz part, and needs a delay. MacOS seems to
- *	execute MOV (Ax),(Ax) for this... Oh and we can't use udelay
- *	here... see we need the via to calibrate the udelay loop ...
- */
-
-/* NetBSD doesn't use this, and it doesn't seem to make a difference. */
-extern volatile long *via_memory_bogon;
-#endif
-
-extern __u8 *via_get_base_address(int);
-
-extern __inline__ void via_write(volatile __u8 *via,int reg, int v)
-{
-#if 0
-	*via_memory_bogon;
-	*via_memory_bogon;
-	*via_memory_bogon;
-#endif
-	via[reg]=v;
-}
-
-extern __inline__ int via_read(volatile __u8 *via,int reg)
-{
-#if 0
-	*via_memory_bogon;
-	*via_memory_bogon;
-	*via_memory_bogon;
-#endif
-	return (int)via[reg];
-}
-
 extern __inline__ int rbv_set_video_bpp(int bpp) {
 	char val = (bpp==1)?0:(bpp==2)?1:(bpp==4)?2:(bpp==8)?3:-1;
 	if (!rbv_present || val<0) return -1;
-	via_write(via2, rMonP, val | (via_read(via2, rMonP)&(~RBV_DEPTH)));
+	via2[rMonP] = (via2[rMonP] & ~RBV_DEPTH) | val;
 	return 0;
 }
 
 #endif /* __ASSEMBLY__ */
 
-#endif /* _ASM_VIA6522_H_ */
+#endif /* _ASM_MAC_VIA_H_ */

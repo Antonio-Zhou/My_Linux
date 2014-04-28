@@ -21,15 +21,11 @@
  *
  * Rob Riggs		Added persistent DMA buffers (1998/10/17)
  */
- 
-#include <linux/config.h>
 
 #define BE_CONSERVATIVE
 #define SAMPLE_ROUNDUP 0
 
 #include "sound_config.h"
-
-#if defined(CONFIG_AUDIO) || defined(CONFIG_GUS)
 
 #define DMAP_FREE_ON_CLOSE      0
 #define DMAP_KEEP_ON_CLOSE      1
@@ -1222,6 +1218,7 @@ void DMAbuf_init(int dev, int dma1, int dma2)
 	}
 }
 
+/* No kernel lock - DMAbuf_activate_recording protected by global cli/sti */
 static unsigned int poll_input(struct file * file, int dev, poll_table *wait)
 {
 	struct audio_operations *adev = audio_devs[dev];
@@ -1294,5 +1291,3 @@ void DMAbuf_deinit(int dev)
 			sound_free_dmap(adev->dmap_in);
 	}
 }
-
-#endif

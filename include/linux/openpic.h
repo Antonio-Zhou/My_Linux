@@ -50,8 +50,9 @@
      *  Vector numbers
      */
 
+#define OPENPIC_VEC_SOURCE      16    /* and up */
 #define OPENPIC_VEC_TIMER       64    /* and up */
-#define OPENPIC_VEC_IPI         70    /* and up */
+#define OPENPIC_VEC_IPI         72    /* and up */
 #define OPENPIC_VEC_SPURIOUS    127
 
 
@@ -356,7 +357,6 @@ extern void openpic_maptimer(u_int timer, u_int cpumask);
 /* Interrupt Sources */
 extern void openpic_enable_irq(u_int irq);
 extern void openpic_disable_irq(u_int irq);
-extern u_int openpic_get_enable(u_int irq);
 extern void openpic_initirq(u_int irq, u_int pri, u_int vector, int polarity,
 			    int is_level);
 extern void openpic_mapirq(u_int irq, u_int cpumask);

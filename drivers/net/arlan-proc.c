@@ -1,13 +1,14 @@
 #include <linux/config.h>
 #include "arlan.h"
+
 #include <linux/sysctl.h>
-#include <linux/version.h>
 
 #ifdef CONFIG_PROC_FS
 
 
+#include <linux/version.h>
 
-/* void enableReceive(struct device* dev);
+/* void enableReceive(struct net_device* dev);
 */
 
 
@@ -57,7 +58,7 @@
 }
 
 
-const char *arlan_diagnostic_info_string(struct device *dev)
+const char *arlan_diagnostic_info_string(struct net_device *dev)
 {
 
 	volatile struct arlan_shmem *arlan = ((struct arlan_private *) dev->priv)->card;
@@ -112,7 +113,7 @@ const char *arlan_diagnostic_info_string(struct device *dev)
 	  }
 };
 
-static const char *arlan_hardware_type_string(struct device *dev)
+static const char *arlan_hardware_type_string(struct net_device *dev)
 {
 	u_char hardwareType;
 	volatile struct arlan_shmem *arlan = ((struct arlan_private *) dev->priv)->card;
@@ -185,8 +186,7 @@ static const char *arlan_hardware_type_string(struct device *dev)
 	}
 }
 #ifdef ARLAN_DEBUGING
-
-static void arlan_print_diagnostic_info(struct device *dev)
+static void arlan_print_diagnostic_info(struct net_device *dev)
 {
 	int i;
 	u_char diagnosticInfo;
@@ -251,7 +251,7 @@ static void arlan_print_diagnostic_info(struct device *dev)
 
 /******************************		TEST 	MEMORY	**************/
 
-static int arlan_hw_test_memory(struct device *dev)
+static int arlan_hw_test_memory(struct net_device *dev)
 {
 	u_char *ptr;
 	int i;
@@ -319,8 +319,7 @@ static int arlan_hw_test_memory(struct device *dev)
 	return 0;
 }
 
-
-static int arlan_setup_card_by_book(struct device *dev)
+static int arlan_setup_card_by_book(struct net_device *dev)
 {
 	u_char irqLevel, configuredStatusFlag;
 	volatile struct arlan_shmem *arlan = ((struct arlan_private *) dev->priv)->card;
@@ -395,7 +394,6 @@ static int arlan_setup_card_by_book(struct device *dev)
 
 	return 0;		/* no errors */
 }
-
 #endif
 
 #ifdef ARLAN_PROC_INTERFACE
@@ -409,7 +407,7 @@ static int arlan_sysctl_info(ctl_table * ctl, int write, struct file *filp,
 	int i;
 	int retv, pos, devnum;
 	struct arlan_private *priva = NULL;
-	struct device *dev;
+	struct net_device *dev;
 	pos = 0;
 	if (write)
 	{
@@ -820,17 +818,15 @@ int arlan_sysctl_reset(ctl_table * ctl, int write, struct file *filp,
 #define CTBLN(num,card,nam) \
         {num , #nam, &(arlan_conf[card].nam), \
          sizeof(int), 0600, NULL, &proc_dointvec}
-
 #ifdef ARLAN_DEBUGING
-  
+
 #define ARLAN_PROC_DEBUG_ENTRIES	{48, "entry_exit_debug", &arlan_entry_and_exit_debug, \
-                 sizeof(int), 0600, NULL, &proc_dointvec},\
- 	{49, "debug", &arlan_debug, \
-                 sizeof(int), 0600, NULL, &proc_dointvec},
+                sizeof(int), 0600, NULL, &proc_dointvec},\
+	{49, "debug", &arlan_debug, \
+                sizeof(int), 0600, NULL, &proc_dointvec},
 #else 
 #define ARLAN_PROC_DEBUG_ENTRIES
 #endif
-
 
 #define ARLAN_SYSCTL_TABLE_TOTAL(cardNo)\
 	CTBLN(1,cardNo,spreadingCode),\
@@ -881,7 +877,7 @@ int arlan_sysctl_reset(ctl_table * ctl, int write, struct file *filp,
 	CTBLN(45,cardNo,radioType),\
 	CTBLN(46,cardNo,writeEEPROM),\
 	CTBLN(47,cardNo,writeRadioType),\
- 	ARLAN_PROC_DEBUG_ENTRIES\
+	ARLAN_PROC_DEBUG_ENTRIES\
 	CTBLN(50,cardNo,in_speed),\
 	CTBLN(51,cardNo,out_speed),\
 	CTBLN(52,cardNo,in_speed10),\
@@ -1010,6 +1006,7 @@ static ctl_table arlan_table[MAX_ARLANS + 1] =
 };
 #endif
 #else
+
 static ctl_table arlan_table[MAX_ARLANS + 1] =
 {
 	{0}

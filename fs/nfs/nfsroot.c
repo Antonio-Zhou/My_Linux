@@ -74,8 +74,7 @@
 #include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/sunrpc/clnt.h>
-#include <linux/nfs2.h>
-#include <linux/nfs3.h>
+#include <linux/nfs.h>
 #include <linux/nfs_fs.h>
 #include <linux/nfs_mount.h>
 #include <linux/in.h>
@@ -90,7 +89,6 @@
 
 /* Default path we try to mount. "%s" gets replaced by our IP address */
 #define NFS_ROOT		"/tftpboot/%s"
-#define NFS_PORT		NFS2_PORT
 
 /* Parameters passed from the kernel command line */
 static char nfs_root_name[256] __initdata = "";
@@ -99,7 +97,7 @@ static char nfs_root_name[256] __initdata = "";
 static __u32 servaddr __initdata = 0;
 
 /* Name of directory to mount */
-static char nfs_path[PATH_MAX] __initdata = { 0, };
+static char nfs_path[NFS_MAXPATHLEN] __initdata = { 0, };
 
 /* NFS-related data */
 static struct nfs_mount_data nfs_data __initdata = { 0, };/* NFS mount info */
@@ -159,7 +157,6 @@ static struct nfs_bool_opts {
 #endif
 	{ "udp",	~NFS_MOUNT_TCP,		0 },
 	{ "tcp",	~NFS_MOUNT_TCP,		NFS_MOUNT_TCP },
-	{ "broken_suid",~NFS_MOUNT_BROKEN_SUID,	NFS_MOUNT_BROKEN_SUID },
 	{ NULL,		0,			0 }
 };
 
@@ -169,7 +166,7 @@ static struct nfs_bool_opts {
  *  need to have root_server_addr set _before_ IPConfig gets called as it
  *  can override it.
  */
-__initfunc(static void root_nfs_parse_addr(char *name))
+static void __init root_nfs_parse_addr(char *name)
 {
 	int octets = 0;
 	char *cp, *cq;
@@ -198,7 +195,7 @@ __initfunc(static void root_nfs_parse_addr(char *name))
 /*
  *  Parse option string.
  */
-__initfunc(static void root_nfs_parse(char *name, char *buf))
+static void __init root_nfs_parse(char *name, char *buf)
 {
 	char *options, *val, *cp;
 
@@ -226,8 +223,8 @@ __initfunc(static void root_nfs_parse(char *name, char *buf))
 		}
 	}
 	if (name[0] && strcmp(name, "default")) {
-		strncpy(buf, name, PATH_MAX-1);
-		buf[PATH_MAX-1] = 0;
+		strncpy(buf, name, NFS_MAXPATHLEN-1);
+		buf[NFS_MAXPATHLEN-1] = 0;
 	}
 }
 
@@ -235,21 +232,19 @@ __initfunc(static void root_nfs_parse(char *name, char *buf))
 /*
  *  Prepare the NFS data structure and parse all options.
  */
-__initfunc(static int root_nfs_name(char *name))
+static int __init root_nfs_name(char *name)
 {
-	char buf[PATH_MAX];
+	char buf[NFS_MAXPATHLEN];
 	char *cp;
 
 	/* Set some default values */
 	memset(&nfs_data, 0, sizeof(nfs_data));
 	nfs_port          = -1;
 	nfs_data.version  = NFS_MOUNT_VERSION;
-	/*
-	 *  dhiggen: nobody has yet demonstrated a convincing need for NFS root
-	 *  locking, so I am reverting to automatic lockd start and disabling
-	 *  NLM locking on an NFS root.
-	 */
-	nfs_data.flags    = NFS_MOUNT_NONLM;
+	nfs_data.flags    = NFS_MOUNT_NONLM;	/* No lockd in nfs root yet */
+	nfs_data.rsize    = NFS_DEF_FILE_IO_BUFFER_SIZE;
+	nfs_data.wsize    = NFS_DEF_FILE_IO_BUFFER_SIZE;
+	nfs_data.bsize	  = 0;
 	nfs_data.timeo    = 7;
 	nfs_data.retrans  = 3;
 	nfs_data.acregmin = 3;
@@ -265,7 +260,7 @@ __initfunc(static int root_nfs_name(char *name))
 	root_nfs_parse(name, buf);
 
 	cp = system_utsname.nodename;
-	if (strlen(buf) + strlen(cp) > PATH_MAX) {
+	if (strlen(buf) + strlen(cp) > NFS_MAXPATHLEN) {
 		printk(KERN_ERR "Root-NFS: Pathname for remote directory too long.\n");
 		return -1;
 	}
@@ -278,7 +273,7 @@ __initfunc(static int root_nfs_name(char *name))
 /*
  *  Get NFS server address.
  */
-__initfunc(static int root_nfs_addr(void))
+static int __init root_nfs_addr(void)
 {
 	if ((servaddr = root_server_addr) == INADDR_NONE) {
 		printk(KERN_ERR "Root-NFS: No NFS server available, giving up.\n");
@@ -293,7 +288,7 @@ __initfunc(static int root_nfs_addr(void))
  *  Tell the user what's going on.
  */
 #ifdef NFSROOT_DEBUG
-__initfunc(static void root_nfs_print(void))
+static void __init root_nfs_print(void)
 {
 	printk(KERN_NOTICE "Root-NFS: Mounting %s on server %s as root\n",
 		nfs_path, nfs_data.hostname);
@@ -308,7 +303,7 @@ __initfunc(static void root_nfs_print(void))
 #endif
 
 
-__initfunc(int root_nfs_init(void))
+int __init root_nfs_init(void)
 {
 #ifdef NFSROOT_DEBUG
 	nfs_debug |= NFSDBG_ROOT;
@@ -336,7 +331,7 @@ __initfunc(int root_nfs_init(void))
  *  Parse NFS server and directory information passed on the kernel
  *  command line.
  */
-__initfunc(void nfs_root_setup(char *line, int *ints))
+int __init nfs_root_setup(char *line)
 {
 	ROOT_DEV = MKDEV(UNNAMED_MAJOR, 255);
 	if (line[0] == '/' || line[0] == ',' || (line[0] >= '0' && line[0] <= '9')) {
@@ -349,8 +344,10 @@ __initfunc(void nfs_root_setup(char *line, int *ints))
 		sprintf(nfs_root_name, NFS_ROOT, line);
 	}
 	root_nfs_parse_addr(nfs_root_name);
+	return 1;
 }
 
+__setup("nfsroot=", nfs_root_setup);
 
 /***************************************************************************
 
@@ -372,7 +369,7 @@ set_sockaddr(struct sockaddr_in *sin, __u32 addr, __u16 port)
 /*
  *  Query server portmapper for the port of a daemon program.
  */
-__initfunc(static int root_nfs_getport(int program, int version, int proto))
+static int __init root_nfs_getport(int program, int version, int proto)
 {
 	struct sockaddr_in sin;
 
@@ -388,7 +385,7 @@ __initfunc(static int root_nfs_getport(int program, int version, int proto))
  *  by the user. Use defaults if portmapper is not available.
  *  XXX: Is there any nfs server with no portmapper?
  */
-__initfunc(static int root_nfs_ports(void))
+static int __init root_nfs_ports(void)
 {
 	int port;
 	int nfsd_ver, mountd_ver;
@@ -420,7 +417,7 @@ __initfunc(static int root_nfs_ports(void))
 			"as nfsd port\n", port);
 	}
 
-	if ((port = root_nfs_getport(NFS_MNT_PROGRAM, mountd_ver, proto)) < 0) {
+	if ((port = root_nfs_getport(NFS_MNT_PROGRAM, nfsd_ver, proto)) < 0) {
 		printk(KERN_ERR "Root-NFS: Unable to get mountd port "
 				"number from server, using default\n");
 		port = mountd_port;
@@ -436,7 +433,7 @@ __initfunc(static int root_nfs_ports(void))
  *  Get a file handle from the server for the directory which is to be
  *  mounted.
  */
-__initfunc(static int root_nfs_get_handle(void))
+static int __init root_nfs_get_handle(void)
 {
 	struct sockaddr_in sin;
 	int status;
@@ -453,32 +450,16 @@ __initfunc(static int root_nfs_get_handle(void))
 	return status;
 }
 
-
 /*
- *  Now actually mount the given directory.
+ *  Get the NFS port numbers and file handle, and return the prepared 'data'
+ *  argument for ->read_super() if everything went OK. Return NULL otherwise.
  */
-__initfunc(static int root_nfs_do_mount(struct super_block *sb))
-{
-	/* Pass the server address to NFS */
-	set_sockaddr((struct sockaddr_in *) &nfs_data.addr, servaddr, nfs_port);
-
-	/* Now (finally ;-)) read the super block for mounting */
-	if (nfs_read_super(sb, &nfs_data, 1) == NULL)
-		return -1;
-	return 0;
-}
-
-
-/*
- *  Get the NFS port numbers and file handle, and then read the super-
- *  block for mounting.
- */
-__initfunc(int nfs_root_mount(struct super_block *sb))
+void * __init nfs_root_data(void)
 {
 	if (root_nfs_init() < 0
 	 || root_nfs_ports() < 0
-	 || root_nfs_get_handle() < 0
-	 || root_nfs_do_mount(sb) < 0)
-		return -1;
-	return 0;
+	 || root_nfs_get_handle() < 0)
+		return NULL;
+	set_sockaddr((struct sockaddr_in *) &nfs_data.addr, servaddr, nfs_port);
+	return (void*)&nfs_data;
 }

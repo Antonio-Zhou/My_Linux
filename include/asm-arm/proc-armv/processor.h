@@ -1,13 +1,15 @@
 /*
  * linux/include/asm-arm/proc-armv/processor.h
  *
- * Copyright (c) 1996 Russell King.
+ * Copyright (c) 1996-1999 Russell King.
  *
  * Changelog:
  *  20-09-1996	RMK	Created
  *  26-09-1996	RMK	Added 'EXTRA_THREAD_STRUCT*'
  *  28-09-1996	RMK	Moved start_thread into the processor dependencies
  *  09-09-1998	PJB	Delete redundant `wp_works_ok'
+ *  30-05-1999	PJB	Save sl across context switches
+ *  31-07-1999	RMK	Added 'domain' stuff
  */
 #ifndef __ASM_PROC_PROCESSOR_H
 #define __ASM_PROC_PROCESSOR_H
@@ -39,8 +41,6 @@ struct context_save_struct {
 	  domain_val(DOMAIN_KERNEL, DOMAIN_MANAGER) |			\
 	  domain_val(DOMAIN_IO, DOMAIN_CLIENT)
 
-#define SWAPPER_PG_DIR	(((unsigned long)swapper_pg_dir) - PAGE_OFFSET)
-
 #define start_thread(regs,pc,sp)					\
 ({									\
 	unsigned long *stack = (unsigned long *)sp;			\
@@ -56,6 +56,9 @@ struct context_save_struct {
 	regs->ARM_r1 = stack[1];	/* r1 (argv) */			\
 	regs->ARM_r0 = stack[0];	/* r0 (argc) */			\
 })
+
+#define KSTK_EIP(tsk)	(((unsigned long *)(4096+(unsigned long)(tsk)))[1021])
+#define KSTK_ESP(tsk)	(((unsigned long *)(4096+(unsigned long)(tsk)))[1019])
 
 /* Allocation and freeing of basic task resources. */
 /*

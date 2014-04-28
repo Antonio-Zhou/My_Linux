@@ -93,7 +93,7 @@ struct irlap_cb {
 	queue_t q;     /* Must be first */
 	magic_t magic;
 
-	struct device  *netdev;
+	struct net_device  *netdev;
 
 	/* Connection state */
 	volatile IRLAP_STATE state;       /* Current state */
@@ -194,7 +194,7 @@ extern hashbin_t *irlap;
 int irlap_init(void);
 void irlap_cleanup(void);
 
-struct irlap_cb *irlap_open(struct device *dev, struct qos_info *qos);
+struct irlap_cb *irlap_open(struct net_device *dev, struct qos_info *qos);
 void irlap_close(struct irlap_cb *self);
 
 void irlap_connect_request(struct irlap_cb *self, __u32 daddr, 

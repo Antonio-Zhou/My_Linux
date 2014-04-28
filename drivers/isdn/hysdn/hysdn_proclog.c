@@ -1,12 +1,41 @@
-/* $Id: hysdn_proclog.c,v 1.1.2.1 2001/12/31 13:26:46 kai Exp $
- *
+/* $Id: hysdn_proclog.c,v 1.4 2000/03/03 16:37:12 kai Exp $
+
  * Linux driver for HYSDN cards, /proc/net filesystem log functions.
+ * written by Werner Cornelius (werner@titro.de) for Hypercope GmbH
  *
- * Author    Werner Cornelius (werner@titro.de) for Hypercope GmbH
- * Copyright 1999 by Werner Cornelius (werner@titro.de)
+ * Copyright 1999  by Werner Cornelius (werner@titro.de)
  *
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2, or (at your option)
+ * any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ *
+ * $Log: hysdn_proclog.c,v $
+ * Revision 1.4  2000/03/03 16:37:12  kai
+ * incorporated some cosmetic changes from the official kernel tree back
+ * into CVS
+ *
+ * Revision 1.3  2000/03/02 00:11:07  werner
+ *
+ * Changes related to procfs for 2.3.48
+ *
+ * Revision 1.2  2000/02/14 19:23:03  werner
+ *
+ * Changed handling of proc filesystem tables to a more portable version
+ *
+ * Revision 1.1  2000/02/10 19:45:18  werner
+ *
+ * Initial release
+ *
  *
  */
 
@@ -18,6 +47,8 @@
 #include <linux/pci.h>
 
 #include "hysdn_defs.h"
+
+static char *hysdn_proclog_revision = "$Revision: 1.4 $";
 
 /* the proc subdir for the interface is defined in the procconf module */
 extern struct proc_dir_entry *hysdn_proc_entry;
@@ -216,7 +247,7 @@ hysdn_log_read(struct file *file, char *buf, size_t count, loff_t * off)
 	struct log_data *inf;
 	int len;
 	word ino;
-	struct procdata *pd = NULL;
+	struct procdata *pd;
 	hysdn_card *card;
 
 	if (!*((struct log_data **) file->private_data)) {
@@ -259,10 +290,10 @@ static int
 hysdn_log_open(struct inode *ino, struct file *filep)
 {
 	hysdn_card *card;
-	struct procdata *pd = NULL;
+	struct procdata *pd;
 	ulong flags;
 
-	MOD_INC_USE_COUNT;
+	MOD_INC_USE_COUNT;	/* lock module */
 	card = card_root;
 	while (card) {
 		pd = card->proclog;
@@ -271,7 +302,7 @@ hysdn_log_open(struct inode *ino, struct file *filep)
 		card = card->next;	/* search next entry */
 	}
 	if (!card) {
-		MOD_DEC_USE_COUNT;
+		MOD_DEC_USE_COUNT;	/* unlock module */
 		return (-ENODEV);	/* device is unknown/invalid */
 	}
 	filep->private_data = card;	/* remember our own card */
@@ -290,7 +321,7 @@ hysdn_log_open(struct inode *ino, struct file *filep)
 			(struct log_data **) filep->private_data = &(pd->log_head);
 		restore_flags(flags);
 	} else {		/* simultaneous read/write access forbidden ! */
-		MOD_DEC_USE_COUNT;
+		MOD_DEC_USE_COUNT;	/* unlock module */
 		return (-EPERM);	/* no permission this time */
 	}
 	return (0);
@@ -353,8 +384,8 @@ hysdn_log_close(struct inode *ino, struct file *filep)
 					kfree(inf);
 				}
 	}			/* read access */
-	MOD_DEC_USE_COUNT;
 
+	MOD_DEC_USE_COUNT;
 	return (retval);
 }				/* hysdn_log_close */
 
@@ -367,7 +398,7 @@ hysdn_log_poll(struct file *file, poll_table * wait)
 	unsigned int mask = 0;
 	word ino;
 	hysdn_card *card;
-	struct procdata *pd = NULL;
+	struct procdata *pd;
 
 	if ((file->f_mode & (FMODE_READ | FMODE_WRITE)) == FMODE_WRITE)
 		return (mask);	/* no polling for write supported */
@@ -405,7 +436,6 @@ static struct file_operations log_fops =
 	release:        hysdn_log_close,                                        
 };
 
-struct inode_operations log_inode_operations;
 
 /***********************************************************************************/
 /* hysdn_proclog_init is called when the module is loaded after creating the cards */
@@ -420,12 +450,9 @@ hysdn_proclog_init(hysdn_card * card)
 
 	if ((pd = (struct procdata *) kmalloc(sizeof(struct procdata), GFP_KERNEL)) != NULL) {
 		memset(pd, 0, sizeof(struct procdata));
-		memset(&log_inode_operations, 0, sizeof(struct inode_operations));
-		log_inode_operations.default_file_ops = &log_fops;
 		sprintf(pd->log_name, "%s%d", PROC_LOG_BASENAME, card->myid);
-		if ((pd->log = create_proc_entry(pd->log_name, S_IFREG | S_IRUGO | S_IWUSR, hysdn_proc_entry)) != NULL) {
-			pd->log->ops = &log_inode_operations;	/* set new operations table */
-		}
+		if ((pd->log = create_proc_entry(pd->log_name, S_IFREG | S_IRUGO | S_IWUSR, hysdn_proc_entry)) != NULL)
+		        pd->log->proc_fops = &log_fops; 
 
 		init_waitqueue_head(&(pd->rd_queue));
 

@@ -1,4 +1,4 @@
-/* $Id: mips_ksyms.c,v 1.19 1999/04/11 18:37:55 harald Exp $
+/* $Id: mips_ksyms.c,v 1.25 2000/02/24 00:12:40 ralf Exp $
  *
  * Export MIPS-specific functions needed for loadable modules.
  *
@@ -22,8 +22,9 @@
 #include <asm/floppy.h>
 #include <asm/io.h>
 #include <asm/page.h>
-#include <asm/pgtable.h>
-#include <asm/sgihpc.h>
+#include <asm/pgalloc.h>
+#include <asm/semaphore.h>
+#include <asm/sgi/sgihpc.h>
 #include <asm/softirq.h>
 #include <asm/uaccess.h>
 
@@ -34,6 +35,8 @@ extern long __strncpy_from_user_asm(char *__to, const char *__from,
                                     long __len);
 extern long __strlen_user_nocheck_asm(const char *s);
 extern long __strlen_user_asm(const char *s);
+extern long __strnlen_user_nocheck_asm(const char *s);
+extern long __strnlen_user_asm(const char *s);
 
 EXPORT_SYMBOL(EISA_bus);
 
@@ -53,10 +56,7 @@ EXPORT_SYMBOL_NOVERS(strrchr);
 EXPORT_SYMBOL_NOVERS(strtok);
 EXPORT_SYMBOL_NOVERS(strpbrk);
 
-EXPORT_SYMBOL(clear_page);
-EXPORT_SYMBOL(__mips_bh_counter);
-EXPORT_SYMBOL(local_bh_count);
-EXPORT_SYMBOL(local_irq_count);
+EXPORT_SYMBOL(_clear_page);
 EXPORT_SYMBOL(enable_irq);
 EXPORT_SYMBOL(disable_irq);
 EXPORT_SYMBOL(kernel_thread);
@@ -70,6 +70,8 @@ EXPORT_SYMBOL_NOVERS(__strncpy_from_user_nocheck_asm);
 EXPORT_SYMBOL_NOVERS(__strncpy_from_user_asm);
 EXPORT_SYMBOL_NOVERS(__strlen_user_nocheck_asm);
 EXPORT_SYMBOL_NOVERS(__strlen_user_asm);
+EXPORT_SYMBOL_NOVERS(__strnlen_user_nocheck_asm);
+EXPORT_SYMBOL_NOVERS(__strnlen_user_asm);
 
 
 /* Networking helper routines. */
@@ -78,12 +80,19 @@ EXPORT_SYMBOL(csum_partial_copy);
 /*
  * Functions to control caches.
  */
-EXPORT_SYMBOL(flush_page_to_ram);
-EXPORT_SYMBOL(flush_cache_all);
-EXPORT_SYMBOL(dma_cache_wback_inv);
-EXPORT_SYMBOL(dma_cache_inv);
+EXPORT_SYMBOL(_flush_page_to_ram);
+EXPORT_SYMBOL(_flush_cache_all);
+EXPORT_SYMBOL(_dma_cache_wback_inv);
+EXPORT_SYMBOL(_dma_cache_inv);
 
 EXPORT_SYMBOL(invalid_pte_table);
+
+/*
+ * Semaphore stuff
+ */
+EXPORT_SYMBOL(__down_read);
+EXPORT_SYMBOL(__down_write);
+EXPORT_SYMBOL(__rwsem_wake);
 
 /*
  * Base address of ports for Intel style I/O.
@@ -99,7 +108,7 @@ EXPORT_SYMBOL(vdma_free);
 EXPORT_SYMBOL(vdma_log2phys);
 #endif
 
-#ifdef CONFIG_SGI
+#ifdef CONFIG_SGI_IP22
 EXPORT_SYMBOL(hpc3c0);
 #endif
 
@@ -122,3 +131,4 @@ EXPORT_SYMBOL(unregister_fpe);
 EXPORT_SYMBOL(screen_info);
 #endif
 
+EXPORT_SYMBOL(get_wchan);

@@ -9,67 +9,189 @@
 #ifndef __ASM_ARM_ARCH_IO_H
 #define __ASM_ARM_ARCH_IO_H
 
-/*
- * This architecture does not require any delayed IO, and
- * has the constant-optimised IO
- */
-#undef	ARCH_IO_DELAY
+#define IO_SPACE_LIMIT 0xffffffff
 
 /*
- * Note that the translation here is weird -
- * the ISA mem space and some peripherals (ethernet and VG468)
- * appear as a 16-bit memory on a 32-bit bus.  This means that
- * byte lanes 2 and 3 are not used, and this translation must
- * be used.
+ * We use two different types of addressing - PC style addresses, and ARM
+ * addresses.  PC style accesses the PC hardware with the normal PC IO
+ * addresses, eg 0x3f8 for serial#1.  ARM addresses are 0x80000000+
+ * and are translated to the start of IO.  Note that all addresses are
+ * shifted left!
  */
-#define __isa_addr(x)		(((x) & 1) | (((x) & 0xfffffffe)) << 1)
+#define __PORT_PCIO(x)	(!((x) & 0x80000000))
 
-#define __isa_io_addr(p)	(PCIO_BASE + ((p) << 2))
-
-#define __inb(p)	(*(volatile unsigned char *)__isa_io_addr(p))
-#define __inl(p)	(panic("__inl(%X) called", p),0)
-
-extern __inline__ unsigned int __inw(unsigned int port)
-{
-	unsigned int value;
-	__asm__ __volatile__(
-	"ldr%?h	%0, [%1]	@ inw"
-	: "=r" (value)
-	: "r" (__isa_io_addr(port)));
-	return value;
+/*
+ * Dynamic IO functions - let the compiler
+ * optimize the expressions
+ */
+#define DECLARE_DYN_OUT(fnsuffix,instr)						\
+extern __inline__ void __out##fnsuffix (unsigned int value, unsigned int port)	\
+{										\
+	unsigned long temp;							\
+	__asm__ __volatile__(							\
+	"tst	%2, #0x80000000\n\t"						\
+	"mov	%0, %4\n\t"							\
+	"addeq	%0, %0, %3\n\t"							\
+	"str" ##instr## "	%1, [%0, %2, lsl #2]	@ out"###fnsuffix	\
+	: "=&r" (temp)								\
+	: "r" (value), "r" (port), "Ir" (PCIO_BASE - IO_BASE), "Ir" (IO_BASE)	\
+	: "cc");								\
 }
 
-#define __outb(v,p)	(*(volatile unsigned char *)__isa_io_addr(p) = v)
-#define __outl(v,p)	panic("__outl(%X,%X) called", v, p)
-
-extern __inline__ unsigned int __outw(unsigned int value, unsigned int port)
-{
-	__asm__ __volatile__(
-	"str%?h	%0, [%1]	@ outw"
-	: : "r" (value), "r" (__isa_io_addr(port)));
+#define DECLARE_DYN_IN(sz,fnsuffix,instr)					\
+extern __inline__ unsigned sz __in##fnsuffix (unsigned int port)		\
+{										\
+	unsigned long temp, value;						\
+	__asm__ __volatile__(							\
+	"tst	%2, #0x80000000\n\t"						\
+	"mov	%0, %4\n\t"							\
+	"addeq	%0, %0, %3\n\t"							\
+	"ldr" ##instr## "	%1, [%0, %2, lsl #2]	@ in"###fnsuffix	\
+	: "=&r" (temp), "=r" (value)						\
+	: "r" (port), "Ir" (PCIO_BASE - IO_BASE), "Ir" (IO_BASE)		\
+	: "cc");								\
+	return (unsigned sz)value;						\
 }
 
-#define __ioaddr(p)	__isa_io_addr(p)
+extern __inline__ unsigned int __ioaddr (unsigned int port)			\
+{										\
+	if (__PORT_PCIO(port))							\
+		return (unsigned int)(PCIO_BASE + (port << 2));			\
+	else									\
+		return (unsigned int)(IO_BASE + (port << 2));			\
+}
+
+#define DECLARE_IO(sz,fnsuffix,instr)	\
+	DECLARE_DYN_OUT(fnsuffix,instr)	\
+	DECLARE_DYN_IN(sz,fnsuffix,instr)
+
+DECLARE_IO(char,b,"b")
+DECLARE_IO(short,w,"")
+DECLARE_IO(int,l,"")
+
+#undef DECLARE_IO
+#undef DECLARE_DYN_OUT
+#undef DECLARE_DYN_IN
 
 /*
- * ioremap support - basic support only
+ * Constant address IO functions
+ *
+ * These have to be macros for the 'J' constraint to work -
+ * +/-4096 immediate operand.
  */
-#define ioremap(addr,size)	((void *)(addr))
-#define iounmap(addr)
+#define __outbc(value,port)							\
+({										\
+	if (__PORT_PCIO((port)))						\
+		__asm__ __volatile__(						\
+		"strb	%0, [%1, %2]		@ outbc"			\
+		: : "r" (value), "r" (PCIO_BASE), "Jr" ((port) << 2));		\
+	else									\
+		__asm__ __volatile__(						\
+		"strb	%0, [%1, %2]		@ outbc"			\
+		: : "r" (value), "r" (IO_BASE), "r" ((port) << 2));		\
+})
 
-#define __isa_mem_addr(x)	((void *)(0xe0000000 + __isa_addr((unsigned long)(x))))
+#define __inbc(port)								\
+({										\
+	unsigned char result;							\
+	if (__PORT_PCIO((port)))						\
+		__asm__ __volatile__(						\
+		"ldrb	%0, [%1, %2]		@ inbc"				\
+		: "=r" (result) : "r" (PCIO_BASE), "Jr" ((port) << 2));		\
+	else									\
+		__asm__ __volatile__(						\
+		"ldrb	%0, [%1, %2]		@ inbc"				\
+		: "=r" (result) : "r" (IO_BASE), "r" ((port) << 2));		\
+	result;									\
+})
 
-#define readb(addr)		(*(volatile unsigned char *)__isa_mem_addr(addr))
-#define readw(addr)		(*(volatile unsigned short *)__isa_mem_addr(addr))
-#define readl(addr)		(*(volatile unsigned long *)__isa_mem_addr(addr))
+#define __outwc(value,port)							\
+({										\
+	unsigned long v = value;						\
+	if (__PORT_PCIO((port)))						\
+		__asm__ __volatile__(						\
+		"str	%0, [%1, %2]		@ outwc"			\
+		: : "r" (v|v<<16), "r" (PCIO_BASE), "Jr" ((port) << 2));	\
+	else									\
+		__asm__ __volatile__(						\
+		"str	%0, [%1, %2]		@ outwc"			\
+		: : "r" (v|v<<16), "r" (IO_BASE), "r" ((port) << 2));		\
+})
 
-#define writeb(b,addr)		(*(volatile unsigned char *)__isa_mem_addr(addr) = (b))
-#define writew(b,addr)		(*(volatile unsigned short *)__isa_mem_addr(addr) = (b))
-#define writel(b,addr)		(*(volatile unsigned long *)__isa_mem_addr(addr) = (b))
+#define __inwc(port)								\
+({										\
+	unsigned short result;							\
+	if (__PORT_PCIO((port)))						\
+		__asm__ __volatile__(						\
+		"ldr	%0, [%1, %2]		@ inwc"				\
+		: "=r" (result) : "r" (PCIO_BASE), "Jr" ((port) << 2));		\
+	else									\
+		__asm__ __volatile__(						\
+		"ldr	%0, [%1, %2]		@ inwc"				\
+		: "=r" (result) : "r" (IO_BASE), "r" ((port) << 2));		\
+	result & 0xffff;							\
+})
 
-#define memset_io(a,b,c)	__ebsa110_set_isamem(__isa_mem_addr(a),(b),(c))
-#define memcpy_fromio(a,b,c)	__ebsa110_copy_fromisamem((a),__isa_mem_addr(b),(c))
-#define memcpy_toio(a,b,c)	__ebsa110_copy_toisamem(__isa_mem_addr(a),(b),(c))
+#define __outlc(v,p)								\
+({										\
+	unsigned long v = value;						\
+	if (__PORT_PCIO((port)))						\
+		__asm__ __volatile__(						\
+		"str	%0, [%1, %2]		@ outlc"			\
+		: : "r" (v), "r" (PCIO_BASE), "Jr" ((port) << 2));		\
+	else									\
+		__asm__ __volatile__(						\
+		"str	%0, [%1, %2]		@ outlc"			\
+		: : "r" (v), "r" (IO_BASE), "r" ((port) << 2));			\
+})
 
+#define __inlc(port)								\
+({										\
+	unsigned long result;							\
+	if (__PORT_PCIO((port)))						\
+		__asm__ __volatile__(						\
+		"ldr	%0, [%1, %2]		@ inlc"				\
+		: "=r" (result) : "r" (PCIO_BASE), "Jr" ((port) << 2));		\
+	else									\
+		__asm__ __volatile__(						\
+		"ldr	%0, [%1, %2]		@ inlc"				\
+		: "=r" (result) : "r" (IO_BASE), "r" ((port) << 2));		\
+	result;									\
+})
+
+#define __ioaddrc(port)								\
+({										\
+	unsigned long addr;							\
+	if (__PORT_PCIO((port)))						\
+		addr = PCIO_BASE + ((port) << 2);				\
+	else									\
+		addr = IO_BASE + ((port) << 2);					\
+	addr;									\
+})
+
+#define inb(p)	 	(__builtin_constant_p((p)) ? __inbc(p)    : __inb(p))
+#define inw(p)	 	(__builtin_constant_p((p)) ? __inwc(p)    : __inw(p))
+#define inl(p)	 	(__builtin_constant_p((p)) ? __inlc(p)    : __inl(p))
+#define outb(v,p)	(__builtin_constant_p((p)) ? __outbc(v,p) : __outb(v,p))
+#define outw(v,p)	(__builtin_constant_p((p)) ? __outwc(v,p) : __outw(v,p))
+#define outl(v,p)	(__builtin_constant_p((p)) ? __outlc(v,p) : __outl(v,p))
+#define __ioaddr(p)	(__builtin_constant_p((p)) ? __ioaddr(p)  : __ioaddrc(p))
+
+/*
+ * Translated address IO functions
+ *
+ * IO address has already been translated to a virtual address
+ */
+#define outb_t(v,p)								\
+	(*(volatile unsigned char *)(p) = (v))
+
+#define inb_t(p)								\
+	(*(volatile unsigned char *)(p))
+
+#define outl_t(v,p)								\
+	(*(volatile unsigned long *)(p) = (v))
+
+#define inl_t(p)								\
+	(*(volatile unsigned long *)(p))
 
 #endif

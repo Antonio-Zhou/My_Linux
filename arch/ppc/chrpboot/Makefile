@@ -12,15 +12,14 @@
 .c.o:
 	$(CC) $(CFLAGS) -DKERNELBASE=$(KERNELBASE) -c -o $*.o $<
 .S.s:
-	$(CC) -D__ASSEMBLY__ -traditional -E -o $*.o $<
+	$(CPP) $(AFLAGS) -traditional -o $*.o $<
 .S.o:
-	$(CC) -D__ASSEMBLY__ -traditional -c -o $*.o $<
+	$(CC) $(AFLAGS) -traditional -c -o $*.o $<
 
-CFLAGS	= -O -fno-builtin -DSTDC_HEADERS -I$(TOPDIR)/include
+CFLAGS	= $(CPPFLAGS) -O -fno-builtin -DSTDC_HEADERS
 LD_ARGS = -Ttext 0x00400000
-OBJCOPY = $(CROSS_COMPILE)objcopy
 
-OBJS = crt0.o start.o main.o misc.o ../coffboot/string.o ../coffboot/zlib.o image.o # initrd.o
+OBJS = crt0.o start.o main.o misc.o ../coffboot/string.o ../coffboot/zlib.o image.o sysmap.o
 LIBS = $(TOPDIR)/lib/lib.a
 
 ifeq ($(CONFIG_PPC64),y)
@@ -65,6 +64,9 @@ mknote: mknote.c
 image.o: piggyback ../coffboot/vmlinux.gz
 	./piggyback image < ../coffboot/vmlinux.gz | $(AS) -o image.o
 
+sysmap.o: piggyback ../../../System.map
+	./piggyback sysmap < ../../../System.map | $(AS) -o sysmap.o
+
 initrd.o: ramdisk.image.gz piggyback
 	./piggyback initrd < ramdisk.image.gz | $(AS) -o initrd.o
 
@@ -102,5 +104,5 @@ fastdep:
 	$(TOPDIR)/scripts/mkdep *.[Sch] > .depend
 
 dep:
-	$(CPP) -M *.S *.c > .depend
+	$(CPP) $(CPPFLAGS) -M *.S *.c > .depend
 

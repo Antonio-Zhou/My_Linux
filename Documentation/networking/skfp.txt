@@ -1,9 +1,9 @@
 (C)Copyright 1998-2000 SysKonnect,
 ===========================================================================
 
-skfp.txt created 17-Jul-2000
+skfp.txt created 11-May-2000
 
-Readme File for skfp.o v2.07
+Readme File for skfp.o v2.06
 
 
 This file contains
@@ -143,10 +143,6 @@ please ensure that the following information is available:
 (6) HISTORY
 ===========
 
-v2.07 (20000717) (In-Kernel version)
-    New features:
-	- in kernel 2.2.17 (hopefully !)
-
 v2.06 (20000511) (In-Kernel version)
     New features:
 	- 64 bit support
@@ -170,10 +166,10 @@ v2.02 (991215) (Standalone version)
 	- Removed unnecessary output
 	- Fixed path for "printver.sh" in makefile
 
-v2.01 (991122)
+v2.01 (991122) (In-Kernel version)
     New features:
 	- Integration in Linux kernel sources
-	- Support for memory mapped I/O
+	- Support for memory mapped I/O.
 
 v2.00 (991112)
     New features:

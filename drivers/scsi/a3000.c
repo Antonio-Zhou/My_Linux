@@ -4,6 +4,7 @@
 #include <linux/sched.h>
 #include <linux/version.h>
 #include <linux/init.h>
+#include <linux/spinlock.h>
 
 #include <asm/setup.h>
 #include <asm/page.h>
@@ -11,7 +12,6 @@
 #include <asm/amigaints.h>
 #include <asm/amigahw.h>
 #include <asm/irq.h>
-#include <asm/spinlock.h>
 
 #include "scsi.h"
 #include "hosts.h"
@@ -20,11 +20,6 @@
 
 #include<linux/stat.h>
 
-struct proc_dir_entry proc_scsi_a3000 = {
-    PROC_SCSI_A3000, 5, "A3000",
-    S_IFDIR | S_IRUGO | S_IXUGO, 2
-};
-
 #define DMA(ptr) ((a3000_scsiregs *)((ptr)->base))
 #define HDATA(ptr) ((struct WD33C93_hostdata *)((ptr)->hostdata))
 
@@ -32,16 +27,19 @@ static struct Scsi_Host *a3000_host = NULL;
 
 static void a3000_intr (int irq, void *dummy, struct pt_regs *fp)
 {
-    unsigned int status = DMA(a3000_host)->ISTR;
+	unsigned long flags;
+	unsigned int status = DMA(a3000_host)->ISTR;
 
-    if (!(status & ISTR_INT_P))
-	return;
-    if (status & ISTR_INTS)
-    {
-	wd33c93_intr (a3000_host);
-    } else {
-        printk("Non-serviced A3000 SCSI-interrupt? ISTR = %02x\n", status);
-    }
+	if (!(status & ISTR_INT_P))
+		return;
+	if (status & ISTR_INTS)
+	{
+		spin_lock_irqsave(&io_request_lock, flags);
+		wd33c93_intr (a3000_host);
+		spin_unlock_irqrestore(&io_request_lock, flags);
+	} else
+		printk("Non-serviced A3000 SCSI-interrupt? ISTR = %02x\n",
+		       status);
 }
 
 static int dma_setup (Scsi_Cmnd *cmd, int dir_in)
@@ -163,7 +161,7 @@ static void dma_stop (struct Scsi_Host *instance, Scsi_Cmnd *SCpnt,
     }
 }
 
-__initfunc(int a3000_detect(Scsi_Host_Template *tpnt))
+int __init a3000_detect(Scsi_Host_Template *tpnt)
 {
     static unsigned char called = 0;
 
@@ -173,16 +171,17 @@ __initfunc(int a3000_detect(Scsi_Host_Template *tpnt))
     if  (!MACH_IS_AMIGA || !AMIGAHW_PRESENT(A3000_SCSI))
 	return 0;
 
-    tpnt->proc_dir = &proc_scsi_a3000;
+    tpnt->proc_name = "A3000";
     tpnt->proc_info = &wd33c93_proc_info;
 
     a3000_host = scsi_register (tpnt, sizeof(struct WD33C93_hostdata));
-    a3000_host->base = (unsigned char *)ZTWO_VADDR(0xDD0000);
+    a3000_host->base = ZTWO_VADDR(0xDD0000);
     a3000_host->irq = IRQ_AMIGA_PORTS;
     DMA(a3000_host)->DAWR = DAWR_A3000;
     wd33c93_init(a3000_host, (wd33c93_regs *)&(DMA(a3000_host)->SASR),
 		 dma_setup, dma_stop, WD33C93_FS_12_15);
-    request_irq(IRQ_AMIGA_PORTS, a3000_intr, 0, "A3000 SCSI", a3000_intr);
+    request_irq(IRQ_AMIGA_PORTS, a3000_intr, SA_SHIRQ, "A3000 SCSI",
+		a3000_intr);
     DMA(a3000_host)->CNTR = CNTR_PDMD | CNTR_INTEN;
     called = 1;
 

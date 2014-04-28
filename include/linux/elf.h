@@ -66,9 +66,11 @@ typedef __u64	Elf64_Word;
 
 #define EM_PPC	       20	/* PowerPC */
 
+#define EM_SH	       42	/* SuperH */
+
 #define EM_SPARCV9     43	/* SPARC v9 64-bit */
 
-#define EM_S390        22	/* IBM S/390 */
+#define EM_IA_64	50	/* HP/Intel IA-64 */
 
 /*
  * This is an interim value that we will use until the committee comes
@@ -77,9 +79,9 @@ typedef __u64	Elf64_Word;
 #define EM_ALPHA	0x9026
 
 /*
- * This is the old interim value for S/390 architecture
+ * This is an interim value for S390 architecture
  */
-#define EM_S390_OLD     0xA390
+#define EM_S390         0xA390
 
 /* This is the info that is needed to parse the dynamic section of the file */
 #define DT_NULL		0

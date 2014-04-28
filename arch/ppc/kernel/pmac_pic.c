@@ -5,14 +5,15 @@
 #include <linux/signal.h>
 #include <linux/pci.h>
 #include <linux/openpic.h>
-#include <asm/pci-bridge.h>
+
+#include <asm/init.h>
 #include <asm/io.h>
 #include <asm/smp.h>
 #include <asm/prom.h>
+#include <asm/pci-bridge.h>
 #include "pmac_pic.h"
-#include "open_pic.h"
 
-struct pmac_irq_hw {
+/* pmac */struct pmac_irq_hw {
         unsigned int    flag;
         unsigned int    enable;
         unsigned int    ack;
@@ -29,10 +30,7 @@ static volatile struct pmac_irq_hw *pmac_irq_hw[4] = {
 
 static int max_irqs;
 static int max_real_irqs;
-
-extern u_int openpic_read(volatile u_int *addr);
-
-#define MAXCOUNT 10000000
+static int has_openpic = 0;
 
 #define GATWICK_IRQ_POOL_SIZE        10
 static struct interrupt_info gatwick_int_pool[GATWICK_IRQ_POOL_SIZE];
@@ -42,6 +40,36 @@ extern int pmac_pcibios_read_config_word(unsigned char bus, unsigned char dev_fn
 extern int pmac_pcibios_write_config_word(unsigned char bus, unsigned char dev_fn,
                                       unsigned char offset, unsigned short val);
 
+/*
+ * Mark an irq as "lost".  This is only used on the pmac
+ * since it can lose interrupts (see pmac_set_irq_mask).
+ * -- Cort
+ */
+void __pmac __no_use_set_lost(unsigned long irq_nr)
+{
+	if (!test_and_set_bit(irq_nr, ppc_lost_interrupts))
+		atomic_inc(&ppc_n_lost_interrupts);
+}
+
+static void pmac_openpic_mask_irq(unsigned int irq_nr)
+{
+	openpic_disable_irq(irq_nr);
+}
+
+static void pmac_openpic_unmask_irq(unsigned int irq_nr)
+{
+	openpic_enable_irq(irq_nr);
+}
+
+struct hw_interrupt_type pmac_open_pic = {
+	" OpenPIC  ",
+	NULL,
+	NULL,
+	pmac_openpic_unmask_irq,
+	pmac_openpic_mask_irq,
+	pmac_openpic_mask_irq,
+	0
+};
 
 static void __pmac pmac_mask_and_ack_irq(unsigned int irq_nr)
 {
@@ -89,10 +117,8 @@ static void __pmac pmac_set_irq_mask(unsigned int irq_nr)
          */
         if ((bit & ppc_cached_irq_mask[i])
             && (ld_le32(&pmac_irq_hw[i]->level) & bit)
-            && !(ld_le32(&pmac_irq_hw[i]->flag) & bit)) {
-                if (!test_and_set_bit(irq_nr, ppc_lost_interrupts))
-                        atomic_inc(&ppc_n_lost_interrupts);
-        }
+            && !(ld_le32(&pmac_irq_hw[i]->flag) & bit))
+		__set_lost((ulong)irq_nr);
 }
 
 static void __pmac pmac_mask_irq(unsigned int irq_nr)
@@ -112,7 +138,6 @@ struct hw_interrupt_type pmac_pic = {
         " PMAC-PIC ",
         NULL,
         NULL,
-        NULL,
         pmac_unmask_irq,
         pmac_mask_irq,
         pmac_mask_and_ack_irq,
@@ -120,8 +145,7 @@ struct hw_interrupt_type pmac_pic = {
 };
 
 struct hw_interrupt_type gatwick_pic = {
-        " PMAC-PI2 ",
-	NULL,
+	" GATWICK  ",
 	NULL,
 	NULL,
 	pmac_unmask_irq,
@@ -134,103 +158,80 @@ static void gatwick_action(int cpl, void *dev_id, struct pt_regs *regs)
 {
 	int irq, bits;
 	
-	for (irq = max_irqs - 1; irq > max_real_irqs; irq -= 32) {
+	for (irq = max_irqs; (irq -= 32) >= max_real_irqs; ) {
 		int i = irq >> 5;
 		bits = ld_le32(&pmac_irq_hw[i]->flag)
 			| ppc_lost_interrupts[i];
 		if (bits == 0)
 			continue;
-		irq -= cntlzw(bits);
+		irq += __ilog2(bits);
 		break;
 	}
 	/* The previous version of this code allowed for this case, we
 	 * don't.  Put this here to check for it.
 	 * -- Cort
 	 */
-	if ( irq_desc[irq].ctl != &gatwick_pic )
+	if ( irq_desc[irq].handler != &gatwick_pic )
 		printk("gatwick irq not from gatwick pic\n");
 	else
 		ppc_irq_dispatch_handler( regs, irq );
 }
 
-void
-pmac_do_IRQ(struct pt_regs *regs,
-	    int            cpu,
-            int            isfake)
+int
+pmac_get_irq(struct pt_regs *regs)
 {
-	extern void psurge_smp_message_recv(void);
-
 	int irq;
 	unsigned long bits = 0;
 
-#ifdef __SMP__
+#ifdef CONFIG_SMP
+	void pmac_smp_message_recv(void);
+	
         /* IPI's are a hack on the powersurge -- Cort */
-        if ( cpu != 0 )
+        if ( smp_processor_id() != 0 )
         {
-                if (!isfake)
-                {
 #ifdef CONFIG_XMON
-                        static int xmon_2nd;
-                        if (xmon_2nd)
-                                xmon(regs);
+		static int xmon_2nd;
+		if (xmon_2nd)
+			xmon(regs);
 #endif
-                        psurge_smp_message_recv();
-                        goto out;
-                }
-                /* could be here due to a do_fake_interrupt call but we don't
-                   mess with the controller from the second cpu -- Cort */
-                goto out;
+		pmac_smp_message_recv();
+		return -2;	/* ignore, already handled */
         }
-
-        {
-                unsigned int loops = MAXCOUNT;
-                while (test_bit(0, &global_irq_lock)) {
-                        if (smp_processor_id() == global_irq_holder) {
-                                printk("uh oh, interrupt while we hold global irq lock!\n");
-#ifdef CONFIG_XMON
-                                xmon(0);
-#endif
-                                break;
-                        }
-                        if (loops-- == 0) {
-                                printk("do_IRQ waiting for irq lock (holder=%d)\n", global_irq_holder);
-#ifdef CONFIG_XMON
-                                xmon(0);
-#endif
-                        }
-                }
-        }
-#endif /* __SMP__ */
-
-        for (irq = max_real_irqs - 1; irq > 0; irq -= 32) {
-                int i = irq >> 5;
-                bits = ld_le32(&pmac_irq_hw[i]->flag)
-                        | ppc_lost_interrupts[i];
-                if (bits == 0)
-                        continue;
-                irq -= cntlzw(bits);
-                break;
-        }
-
-        if (irq < 0)
-        {
-                printk(KERN_DEBUG "Bogus interrupt %d from PC = %lx\n",
-                       irq, regs->nip);
-                ppc_spurious_interrupts++;
-        }
-        else
-        {
-                ppc_irq_dispatch_handler( regs, irq );
-        }
-#ifdef CONFIG_SMP	
-out:
 #endif /* CONFIG_SMP */
+
+	/* Yeah, I know, this could be a separate get_irq function */
+	if (has_openpic)
+	{
+		irq = openpic_irq(smp_processor_id());
+		if (irq == OPENPIC_VEC_SPURIOUS)
+			/* We get those when doing polled ADB requests,
+			 * using -2 is a temp hack to disable the printk
+			 */
+			irq = -2; /*-1; */
+		else
+			openpic_eoi(smp_processor_id());
+	}
+	else
+	{
+		for (irq = max_real_irqs; (irq -= 32) >= 0; ) {
+			int i = irq >> 5;
+			bits = ld_le32(&pmac_irq_hw[i]->flag)
+				| ppc_lost_interrupts[i];
+			if (bits == 0)
+				continue;
+			irq += __ilog2(bits);
+			break;
+		}
+	}
+
+	return irq;
 }
 
 /* This routine will fix some missing interrupt values in the device tree
  * on the gatwick mac-io controller used by some PowerBooks
  */
-static void __init pmac_fix_gatwick_interrupts(struct device_node *gw, int irq_base)
+static void __init
+pmac_fix_gatwick_interrupts(struct device_node *gw, int irq_base)
 {
 	struct device_node *node;
 	int count;
@@ -349,66 +350,45 @@ static void __init enable_second_ohare(void)
 	}
 }
 
-__initfunc(void
-pmac_pic_init(void))
+void __init
+pmac_pic_init(void)
 {
         int i;
         struct device_node *irqctrler;
-        volatile struct pmac_irq_hw *addr;
-	int second_irq;
-	u_int t;
-	int nr_irq;
+        unsigned long addr;
+	int second_irq = -999;
 
 	/* We first try to detect Apple's new Core99 chipset, since mac-io
 	 * is quite different on those machines and contains an IBM MPIC2.
 	 */
 	irqctrler = find_type_devices("open-pic");
-	if (irqctrler != NULL) {
-	    printk("PowerMac using OpenPIC irq controller\n");
-	    if (irqctrler->n_addrs > 0) {
+	if (irqctrler != NULL)
+	{
+		printk("PowerMac using OpenPIC irq controller\n");
+		if (irqctrler->n_addrs > 0)
+		{
 #ifdef CONFIG_XMON
-		struct device_node* pswitch;
+			struct device_node* pswitch;
 #endif /* CONFIG_XMON */	
-		OpenPIC = (volatile struct OpenPIC *)
-			ioremap(irqctrler->addrs[0].address,
-			irqctrler->addrs[0].size);
-		/* from openpic.c code... --Troy
-		 * dynamically figure out how many interrupts 
-		 * We should really do something like panic
-		 * if nr_irq >= OPENPIC_VEC_IPI
-		 */
-		t = openpic_read(&OpenPIC->Global.Feature_Reporting0);
-                nr_irq = ((t & OPENPIC_FEATURE_LAST_SOURCE_MASK) >>
-                                OPENPIC_FEATURE_LAST_SOURCE_SHIFT) + 1;
-		
-		for ( i = 0 ; i < nr_irq ; i++ ) {
-		    irq_desc[i].ctl = &open_pic;
-		    irq_desc[i].level = 0;
-		}
-		ppc_md.do_IRQ = open_pic_do_IRQ;
-		open_pic.irq_offset = 0;
-		openpic_init(1);
+			OpenPIC = (volatile struct OpenPIC *)
+				ioremap(irqctrler->addrs[0].address,
+					irqctrler->addrs[0].size);
+			for ( i = 0 ; i < NR_IRQS ; i++ )
+				irq_desc[i].handler = &pmac_open_pic;
+			openpic_init(1);
+			has_openpic = 1;
 #ifdef CONFIG_XMON
-		pswitch = find_devices("programmer-switch");
-		if (pswitch && pswitch->n_intrs)
-			request_irq(pswitch->intrs[0].line, xmon_irq, 0,	
-				"NMI - XMON", 0);
+			pswitch = find_devices("programmer-switch");
+			if (pswitch && pswitch->n_intrs)
+				request_irq(pswitch->intrs[0].line, xmon_irq, 0,
+					    "NMI - XMON", 0);
 #endif	/* CONFIG_XMON */
-#ifdef __SMP__
-		request_irq(OPENPIC_VEC_IPI, openpic_ipi_action,
-			    0, "IPI0", 0);
-		request_irq(OPENPIC_VEC_IPI+1, openpic_ipi_action,
-			    0, "IPI1 (invalidate TLB)", 0);
-		request_irq(OPENPIC_VEC_IPI+2, openpic_ipi_action,
-			    0, "IPI2 (stop CPU)", 0);
-		request_irq(OPENPIC_VEC_IPI+3, openpic_ipi_action,
-			    0, "IPI3 (reschedule)", 0);
-#endif	/* __SMP__ */
-		return;
-	    }
-	    irqctrler = NULL;
+			return;
+		}
+		irqctrler = NULL;
 	}
 
+	int_control.int_set_lost = __no_use_set_lost;
 	/*
 	 * G3 powermacs and 1999 G3 PowerBooks have 64 interrupts,
 	 * 1998 G3 Series PowerBooks have 128, 
@@ -428,25 +408,32 @@ pmac_pic_init(void))
 			max_irqs = 64;
 	}
 	for ( i = 0; i < max_real_irqs ; i++ )
-		irq_desc[i].ctl = &pmac_pic;
+		irq_desc[i].handler = &pmac_pic;
 
 	/* get addresses of first controller */
 	if (irqctrler) {
 		if  (irqctrler->n_addrs > 0) {
-			addr = ioremap(irqctrler->addrs[0].address, 0x40);
-			addr += 2;
-			for (i = 0; i < 2; ++i, --addr)
-				pmac_irq_hw[i] = addr;
+			addr = (unsigned long) 
+				ioremap(irqctrler->addrs[0].address, 0x40);
+			for (i = 0; i < 2; ++i)
+				pmac_irq_hw[i] = (volatile struct pmac_irq_hw*)
+					(addr + (2 - i) * 0x10);
 		}
 		
 		/* get addresses of second controller */
 		irqctrler = irqctrler->next;
 		if (irqctrler && irqctrler->n_addrs > 0) {
-			addr = ioremap(irqctrler->addrs[0].address, 0x40);
-			addr += 2;
-			for (i = 2; i < 4; ++i, --addr)
-				pmac_irq_hw[i] = addr;
+			addr = (unsigned long) 
+				ioremap(irqctrler->addrs[0].address, 0x40);
+			for (i = 2; i < 4; ++i)
+				pmac_irq_hw[i] = (volatile struct pmac_irq_hw*)
+					(addr + (4 - i) * 0x10);
 		}
+	} else {
+		/* older powermacs have a GC (grand central) or ohare at
+		   f3000000, with interrupt control registers at f3000020. */
+		addr = (unsigned long) ioremap(0xf3000000, 0x40);
+		pmac_irq_hw[0] = (volatile struct pmac_irq_hw *) (addr + 0x20);
 	}
 
 	/* PowerBooks 3400 and 3500 can have a second controller in a second
@@ -466,11 +453,11 @@ pmac_pic_init(void))
 			(int)second_irq);
 		if (device_is_compatible(irqctrler, "gatwick"))
 			pmac_fix_gatwick_interrupts(irqctrler, max_real_irqs);
+		for ( i = max_real_irqs ; i < max_irqs ; i++ )
+			irq_desc[i].handler = &gatwick_pic;
 		request_irq( second_irq, gatwick_action, SA_INTERRUPT,
-			     "interrupt cascade", 0 );
+			     "gatwick cascade", 0 );
 	}
-	for (i = max_real_irqs; i < max_irqs; i++)
-		irq_desc[i].ctl = &gatwick_pic;
 	printk("System has %d possible interrupts\n", max_irqs);
 	if (max_irqs != max_real_irqs)
 		printk(KERN_DEBUG "%d interrupts on main controller\n",
@@ -487,37 +474,34 @@ pmac_pic_init(void))
  * sleep_save_intrs() saves the states of all interrupt enables
  * and disables all interupts except for the nominated one.
  * sleep_restore_intrs() restores the states of all interrupt enables.
- * 
- * TODO: Those should be sleep notifiers with high priority.
  */
 unsigned int sleep_save_mask[2];
 
 void
-pmac_sleep_save_intrs(int viaint)
+sleep_save_intrs(int viaint)
 {
 	sleep_save_mask[0] = ppc_cached_irq_mask[0];
 	sleep_save_mask[1] = ppc_cached_irq_mask[1];
 	ppc_cached_irq_mask[0] = 0;
 	ppc_cached_irq_mask[1] = 0;
-	if (viaint > 0)
-		set_bit(viaint, ppc_cached_irq_mask);
+	set_bit(viaint, ppc_cached_irq_mask);
 	out_le32(&pmac_irq_hw[0]->enable, ppc_cached_irq_mask[0]);
 	if (max_real_irqs > 32)
 		out_le32(&pmac_irq_hw[1]->enable, ppc_cached_irq_mask[1]);
 	(void)in_le32(&pmac_irq_hw[0]->flag);
+	/* make sure mask gets to controller before we return to caller */
 	mb();
+        (void)in_le32(&pmac_irq_hw[0]->enable);
 }
 
 void
-pmac_sleep_restore_intrs(void)
+sleep_restore_intrs(void)
 {
 	int i;
-
 
 	out_le32(&pmac_irq_hw[0]->enable, 0);
 	if (max_real_irqs > 32)
 		out_le32(&pmac_irq_hw[1]->enable, 0);
-	(void)in_le32(&pmac_irq_hw[0]->flag);
 	mb();
 	for (i = 0; i < max_real_irqs; ++i)
 		if (test_bit(i, sleep_save_mask))

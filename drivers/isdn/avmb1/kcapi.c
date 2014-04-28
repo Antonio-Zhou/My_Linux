@@ -1,14 +1,91 @@
-/* $Id: kcapi.c,v 1.1.2.1 2001/12/31 13:26:43 kai Exp $
+/*
+ * $Id: kcapi.c,v 1.15 2000/04/06 15:01:25 calle Exp $
  * 
  * Kernel CAPI 2.0 Module
  * 
- * Copyright 1999 by Carsten Paeth <calle@calle.de>
+ * (c) Copyright 1999 by Carsten Paeth (calle@calle.in-berlin.de)
  * 
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
+ * $Log: kcapi.c,v $
+ * Revision 1.15  2000/04/06 15:01:25  calle
+ * Bugfix: crash in capidrv.c when reseting a capi controller.
+ * - changed code order on remove of controller.
+ * - using tq_schedule for notifier in kcapi.c.
+ * - now using spin_lock_irqsave() and spin_unlock_irqrestore().
+ * strange: sometimes even MP hang on unload of isdn.o ...
+ *
+ * Revision 1.14  2000/04/03 13:29:25  calle
+ * make Tim Waugh happy (module unload races in 2.3.99-pre3).
+ * no real problem there, but now it is much cleaner ...
+ *
+ * Revision 1.13  2000/03/03 15:50:42  calle
+ * - kernel CAPI:
+ *   - Changed parameter "param" in capi_signal from __u32 to void *.
+ *   - rewrote notifier handling in kcapi.c
+ *   - new notifier NCCI_UP and NCCI_DOWN
+ * - User CAPI:
+ *   - /dev/capi20 is now a cloning device.
+ *   - middleware extentions prepared.
+ * - capidrv.c
+ *   - locking of list operations and module count updates.
+ *
+ * Revision 1.12  2000/01/28 16:45:39  calle
+ * new manufacturer command KCAPI_CMD_ADDCARD (generic addcard),
+ * will search named driver and call the add_card function if one exist.
+ *
+ * Revision 1.11  1999/11/23 13:29:29  calle
+ * Bugfix: incoming capi message were never traced.
+ *
+ * Revision 1.10  1999/10/26 15:30:32  calle
+ * Generate error message if user want to add card, but driver module is
+ * not loaded.
+ *
+ * Revision 1.9  1999/10/11 22:04:12  keil
+ * COMPAT_NEED_UACCESS (no include in isdn_compat.h)
+ *
+ * Revision 1.8  1999/09/10 17:24:18  calle
+ * Changes for proposed standard for CAPI2.0:
+ * - AK148 "Linux Exention"
+ *
+ * Revision 1.7  1999/09/04 06:20:05  keil
+ * Changes from kernel set_current_state()
+ *
+ * Revision 1.6  1999/07/20 06:41:49  calle
+ * Bugfix: After the redesign of the AVM B1 driver, the driver didn't even
+ *         compile, if not selected as modules.
+ *
+ * Revision 1.5  1999/07/09 15:05:48  keil
+ * compat.h is now isdn_compat.h
+ *
+ * Revision 1.4  1999/07/08 14:15:17  calle
+ * Forgot to count down ncards in drivercb_detach_ctr.
+ *
+ * Revision 1.3  1999/07/06 07:42:02  calle
+ * - changes in /proc interface
+ * - check and changed calls to [dev_]kfree_skb and [dev_]alloc_skb.
+ *
+ * Revision 1.2  1999/07/05 15:09:52  calle
+ * - renamed "appl_release" to "appl_released".
+ * - version und profile data now cleared on controller reset
+ * - extended /proc interface, to allow driver and controller specific
+ *   informations to include by driver hackers.
+ *
+ * Revision 1.1  1999/07/01 15:26:42  calle
+ * complete new version (I love it):
+ * + new hardware independed "capi_driver" interface that will make it easy to:
+ *   - support other controllers with CAPI-2.0 (i.e. USB Controller)
+ *   - write a CAPI-2.0 for the passive cards
+ *   - support serial link CAPI-2.0 boxes.
+ * + wrote "capi_driver" for all supported cards.
+ * + "capi_driver" (supported cards) now have to be configured with
+ *   make menuconfig, in the past all supported cards where included
+ *   at once.
+ * + new and better informations in /proc/capi/
+ * + new ioctl to switch trace of capi messages per controller
+ *   using "avmcapictrl trace [contr] on|off|...."
+ * + complete testcircle with all supported cards and also the
+ *   PCMCIA cards (now patch for pcmcia-cs-3.0.13 needed) done.
  *
  */
-
 #define CONFIG_AVMB1_COMPAT
 
 #include <linux/config.h>
@@ -21,11 +98,9 @@
 #include <linux/proc_fs.h>
 #include <linux/skbuff.h>
 #include <linux/tqueue.h>
-#include <linux/isdn_compat.h>
 #include <linux/capi.h>
 #include <linux/kernelcapi.h>
 #include <linux/locks.h>
-#include <linux/init.h>
 #include <asm/uaccess.h>
 #include "capicmd.h"
 #include "capiutil.h"
@@ -34,7 +109,7 @@
 #include <linux/b1lli.h>
 #endif
 
-static char *revision = "$Revision: 1.1.2.1 $";
+static char *revision = "$Revision: 1.15 $";
 
 /* ------------------------------------------------------------- */
 
@@ -45,12 +120,10 @@ static char *revision = "$Revision: 1.1.2.1 $";
 
 /* ------------------------------------------------------------- */
 
-static int showcapimsgs = 0;
+int showcapimsgs = 0;
 
-MODULE_DESCRIPTION("CAPI4Linux: kernel CAPI layer");
-MODULE_AUTHOR("Carsten Paeth");
-MODULE_LICENSE("GPL");
-MODULE_PARM(showcapimsgs, "i");
+MODULE_AUTHOR("Carsten Paeth <calle@calle.in-berlin.de>");
+MODULE_PARM(showcapimsgs, "0-4i");
 
 /* ------------------------------------------------------------- */
 
@@ -184,6 +257,7 @@ static int proc_applications_read_proc(char *page, char **start, off_t off,
 	struct capi_appl *ap;
 	int i;
 	int len = 0;
+	off_t begin = 0;
 
 	for (i=0; i < CAPI_MAXAPPL; i++) {
 		ap = &applications[i];
@@ -195,21 +269,20 @@ static int proc_applications_read_proc(char *page, char **start, off_t off,
 			ap->rparam.datablklen,
 			ap->nncci,
                         skb_queue_len(&ap->recv_queue));
-		if (len <= off) {
-			off -= len;
+		if (len+begin > off+count)
+			goto endloop;
+		if (len+begin < off) {
+			begin += len;
 			len = 0;
-		} else {
-			if (len-off > count)
-				goto endloop;
 		}
 	}
 endloop:
-	*start = page+off;
-	if (len < count)
+	if (i >= CAPI_MAXAPPL)
 		*eof = 1;
-	if (len>count) len = count;
-	if (len<0) len = 0;
-	return len;
+	if (off >= len+begin)
+		return 0;
+	*start = page + (off-begin);
+	return ((count < begin+len-off) ? count : begin+len-off);
 }
 
 /*
@@ -223,6 +296,7 @@ static int proc_ncci_read_proc(char *page, char **start, off_t off,
 	struct capi_ncci *np;
 	int i;
 	int len = 0;
+	off_t begin = 0;
 
 	for (i=0; i < CAPI_MAXAPPL; i++) {
 		ap = &applications[i];
@@ -233,22 +307,21 @@ static int proc_ncci_read_proc(char *page, char **start, off_t off,
 				np->ncci,
 				np->winsize,
 				np->nmsg);
-			if (len <= off) {
-				off -= len;
+			if (len+begin > off+count)
+				goto endloop;
+			if (len+begin < off) {
+				begin += len;
 				len = 0;
-			} else {
-				if (len-off > count)
-					goto endloop;
 			}
 		}
 	}
 endloop:
-	*start = page+off;
-	if (len < count)
+	if (i >= CAPI_MAXAPPL)
 		*eof = 1;
-	if (len>count) len = count;
-	if (len<0) len = 0;
-	return len;
+	if (off >= len+begin)
+		return 0;
+	*start = page + (off-begin);
+	return ((count < begin+len-off) ? count : begin+len-off);
 }
 
 /*
@@ -260,6 +333,7 @@ static int proc_driver_read_proc(char *page, char **start, off_t off,
 {
 	struct capi_driver *driver;
 	int len = 0;
+	off_t begin = 0;
 
 	spin_lock(&drivers_lock);
 	for (driver = drivers; driver; driver = driver->next) {
@@ -267,22 +341,21 @@ static int proc_driver_read_proc(char *page, char **start, off_t off,
 					driver->name,
 					driver->ncontroller,
 					driver->revision);
-		if (len <= off) {
-			off -= len;
+		if (len+begin > off+count)
+			goto endloop;
+		if (len+begin < off) {
+			begin += len;
 			len = 0;
-		} else {
-			if (len-off > count)
-				goto endloop;
 		}
 	}
 endloop:
 	spin_unlock(&drivers_lock);
-	*start = page+off;
-	if (len < count)
+	if (!driver)
 		*eof = 1;
-	if (len>count) len = count;
-	if (len<0) len = 0;
-	return len;
+	if (off >= len+begin)
+		return 0;
+	*start = page + (begin-off);
+	return ((count < begin+len-off) ? count : begin+len-off);
 }
 
 /*
@@ -294,26 +367,26 @@ static int proc_users_read_proc(char *page, char **start, off_t off,
 {
         struct capi_interface_user *cp;
 	int len = 0;
+	off_t begin = 0;
 
 	spin_lock(&capi_users_lock);
         for (cp = capi_users; cp ; cp = cp->next) {
 		len += sprintf(page+len, "%s\n", cp->name);
-		if (len <= off) {
-			off -= len;
+		if (len+begin > off+count)
+			goto endloop;
+		if (len+begin < off) {
+			begin += len;
 			len = 0;
-		} else {
-			if (len-off > count)
-				goto endloop;
 		}
 	}
 endloop:
 	spin_unlock(&capi_users_lock);
-	*start = page+off;
-	if (len < count)
+	if (cp == 0)
 		*eof = 1;
-	if (len>count) len = count;
-	if (len<0) len = 0;
-	return len;
+	if (off >= len+begin)
+		return 0;
+	*start = page + (begin-off);
+	return ((count < begin+len-off) ? count : begin+len-off);
 }
 
 /*
@@ -326,6 +399,7 @@ static int proc_controller_read_proc(char *page, char **start, off_t off,
 	struct capi_ctr *cp;
 	int i;
 	int len = 0;
+	off_t begin = 0;
 
 	for (i=0; i < CAPI_MAXCONTR; i++) {
 		cp = &cards[i];
@@ -336,21 +410,20 @@ static int proc_controller_read_proc(char *page, char **start, off_t off,
 			cp->name,
 			cp->driver->procinfo ?  cp->driver->procinfo(cp) : ""
 			);
-		if (len <= off) {
-			off -= len;
+		if (len+begin > off+count)
+			goto endloop;
+		if (len+begin < off) {
+			begin += len;
 			len = 0;
-		} else {
-			if (len-off > count)
-				goto endloop;
 		}
 	}
 endloop:
-	*start = page+off;
-	if (len < count)
+	if (i >= CAPI_MAXCONTR)
 		*eof = 1;
-	if (len>count) len = count;
-	if (len<0) len = 0;
-	return len;
+	if (off >= len+begin)
+		return 0;
+	*start = page + (begin-off);
+	return ((count < begin+len-off) ? count : begin+len-off);
 }
 
 /*
@@ -363,6 +436,7 @@ static int proc_applstats_read_proc(char *page, char **start, off_t off,
 	struct capi_appl *ap;
 	int i;
 	int len = 0;
+	off_t begin = 0;
 
 	for (i=0; i < CAPI_MAXAPPL; i++) {
 		ap = &applications[i];
@@ -373,21 +447,20 @@ static int proc_applstats_read_proc(char *page, char **start, off_t off,
 			ap->nrecvdatapkt,
 			ap->nsentctlpkt,
 			ap->nsentdatapkt);
-		if (len <= off) {
-			off -= len;
+		if (len+begin > off+count)
+			goto endloop;
+		if (len+begin < off) {
+			begin += len;
 			len = 0;
-		} else {
-			if (len-off > count)
-				goto endloop;
 		}
 	}
 endloop:
-	*start = page+off;
-	if (len < count)
+	if (i >= CAPI_MAXAPPL)
 		*eof = 1;
-	if (len>count) len = count;
-	if (len<0) len = 0;
-	return len;
+	if (off >= len+begin)
+		return 0;
+	*start = page + (begin-off);
+	return ((count < begin+len-off) ? count : begin+len-off);
 }
 
 /*
@@ -400,6 +473,7 @@ static int proc_contrstats_read_proc(char *page, char **start, off_t off,
 	struct capi_ctr *cp;
 	int i;
 	int len = 0;
+	off_t begin = 0;
 
 	for (i=0; i < CAPI_MAXCONTR; i++) {
 		cp = &cards[i];
@@ -410,21 +484,20 @@ static int proc_contrstats_read_proc(char *page, char **start, off_t off,
 			cp->nrecvdatapkt,
 			cp->nsentctlpkt,
 			cp->nsentdatapkt);
-		if (len <= off) {
-			off -= len;
+		if (len+begin > off+count)
+			goto endloop;
+		if (len+begin < off) {
+			begin += len;
 			len = 0;
-		} else {
-			if (len-off > count)
-				goto endloop;
 		}
 	}
 endloop:
-	*start = page+off;
-	if (len < count)
+	if (i >= CAPI_MAXCONTR)
 		*eof = 1;
-	if (len>count) len = count;
-	if (len<0) len = 0;
-	return len;
+	if (off >= len+begin)
+		return 0;
+	*start = page + (begin-off);
+	return ((count < begin+len-off) ? count : begin+len-off);
 }
 
 static struct procfsentries {
@@ -711,7 +784,7 @@ static void controllercb_appl_released(struct capi_ctr * card, __u16 appl)
 	}
 }
 /*
- * ncci management
+ * ncci managment
  */
 
 static void controllercb_new_ncci(struct capi_ctr * card,
@@ -1027,7 +1100,7 @@ static int driver_read_proc(char *page, char **start, off_t off,
 	if (len < off) 
            return 0;
 	*eof = 1;
-	*start = page + off;
+	*start = page - off;
 	return ((count < len-off) ? count : len-off);
 }
 
@@ -1132,12 +1205,14 @@ static __u16 capi_register(capi_register_params * rparam, __u16 * applidp)
 
 static __u16 capi_release(__u16 applid)
 {
+	struct sk_buff *skb;
 	int i;
 
 	if (!VALID_APPLID(applid) || APPL(applid)->releasing)
 		return CAPI_ILLAPPNR;
 	APPL(applid)->releasing++;
-	skb_queue_purge(&APPL(applid)->recv_queue);
+	while ((skb = skb_dequeue(&APPL(applid)->recv_queue)) != 0)
+		kfree_skb(skb);
 	for (i = 0; i < CAPI_MAXCONTR; i++) {
 		if (cards[i].cardstate != CARD_RUNNING)
 			continue;
@@ -1640,18 +1715,44 @@ EXPORT_SYMBOL(detach_capi_interface);
 EXPORT_SYMBOL(attach_capi_driver);
 EXPORT_SYMBOL(detach_capi_driver);
 
+#ifndef MODULE
+#ifdef CONFIG_ISDN_DRV_AVMB1_B1ISA
+extern int b1isa_init(void);
+#endif
+#ifdef CONFIG_ISDN_DRV_AVMB1_B1PCI
+extern int b1pci_init(void);
+#endif
+#ifdef CONFIG_ISDN_DRV_AVMB1_T1ISA
+extern int t1isa_init(void);
+#endif
+#ifdef CONFIG_ISDN_DRV_AVMB1_B1PCMCIA
+extern int b1pcmcia_init(void);
+#endif
+#ifdef CONFIG_ISDN_DRV_AVMB1_T1PCI
+extern int t1pci_init(void);
+#endif
+#ifdef CONFIG_ISDN_DRV_AVMB1_C4
+extern int c4_init(void);
+#endif
+#endif
+
 /*
  * init / exit functions
  */
 
-static int __init kcapi_init(void)
+#ifdef MODULE
+#define kcapi_init init_module
+#endif
+
+int kcapi_init(void)
 {
 	char *p;
-	char rev[32];
+	char rev[10];
 
 	MOD_INC_USE_COUNT;
 
 	skb_queue_head_init(&recv_queue);
+	/* init_bh(CAPI_BH, do_capi_bh); */
 
 	tq_state_notify.routine = notify_handler;
 	tq_state_notify.data = 0;
@@ -1661,24 +1762,42 @@ static int __init kcapi_init(void)
 
         proc_capi_init();
 
-	if ((p = strchr(revision, ':')) != 0 && p[1]) {
-		strncpy(rev, p + 2, sizeof(rev));
-		rev[sizeof(rev)-1] = 0;
-		if ((p = strchr(rev, '$')) != 0 && p > rev)
-		   *(p-1) = 0;
+	if ((p = strchr(revision, ':'))) {
+		strcpy(rev, p + 1);
+		p = strchr(rev, '$');
+		*p = 0;
 	} else
 		strcpy(rev, "1.0");
 
 #ifdef MODULE
-        printk(KERN_NOTICE "CAPI-driver Rev %s: loaded\n", rev);
+        printk(KERN_NOTICE "CAPI-driver Rev%s: loaded\n", rev);
 #else
-	printk(KERN_NOTICE "CAPI-driver Rev %s: started\n", rev);
+	printk(KERN_NOTICE "CAPI-driver Rev%s: started\n", rev);
+#ifdef CONFIG_ISDN_DRV_AVMB1_B1ISA
+	(void)b1isa_init();
+#endif
+#ifdef CONFIG_ISDN_DRV_AVMB1_B1PCI
+	(void)b1pci_init();
+#endif
+#ifdef CONFIG_ISDN_DRV_AVMB1_T1ISA
+	(void)t1isa_init();
+#endif
+#ifdef CONFIG_ISDN_DRV_AVMB1_B1PCMCIA
+	(void)b1pcmcia_init();
+#endif
+#ifdef CONFIG_ISDN_DRV_AVMB1_T1PCI
+	(void)t1pci_init();
+#endif
+#ifdef CONFIG_ISDN_DRV_AVMB1_C4
+	(void)c4_init();
+#endif
 #endif
 	MOD_DEC_USE_COUNT;
 	return 0;
 }
 
-static void  kcapi_exit(void)
+#ifdef MODULE
+void cleanup_module(void)
 {
 	char rev[10];
 	char *p;
@@ -1694,6 +1813,4 @@ static void  kcapi_exit(void)
         proc_capi_exit();
 	printk(KERN_NOTICE "CAPI-driver Rev%s: unloaded\n", rev);
 }
-
-module_init(kcapi_init);
-module_exit(kcapi_exit);
+#endif

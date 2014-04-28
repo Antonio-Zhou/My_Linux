@@ -89,38 +89,34 @@ MachineCheckException(struct pt_regs *regs)
 {
 	if ( !user_mode(regs) )
 	{
-#ifdef CONFIG_MBX
-		/* the mbx pci read routines can cause machine checks -- Cort */
-		bad_page_fault(regs,regs->dar);
+#if defined(CONFIG_8xx) && defined(CONFIG_PCI)
+		/* the qspan pci read routines can cause machine checks -- Cort */
+		bad_page_fault(regs, regs->dar);
 		return;
-#endif /* CONFIG_MBX */
+#endif
 #if defined(CONFIG_XMON) || defined(CONFIG_KGDB)
 		if (debugger_fault_handler) {
 			debugger_fault_handler(regs);
 			return;
 		}
 #endif
-		printk("Machine check in kernel mode.  (regs at %p)\n", regs);
-		printk("Caused by (from srr1): ");
-		switch( regs->msr & 0x001F0000) {
-		case 0x100000:
-			printk("L2 data cache parity error\n");
-			break;
+		printk("Machine check in kernel mode.\n");
+		printk("Caused by (from SRR1=%lx): ", regs->msr);
+		switch (regs->msr & 0xF0000) {
 		case 0x80000:
 			printk("Machine check signal\n");
-			printk("(probably due to access of bad physical address\n");
 			break;
 		case 0x40000:
 			printk("Transfer error ack signal\n");
 			break;
 		case 0x20000:
-			printk("Data parity signal\n");
+			printk("Data parity error signal\n");
 			break;
 		case 0x10000:
-			printk("Address parity signal\n");
+			printk("Address parity error signal\n");
 			break;
 		default:
-			printk("Unknown values in srr1\n");
+			printk("Unknown values in msr\n");
 		}
 		show_regs(regs);
 #if defined(CONFIG_XMON) || defined(CONFIG_KGDB)
@@ -130,6 +126,20 @@ MachineCheckException(struct pt_regs *regs)
 		panic("machine check");
 	}
 	_exception(SIGSEGV, regs);	
+}
+
+void
+SMIException(struct pt_regs *regs)
+{
+#if defined(CONFIG_XMON) || defined(CONFIG_KGDB)
+	{
+		debugger(regs);
+		return;
+	}
+#endif
+	show_regs(regs);
+	print_backtrace((unsigned long *)regs->gpr[1]);
+	panic("System Management Interrupt");
 }
 
 void
@@ -156,52 +166,22 @@ RunModeException(struct pt_regs *regs)
 	_exception(SIGTRAP, regs);	
 }
 
-/* Illegal instruction emulation support.  Originally written to
- * provide the PVR to user applications using the mfspr rd, PVR.
- * Return non-zero if we can't emulate, or EFAULT if the associated
- * memory access caused an access fault.  Return zero on success.
- *
- * There are a couple of ways to do this, either "decode" the instruction
- * or directly match lots of bits.  In this case, matching lots of
- * bits is faster and easier.
- *
- */
-#define INST_MFSPR_PVR		0x7c1f42a6
-#define INST_MFSPR_PVR_MASK	0xfc1fffff
-
-static int
-emulate_instruction(struct pt_regs *regs)
-{
-	uint    instword;
-	uint    rd;
-	int    retval;
-
-	retval = EINVAL;
-	if (!user_mode(regs))
-		return retval;
-
-	retval = EFAULT;
-	if (get_user(instword, (uint *)(regs->nip)))
-		return retval;
-
-	/* Emulate the mfspr rD, PVR.
-	 */
-	retval = EINVAL;
-	if ((instword & INST_MFSPR_PVR_MASK) == INST_MFSPR_PVR) {
-		rd = (instword >> 21) & 0x1f;
-		regs->gpr[rd] = _get_PVR();
-		retval = 0;
-	}
-	if (retval == 0)
-		regs->nip += 4;
-	return(retval);
-}
-
 void
 ProgramCheckException(struct pt_regs *regs)
 {
-	int errcode;
+#if defined(CONFIG_4xx)
+	unsigned int esr = mfspr(SPRN_ESR);
 
+	if (esr & ESR_PTR) {
+#if defined(CONFIG_XMON) || defined(CONFIG_KGDB)
+		if (debugger_bpt(regs))
+			return;
+#endif
+		_exception(SIGTRAP, regs);
+	} else {
+		_exception(SIGILL, regs);
+	}
+#else
 	if (regs->msr & 0x100000) {
 		/* IEEE FP exception */
 		_exception(SIGFPE, regs);
@@ -213,14 +193,9 @@ ProgramCheckException(struct pt_regs *regs)
 #endif
 		_exception(SIGTRAP, regs);
 	} else {
-		/* Try to emulate it if we should. */
-		if ((errcode = emulate_instruction(regs))) {
-			if (errcode == EFAULT)
-				_exception(SIGBUS, regs);
-			else
-				_exception(SIGILL, regs);
-		}
+		_exception(SIGILL, regs);
 	}
+#endif
 }
 
 void
@@ -239,8 +214,6 @@ AlignmentException(struct pt_regs *regs)
 {
 	int fixed;
 
-	if (regs->msr & MSR_FP)
-		giveup_fpu(current);
 	fixed = fix_alignment(regs);
 	if (fixed == 1) {
 		regs->nip += 4;	/* skip over emulated instruction */
@@ -248,7 +221,10 @@ AlignmentException(struct pt_regs *regs)
 	}
 	if (fixed == -EFAULT) {
 		/* fixed == -EFAULT means the operand address was bad */
-		bad_page_fault(regs, regs->dar);
+		if (user_mode(regs))
+			force_sig(SIGSEGV, current);
+		else
+			bad_page_fault(regs, regs->dar);
 		return;
 	}
 	_exception(SIGBUS, regs);	
@@ -279,25 +255,29 @@ trace_syscall(struct pt_regs *regs)
 void
 SoftwareEmulation(struct pt_regs *regs)
 {
-	int	errcode;
-	extern int	Soft_emulate_8xx (struct pt_regs *regs);
-	extern void print_8xx_pte(struct mm_struct *, unsigned long);	
+	extern int do_mathemu(struct pt_regs *);
+	int errcode;
 
-	if (user_mode(regs))
-	{
-		if ((errcode = Soft_emulate_8xx(regs))) {
-printk("Software Emulation %s/%d NIP: %lx *NIP: 0x%x code: %x",
-       current->comm,current->pid,
-       regs->nip, *((uint *)regs->nip), errcode);
-/*print_8xx_pte(current->mm, regs->nip);*/
-			if (errcode == EFAULT)
-				_exception(SIGBUS, regs);
-			else
-				_exception(SIGILL, regs);
-		}
-	}
-	else {
+	if (!user_mode(regs)) {
+		show_regs(regs);
+#if defined(CONFIG_XMON) || defined(CONFIG_KGDB)
+		debugger(regs);
+#endif
+		print_backtrace((unsigned long *)regs->gpr[1]);
 		panic("Kernel Mode Software FPU Emulation");
+	}
+
+#ifdef CONFIG_MATH_EMULATION
+	if ((errcode = do_mathemu(regs))) {
+#else
+	if ((errcode = Soft_emulate_8xx(regs))) {
+#endif
+		if (errcode > 0)
+			_exception(SIGFPE, regs);
+		else if (errcode == -EFAULT)
+			_exception(SIGSEGV, regs);
+		else
+			_exception(SIGILL, regs);
 	}
 }
 #endif
@@ -309,6 +289,6 @@ TAUException(struct pt_regs *regs)
 	       regs->nip, regs->msr, regs->trap);
 }
 
-__initfunc(void trap_init(void))
+void __init trap_init(void)
 {
 }

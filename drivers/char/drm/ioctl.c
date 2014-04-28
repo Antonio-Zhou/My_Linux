@@ -2,7 +2,6 @@
  * Created: Fri Jan  8 09:01:26 1999 by faith@precisioninsight.com
  *
  * Copyright 1999 Precision Insight, Inc., Cedar Park, Texas.
- * Copyright 2000 VA Linux Systems, Inc., Sunnyvale, California.
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -25,7 +24,7 @@
  * DEALINGS IN THE SOFTWARE.
  * 
  * Authors:
- *    Rickard E. (Rik) Faith <faith@valinux.com>
+ *    Rickard E. (Rik) Faith <faith@precisioninsight.com>
  *
  */
 
@@ -75,7 +74,7 @@ int drm_setunique(struct inode *inode, struct file *filp, unsigned int cmd,
 	if (dev->unique_len || dev->unique) return -EBUSY;
 
 	copy_from_user_ret(&u, (drm_unique_t *)arg, sizeof(u), -EFAULT);
-	if (!u.unique_len || u.unique_len > 1024) return -EINVAL;
+	if (!u.unique_len) return -EINVAL;
 	
 	dev->unique_len = u.unique_len;
 	dev->unique	= drm_alloc(u.unique_len + 1, DRM_MEM_DRIVER);

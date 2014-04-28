@@ -15,11 +15,9 @@
 /*
  * Thomas Sailer   : ioctl code reworked (vmalloc/vfree removed)
  */
-#include <linux/config.h>
-
 #include "sound_config.h"
 
-#ifdef CONFIG_PAS
+#include "pas2.h"
 
 #ifndef DEB
 #define DEB(what)		/* (what) */
@@ -71,7 +69,7 @@ mix_write(unsigned char data, int ioaddr)
 
 	if (pas_model == 4)
 	  {
-		  outw(data | (data << 8), (ioaddr + translate_code) - 1);
+		  outw(data | (data << 8), (ioaddr ^ translate_code) - 1);
 		  outb((0x80), 0);
 	} else
 		pas_write(data, ioaddr);
@@ -332,5 +330,3 @@ pas_init_mixer(void)
 	  }
 	return 1;
 }
-
-#endif

@@ -2,7 +2,7 @@
  *  include/asm-s390/page.h
  *
  *  S390 version
- *    Copyright (C) 1999 IBM Deutschland Entwicklung GmbH, IBM Corporation
+ *    Copyright (C) 1999,2000 IBM Deutschland Entwicklung GmbH, IBM Corporation
  *    Author(s): Hartmut Penner (hp@de.ibm.com)
  */
 
@@ -19,18 +19,16 @@
 
 #define STRICT_MM_TYPECHECKS
 
-/*
- * gcc uses builtin, i.e. MVCLE for both operations
- */
-
-#define clear_page(page)        memset((void *)(page), 0, PAGE_SIZE)
-#define copy_page(to,from)      memcpy((void *)(to), (void *)(from), PAGE_SIZE)
-
 #define BUG() do { \
-	printk("kernel BUG at %s:%d!\n", __FILE__, __LINE__); \
-	__asm__ __volatile__(".word 0x0000"); \
-} while (0)
+        printk("kernel BUG at %s:%d!\n", __FILE__, __LINE__); \
+        __asm__ __volatile__(".word 0x0000"); \
+} while (0)                                       
 
+#define PAGE_BUG(page) do { \
+        BUG(); \
+} while (0)                      
+
+/* Pure 2^n version of get_order */
 extern __inline__ int get_order(unsigned long size)
 {
         int order;
@@ -43,6 +41,13 @@ extern __inline__ int get_order(unsigned long size)
         } while (size);
         return order;
 }
+
+/*
+ * gcc uses builtin, i.e. MVCLE for both operations
+ */
+
+#define clear_page(page)        memset((void *)(page), 0, PAGE_SIZE)
+#define copy_page(to,from)      memcpy((void *)(to), (void *)(from), PAGE_SIZE)
 
 #ifdef STRICT_MM_TYPECHECKS
 /*
@@ -108,6 +113,7 @@ typedef unsigned long pgprot_t;
 #define __pa(x)                 ((unsigned long)(x)-PAGE_OFFSET)
 #define __va(x)                 ((void *)((unsigned long)(x)+PAGE_OFFSET))
 #define MAP_NR(addr)            (__pa(addr) >> PAGE_SHIFT)
+#define PHYSMAP_NR(addr)	((unsigned long)(addr) >> PAGE_SHIFT)
 
 #endif                                 /* __KERNEL__                       */
 

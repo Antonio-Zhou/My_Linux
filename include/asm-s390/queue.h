@@ -70,35 +70,6 @@ static __inline__ void add_to_list(list **lhead,list *member)
 	*lhead=member;
 }
 
-static __inline__ list *remove_listhead(list **lhead)
-{
-	list *oldhead=*lhead;
-
-	if(oldhead)
-		*lhead=(*lhead)->next;
-	return(oldhead);
-}
-
-static __inline__ void add_to_list_tail(list **lhead,list *member)
-{
-	list *curr,*prev;
-	if(*lhead==NULL)
-		*lhead=member;
-	else
-	{
-		prev=*lhead;
-		for(curr=(*lhead)->next;curr!=NULL;curr=curr->next)
-			prev=curr;
-		prev->next=member;
-	}
-}
-static __inline__ void add_to_list_tail_null(list **lhead,list *member)
-{
-	member->next=NULL;
-	add_to_list_tail_null(lhead,member);
-}
-
-
 static __inline__ int is_in_list(list *lhead,list *member)
 {
 	list *curr;
@@ -125,7 +96,6 @@ static __inline__ int get_prev(list *lhead,list *member,list **prev)
 }
 
 
-
 static __inline__ int remove_from_list(list **lhead,list *member)
 {
 	list *prev;
@@ -142,29 +112,6 @@ static __inline__ int remove_from_list(list **lhead,list *member)
 	return(FALSE);
 }
 
-static __inline__ int remove_from_queue(qheader *qhead,queue *member)
-{
-	queue *prev;
-
-	if(get_prev(qhead->head,(list *)member,(list **)&prev))
-	{
-
-		if(prev)
-		{
-			prev->next=member->next;
-			if(prev->next==NULL)
-				qhead->tail=prev;
-		}
-		else
-		{
-			if(qhead->head==qhead->tail)
-				qhead->tail=NULL;
-			qhead->head=member->next;
-		}
-		return(TRUE);
-	}
-	return(FALSE);
-}
 
 
 

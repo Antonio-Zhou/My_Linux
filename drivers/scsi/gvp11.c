@@ -12,7 +12,7 @@
 #include <asm/amigahw.h>
 #include <linux/zorro.h>
 #include <asm/irq.h>
-#include <asm/spinlock.h>
+#include <linux/spinlock.h>
 
 #include "scsi.h"
 #include "hosts.h"
@@ -20,11 +20,6 @@
 #include "gvp11.h"
 
 #include<linux/stat.h>
-
-struct proc_dir_entry proc_scsi_gvp11 = {
-    PROC_SCSI_GVP11, 5, "GVP11",
-    S_IFDIR | S_IRUGO | S_IXUGO, 2
-};
 
 #define DMA(ptr) ((gvp11_scsiregs *)((ptr)->base))
 #define HDATA(ptr) ((struct WD33C93_hostdata *)((ptr)->hostdata))
@@ -34,6 +29,7 @@ static Scsi_Host_Template *gvp11_template;
 
 static void gvp11_intr (int irq, void *dummy, struct pt_regs *fp)
 {
+    unsigned long flags;
     unsigned int status;
     struct Scsi_Host *instance;
 
@@ -44,7 +40,9 @@ static void gvp11_intr (int irq, void *dummy, struct pt_regs *fp)
 	if (!(status & GVP11_DMAC_INT_PENDING))
 	    continue;
 
+	spin_lock_irqsave(&io_request_lock, flags);
 	wd33c93_intr (instance);
+	spin_unlock_irqrestore(&io_request_lock, flags);
     }
 }
 
@@ -77,7 +75,8 @@ static int dma_setup (Scsi_Cmnd *cmd, int dir_in)
 
 	if ( scsi_alloc_out_of_range || !HDATA(cmd->host)->dma_bounce_buffer) {
 	    HDATA(cmd->host)->dma_bounce_buffer =
-		amiga_chip_alloc(HDATA(cmd->host)->dma_bounce_len);
+		amiga_chip_alloc(HDATA(cmd->host)->dma_bounce_len,
+				       "GVP II SCSI Bounce Buffer");
 
 	    if(!HDATA(cmd->host)->dma_bounce_buffer)
 	    {
@@ -102,7 +101,8 @@ static int dma_setup (Scsi_Cmnd *cmd, int dir_in)
             }
 		
 	    HDATA(cmd->host)->dma_bounce_buffer =
-		amiga_chip_alloc(HDATA(cmd->host)->dma_bounce_len);
+		amiga_chip_alloc(HDATA(cmd->host)->dma_bounce_len,
+				       "GVP II SCSI Bounce Buffer");
 
 	    if(!HDATA(cmd->host)->dma_bounce_buffer)
 	    {
@@ -178,14 +178,13 @@ static int num_gvp11 = 0;
 
 #define CHECK_WD33C93
 
-__initfunc(int gvp11_detect(Scsi_Host_Template *tpnt))
+int __init gvp11_detect(Scsi_Host_Template *tpnt)
 {
     static unsigned char called = 0;
     struct Scsi_Host *instance;
-    caddr_t address;
+    unsigned long address;
     unsigned int epc;
-    unsigned int key = 0, skey;
-    const struct ConfigDev *cd;
+    struct zorro_dev *z = NULL;
     unsigned int default_dma_xfer_mask;
 #ifdef CHECK_WD33C93
     volatile unsigned char *sasr_3393, *scmd_3393;
@@ -197,40 +196,41 @@ __initfunc(int gvp11_detect(Scsi_Host_Template *tpnt))
 	return 0;
     called = 1;
 
-    tpnt->proc_dir = &proc_scsi_gvp11;
+    tpnt->proc_name = "GVP11";
     tpnt->proc_info = &wd33c93_proc_info;
 
-    while (1) {
+    while ((z = zorro_find_device(ZORRO_WILDCARD, z))) {
 	/* 
 	 * This should (hopefully) be the correct way to identify
 	 * all the different GVP SCSI controllers (except for the
 	 * SERIES I though).
 	 */
-	skey = key;
 
-	if ((key = zorro_find(ZORRO_PROD_GVP_COMBO_030_R3_SCSI, 0, skey)) ||
-	    (key = zorro_find(ZORRO_PROD_GVP_SERIES_II, 0, skey)))
+	if (z->id == ZORRO_PROD_GVP_COMBO_030_R3_SCSI ||
+	    z->id == ZORRO_PROD_GVP_SERIES_II)
 	    default_dma_xfer_mask = ~0x00ffffff;
-	else if ((key = zorro_find(ZORRO_PROD_GVP_GFORCE_030_SCSI, 0, skey)) ||
-		 (key = zorro_find(ZORRO_PROD_GVP_A530_SCSI, 0, skey)) ||
-		 (key = zorro_find(ZORRO_PROD_GVP_COMBO_030_R4_SCSI, 0, skey)))
+	else if (z->id == ZORRO_PROD_GVP_GFORCE_030_SCSI ||
+		 z->id == ZORRO_PROD_GVP_A530_SCSI ||
+		 z->id == ZORRO_PROD_GVP_COMBO_030_R4_SCSI)
 	    default_dma_xfer_mask = ~0x01ffffff;
-	else if ((key = zorro_find(ZORRO_PROD_GVP_A1291, 0, skey)) ||
-		 (key = zorro_find(ZORRO_PROD_GVP_GFORCE_040_SCSI_1, 0, skey)))
+	else if (z->id == ZORRO_PROD_GVP_A1291 ||
+		 z->id == ZORRO_PROD_GVP_GFORCE_040_SCSI_1)
 	    default_dma_xfer_mask = ~0x07ffffff;
 	else
-	    break;
-
-	cd = zorro_get_board(key);
-	address = cd->cd_BoardAddr;
+	    continue;
 
 	/*
 	 * Rumors state that some GVP ram boards use the same product
 	 * code as the SCSI controllers. Therefore if the board-size
 	 * is not 64KB we asume it is a ram board and bail out.
 	 */
-	if (cd->cd_BoardSize != 0x10000)
+	if (z->resource.end-z->resource.start != 0xffff)
 		continue;
+
+	address = z->resource.start;
+	if (!request_mem_region(address, 256, "wd33c93"))
+	    continue;
+	strcpy(z->name, "GVP Series II SCSI");
 
 #ifdef CHECK_WD33C93
 
@@ -253,18 +253,18 @@ __initfunc(int gvp11_detect(Scsi_Host_Template *tpnt))
 
 	q = *sasr_3393;		/* read it */
 	if (q & 0x08)		/* bit 3 should always be clear */
-		continue;
+		goto release;
 	*sasr_3393 = WD_AUXILIARY_STATUS;	 /* setup indirect address */
 	if (*sasr_3393 == WD_AUXILIARY_STATUS) { /* shouldn't retain the write */
 		*sasr_3393 = save_sasr;	/* Oops - restore this byte */
-		continue;
+		goto release;
 		}
 	if (*sasr_3393 != q) {	/* should still read the same */
 		*sasr_3393 = save_sasr;	/* Oops - restore this byte */
-		continue;
+		goto release;
 		}
 	if (*scmd_3393 != q)	/* and so should the image at 0x1f */
-		continue;
+		goto release;
 
 
     /* Ok, we probably have a wd33c93, but let's check a few other places
@@ -281,7 +281,7 @@ __initfunc(int gvp11_detect(Scsi_Host_Template *tpnt))
 	*sasr_3393 = WD_SCSI_STATUS;
 	*scmd_3393 = q;
 	if (qq != q)			/* should be read only */
-		continue;
+		goto release;
 	*sasr_3393 = 0x1e;	/* this register is unimplemented */
 	q = *scmd_3393;
 	*sasr_3393 = 0x1e;
@@ -291,7 +291,7 @@ __initfunc(int gvp11_detect(Scsi_Host_Template *tpnt))
 	*sasr_3393 = 0x1e;
 	*scmd_3393 = q;
 	if (qq != q || qq != 0xff)	/* should be read only, all 1's */
-		continue;
+		goto release;
 	*sasr_3393 = WD_TIMEOUT_PERIOD;
 	q = *scmd_3393;
 	*sasr_3393 = WD_TIMEOUT_PERIOD;
@@ -301,13 +301,13 @@ __initfunc(int gvp11_detect(Scsi_Host_Template *tpnt))
 	*sasr_3393 = WD_TIMEOUT_PERIOD;
 	*scmd_3393 = q;
 	if (qq != (~q & 0xff))		/* should be read/write */
-		continue;
+		goto release;
 #endif
 
 	instance = scsi_register (tpnt, sizeof (struct WD33C93_hostdata));
-	instance->base = (unsigned char *)ZTWO_VADDR(address);
+	instance->base = ZTWO_VADDR(address);
 	instance->irq = IRQ_AMIGA_PORTS;
-	instance->unique_id = key;
+	instance->unique_id = z->slotaddr;
 
 	if (gvp11_xfer_mask)
 		HDATA(instance)->dma_xfer_mask = gvp11_xfer_mask;
@@ -338,11 +338,14 @@ __initfunc(int gvp11_detect(Scsi_Host_Template *tpnt))
 	if (num_gvp11++ == 0) {
 		first_instance = instance;
 		gvp11_template = instance->hostt;
-		request_irq(IRQ_AMIGA_PORTS, gvp11_intr, 0,
+		request_irq(IRQ_AMIGA_PORTS, gvp11_intr, SA_SHIRQ,
 			    "GVP11 SCSI", gvp11_intr);
 	}
 	DMA(instance)->CNTR = GVP11_DMAC_INT_ENABLE;
-	zorro_config_board(key, 0);
+	continue;
+
+release:
+	release_mem_region(ZTWO_PADDR(instance->base), 256);
     }
 
     return num_gvp11;
@@ -365,7 +368,7 @@ int gvp11_release(struct Scsi_Host *instance)
 {
 #ifdef MODULE
     DMA(instance)->CNTR = 0;
-    zorro_unconfig_board(instance->unique_id, 0);
+    release_mem_region(ZTWO_PADDR(instance->base), 256);
     if (--num_gvp11 == 0)
 	    free_irq(IRQ_AMIGA_PORTS, gvp11_intr);
     wd33c93_release();

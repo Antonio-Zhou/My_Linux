@@ -13,7 +13,6 @@
 /*
  * Thomas Sailer   : ioctl code reworked (vmalloc/vfree removed)
  */
-#include <linux/config.h>
 #include <linux/stddef.h>
 #include <linux/kmod.h>
 
@@ -21,7 +20,6 @@
 
 #include "sound_config.h"
 
-#ifdef CONFIG_MIDI
 
 /*
  * Don't make MAX_QUEUE_SIZE larger than 4000
@@ -29,8 +27,8 @@
 
 #define MAX_QUEUE_SIZE	4000
 
-static struct wait_queue *midi_sleeper[MAX_MIDI_DEV] = {NULL};
-static struct wait_queue *input_sleeper[MAX_MIDI_DEV] = {NULL};
+static wait_queue_head_t midi_sleeper[MAX_MIDI_DEV];
+static wait_queue_head_t input_sleeper[MAX_MIDI_DEV];
 
 struct midi_buf
 {
@@ -53,7 +51,7 @@ static void midi_poll(unsigned long dummy);
 
 
 static struct timer_list poll_timer = {
-	NULL, NULL, 0, 0, midi_poll
+	function: midi_poll
 };
 
 static volatile int open_devs = 0;
@@ -202,8 +200,8 @@ int MIDIbuf_open(int dev, struct file *file)
 	midi_out_buf[dev]->len = midi_out_buf[dev]->head = midi_out_buf[dev]->tail = 0;
 	open_devs++;
 
-	init_waitqueue(&midi_sleeper[dev]);
-	init_waitqueue(&input_sleeper[dev]);
+	init_waitqueue_head(&midi_sleeper[dev]);
+	init_waitqueue_head(&input_sleeper[dev]);
 
 	if (open_devs < 2)	/* This was first open */
 	{
@@ -396,6 +394,7 @@ int MIDIbuf_ioctl(int dev, struct file *file,
 	}
 }
 
+/* No kernel lock - fine */
 unsigned int MIDIbuf_poll(int dev, struct file *file, poll_table * wait)
 {
 	unsigned int mask = 0;
@@ -431,6 +430,3 @@ int MIDIbuf_avail(int dev)
 		return DATA_AVAIL (midi_in_buf[dev]);
 	return 0;
 }
-
-
-#endif

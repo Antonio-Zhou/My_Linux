@@ -1,4 +1,4 @@
-/* $Id: head.S,v 1.95.2.7 2001/08/12 10:56:22 davem Exp $
+/* $Id: head.S,v 1.103 2000/05/09 17:40:13 davem Exp $
  * head.S: The initial boot code for the Sparc port of Linux.
  *
  * Copyright (C) 1995 David S. Miller (davem@caip.rutgers.edu)
@@ -6,6 +6,8 @@
  * Copyright (C) 1996 Miguel de Icaza (miguel@nuclecu.unam.mx)
  * Copyright (C) 1997 Jakub Jelinek   (jj@sunsite.mff.cuni.cz)
  * Copyright (C) 1997 Michael A. Griffith (grif@acm.org)
+ *
+ * CompactPCI platform by Eric Brower, 1999.
  */
 
 #include <linux/version.h>
@@ -76,6 +78,11 @@ sun4e_notsup:
         .asciz  "Sparc-Linux sun4e support does not exist\n\n"
 	.align 4
 
+#ifndef CONFIG_SUNOS_EMUL
+#undef SUNOS_SYSCALL_TRAP
+#define SUNOS_SYSCALL_TRAP SUNOS_NO_SYSCALL_TRAP
+#endif
+
 	/* The Sparc trap table, bootloader gives us control at _start. */
 	.text
 	.globl	start, _stext, _start, __stext
@@ -85,7 +92,7 @@ __stext:
 _stext:
 start:
 C_LABEL(trapbase):
-#ifdef __SMP__
+#ifdef CONFIG_SMP
 C_LABEL(trapbase_cpu0):
 #endif
 /* We get control passed to us here at t_zero. */
@@ -117,7 +124,7 @@ t_irq12:TRAP_ENTRY_INTERRUPT(12)            /* IRQ Zilog serial chip         */
 t_irq13:TRAP_ENTRY_INTERRUPT(13)            /* IRQ Audio Intr.               */
 t_irq14:TRAP_ENTRY_INTERRUPT(14)            /* IRQ Timer #2                  */
 	.globl	t_nmi
-#ifndef __SMP__
+#ifndef CONFIG_SMP
 t_nmi:	NMI_TRAP                            /* Level 15 (NMI)                */
 #else
 t_nmi:	TRAP_ENTRY(0x1f, linux_trap_ipi15_sun4m)
@@ -151,13 +158,9 @@ t_bad6f:BAD_TRAP(0x6f) BAD_TRAP(0x70) BAD_TRAP(0x71) BAD_TRAP(0x72) BAD_TRAP(0x7
 t_bad74:BAD_TRAP(0x74) BAD_TRAP(0x75) BAD_TRAP(0x76) BAD_TRAP(0x77) BAD_TRAP(0x78)
 t_bad79:BAD_TRAP(0x79) BAD_TRAP(0x7a) BAD_TRAP(0x7b) BAD_TRAP(0x7c) BAD_TRAP(0x7d)
 t_bad7e:BAD_TRAP(0x7e) BAD_TRAP(0x7f)
-#ifdef CONFIG_SUNOS_EMUL
 t_sunos:SUNOS_SYSCALL_TRAP                  /* SunOS System Call             */
-#else
-t_sunos:SUNOS_NO_SYSCALL_TRAP		    /* No SunOS emulation	     */
-#endif
 t_sbkpt:BREAKPOINT_TRAP                     /* Software Breakpoint/KGDB      */
-t_divz:	TRAP_ENTRY(0x82, do_hw_divzero)     /* Divide by zero trap           */
+t_divz:	BAD_TRAP(0x82)                      /* Divide by zero trap           */
 t_flwin:TRAP_ENTRY(0x83, do_flush_windows)  /* Flush Windows Trap            */
 t_clwin:BAD_TRAP(0x84)                      /* Clean Windows Trap            */
 t_rchk:	BAD_TRAP(0x85)                      /* Range Check                   */
@@ -200,7 +203,7 @@ dbtrap2:BAD_TRAP(0xff)                      /* Debugger/PROM breakpoint #2   */
 	.globl	C_LABEL(end_traptable)
 C_LABEL(end_traptable):
 
-#ifdef __SMP__
+#ifdef CONFIG_SMP
 	/* Trap tables for the other cpus. */
 	.globl	C_LABEL(trapbase_cpu1), C_LABEL(trapbase_cpu2), C_LABEL(trapbase_cpu3)
 C_LABEL(trapbase_cpu1):
@@ -240,13 +243,9 @@ C_LABEL(trapbase_cpu1):
 	BAD_TRAP(0x74) BAD_TRAP(0x75) BAD_TRAP(0x76) BAD_TRAP(0x77) BAD_TRAP(0x78)
 	BAD_TRAP(0x79) BAD_TRAP(0x7a) BAD_TRAP(0x7b) BAD_TRAP(0x7c) BAD_TRAP(0x7d)
 	BAD_TRAP(0x7e) BAD_TRAP(0x7f)
-#ifdef CONFIG_SUNOS_EMUL
-	SUNOS_SYSCALL_TRAP	/* SunOS System Call */
-#else
-	SUNOS_NO_SYSCALL_TRAP	/* No SunOS emulation */
-#endif
+	SUNOS_SYSCALL_TRAP 
 	BREAKPOINT_TRAP
-	TRAP_ENTRY(0x82, do_hw_divzero)
+	BAD_TRAP(0x82)
 	TRAP_ENTRY(0x83, do_flush_windows) BAD_TRAP(0x84) BAD_TRAP(0x85)
 	BAD_TRAP(0x86) BAD_TRAP(0x87) SOLARIS_SYSCALL_TRAP
 	NETBSD_SYSCALL_TRAP BAD_TRAP(0x8a) BAD_TRAP(0x8b) BAD_TRAP(0x8c)
@@ -312,13 +311,9 @@ C_LABEL(trapbase_cpu2):
 	BAD_TRAP(0x74) BAD_TRAP(0x75) BAD_TRAP(0x76) BAD_TRAP(0x77) BAD_TRAP(0x78)
 	BAD_TRAP(0x79) BAD_TRAP(0x7a) BAD_TRAP(0x7b) BAD_TRAP(0x7c) BAD_TRAP(0x7d)
 	BAD_TRAP(0x7e) BAD_TRAP(0x7f)
-#ifdef CONFIG_SUNOS_EMUL
-	SUNOS_SYSCALL_TRAP	/* SunOS System Call */
-#else
-	SUNOS_NO_SYSCALL_TRAP	/* No SunOS emulation */
-#endif
+	SUNOS_SYSCALL_TRAP 
 	BREAKPOINT_TRAP
-	TRAP_ENTRY(0x82, do_hw_divzero)
+	BAD_TRAP(0x82)
 	TRAP_ENTRY(0x83, do_flush_windows) BAD_TRAP(0x84) BAD_TRAP(0x85)
 	BAD_TRAP(0x86) BAD_TRAP(0x87) SOLARIS_SYSCALL_TRAP
 	NETBSD_SYSCALL_TRAP BAD_TRAP(0x8a) BAD_TRAP(0x8b) BAD_TRAP(0x8c)
@@ -384,13 +379,9 @@ C_LABEL(trapbase_cpu3):
 	BAD_TRAP(0x74) BAD_TRAP(0x75) BAD_TRAP(0x76) BAD_TRAP(0x77) BAD_TRAP(0x78)
 	BAD_TRAP(0x79) BAD_TRAP(0x7a) BAD_TRAP(0x7b) BAD_TRAP(0x7c) BAD_TRAP(0x7d)
 	BAD_TRAP(0x7e) BAD_TRAP(0x7f)
-#ifdef CONFIG_SUNOS_EMUL
-	SUNOS_SYSCALL_TRAP	/* SunOS System Call */
-#else
-	SUNOS_NO_SYSCALL_TRAP	/* No SunOS emulation */
-#endif
+	SUNOS_SYSCALL_TRAP  
 	BREAKPOINT_TRAP
-	TRAP_ENTRY(0x82, do_hw_divzero)
+	BAD_TRAP(0x82)
 	TRAP_ENTRY(0x83, do_flush_windows) BAD_TRAP(0x84) BAD_TRAP(0x85)
 	BAD_TRAP(0x86) BAD_TRAP(0x87) SOLARIS_SYSCALL_TRAP
 	NETBSD_SYSCALL_TRAP BAD_TRAP(0x8a) BAD_TRAP(0x8b) BAD_TRAP(0x8c)
@@ -492,10 +483,8 @@ current_pc:
 1:
 		mov	%o7, %g3
 
-#ifndef CONFIG_AP1000
 		tst	%o0
 		be	no_sun4u_here
-#endif
 		 mov	%g4, %o7		/* Previous %o7. */
 	
 		mov	%o0, %l0		! stash away romvec
@@ -771,11 +760,6 @@ go_to_highmem:
  * I figure out and store nwindows and nwindowsm1 later on.
  */
 execute_in_high_mem:
-#if CONFIG_AP1000
-                /* we don't have a prom :-( */
-                b sun4m_init
-                nop
-#endif
 		mov	%l0, %o0		! put back romvec
 		mov	%l1, %o1		! and debug_vec
 
@@ -861,6 +845,8 @@ got_prop:
 		be	1f
 		 cmp	%l1, 'm'
 		be	1f
+		 cmp	%l1, 's'
+		be	1f
 		 cmp	%l1, 'd'
 		be	1f
 		 cmp	%l1, 'e'
@@ -872,6 +858,8 @@ got_prop:
 1:		set	C_LABEL(cputypval), %l1
 		ldub	[%l1 + 0x4], %l1
 		cmp	%l1, 'm'		! Test for sun4d, sun4e ?
+		be	sun4m_init
+		 cmp	%l1, 's'		! Treat sun4s as sun4m
 		be	sun4m_init
 		 cmp	%l1, 'd'		! Let us see how the beast will die
 		be	sun4d_init
@@ -897,7 +885,7 @@ sun4d_init:
 	or	%g5, %g3, %g5
 	st	%g5, [%g4]
 
-#ifdef __SMP__
+#ifdef CONFIG_SMP
 	/* Get our CPU id out of bootbus */
 	set     SUN4D_BOOTBUS_CPUID, %g3
 	lduba   [%g3] ASI_M_CTL, %g3
@@ -1042,7 +1030,7 @@ sun4c_continue_boot:
 		 */
 		set	C_LABEL(init_task_union), %g6
 		set	C_LABEL(current_set), %g2
-#ifdef __SMP__
+#ifdef CONFIG_SMP
 		sethi	%hi(C_LABEL(boot_cpu_id4)), %g3
 		ldub	[%g3 + %lo(C_LABEL(boot_cpu_id4))], %g3
 		st	%g6, [%g2]
@@ -1050,7 +1038,7 @@ sun4c_continue_boot:
 #endif
 		st	%g6, [%g2]
 
-		st	%g0, [%g6 + AOFF_task_tss + AOFF_thread_uwinmask]
+		st	%g0, [%g6 + AOFF_task_thread + AOFF_thread_uwinmask]
 
 /* Compute NWINDOWS and stash it away. Now uses %wim trick explained
  * in the V8 manual. Ok, this method seems to work, Sparc is cool...

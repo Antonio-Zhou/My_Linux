@@ -4,21 +4,23 @@
  *
  *  S390 version
  *    Copyright (C) 1999 IBM Deutschland Entwicklung GmbH, IBM Corporation
- *    Author(s): Martin Peschke <mpeschke@de.ibm.com>
+ *    Author(s): Martin Peschke <peschke@fh-brandenburg.de>
  *
- * 
  *
- * 
- * 
- * 
+ *
+ *
+ *
+ *
  */
 
+#include <linux/config.h>
 #include <linux/kernel.h>
 #include <linux/string.h>
 #include <linux/errno.h>
 #include <linux/ctype.h>
 #include <linux/mm.h>
 #include <linux/timer.h>
+#include <linux/bootmem.h>
 
 #include <asm/ebcdic.h>
 #include <asm/uaccess.h>
@@ -26,16 +28,10 @@
 #include <asm/bitops.h>
 #include <asm/setup.h>
 #include <asm/page.h>
-#include <asm/s390_ext.h>
-#include <asm/irq.h>
 
 #ifndef MIN
-#define MIN(a,b) (((a<b) ? a : b))
+#define MIN(a,b) ((a<b) ? a : b)
 #endif
-
-#define HWC_ASCEBC(x) ((MACHINE_IS_VM ? _ascebc[x] : _ascebc_500[x]))
-
-#define HWC_EBCASC_STR(s,c) ((MACHINE_IS_VM ? EBCASC(s,c) : EBCASC_500(s,c)))
 
 #define HWC_RW_PRINT_HEADER "hwc low level driver: "
 
@@ -54,8 +50,6 @@
 #undef DUMP_HWCB_INPUT
 
 #undef BUFFER_STRESS_TEST
-
-#undef MEASURE_HWC_OUTPUT
 
 typedef struct {
 	unsigned char *next;
@@ -124,16 +118,12 @@ static unsigned char _obuf[MAX_HWCB_ROOM];
 static unsigned char
  _page[PAGE_SIZE] __attribute__ ((aligned (PAGE_SIZE)));
 
-typedef unsigned long kmem_pages_t;
+typedef u32 kmem_pages_t;
 
 #define MAX_KMEM_PAGES (sizeof(kmem_pages_t) << 3)
 
-#define HWC_WTIMER_RUNS	1
-#define HWC_FLUSH		2
-#define HWC_INIT		4
-#define HWC_BROKEN		8
-#define HWC_INTERRUPT		16
-#define HWC_PTIMER_RUNS	32
+#define HWC_TIMER_RUNS	1
+#define FLUSH_HWCBS	2
 
 static struct {
 
@@ -175,17 +165,12 @@ static struct {
 	unsigned char write_prio:1;
 	unsigned char read_nonprio:1;
 	unsigned char read_prio:1;
-	unsigned char read_statechange:1;
 
 	unsigned char flags;
-
-	hwc_high_level_calls_t *calls;
 
 	spinlock_t lock;
 
 	struct timer_list write_timer;
-
-	struct timer_list poll_timer;
 } hwc_data =
 {
 	{
@@ -194,17 +179,15 @@ static struct {
 		8,
 		    0,
 		    80,
+		    CODE_ASCII,
 		    1,
+		    50,
 		    MAX_KMEM_PAGES,
-		    MAX_KMEM_PAGES,
 
 		    0,
 
-		    0x6c,
+		    0x6c
 
-		    0,
-		    0,
-		    0
 	},
 	    NULL,
 	    NULL,
@@ -225,25 +208,20 @@ static struct {
 	    0,
 	    0,
 	    0,
-	    0,
-	    0,
-	    NULL
+	    0
 
 };
-
-static unsigned long cr0 __attribute__ ((aligned (8)));
-static unsigned long cr0_save __attribute__ ((aligned (8)));
-static unsigned char psw_mask __attribute__ ((aligned (8)));
 
 #define DELAYED_WRITE 0
 #define IMMEDIATE_WRITE 1
 
 static signed int do_hwc_write (int from_user, unsigned char *,
 				unsigned int,
+				unsigned char,
 				unsigned char);
 
 static asmlinkage int 
-internal_print (char write_time, char *fmt,...)
+internal_print (char write_time, const char *fmt,...)
 {
 	va_list args;
 	int i;
@@ -252,7 +230,7 @@ internal_print (char write_time, char *fmt,...)
 	va_start (args, fmt);
 	i = vsprintf (buf, fmt, args);
 	va_end (args);
-	return do_hwc_write (0, buf, i, write_time);
+	return do_hwc_write (0, buf, i, CODE_ASCII, write_time);
 }
 
 int 
@@ -268,7 +246,7 @@ hwc_printk (const char *fmt,...)
 
 	i = vsprintf (buf, fmt, args);
 	va_end (args);
-	retval = do_hwc_write (0, buf, i, IMMEDIATE_WRITE);
+	retval = do_hwc_write (0, buf, i, CODE_ASCII, IMMEDIATE_WRITE);
 
 	spin_unlock_irqrestore (&hwc_data.lock, flags);
 
@@ -318,8 +296,8 @@ service_call (
 {
 	unsigned int condition_code = 1;
 
-	__asm__ __volatile__ ("L 1, 0(%0) \n\t"
-			      "LRA 2, 0(%1) \n\t"
+	__asm__ __volatile__ ("L 1, 0(0,%0) \n\t"
+			      "LRA 2, 0(0,%1) \n\t"
 			      ".long 0xB2200012 \n\t"
 			      :
 			      :"a" (&hwc_command_word), "a" (hwcb)
@@ -332,15 +310,15 @@ service_call (
 	return condition_code;
 }
 
-static inline unsigned long 
-hwc_ext_int_param (void)
+static inline unsigned char *
+ext_int_param (void)
 {
 	u32 param;
 
-	__asm__ __volatile__ ("L %0,128\n\t"
+	__asm__ __volatile__ ("L %0,128(0,0)\n\t"
 			      :"=r" (param));
 
-	return (unsigned long) param;
+	return ((unsigned char *) param);
 }
 
 static int 
@@ -357,6 +335,9 @@ prepare_write_hwcb (void)
 	hwcb = (write_hwcb_t *) BUF_HWCB;
 
 	memcpy (hwcb, &write_hwcb_template, sizeof (write_hwcb_t));
+
+	if (!hwc_data.write_nonprio && hwc_data.write_prio)
+		hwcb->msgbuf.type = ET_PMsgCmd;
 
 	return 0;
 }
@@ -380,7 +361,7 @@ sane_write_hwcb (void)
 
 #ifdef DUMP_HWC_WRITE_LIST_ERROR
 		__asm__ ("LHI 1,0xe30\n\t"
-			 "LRA 2,0(%0) \n\t"
+			 "LRA 2,0(0,%0) \n\t"
 			 "J .+0 \n\t"
 	      :
 	      :	 "a" (bad_addr)
@@ -411,7 +392,7 @@ sane_write_hwcb (void)
 			page = (unsigned long) BUF_HWCB;
 
 			if (page >= hwc_data.kmem_start &&
-			    page <= hwc_data.kmem_end) {
+			    page < hwc_data.kmem_end) {
 
 				page_nr = (int)
 				    ((page - hwc_data.kmem_start) >> 12);
@@ -422,11 +403,11 @@ sane_write_hwcb (void)
 		internal_print (
 				       DELAYED_WRITE,
 				       HWC_RW_PRINT_HEADER
-		       "found invalid HWCB at address 0x%lx. List corrupted. "
+			"found invalid HWCB at address 0x%x. List corrupted. "
 			   "Lost %i HWCBs with %i characters within up to %i "
 			   "messages. Saved %i HWCB with last %i characters i"
 				       "within up to %i messages.\n",
-				       (unsigned long) bad_addr,
+				       (unsigned int) bad_addr,
 				       lost_hwcb, lost_char, lost_msg,
 				       hwc_data.hwcb_count,
 				       ALL_HWCB_CHAR, ALL_HWCB_MTO);
@@ -442,8 +423,8 @@ reuse_write_hwcb (void)
 	if (hwc_data.hwcb_count < 2)
 #ifdef DUMP_HWC_WRITE_LIST_ERROR
 		__asm__ ("LHI 1,0xe31\n\t"
-			 "LRA 2,0(%0)\n\t"
-			 "LRA 3,0(%1)\n\t"
+			 "LRA 2,0(0,%0)\n\t"
+			 "LRA 3,0(0,%1)\n\t"
 			 "J .+0 \n\t"
 	      :
 	      :	 "a" (BUF_HWCB), "a" (OUT_HWCB)
@@ -592,8 +573,9 @@ release_write_hwcb (void)
 		OUT_HWCB = OUT_HWCB_NEXT;
 
 		if (page >= hwc_data.kmem_start &&
-		    page <= hwc_data.kmem_end) {
-			/*memset((void *) page, 0, PAGE_SIZE); */
+		    page < hwc_data.kmem_end) {
+
+			memset ((void *) page, 0, PAGE_SIZE);
 
 			page_nr = (int) ((page - hwc_data.kmem_start) >> 12);
 			clear_bit (page_nr, &hwc_data.kmem_pages);
@@ -654,38 +636,7 @@ add_mto (
 	BUF_HWCB_CHAR += count;
 	ALL_HWCB_CHAR += count;
 
-#ifdef MEASURE_HWC_OUTPUT
-
-	hwc_data.ioctls.measured_lines++;
-	hwc_data.ioctls.measured_chars += count;
-#endif
-
 	return count;
-}
-
-static int write_event_data_1 (void);
-
-static void 
-do_poll_hwc (unsigned long data)
-{
-	unsigned long flags;
-
-	spin_lock_irqsave (&hwc_data.lock, flags);
-
-	write_event_data_1 ();
-
-	spin_unlock_irqrestore (&hwc_data.lock, flags);
-}
-
-void 
-start_poll_hwc (void)
-{
-	init_timer (&hwc_data.poll_timer);
-	hwc_data.poll_timer.function = do_poll_hwc;
-	hwc_data.poll_timer.data = (unsigned long) NULL;
-	hwc_data.poll_timer.expires = jiffies + 2 * HZ;
-	add_timer (&hwc_data.poll_timer);
-	hwc_data.flags |= HWC_PTIMER_RUNS;
 }
 
 static int 
@@ -693,35 +644,27 @@ write_event_data_1 (void)
 {
 	unsigned short int condition_code;
 	int retval;
-	write_hwcb_t *hwcb = (write_hwcb_t *) OUT_HWCB;
 
-	if ((!hwc_data.write_prio) &&
-	    (!hwc_data.write_nonprio) &&
-	    hwc_data.read_statechange)
-		return -EOPNOTSUPP;
+	if ((!hwc_data.write_prio) && (!hwc_data.write_nonprio))
+		return -EPERM;
 
 	if (hwc_data.current_servc)
 		return -EBUSY;
 
 	retval = sane_write_hwcb ();
 	if (retval < 0)
-		return -EIO;
+		return retval;
 
 	if (!OUT_HWCB_MTO)
 		return -ENODATA;
-
-	if (!hwc_data.write_nonprio && hwc_data.write_prio)
-		hwcb->msgbuf.type = ET_PMsgCmd;
-	else
-		hwcb->msgbuf.type = ET_Msg;
 
 	condition_code = service_call (HWC_CMDW_WRITEDATA, OUT_HWCB);
 
 #ifdef DUMP_HWC_WRITE_ERROR
 	if (condition_code != HWC_COMMAND_INITIATED)
 		__asm__ ("LHI 1,0xe20\n\t"
-			 "L 2,0(%0)\n\t"
-			 "LRA 3,0(%1)\n\t"
+			 "L 2,0(0,%0)\n\t"
+			 "LRA 3,0(0,%1)\n\t"
 			 "J .+0 \n\t"
 	      :
 	      :	 "a" (&condition_code), "a" (OUT_HWCB)
@@ -733,15 +676,10 @@ write_event_data_1 (void)
 		hwc_data.current_servc = HWC_CMDW_WRITEDATA;
 		hwc_data.current_hwcb = OUT_HWCB;
 		retval = condition_code;
-#ifdef MEASURE_HWC_OUTPUT
-		hwc_data.ioctls.measured_wcalls++;
-#endif
 		break;
 	case HWC_BUSY:
 		retval = -EBUSY;
 		break;
-	case HWC_NOT_OPERATIONAL:
-		start_poll_hwc ();
 	default:
 		retval = -EIO;
 	}
@@ -757,105 +695,87 @@ flush_hwcbs (void)
 
 	release_write_hwcb ();
 
-	hwc_data.flags &= ~HWC_FLUSH;
+	hwc_data.flags &= ~FLUSH_HWCBS;
 }
 
 static int 
-write_event_data_2 (u32 ext_int_param)
+write_event_data_2 (void)
 {
 	write_hwcb_t *hwcb;
-	int retval = 0;
+	int retval;
+	unsigned char *param;
 
-#ifdef DUMP_HWC_WRITE_ERROR
-	if ((ext_int_param & HWC_EXT_INT_PARAM_ADDR)
-	    != (unsigned long) hwc_data.current_hwcb) {
-		internal_print (
-				       DELAYED_WRITE,
-				       HWC_RW_PRINT_HEADER
-				       "write_event_data_2 : "
-				       "HWCB address does not fit "
-				       "(expected: 0x%lx, got: 0x%lx).\n",
-				       (unsigned long) hwc_data.current_hwcb,
-				       ext_int_param);
+	param = ext_int_param ();
+	if (param != hwc_data.current_hwcb)
 		return -EINVAL;
-	}
-#endif
 
 	hwcb = (write_hwcb_t *) OUT_HWCB;
 
-#ifdef DUMP_HWC_WRITE_LIST_ERROR
-	if (((unsigned char *) hwcb) != hwc_data.current_hwcb) {
+#ifdef DUMP_HWC_WRITE_ERROR
+#if 0
+	if (((unsigned char *) hwcb) != param)
 		__asm__ ("LHI 1,0xe22\n\t"
-			 "LRA 2,0(%0)\n\t"
-			 "LRA 3,0(%1)\n\t"
-			 "LRA 4,0(%2)\n\t"
-			 "LRA 5,0(%3)\n\t"
+			 "LRA 2,0(0,%0)\n\t"
+			 "LRA 3,0(0,%1)\n\t"
+			 "LRA 4,0(0,%2)\n\t"
+			 "LRA 5,0(0,%3)\n\t"
 			 "J .+0 \n\t"
 	      :
 	      :	 "a" (OUT_HWCB),
 			 "a" (hwc_data.current_hwcb),
 			 "a" (BUF_HWCB),
-			 "a" (hwcb)
+			 "a" (param)
 	      :	 "1", "2", "3", "4", "5");
-	}
+#endif
+	if (hwcb->response_code != 0x0020)
+#if 0
+		internal_print (DELAYED_WRITE, HWC_RW_PRINT_HEADER
+		  "\n************************ error in write_event_data_2()\n"
+				"OUT_HWCB:                    0x%x\n"
+				"BUF_HWCB:                    0x%x\n"
+				"response_code:               0x%x\n"
+				"hwc_data.hwcb_count:        %d\n"
+				"hwc_data.kmem_pages:        0x%x\n"
+				"hwc_data.ioctls.kmem_hwcb:   %d\n"
+				"hwc_data.ioctls.max_hwcb:    %d\n"
+				"hwc_data.kmem_start:        0x%x\n"
+				"hwc_data.kmem_end:          0x%x\n"
+		    "*****************************************************\n",
+				OUT_HWCB,
+				BUF_HWCB,
+				hwcb->response_code,
+				hwc_data.hwcb_count,
+				hwc_data.kmem_pages,
+				hwc_data.ioctls.kmem_hwcb,
+				hwc_data.ioctls.max_hwcb,
+				hwc_data.kmem_start,
+				hwc_data.kmem_end);
+#endif
+	__asm__ ("LHI 1,0xe21\n\t"
+		 "LRA 2,0(0,%0)\n\t"
+		 "LRA 3,0(0,%1)\n\t"
+		 "LRA 4,0(0,%2)\n\t"
+		 "LH 5,0(0,%3)\n\t"
+		 "SRL 5,8(0)\n\t"
+		 "J .+0 \n\t"
+      :
+      :	 "a" (OUT_HWCB), "a" (hwc_data.current_hwcb),
+		 "a" (BUF_HWCB),
+		 "a" (&(hwc_data.hwcb_count))
+      :	 "1", "2", "3", "4", "5");
 #endif
 
-#ifdef DUMP_HWC_WRITE_ERROR
-	if (hwcb->response_code != 0x0020) {
-		__asm__ ("LHI 1,0xe21\n\t"
-			 "LRA 2,0(%0)\n\t"
-			 "LRA 3,0(%1)\n\t"
-			 "LRA 4,0(%2)\n\t"
-			 "LH 5,0(%3)\n\t"
-			 "SRL 5,8\n\t"
-			 "J .+0 \n\t"
-	      :
-	      :	 "a" (OUT_HWCB), "a" (hwc_data.current_hwcb),
-			 "a" (BUF_HWCB),
-			 "a" (&(hwc_data.hwcb_count))
-	      :	 "1", "2", "3", "4", "5");
-	}
-#endif
-
-	switch (hwcb->response_code) {
-	case 0x0020:
+	if (hwcb->response_code == 0x0020) {
 
 		retval = OUT_HWCB_CHAR;
 		release_write_hwcb ();
-		break;
-	case 0x0040:
-	case 0x0340:
-	case 0x40F0:
-		if (!hwc_data.read_statechange) {
-			hwcb->response_code = 0;
-			start_poll_hwc ();
-		}
+	} else
 		retval = -EIO;
-		break;
-	default:
-		internal_print (
-				       DELAYED_WRITE,
-				       HWC_RW_PRINT_HEADER
-				       "write_event_data_2 : "
-				       "failed operation "
-				       "(response code: 0x%x "
-				       "HWCB address: 0x%x).\n",
-				       hwcb->response_code,
-				       hwcb);
-		retval = -EIO;
-	}
 
-	if (retval == -EIO) {
-
-		hwcb->control_mask[0] = 0;
-		hwcb->control_mask[1] = 0;
-		hwcb->control_mask[2] = 0;
-		hwcb->response_code = 0;
-	}
 	hwc_data.current_servc = 0;
 	hwc_data.current_hwcb = NULL;
 
-	if (hwc_data.flags & HWC_FLUSH)
+	if (hwc_data.flags & FLUSH_HWCBS)
 		flush_hwcbs ();
 
 	return retval;
@@ -875,10 +795,10 @@ do_put_line (
 #ifdef DUMP_HWC_WRITE_LIST_ERROR
 		if (add_mto (message, count) != count)
 			__asm__ ("LHI 1,0xe32\n\t"
-				 "LRA 2,0(%0)\n\t"
-				 "L 3,0(%1)\n\t"
-				 "LRA 4,0(%2)\n\t"
-				 "LRA 5,0(%3)\n\t"
+				 "LRA 2,0(0,%0)\n\t"
+				 "L 3,0(0,%1)\n\t"
+				 "LRA 4,0(0,%2)\n\t"
+				 "LRA 5,0(0,%3)\n\t"
 				 "J .+0 \n\t"
 		      :
 		      :	 "a" (message), "a" (&hwc_data.kmem_pages),
@@ -896,9 +816,9 @@ put_line (
 		 unsigned short count)
 {
 
-	if ((!hwc_data.obuf_start) && (hwc_data.flags & HWC_WTIMER_RUNS)) {
+	if ((!hwc_data.obuf_start) && (hwc_data.flags & HWC_TIMER_RUNS)) {
 		del_timer (&hwc_data.write_timer);
-		hwc_data.flags &= ~HWC_WTIMER_RUNS;
+		hwc_data.flags &= ~HWC_TIMER_RUNS;
 	}
 	hwc_data.obuf_start += count;
 
@@ -944,12 +864,13 @@ do_hwc_write (
 		     int from_user,
 		     unsigned char *msg,
 		     unsigned int count,
+		     unsigned char code,
 		     unsigned char write_time)
 {
 	unsigned int i_msg = 0;
 	unsigned short int spaces = 0;
 	unsigned int processed_characters = 0;
-	unsigned char ch;
+	unsigned char ch, orig_ch;
 	unsigned short int obuf_count;
 	unsigned short int obuf_cursor;
 	unsigned short int obuf_columns;
@@ -966,10 +887,15 @@ do_hwc_write (
 	}
 
 	for (i_msg = 0; i_msg < count; i_msg++) {
+
 		if (from_user)
-			get_user (ch, msg + i_msg);
+			get_user (orig_ch, msg + i_msg);
 		else
-			ch = msg[i_msg];
+			orig_ch = msg[i_msg];
+		if (code == CODE_EBCDIC)
+			ch = _ebcasc[orig_ch];
+		else
+			ch = orig_ch;
 
 		processed_characters++;
 
@@ -1007,7 +933,7 @@ do_hwc_write (
 				if (obuf_cursor < obuf_columns) {
 					hwc_data.obuf[hwc_data.obuf_start +
 						      obuf_cursor]
-					    = HWC_ASCEBC (' ');
+					    = 0x20;
 					obuf_cursor++;
 				} else
 					break;
@@ -1025,7 +951,7 @@ do_hwc_write (
 			while (spaces) {
 				hwc_data.obuf[hwc_data.obuf_start +
 					      obuf_cursor - spaces]
-				    = HWC_ASCEBC (' ');
+				    = 0x20;
 				spaces--;
 			}
 
@@ -1055,7 +981,8 @@ do_hwc_write (
 			if (isprint (ch))
 				hwc_data.obuf[hwc_data.obuf_start +
 					      obuf_cursor++]
-				    = HWC_ASCEBC (ch);
+				    = (code == CODE_ASCII) ?
+				    _ascebc[orig_ch] : orig_ch;
 		}
 		if (obuf_cursor > obuf_count)
 			obuf_count = obuf_cursor;
@@ -1074,10 +1001,11 @@ do_hwc_write (
 
 			if (hwc_data.ioctls.final_nl > 0) {
 
-				if (hwc_data.flags & HWC_WTIMER_RUNS) {
+				if (hwc_data.flags & HWC_TIMER_RUNS) {
 
-					mod_timer (&hwc_data.write_timer,
-						   jiffies + hwc_data.ioctls.final_nl * HZ / 10);
+					hwc_data.write_timer.expires =
+					    jiffies +
+					    hwc_data.ioctls.final_nl * HZ / 10;
 				} else {
 
 					init_timer (&hwc_data.write_timer);
@@ -1089,7 +1017,7 @@ do_hwc_write (
 					    jiffies +
 					    hwc_data.ioctls.final_nl * HZ / 10;
 					add_timer (&hwc_data.write_timer);
-					hwc_data.flags |= HWC_WTIMER_RUNS;
+					hwc_data.flags |= HWC_TIMER_RUNS;
 				}
 			} else;
 
@@ -1116,8 +1044,8 @@ hwc_write (int from_user, const unsigned char *msg, unsigned int count)
 
 	spin_lock_irqsave (&hwc_data.lock, flags);
 
-	retval = do_hwc_write (from_user, (unsigned char *) msg,
-			       count, IMMEDIATE_WRITE);
+	retval = do_hwc_write (from_user, msg, count, hwc_data.ioctls.code,
+			       IMMEDIATE_WRITE);
 
 	spin_unlock_irqrestore (&hwc_data.lock, flags);
 
@@ -1197,7 +1125,7 @@ hwc_flush_buffer (unsigned char flag)
 		if (hwc_data.current_servc != HWC_CMDW_WRITEDATA)
 			flush_hwcbs ();
 		else
-			hwc_data.flags |= HWC_FLUSH;
+			hwc_data.flags |= FLUSH_HWCBS;
 	}
 	if (flag & IN_WRITE_BUF) {
 		hwc_data.obuf_cursor = 0;
@@ -1373,14 +1301,13 @@ get_input (void *start, void *end)
 	if (hwc_data.ioctls.delim)
 		count = seperate_cases (start, count);
 
-	HWC_EBCASC_STR (start, count);
-
 	if (hwc_data.ioctls.echo)
-		do_hwc_write (0, start, count, IMMEDIATE_WRITE);
+		do_hwc_write (0, start, count, CODE_EBCDIC, IMMEDIATE_WRITE);
 
-	if (hwc_data.calls != NULL)
-		if (hwc_data.calls->move_input != NULL)
-			(hwc_data.calls->move_input) (start, count);
+	if (hwc_data.ioctls.code == CODE_ASCII)
+		EBCASC (start, count);
+
+	store_hwc_input (start, count);
 
 	return count;
 }
@@ -1480,7 +1407,7 @@ eval_mdsmu (gds_vector_t * start, void *end)
 	return retval;
 }
 
-static int 
+inline static int 
 eval_evbuf (gds_vector_t * start, void *end)
 {
 	gds_vector_t *vec;
@@ -1494,128 +1421,6 @@ eval_evbuf (gds_vector_t * start, void *end)
 		    (((unsigned long) vec) + sizeof (gds_vector_t));
 		vec_end = (void *) (((unsigned long) vec) + vec->length);
 		retval = eval_mdsmu (vec_data, vec_end);
-	}
-	return retval;
-}
-
-static inline int 
-eval_hwc_receive_mask (_hwcb_mask_t mask)
-{
-
-	hwc_data.write_nonprio
-	    = ((mask & ET_Msg_Mask) == ET_Msg_Mask);
-
-	hwc_data.write_prio
-	    = ((mask & ET_PMsgCmd_Mask) == ET_PMsgCmd_Mask);
-
-	if (hwc_data.write_prio || hwc_data.write_nonprio) {
-		internal_print (
-				       DELAYED_WRITE,
-				       HWC_RW_PRINT_HEADER
-				       "can write messages\n");
-		return 0;
-	} else {
-		internal_print (
-				       DELAYED_WRITE,
-				       HWC_RW_PRINT_HEADER
-				       "can not write messages\n");
-		return -1;
-	}
-}
-
-static inline int 
-eval_hwc_send_mask (_hwcb_mask_t mask)
-{
-
-	hwc_data.read_statechange
-	    = ((mask & ET_StateChange_Mask) == ET_StateChange_Mask);
-	if (hwc_data.read_statechange)
-		internal_print (
-				       DELAYED_WRITE,
-				       HWC_RW_PRINT_HEADER
-				     "can read state change notifications\n");
-	else
-		internal_print (
-				       DELAYED_WRITE,
-				       HWC_RW_PRINT_HEADER
-				 "can not read state change notifications\n");
-
-	hwc_data.read_nonprio
-	    = ((mask & ET_OpCmd_Mask) == ET_OpCmd_Mask);
-	if (hwc_data.read_nonprio)
-		internal_print (
-				       DELAYED_WRITE,
-				       HWC_RW_PRINT_HEADER
-				       "can read commands\n");
-
-	hwc_data.read_prio
-	    = ((mask & ET_PMsgCmd_Mask) == ET_PMsgCmd_Mask);
-	if (hwc_data.read_prio)
-		internal_print (
-				       DELAYED_WRITE,
-				       HWC_RW_PRINT_HEADER
-				       "can read priority commands\n");
-
-	if (hwc_data.read_prio || hwc_data.read_nonprio) {
-		return 0;
-	} else {
-		internal_print (
-				       DELAYED_WRITE,
-				       HWC_RW_PRINT_HEADER
-				     "can not read commands from operator\n");
-		return -1;
-	}
-}
-
-static int 
-eval_statechangebuf (statechangebuf_t * scbuf)
-{
-	int retval = 0;
-
-	internal_print (
-			       DELAYED_WRITE,
-			       HWC_RW_PRINT_HEADER
-			       "HWC state change detected\n");
-
-	if (scbuf->validity_hwc_active_facility_mask) {
-
-	}
-	if (scbuf->validity_hwc_receive_mask) {
-
-		if (scbuf->mask_length != 4) {
-#ifdef DUMP_HWC_INIT_ERROR
-			__asm__ ("LHI 1,0xe50\n\t"
-				 "LRA 2,0(%0)\n\t"
-				 "J .+0 \n\t"
-		      :
-		      :	 "a" (scbuf)
-		      :	 "1", "2");
-#endif
-		} else {
-
-			retval += eval_hwc_receive_mask
-			    (scbuf->hwc_receive_mask);
-		}
-	}
-	if (scbuf->validity_hwc_send_mask) {
-
-		if (scbuf->mask_length != 4) {
-#ifdef DUMP_HWC_INIT_ERROR
-			__asm__ ("LHI 1,0xe51\n\t"
-				 "LRA 2,0(%0)\n\t"
-				 "J .+0 \n\t"
-		      :
-		      :	 "a" (scbuf)
-		      :	 "1", "2");
-#endif
-		} else {
-
-			retval += eval_hwc_send_mask
-			    (scbuf->hwc_send_mask);
-		}
-	}
-	if (scbuf->validity_read_data_function_mask) {
-
 	}
 	return retval;
 }
@@ -1652,17 +1457,17 @@ process_evbufs (void *start, void *end)
 			retval += eval_evbuf (evbuf_data, evbuf_end);
 			break;
 		case ET_StateChange:
-			retval += eval_statechangebuf
-			    ((statechangebuf_t *) evbuf);
+
+			retval = -ENOSYS;
 			break;
 		default:
-			internal_print (
-					       DELAYED_WRITE,
-					       HWC_RW_PRINT_HEADER
-					       "unconditional read: "
-					       "unknown event buffer found, "
-					       "type 0x%x",
-					       evbuf->type);
+			printk (
+				       KERN_WARNING
+				       HWC_RW_PRINT_HEADER
+				       "unconditional read: "
+				       "unknown event buffer found, "
+				       "type 0x%x",
+				       evbuf->type);
 			retval = -ENOSYS;
 		}
 		evbuf = (evbuf_t *) evbuf_end;
@@ -1677,14 +1482,11 @@ unconditional_read_1 (void)
 	read_hwcb_t *hwcb = (read_hwcb_t *) hwc_data.page;
 	int retval;
 
-#if 0
-
 	if ((!hwc_data.read_prio) && (!hwc_data.read_nonprio))
 		return -EOPNOTSUPP;
 
 	if (hwc_data.current_servc)
 		return -EBUSY;
-#endif
 
 	memset (hwcb, 0x00, PAGE_SIZE);
 	memcpy (hwcb, &read_hwcb_template, sizeof (read_hwcb_t));
@@ -1694,8 +1496,8 @@ unconditional_read_1 (void)
 #ifdef DUMP_HWC_READ_ERROR
 	if (condition_code == HWC_NOT_OPERATIONAL)
 		__asm__ ("LHI 1,0xe40\n\t"
-			 "L 2,0(%0)\n\t"
-			 "LRA 3,0(%1)\n\t"
+			 "L 2,0(0,%0)\n\t"
+			 "LRA 3,0(0,%1)\n\t"
 			 "J .+0 \n\t"
 	      :
 	      :	 "a" (&condition_code), "a" (hwc_data.page)
@@ -1719,7 +1521,7 @@ unconditional_read_1 (void)
 }
 
 static int 
-unconditional_read_2 (u32 ext_int_param)
+unconditional_read_2 (void)
 {
 	read_hwcb_t *hwcb = (read_hwcb_t *) hwc_data.page;
 
@@ -1729,8 +1531,8 @@ unconditional_read_2 (u32 ext_int_param)
 	    (hwcb->response_code != 0x60F0) &&
 	    (hwcb->response_code != 0x62F0))
 		__asm__ ("LHI 1,0xe41\n\t"
-			 "LRA 2,0(%0)\n\t"
-			 "L 3,0(%1)\n\t"
+			 "LRA 2,0(0,%0)\n\t"
+			 "L 3,0(0,%1)\n\t"
 			 "J .+0\n\t"
 	      :
 	      :	 "a" (hwc_data.page), "a" (&(hwcb->response_code))
@@ -1750,13 +1552,6 @@ unconditional_read_2 (u32 ext_int_param)
 
 	case 0x60F0:
 	case 0x62F0:
-		internal_print (
-				       IMMEDIATE_WRITE,
-				       HWC_RW_PRINT_HEADER
-				       "unconditional read: "
-				     "got interrupt and tried to read input, "
-				  "but nothing found (response code=0x%x).\n",
-				       hwcb->response_code);
 		return 0;
 
 	case 0x0100:
@@ -1790,21 +1585,26 @@ unconditional_read_2 (u32 ext_int_param)
 		internal_print (
 				       IMMEDIATE_WRITE,
 				       HWC_RW_PRINT_HEADER
-			       "unconditional read: invalid function code\n");
+			   "unconditional read: invalid function code - this "
+			 "must not occur in a correct driver, please contact "
+				       "author\n");
 		return -EIO;
 
 	case 0x70F0:
 		internal_print (
 				       IMMEDIATE_WRITE,
 				       HWC_RW_PRINT_HEADER
-			      "unconditional read: invalid selection mask\n");
+			  "unconditional read: invalid selection mask - this "
+			 "must not occur in a correct driver, please contact "
+				       "author\n");
 		return -EIO;
 
 	case 0x0040:
 		internal_print (
 				       IMMEDIATE_WRITE,
 				       HWC_RW_PRINT_HEADER
-				 "unconditional read: HWC equipment check\n");
+			    "unconditional read: HWC equipment check - don't "
+				       "know how to handle this case\n");
 		return -EIO;
 
 	default:
@@ -1825,14 +1625,16 @@ write_event_mask_1 (void)
 	unsigned int condition_code;
 	int retval;
 
+	memcpy (hwc_data.page, &init_hwcb_template, sizeof (init_hwcb_t));
+
 	condition_code = service_call (HWC_CMDW_WRITEMASK, hwc_data.page);
 
 #ifdef DUMP_HWC_INIT_ERROR
 
-	if (condition_code == HWC_NOT_OPERATIONAL)
+	if (condition_code != HWC_COMMAND_INITIATED)
 		__asm__ ("LHI 1,0xe10\n\t"
-			 "L 2,0(%0)\n\t"
-			 "LRA 3,0(%1)\n\t"
+			 "L 2,0(0,%0)\n\t"
+			 "LRA 3,0(0,%1)\n\t"
 			 "J .+0\n\t"
 	      :
 	      :	 "a" (&condition_code), "a" (hwc_data.page)
@@ -1856,41 +1658,39 @@ write_event_mask_1 (void)
 }
 
 static int 
-write_event_mask_2 (u32 ext_int_param)
+write_event_mask_2 (void)
 {
 	init_hwcb_t *hwcb = (init_hwcb_t *) hwc_data.page;
 	int retval = 0;
 
-	if (hwcb->response_code != 0x0020) {
+	if (hwcb->hwc_receive_mask & ET_Msg_Mask)
+		hwc_data.write_nonprio = 1;
+
+	if (hwcb->hwc_receive_mask & ET_PMsgCmd_Mask)
+		hwc_data.write_prio = 1;
+
+	if (hwcb->hwc_send_mask & ET_OpCmd_Mask)
+		hwc_data.read_nonprio = 1;
+
+	if (hwcb->hwc_send_mask & ET_PMsgCmd_Mask)
+		hwc_data.read_nonprio = 1;
+
+	if ((hwcb->response_code != 0x0020) ||
+	    (!hwc_data.write_nonprio) ||
+	    ((!hwc_data.read_nonprio) && (!hwc_data.read_prio)))
 #ifdef DUMP_HWC_INIT_ERROR
 		__asm__ ("LHI 1,0xe11\n\t"
-			 "LRA 2,0(%0)\n\t"
-			 "L 3,0(%1)\n\t"
+			 "LRA 2,0(0,%0)\n\t"
+			 "L 3,0(0,%1)\n\t"
 			 "J .+0\n\t"
 	      :
 	      :	 "a" (hwcb), "a" (&(hwcb->response_code))
 	      :	 "1", "2", "3");
 #else
-		retval = -1;
+		retval = -EIO
 #endif
-	} else {
-		if (hwcb->mask_length != 4) {
-#ifdef DUMP_HWC_INIT_ERROR
-			__asm__ ("LHI 1,0xe52\n\t"
-				 "LRA 2,0(%0)\n\t"
-				 "J .+0 \n\t"
-		      :
-		      :	 "a" (hwcb)
-		      :	 "1", "2");
-#endif
-		} else {
-			retval += eval_hwc_receive_mask
-			    (hwcb->hwc_receive_mask);
-			retval += eval_hwc_send_mask (hwcb->hwc_send_mask);
-		}
-	}
 
-	hwc_data.current_servc = 0;
+		    hwc_data.current_servc = 0;
 	hwc_data.current_hwcb = NULL;
 
 	return retval;
@@ -1919,6 +1719,18 @@ set_hwc_ioctls (hwc_ioctls_t * ioctls, char correct)
 			retval = -EINVAL;
 	} else
 		tmp.columns = ioctls->columns;
+
+	switch (ioctls->code) {
+	case CODE_EBCDIC:
+	case CODE_ASCII:
+		tmp.code = ioctls->code;
+		break;
+	default:
+		if (correct)
+			tmp.code = CODE_ASCII;
+		else
+			retval = -EINVAL;
+	}
 
 	tmp.final_nl = ioctls->final_nl;
 
@@ -1954,10 +1766,6 @@ set_hwc_ioctls (hwc_ioctls_t * ioctls, char correct)
 	}
 	tmp.delim = ioctls->delim;
 
-	tmp.measured_lines = ioctls->measured_lines;
-	tmp.measured_chars = ioctls->measured_chars;
-	tmp.measured_wcalls = ioctls->measured_wcalls;
-
 	if (!(retval < 0))
 		hwc_data.ioctls = tmp;
 
@@ -1965,56 +1773,9 @@ set_hwc_ioctls (hwc_ioctls_t * ioctls, char correct)
 }
 
 int 
-do_hwc_init (void)
+hwc_init (void)
 {
 	int retval;
-
-	memcpy (hwc_data.page, &init_hwcb_template, sizeof (init_hwcb_t));
-
-	do {
-
-		retval = write_event_mask_1 ();
-
-		if (retval == -EBUSY) {
-
-			hwc_data.flags |= HWC_INIT;
-
-			asm volatile ("STCTL 0,0,%0":"=m" (cr0));
-			cr0_save = cr0;
-			cr0 |= 0x00000200;
-			cr0 &= 0xFFFFF3AC;
-			asm volatile ("LCTL 0,0,%0"::"m" (cr0):"memory");
-
-			asm volatile ("STOSM %0,0x01"
-				      :"=m" (psw_mask)::"memory");
-
-			while (!(hwc_data.flags & HWC_INTERRUPT))
-				barrier ();
-
-			asm volatile ("STNSM %0,0xFE"
-				      :"=m" (psw_mask)::"memory");
-
-			asm volatile ("LCTL 0,0,%0"
-				      ::"m" (cr0_save):"memory");
-
-			hwc_data.flags &= ~HWC_INIT;
-		}
-	} while (retval == -EBUSY);
-
-	if (retval == -EIO) {
-		hwc_data.flags |= HWC_BROKEN;
-		printk (HWC_RW_PRINT_HEADER "HWC not operational\n");
-	}
-	return retval;
-}
-
-void hwc_interrupt_handler (struct pt_regs *regs, __u16 code);
-
-int 
-hwc_init (unsigned long *kmem_start)
-{
-	int retval;
-
 #ifdef BUFFER_STRESS_TEST
 
 	init_hwcb_t *hwcb;
@@ -2022,10 +1783,16 @@ hwc_init (unsigned long *kmem_start)
 
 #endif
 
-	if (register_external_interrupt (0x2401, hwc_interrupt_handler) != 0)
-		panic ("Couldn't request external interrupts 0x2401");
+#ifdef CONFIG_3215
+	if (MACHINE_IS_VM)
+		return 0;
+#endif
 
 	spin_lock_init (&hwc_data.lock);
+
+	retval = write_event_mask_1 ();
+	if (retval < 0)
+		return retval;
 
 #ifdef USE_VM_DETECTION
 
@@ -2043,12 +1810,10 @@ hwc_init (unsigned long *kmem_start)
 #endif
 	retval = set_hwc_ioctls (&hwc_data.init_ioctls, 1);
 
-	*kmem_start = (*kmem_start + PAGE_SIZE - 1) & -4096L;
-	hwc_data.kmem_start = *kmem_start;
-	*kmem_start += hwc_data.ioctls.kmem_hwcb * PAGE_SIZE;
-	hwc_data.kmem_end = *kmem_start - 1;
-
-	retval = do_hwc_init ();
+	hwc_data.kmem_start = (unsigned long)
+	    alloc_bootmem_pages (hwc_data.ioctls.kmem_hwcb * PAGE_SIZE);
+	hwc_data.kmem_end = hwc_data.kmem_start +
+	    hwc_data.ioctls.kmem_hwcb * PAGE_SIZE - 1;
 
 	ctl_set_bit (0, 9);
 
@@ -2059,7 +1824,7 @@ hwc_init (unsigned long *kmem_start)
 			       HWC_RW_PRINT_HEADER
 			       "use %i bytes for buffering.\n",
 			       hwc_data.ioctls.kmem_hwcb * PAGE_SIZE);
-	for (i = 0; i < 2000; i++) {
+	for (i = 0; i < 500; i++) {
 		hwcb = (init_hwcb_t *) BUF_HWCB;
 		internal_print (
 				       DELAYED_WRITE,
@@ -2071,155 +1836,45 @@ hwc_init (unsigned long *kmem_start)
 
 #endif
 
-	return /*retval */ 0;
-}
-
-signed int 
-hwc_register_calls (hwc_high_level_calls_t * calls)
-{
-	if (calls == NULL)
-		return -EINVAL;
-
-	if (hwc_data.calls != NULL)
-		return -EBUSY;
-
-	hwc_data.calls = calls;
-	return 0;
-}
-
-signed int 
-hwc_unregister_calls (hwc_high_level_calls_t * calls)
-{
-	if (hwc_data.calls == NULL)
-		return -EINVAL;
-
-	if (calls != hwc_data.calls)
-		return -EINVAL;
-
-	hwc_data.calls = NULL;
-	return 0;
+	return retval;
 }
 
 void 
-hwc_do_interrupt (u32 ext_int_param)
+do_hwc_interrupt (void)
 {
-	u32 finished_hwcb = ext_int_param & HWC_EXT_INT_PARAM_ADDR;
-	u32 evbuf_pending = ext_int_param & HWC_EXT_INT_PARAM_PEND;
 
-	if (hwc_data.flags & HWC_PTIMER_RUNS) {
-		del_timer (&hwc_data.poll_timer);
-		hwc_data.flags &= ~HWC_PTIMER_RUNS;
-	}
-	if (finished_hwcb) {
+	spin_lock (&hwc_data.lock);
 
-		if ((unsigned long) hwc_data.current_hwcb != finished_hwcb) {
-			internal_print (
-					       DELAYED_WRITE,
-					       HWC_RW_PRINT_HEADER
-					       "interrupt: mismatch: "
-					       "ext. int param. (0x%x) vs. "
-					       "current HWCB (0x%x)\n",
-					       ext_int_param,
-					       hwc_data.current_hwcb);
-		} else {
-
-			switch (hwc_data.current_servc) {
-
-			case HWC_CMDW_WRITEMASK:
-
-				write_event_mask_2 (ext_int_param);
-				break;
-
-			case HWC_CMDW_WRITEDATA:
-
-				write_event_data_2 (ext_int_param);
-				break;
-
-			case HWC_CMDW_READDATA:
-
-				unconditional_read_2 (ext_int_param);
-				break;
-			default:
-			}
-		}
-	} else {
-
-		if (hwc_data.current_hwcb) {
-			internal_print (
-					       DELAYED_WRITE,
-					       HWC_RW_PRINT_HEADER
-					       "interrupt: mismatch: "
-					       "ext. int. param. (0x%x) vs. "
-					       "current HWCB (0x%x)\n",
-					       ext_int_param,
-					       hwc_data.current_hwcb);
-		}
-	}
-
-	if (evbuf_pending) {
+	if (!hwc_data.current_servc) {
 
 		unconditional_read_1 ();
+
 	} else {
+
+		switch (hwc_data.current_servc) {
+
+		case HWC_CMDW_WRITEMASK:
+
+			write_event_mask_2 ();
+			break;
+
+		case HWC_CMDW_WRITEDATA:
+
+			write_event_data_2 ();
+			break;
+
+		case HWC_CMDW_READDATA:
+
+			unconditional_read_2 ();
+			break;
+		}
 
 		write_event_data_1 ();
 	}
 
-	if (!hwc_data.calls || !hwc_data.calls->wake_up)
-		return;
-	(hwc_data.calls->wake_up) ();
-}
+	wake_up_hwc_tty ();
 
-void 
-hwc_interrupt_handler (struct pt_regs *regs, __u16 code)
-{
-	u32 ext_int_param = hwc_ext_int_param ();
-	int cpu = smp_processor_id ();
-
-	irq_enter (cpu, 0x2401);
-
-	if (hwc_data.flags & HWC_INIT) {
-
-		hwc_data.flags |= HWC_INTERRUPT;
-	} else if (hwc_data.flags & HWC_BROKEN) {
-
-		if (!do_hwc_init ()) {
-			hwc_data.flags &= ~HWC_BROKEN;
-			internal_print (DELAYED_WRITE,
-					HWC_RW_PRINT_HEADER
-					"delayed HWC setup after"
-					" temporary breakdown"
-					" (ext. int. parameter=0x%x)\n",
-					ext_int_param);
-		}
-	} else {
-		spin_lock (&hwc_data.lock);
-		hwc_do_interrupt (ext_int_param);
-		spin_unlock (&hwc_data.lock);
-	}
-	irq_exit (cpu, 0x2401);
-}
-
-void 
-hwc_unblank (void)
-{
-
-	spin_lock (&hwc_data.lock);
 	spin_unlock (&hwc_data.lock);
-
-	asm volatile ("STCTL 0,0,%0":"=m" (cr0));
-	cr0_save = cr0;
-	cr0 |= 0x00000200;
-	cr0 &= 0xFFFFF3AC;
-	asm volatile ("LCTL 0,0,%0"::"m" (cr0):"memory");
-
-	asm volatile ("STOSM %0,0x01":"=m" (psw_mask)::"memory");
-
-	while (ALL_HWCB_CHAR)
-		barrier ();
-
-	asm volatile ("STNSM %0,0xFE":"=m" (psw_mask)::"memory");
-
-	asm volatile ("LCTL 0,0,%0"::"m" (cr0_save):"memory");
 }
 
 int 
@@ -2234,12 +1889,6 @@ hwc_ioctl (unsigned int cmd, unsigned long arg)
 
 	switch (cmd) {
 
-	case TIOCHWCSMEAS:
-		hwc_data.ioctls.measured_lines = 0;
-		hwc_data.ioctls.measured_chars = 0;
-		hwc_data.ioctls.measured_wcalls = 0;
-		break;
-
 	case TIOCHWCSHTAB:
 		if (get_user (tmp.width_htab, (ioctl_htab_t *) arg))
 			goto fault;
@@ -2253,6 +1902,12 @@ hwc_ioctl (unsigned int cmd, unsigned long arg)
 	case TIOCHWCSCOLS:
 		if (get_user (tmp.columns, (ioctl_cols_t *) arg))
 			goto fault;
+		break;
+
+	case TIOCHWCSCODE:
+		if (get_user (tmp.code, (ioctl_code_t *) arg))
+			goto fault;
+
 		break;
 
 	case TIOCHWCSNL:
@@ -2283,21 +1938,6 @@ hwc_ioctl (unsigned int cmd, unsigned long arg)
 		retval = set_hwc_ioctls (&hwc_data.init_ioctls, 1);
 		break;
 
-	case TIOCHWCGMEASL:
-		if (put_user (tmp.measured_lines, (ioctl_meas_t *) arg))
-			goto fault;
-		break;
-
-	case TIOCHWCGMEASC:
-		if (put_user (tmp.measured_chars, (ioctl_meas_t *) arg))
-			goto fault;
-		break;
-
-	case TIOCHWCGMEASS:
-		if (put_user (tmp.measured_wcalls, (ioctl_meas_t *) arg))
-			goto fault;
-		break;
-
 	case TIOCHWCGHTAB:
 		if (put_user (tmp.width_htab, (ioctl_htab_t *) arg))
 			goto fault;
@@ -2311,6 +1951,12 @@ hwc_ioctl (unsigned int cmd, unsigned long arg)
 	case TIOCHWCGCOLS:
 		if (put_user (tmp.columns, (ioctl_cols_t *) arg))
 			goto fault;
+		break;
+
+	case TIOCHWCGCODE:
+		if (put_user (tmp.code, (ioctl_code_t *) arg))
+			goto fault;
+
 		break;
 
 	case TIOCHWCGNL:

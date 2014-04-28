@@ -6,8 +6,6 @@
  * Copyright (C) 1996, 1997 Olaf Kirch
  */
 
-#define NFS_NEED_NFS3_XDR_TYPES
-
 #include <linux/param.h>
 #include <linux/sched.h>
 #include <linux/mm.h>
@@ -324,7 +322,7 @@ static int
 nfs3_xdr_diropargs(struct rpc_rqst *req, u32 *p, struct nfs3_diropargs *args)
 {
 	p = xdr_encode_fhandle(p, args->fh);
-	p = xdr_encode_string(p, args->name, args->len);
+	p = xdr_encode_array(p, args->name, args->len);
 	req->rq_slen = xdr_adjust_iovec(req->rq_svec, p);
 	return 0;
 }
@@ -350,7 +348,7 @@ static int
 nfs3_xdr_readargs(struct rpc_rqst *req, u32 *p, struct nfs_readargs *args)
 {
 	struct rpc_auth	*auth = req->rq_task->tk_auth;
-	size_t		replen;
+	int		buflen, replen;
 	unsigned int	nr;
 
 	p = xdr_encode_fhandle(p, args->fh);
@@ -361,20 +359,23 @@ nfs3_xdr_readargs(struct rpc_rqst *req, u32 *p, struct nfs_readargs *args)
 	/* Get the number of buffers in the receive iovec */
 	nr = args->nriov;
 
-	if (nr+1 > MAX_IOVEC) {
+	if (nr+2 > MAX_IOVEC) {
 		printk(KERN_ERR "NFS: Bad number of iov's in xdr_readargs\n");
 		return -EINVAL;
 	}
 
 	/* set up reply iovec */
 	replen = (RPC_REPHDRSIZE + auth->au_rslack + NFS3_readres_sz) << 2;
+	buflen = req->rq_rvec[0].iov_len;
 	req->rq_rvec[0].iov_len  = replen;
 
 	/* Copy the iovec */
 	memcpy(req->rq_rvec + 1, args->iov, nr * sizeof(struct iovec));
 
-	req->rq_rlen = args->count + replen;
-	req->rq_rnr += nr;
+	req->rq_rvec[nr+1].iov_base = (u8 *) req->rq_rvec[0].iov_base + replen;
+	req->rq_rvec[nr+1].iov_len  = buflen - replen;
+	req->rq_rlen = args->count + buflen;
+	req->rq_rnr += nr+1;
 
 	return 0;
 }
@@ -434,7 +435,7 @@ static int
 nfs3_xdr_createargs(struct rpc_rqst *req, u32 *p, struct nfs3_createargs *args)
 {
 	p = xdr_encode_fhandle(p, args->fh);
-	p = xdr_encode_string(p, args->name, args->len);
+	p = xdr_encode_array(p, args->name, args->len);
 
 	*p++ = htonl(args->createmode);
 	if (args->createmode == NFS3_CREATE_EXCLUSIVE) {
@@ -454,7 +455,7 @@ static int
 nfs3_xdr_mkdirargs(struct rpc_rqst *req, u32 *p, struct nfs3_mkdirargs *args)
 {
 	p = xdr_encode_fhandle(p, args->fh);
-	p = xdr_encode_string(p, args->name, args->len);
+	p = xdr_encode_array(p, args->name, args->len);
 	p = xdr_encode_sattr(p, args->sattr);
 	req->rq_slen = xdr_adjust_iovec(req->rq_svec, p);
 	return 0;
@@ -467,9 +468,9 @@ static int
 nfs3_xdr_symlinkargs(struct rpc_rqst *req, u32 *p, struct nfs3_symlinkargs *args)
 {
 	p = xdr_encode_fhandle(p, args->fromfh);
-	p = xdr_encode_string(p, args->fromname, args->fromlen);
+	p = xdr_encode_array(p, args->fromname, args->fromlen);
 	p = xdr_encode_sattr(p, args->sattr);
-	p = xdr_encode_string(p, args->topath, args->tolen);
+	p = xdr_encode_array(p, args->topath, args->tolen);
 	req->rq_slen = xdr_adjust_iovec(req->rq_svec, p);
 	return 0;
 }
@@ -481,7 +482,7 @@ static int
 nfs3_xdr_mknodargs(struct rpc_rqst *req, u32 *p, struct nfs3_mknodargs *args)
 {
 	p = xdr_encode_fhandle(p, args->fh);
-	p = xdr_encode_string(p, args->name, args->len);
+	p = xdr_encode_array(p, args->name, args->len);
 	*p++ = htonl(args->type);
 	p = xdr_encode_sattr(p, args->sattr);
 	if (args->type == NF3CHR || args->type == NF3BLK) {
@@ -500,9 +501,9 @@ static int
 nfs3_xdr_renameargs(struct rpc_rqst *req, u32 *p, struct nfs3_renameargs *args)
 {
 	p = xdr_encode_fhandle(p, args->fromfh);
-	p = xdr_encode_string(p, args->fromname, args->fromlen);
+	p = xdr_encode_array(p, args->fromname, args->fromlen);
 	p = xdr_encode_fhandle(p, args->tofh);
-	p = xdr_encode_string(p, args->toname, args->tolen);
+	p = xdr_encode_array(p, args->toname, args->tolen);
 	req->rq_slen = xdr_adjust_iovec(req->rq_svec, p);
 	return 0;
 }
@@ -515,7 +516,7 @@ nfs3_xdr_linkargs(struct rpc_rqst *req, u32 *p, struct nfs3_linkargs *args)
 {
 	p = xdr_encode_fhandle(p, args->fromfh);
 	p = xdr_encode_fhandle(p, args->tofh);
-	p = xdr_encode_string(p, args->toname, args->tolen);
+	p = xdr_encode_array(p, args->toname, args->tolen);
 	req->rq_slen = xdr_adjust_iovec(req->rq_svec, p);
 	return 0;
 }
@@ -527,7 +528,7 @@ static int
 nfs3_xdr_readdirargs(struct rpc_rqst *req, u32 *p, struct nfs3_readdirargs *args)
 {
 	struct rpc_auth	*auth = req->rq_task->tk_auth;
-	size_t		replen;
+	int		buflen, replen;
 
 	p = xdr_encode_fhandle(p, args->fh);
 	p = xdr_encode_hyper(p, args->cookie);
@@ -543,11 +544,14 @@ nfs3_xdr_readdirargs(struct rpc_rqst *req, u32 *p, struct nfs3_readdirargs *args
 
 	/* set up reply iovec */
 	replen = (RPC_REPHDRSIZE + auth->au_rslack + NFS3_readdirres_sz) << 2;
+	buflen = req->rq_rvec[0].iov_len;
 	req->rq_rvec[0].iov_len  = replen;
 	req->rq_rvec[1].iov_base = args->buffer;
 	req->rq_rvec[1].iov_len  = args->bufsiz;
-	req->rq_rlen = replen + args->bufsiz;
-	req->rq_rnr ++;
+	req->rq_rvec[2].iov_base = (u8 *) req->rq_rvec[0].iov_base + replen;
+	req->rq_rvec[2].iov_len  = buflen - replen;
+	req->rq_rlen = buflen + args->bufsiz;
+	req->rq_rnr += 2;
 
 	return 0;
 }
@@ -560,7 +564,7 @@ static int
 nfs3_xdr_readdirres(struct rpc_rqst *req, u32 *p, struct nfs3_readdirres *res)
 {
 	struct iovec	*iov = req->rq_rvec;
-	u32		hdrlen;
+	int		hdrlen;
 	int		status, nr;
 	unsigned int	len;
 	u32		*entry, *end;
@@ -579,12 +583,8 @@ nfs3_xdr_readdirres(struct rpc_rqst *req, u32 *p, struct nfs3_readdirres *res)
 	}
 
 	hdrlen = (u8 *) p - (u8 *) iov->iov_base;
-	if (hdrlen > iov[0].iov_len) {
-		printk(KERN_WARNING "NFS: Odd RPC header size in READDIR reply: %d\n", hdrlen);
-		return -errno_NFSERR_IO;
-	}
-	if (hdrlen != iov->iov_len) {
-		dprintk("NFS: Short READDIR header. iovec will be shifted.\n");
+	if (iov->iov_len > hdrlen) {
+		dprintk("NFS: READDIR header is short. iovec will be shifted.\n");
 		xdr_shift_iovec(iov, req->rq_rnr, iov->iov_len - hdrlen);
 	}
 
@@ -592,8 +592,6 @@ nfs3_xdr_readdirres(struct rpc_rqst *req, u32 *p, struct nfs3_readdirres *res)
 	end = (u32 *) ((u8 *) p + iov[1].iov_len);
 	for (nr = 0; *p++; nr++) {
 		entry = p - 1;
-		if (p + 3 > end)
-			goto short_pkt;
 		p += 2;				/* inode # */
 		len = ntohl(*p++);		/* string length */
 		p += XDR_QUADLEN(len) + 2;	/* name + cookie */
@@ -605,12 +603,8 @@ nfs3_xdr_readdirres(struct rpc_rqst *req, u32 *p, struct nfs3_readdirres *res)
 
 		if (res->plus) {
 			/* post_op_attr */
-			if (p > end)
-				goto short_pkt;
 			if (*p++)
 				p += 21;
-			if (p > end)
-				goto short_pkt;
 			/* post_op_fh3 */
 			if (*p++) {
 				len = ntohl(*p++);
@@ -622,15 +616,16 @@ nfs3_xdr_readdirres(struct rpc_rqst *req, u32 *p, struct nfs3_readdirres *res)
 				p += XDR_QUADLEN(len);
 			}
 		}
-		if (p + 2 > end)
-			goto short_pkt;
+
+		if (p + 2 > end) {
+			printk(KERN_NOTICE
+				"NFS: short packet in readdir reply!\n");
+			/* truncate listing */
+			entry[0] = entry[1] = 0;
+			break;
+		}
 	}
 
-	return nr;
- short_pkt:
-	printk(KERN_NOTICE "NFS: short packet in readdir reply!\n");
-	/* truncate listing */
-	entry[0] = entry[1] = 0;
 	return nr;
 }
 
@@ -768,16 +763,19 @@ nfs3_xdr_readlinkargs(struct rpc_rqst *req, u32 *p, struct nfs3_readlinkargs *ar
 {
 	struct rpc_task *task = req->rq_task;
 	struct rpc_auth *auth = task->tk_auth;
-	size_t		replen;
+	int		buflen, replen;
 
 	p = xdr_encode_fhandle(p, args->fh);
 	req->rq_slen = xdr_adjust_iovec(req->rq_svec, p);
 	replen = (RPC_REPHDRSIZE + auth->au_rslack + NFS3_readlinkres_sz) << 2;
+	buflen = req->rq_rvec[0].iov_len;
 	req->rq_rvec[0].iov_len  = replen;
 	req->rq_rvec[1].iov_base = args->buffer;
 	req->rq_rvec[1].iov_len  = args->bufsiz;
-	req->rq_rlen = replen + args->bufsiz;
-	req->rq_rnr ++;
+	req->rq_rvec[2].iov_base = (u8 *) req->rq_rvec[0].iov_base + replen;
+	req->rq_rvec[2].iov_len  = buflen - replen;
+	req->rq_rlen = buflen + args->bufsiz;
+	req->rq_rnr += 2;
 	return 0;
 }
 
@@ -788,7 +786,7 @@ static int
 nfs3_xdr_readlinkres(struct rpc_rqst *req, u32 *p, struct nfs3_readlinkres *res)
 {
 	struct iovec	*iov = req->rq_rvec;
-	u32		hdrlen;
+	int		hdrlen;
 	u32	*strlen;
 	char	*string;
 	int	status;
@@ -801,12 +799,8 @@ nfs3_xdr_readlinkres(struct rpc_rqst *req, u32 *p, struct nfs3_readlinkres *res)
 		return -nfs_stat_to_errno(status);
 
 	hdrlen = (u8 *) p - (u8 *) iov->iov_base;
-	if (hdrlen > iov[0].iov_len) {
-		printk(KERN_WARNING "NFS: Odd RPC header size in READLINK reply: %d\n", hdrlen);
-		return -errno_NFSERR_IO;
-	}
-	if (hdrlen != iov->iov_len) {
-		dprintk("NFS: Short READLINK header. iovec will be shifted.\n");
+	if (iov->iov_len > hdrlen) {
+		dprintk("NFS: READLINK header is short. iovec will be shifted.\n");
 		xdr_shift_iovec(iov, req->rq_rnr, iov->iov_len - hdrlen);
 	}
 
@@ -829,8 +823,7 @@ static int
 nfs3_xdr_readres(struct rpc_rqst *req, u32 *p, struct nfs_readres *res)
 {
 	struct iovec *iov = req->rq_rvec;
-	u32	count, ocount, recvd, hdrlen;
-	int	status;
+	int	status, count, ocount, recvd, hdrlen;
 
 	status = ntohl(*p++);
 	p = xdr_decode_post_op_attr(p, res->fattr);
@@ -851,12 +844,8 @@ nfs3_xdr_readres(struct rpc_rqst *req, u32 *p, struct nfs_readres *res)
 	}
 
 	hdrlen = (u8 *) p - (u8 *) iov->iov_base;
-	if (hdrlen > iov[0].iov_len) {
-		printk(KERN_WARNING "NFS: Odd RPC header size in read reply: %d\n", hdrlen);
-		return -errno_NFSERR_IO;
-	}
-	if (hdrlen != iov->iov_len) {
-		dprintk("NFS: Short READ header. iovec will be shifted.\n");
+	if (iov->iov_len > hdrlen) {
+		dprintk("NFS: READ header is short. iovec will be shifted.\n");
 		xdr_shift_iovec(iov, req->rq_rnr, iov->iov_len - hdrlen);
 	}
 
@@ -868,7 +857,7 @@ nfs3_xdr_readres(struct rpc_rqst *req, u32 *p, struct nfs_readres *res)
 	}
 
 	if (count < res->count) {
-		xdr_zero_iovec(iov+1, req->rq_rnr-1, res->count - count);
+		xdr_zero_iovec(iov+1, req->rq_rnr-2, res->count - count);
 		res->count = count;
 	}
 

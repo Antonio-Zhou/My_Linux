@@ -6,8 +6,7 @@
  *	
  *	Written by Alan Cox, Building Number Three Ltd
  * 	Modified by Deepak Saxena <deepak@plexity.net>
- * 	Mar 23 ,2000: MTRR fix for Intel i960- 
- *		Boji T  Kannanthanam <boji.t.kannanthanam@intel.com>
+ * 	Modified by Boji T Kannanthanam <boji.t.kannanthanam@intel.com>
  *
  *	This program is free software; you can redistribute it and/or
  *	modify it under the terms of the GNU General Public License
@@ -113,7 +112,7 @@ static void i2o_pci_interrupt(int irq, void *dev_id, struct pt_regs *r)
  *
  * TODO: Add support for polled controllers
  */
-int i2o_pci_install(struct pci_dev *dev)
+int __init i2o_pci_install(struct pci_dev *dev)
 {
 	struct i2o_controller *c=kmalloc(sizeof(struct i2o_controller),
 						GFP_KERNEL);
@@ -133,9 +132,9 @@ int i2o_pci_install(struct pci_dev *dev)
 	for(i=0; i<6; i++)
 	{
 		/* Skip I/O spaces */
-		if(!(dev->base_address[i]&PCI_BASE_ADDRESS_SPACE))
+		if(!(dev->resource[i].flags&PCI_BASE_ADDRESS_SPACE))
 		{
-			memptr=dev->base_address[i]&~15;
+			memptr=dev->resource[i].start;
 			break;
 		}
 	}
@@ -147,14 +146,7 @@ int i2o_pci_install(struct pci_dev *dev)
 		return -EINVAL;
 	}
 	
-
-        pci_write_config_dword(dev, PCI_BASE_ADDRESS_0+4*i, ~0);
-	pci_read_config_dword(dev, PCI_BASE_ADDRESS_0+4*i, &size);
-	pci_write_config_dword(dev, PCI_BASE_ADDRESS_0+4*i, dev->base_address[i]);
-	
-	size=~(size&PCI_BASE_ADDRESS_MEM_MASK);
-	size++;	/* mind the fence */
-	
+	size = dev->resource[i].end-dev->resource[i].start+1;	
 	/* Map the I2O controller */
 	
 	printk(KERN_INFO "i2o: PCI I2O controller at 0x%08X size=%d\n", memptr, size);
@@ -187,28 +179,20 @@ int i2o_pci_install(struct pci_dev *dev)
 	 * Enable Write Combining MTRR for IOP's memory region
 	 */
 #ifdef CONFIG_MTRR
-	c->bus.pci.mtrr_reg0 =  mtrr_add(c->mem_phys, size, MTRR_TYPE_WRCOMB, 1);
-
-	/*
-	 * If it is an INTEL i960 I/O processor then set the first 64K to Uncacheable
-	 * since the region contains the Messaging unit which shouldn't be cached.
-	 */
-
+	c->bus.pci.mtrr_reg0 =
+		mtrr_add(c->mem_phys, size, MTRR_TYPE_WRCOMB, 1);
+/*
+* If it is an INTEL i960 I/O processor then set the first 64K to Uncacheable
+* since the region contains the Messaging unit which shouldn't be cached.
+*/
 	c->bus.pci.mtrr_reg1 = -1;
-
-	if(dev->vendor == PCI_VENDOR_ID_INTEL) 
+	if(dev->vendor == PCI_VENDOR_ID_INTEL)
 	{
-		printk(KERN_INFO "I2O: MTRR workaround for Intel i960 processor\n");
-		c->bus.pci.mtrr_reg1 = mtrr_add(c->mem_phys, 65536, MTRR_TYPE_UNCACHABLE, 1);
-		if(c->bus.pci.mtrr_reg1< 0)
-		{
-			printk(KERN_INFO "i2o_pci: Error in setting MTRR_TYPE_UNCACHABLE\n");
-			if(c->bus.pci.mtrr_reg0>=0)
-			{
-				mtrr_del(c->bus.pci.mtrr_reg0, 0, 0);
-				c->bus.pci.mtrr_reg0 = -1;
-			}
-		}
+	printk(KERN_INFO "I2O: MTRR workaround for Intel i960 processor\n"); 
+	c->bus.pci.mtrr_reg1 =
+		mtrr_add(c->mem_phys, 65536, MTRR_TYPE_UNCACHABLE, 1);
+	if(c->bus.pci.mtrr_reg1< 0)
+		printk(KERN_INFO "i2o_pci: Error in setting MTRR_TYPE_UNCACHABLE\n");
 	}
 
 #endif
@@ -256,14 +240,14 @@ int i2o_pci_install(struct pci_dev *dev)
 	return 0;	
 }
 
-int i2o_pci_scan(void)
+int __init i2o_pci_scan(void)
 {
 	struct pci_dev *dev;
 	int count=0;
 	
 	printk(KERN_INFO "i2o: Checking for PCI I2O controllers...\n");
 
-	for(dev=pci_devices; dev!=NULL; dev=dev->next)
+	pci_for_each_dev(dev)	
 	{
 		if((dev->class>>8)!=PCI_CLASS_INTELLIGENT_I2O)
 			continue;

@@ -20,10 +20,10 @@ ALL_SUB_DIRS := $(SUB_DIRS) paride
 
 
 L_TARGET := block.a
-L_OBJS   := genhd.o
+L_OBJS   := genhd.o elevator.o
 M_OBJS   :=
 MOD_LIST_NAME := BLOCK_MODULES
-LX_OBJS := ll_rw_blk.o
+LX_OBJS := ll_rw_blk.o blkpg.o
 MX_OBJS :=
 
 ifeq ($(CONFIG_MAC_FLOPPY),y)
@@ -52,6 +52,10 @@ else
   ifeq ($(CONFIG_ATARI_FLOPPY),m)
   M_OBJS += ataflop.o
   endif
+endif
+
+ifeq ($(CONFIG_BLK_DEV_SWIM_IOP),y)
+  L_OBJS += swim_iop.o
 endif
 
 ifeq ($(CONFIG_ATARI_ACSI),y)
@@ -94,138 +98,6 @@ else
   endif
 endif
 
-ifeq ($(CONFIG_BLK_DEV_HD),y)
-L_OBJS += hd.o
-endif
-
-ifeq ($(CONFIG_BLK_DEV_RZ1000),y)
-IDE_OBJS += rz1000.o
-endif
-
-ifeq ($(CONFIG_BLK_DEV_CMD640),y)
-IDE_OBJS += cmd640.o
-endif
-
-ifeq ($(CONFIG_BLK_DEV_IDE_PMAC),y)
-IDE_OBJS += ide-pmac.o
-endif
-
-ifeq ($(CONFIG_BLK_DEV_IDEPCI),y)
-IDE_OBJS += ide-pci.o
-endif
-
-ifeq ($(CONFIG_BLK_DEV_IDEDMA),y)
-IDE_OBJS += ide-dma.o
-endif
-
-ifeq ($(CONFIG_BLK_DEV_DTC2278),y)
-IDE_OBJS += dtc2278.o
-endif
-
-ifeq ($(CONFIG_BLK_DEV_HT6560B),y)
-IDE_OBJS += ht6560b.o
-endif
-
-ifeq ($(CONFIG_BLK_DEV_QD6580),y)
-IDE_OBJS += qd6580.o
-endif
-
-ifeq ($(CONFIG_BLK_DEV_UMC8672),y)
-IDE_OBJS += umc8672.o
-endif
-
-ifeq ($(CONFIG_BLK_DEV_ALI14XX),y)
-IDE_OBJS += ali14xx.o
-endif
-
-ifeq ($(CONFIG_BLK_DEV_PDC4030),y)
-IDE_OBJS += pdc4030.o
-endif
-
-ifeq ($(CONFIG_BLK_DEV_ALI15X3),y)
-IDE_OBJS += alim15x3.o
-endif
-
-ifeq ($(CONFIG_BLK_DEV_TRM290),y)
-IDE_OBJS += trm290.o
-endif
-
-ifeq ($(CONFIG_BLK_DEV_OPTI621),y)
-IDE_OBJS += opti621.o
-endif
-
-ifeq ($(CONFIG_BLK_DEV_NS87415),y)
-IDE_OBJS += ns87415.o
-endif
-
-ifeq ($(CONFIG_BLK_DEV_VIA82C586),y)
-IDE_OBJS += via82c586.o
-endif
-
-ifeq ($(CONFIG_BLK_DEV_CMD646),y)
-IDE_OBJS += cmd646.o
-endif
-
-ifeq ($(CONFIG_BLK_DEV_CS5530),y)
-IDE_OBJS += cs5530.o
-endif     
-
-ifeq ($(CONFIG_BLK_DEV_SL82C105),y)
-IDE_OBJS += sl82c105.o
-endif
-
-### if CONFIG_BLK_DEV_IDE is n, IDE_OBJS will be ignored
-
-ifeq ($(CONFIG_PROC_FS),y)
-IDE_OBJS += ide-proc.o
-endif
-  
-###Collect
-
-ifeq ($(CONFIG_BLK_DEV_IDE),y)
-  LX_OBJS += ide.o
-  L_OBJS += ide-probe.o $(IDE_OBJS)
-else
-  ifeq ($(CONFIG_BLK_DEV_IDE),m)
-  MIX_OBJS += ide.o $(IDE_OBJS)
-  M_OBJS += ide-mod.o ide-probe.o
-  endif
-endif
-
-############
-
-ifeq ($(CONFIG_BLK_DEV_IDEDISK),y)
-L_OBJS += ide-disk.o
-else
-  ifeq ($(CONFIG_BLK_DEV_IDEDISK),m)
-  M_OBJS += ide-disk.o
-  endif
-endif
-
-ifeq ($(CONFIG_BLK_DEV_IDECD),y)
-L_OBJS += ide-cd.o
-else
-  ifeq ($(CONFIG_BLK_DEV_IDECD),m)
-  M_OBJS += ide-cd.o
-  endif
-endif
-
-ifeq ($(CONFIG_BLK_DEV_IDETAPE),y)
-L_OBJS += ide-tape.o
-else
-  ifeq ($(CONFIG_BLK_DEV_IDETAPE),m)
-  M_OBJS += ide-tape.o
-  endif
-endif
-
-ifeq ($(CONFIG_BLK_DEV_IDEFLOPPY),y)
-L_OBJS += ide-floppy.o
-else
-  ifeq ($(CONFIG_BLK_DEV_IDEFLOPPY),m)
-  M_OBJS += ide-floppy.o
-  endif
-endif
-
 ifeq ($(CONFIG_BLK_DEV_PS2),y)
 L_OBJS += ps2esdi.o
 else
@@ -250,20 +122,20 @@ else
   endif
 endif
 
-ifeq ($(CONFIG_BLK_CPQ_CISS_DA),y)
-L_OBJS += cciss.o
-else
-  ifeq ($(CONFIG_BLK_CPQ_CISS_DA),m)
-  M_OBJS += cciss.o
-  endif
-endif
-
 ifeq ($(CONFIG_BLK_DEV_DAC960),y)
 LX_OBJS += DAC960.o
 else
   ifeq ($(CONFIG_BLK_DEV_DAC960),m)
   MX_OBJS += DAC960.o
   endif
+endif
+
+ifeq ($(CONFIG_BLK_DEV_LVM),y)
+L_OBJS += lvm.o lvm-snap.o
+else
+   ifeq ($(CONFIG_BLK_DEV_LVM),m)
+   M_OBJS += lvm-mod.o
+   endif
 endif
 
 ifeq ($(CONFIG_BLK_DEV_MD),y)
@@ -277,26 +149,28 @@ else
   endif
 endif
 
-ifeq ($(CONFIG_MD_STRIPED),y)
+ifeq ($(CONFIG_MD_RAID0),y)
 L_OBJS += raid0.o
 else
-  ifeq ($(CONFIG_MD_STRIPED),m)
+  ifeq ($(CONFIG_MD_RAID0),m)
   M_OBJS += raid0.o
   endif
 endif
 
-ifeq ($(CONFIG_MD_MIRRORING),y)
+ifeq ($(CONFIG_MD_RAID1),y)
 L_OBJS += raid1.o
 else
-  ifeq ($(CONFIG_MD_MIRRORING),m)
+  ifeq ($(CONFIG_MD_RAID1),m)
   M_OBJS += raid1.o
   endif
 endif
 
 ifeq ($(CONFIG_MD_RAID5),y)
+LX_OBJS += xor.o
 L_OBJS += raid5.o
 else
   ifeq ($(CONFIG_MD_RAID5),m)
+  LX_OBJS += xor.o
   M_OBJS += raid5.o
   endif
 endif
@@ -322,5 +196,5 @@ endif
 
 include $(TOPDIR)/Rules.make
 
-ide-mod.o: ide.o $(IDE_OBJS)
-	$(LD) $(LD_RFLAG) -r -o $@ ide.o $(IDE_OBJS)
+lvm-mod.o:	lvm.o lvm-snap.o
+	$(LD) -r -o $@ lvm.o lvm-snap.o

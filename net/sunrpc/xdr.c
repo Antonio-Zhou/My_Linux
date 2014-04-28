@@ -13,7 +13,6 @@
 #include <linux/in.h>
 #include <linux/sunrpc/xdr.h>
 #include <linux/sunrpc/msg_prot.h>
-#include <linux/nfs2.h>
 
 u32	rpc_success, rpc_prog_unavail, rpc_prog_mismatch, rpc_proc_unavail,
 	rpc_garbage_args, rpc_system_err;
@@ -58,8 +57,8 @@ xdr_encode_netobj(u32 *p, const struct xdr_netobj *obj)
 {
 	unsigned int	quadlen = XDR_QUADLEN(obj->len);
 
+	p[quadlen] = 0;		/* zero trailing bytes */
 	*p++ = htonl(obj->len);
-	p[quadlen-1] = 0;	/* zero trailing bytes */
 	memcpy(p, obj->data, obj->len);
 	return p + XDR_QUADLEN(obj->len);
 }
@@ -86,17 +85,20 @@ xdr_decode_netobj(u32 *p, struct xdr_netobj *obj)
 }
 
 u32 *
-xdr_encode_string(u32 *p, const char *string, int len)
+xdr_encode_array(u32 *p, const char *array, unsigned int len)
 {
-	int quadlen;
+	int quadlen = XDR_QUADLEN(len);
 
-	if (len < 0)
-		len = strlen(string);
-	quadlen = XDR_QUADLEN(len);
 	p[quadlen] = 0;
 	*p++ = htonl(len);
-	memcpy(p, string, len);
+	memcpy(p, array, len);
 	return p + quadlen;
+}
+
+u32 *
+xdr_encode_string(u32 *p, const char *string)
+{
+	return xdr_encode_array(p, string, strlen(string));
 }
 
 u32 *

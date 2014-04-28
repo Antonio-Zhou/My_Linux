@@ -1,6 +1,8 @@
 #ifndef _ALPHA_ATOMIC_H
 #define _ALPHA_ATOMIC_H
 
+#include <linux/config.h>
+
 /*
  * Atomic operations that C can't guarantee us.  Useful for
  * resource counting etc...
@@ -9,7 +11,7 @@
  * than regular operations.
  */
 
-#ifdef __SMP__
+#ifdef CONFIG_SMP
 typedef struct { volatile int counter; } atomic_t;
 #else
 typedef struct { int counter; } atomic_t;
@@ -41,7 +43,7 @@ extern __inline__ void atomic_add(int i, atomic_t * v)
 	"	addl %0,%2,%0\n"
 	"	stl_c %0,%1\n"
 	"	beq %0,2f\n"
-	".section .text2,\"ax\"\n"
+	".subsection 2\n"
 	"2:	br 1b\n"
 	".previous"
 	:"=&r" (temp), "=m" (__atomic_fool_gcc(v))
@@ -56,7 +58,7 @@ extern __inline__ void atomic_sub(int i, atomic_t * v)
 	"	subl %0,%2,%0\n"
 	"	stl_c %0,%1\n"
 	"	beq %0,2f\n"
-	".section .text2,\"ax\"\n"
+	".subsection 2\n"
 	"2:	br 1b\n"
 	".previous"
 	:"=&r" (temp), "=m" (__atomic_fool_gcc(v))
@@ -76,7 +78,7 @@ extern __inline__ long atomic_add_return(int i, atomic_t * v)
 	"	stl_c %0,%1\n"
 	"	beq %0,2f\n"
 	"	mb\n"
-	".section .text2,\"ax\"\n"
+	".subsection 2\n"
 	"2:	br 1b\n"
 	".previous"
 	:"=&r" (temp), "=m" (__atomic_fool_gcc(v)), "=&r" (result)
@@ -94,7 +96,7 @@ extern __inline__ long atomic_sub_return(int i, atomic_t * v)
 	"	stl_c %0,%1\n"
 	"	beq %0,2f\n"
 	"	mb\n"
-	".section .text2,\"ax\"\n"
+	".subsection 2\n"
 	"2:	br 1b\n"
 	".previous"
 	:"=&r" (temp), "=m" (__atomic_fool_gcc(v)), "=&r" (result)

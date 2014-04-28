@@ -19,6 +19,7 @@
 #include <linux/kernel_stat.h>
 #include <linux/init.h>
 
+#include <asm/init.h>
 #include <asm/segment.h>
 #include <asm/io.h>
 #include <asm/processor.h>
@@ -26,7 +27,7 @@
 #include <asm/prep_nvram.h>
 #include <asm/mk48t59.h>
 
-#include <asm/time.h>
+#include "time.h"
 
 /*
  * The motorola uses the m48t18 rtc (includes DS1643) whose registers

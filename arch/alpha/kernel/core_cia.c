@@ -1,14 +1,17 @@
 /*
  *	linux/arch/alpha/kernel/core_cia.c
  *
- * Code common to all CIA core logic chips.
- *
  * Written by David A Rusling (david.rusling@reo.mts.dec.com).
  * December 1995.
  *
+ *	Copyright (C) 1995  David A Rusling
+ *	Copyright (C) 1997, 1998  Jay Estabrook
+ *	Copyright (C) 1998, 1999, 2000  Richard Henderson
+ *
+ * Code common to all CIA core logic chips.
  */
+
 #include <linux/kernel.h>
-#include <linux/config.h>
 #include <linux/types.h>
 #include <linux/pci.h>
 #include <linux/sched.h>
@@ -16,15 +19,17 @@
 
 #include <asm/system.h>
 #include <asm/ptrace.h>
-#include <asm/pci.h>
 
 #define __EXTERN_INLINE inline
 #include <asm/io.h>
 #include <asm/core_cia.h>
 #undef __EXTERN_INLINE
 
+#include <linux/bootmem.h>
+
 #include "proto.h"
-#include "bios32.h"
+#include "pci_impl.h"
+
 
 /*
  * NOTE: Herein lie back-to-back mb instructions.  They are magic. 
@@ -32,33 +37,20 @@
  * handle the system transaction.  Another involves timing.  Ho hum.
  */
 
-/*
- * BIOS32-style PCI interface:
- */
-
-#define DEBUG_MCHECK 0	/* 0 = minimal, 1 = debug, 2 = dump */
-
 #define DEBUG_CONFIG 0
-
 #if DEBUG_CONFIG
 # define DBGC(args)	printk args
 #else
 # define DBGC(args)
 #endif
 
-#define vuip	volatile unsigned int  *
-
-static volatile unsigned int CIA_mcheck_expected = 0;
-static volatile unsigned int CIA_mcheck_taken = 0;
-static unsigned int CIA_jd;
-
+#define vip	volatile int  *
 
 /*
  * Given a bus, device, and function number, compute resulting
- * configuration space address and setup the CIA_HAXR2 register
- * accordingly.  It is therefore not safe to have concurrent
- * invocations to configuration space access routines, but there
- * really shouldn't be any need for this.
+ * configuration space address.  It is therefore not safe to have
+ * concurrent invocations to configuration space access routines, but
+ * there really shouldn't be any need for this.
  *
  * Type 0:
  *
@@ -96,35 +88,19 @@ static unsigned int CIA_jd;
  */
 
 static int
-mk_conf_addr(u8 bus, u8 device_fn, u8 where, unsigned long *pci_addr,
+mk_conf_addr(struct pci_dev *dev, int where, unsigned long *pci_addr,
 	     unsigned char *type1)
 {
-	unsigned long addr;
+	u8 bus = dev->bus->number;
+	u8 device_fn = dev->devfn;
 
-	DBGC(("mk_conf_addr(bus=%d, device_fn=0x%x, where=0x%x, "
-	      "pci_addr=0x%p, type1=0x%p)\n",
-	      bus, device_fn, where, pci_addr, type1));
+	*type1 = (bus != 0);
+	*pci_addr = (bus << 16) | (device_fn << 8) | where;
 
-	if (bus == 0) {
-		int device = device_fn >> 3;
+	DBGC(("mk_conf_addr(bus=%d ,device_fn=0x%x, where=0x%x,"
+	      " returning address 0x%p\n"
+	      bus, device_fn, where, *pci_addr));
 
-		/* Type 0 configuration cycle.  */
-
-		if (device > 20) {
-			DBGC(("mk_conf_addr: device (%d) > 20, returning -1\n",
-			      device));
-			return -1;
-		}
-
-		*type1 = 0;
-		addr = (device_fn << 8) | (where);
-	} else {
-		/* Type 1 configuration cycle.  */
-		*type1 = 1;
-		addr = (bus << 16) | (device_fn << 8) | (where);
-	}
-	*pci_addr = addr;
-	DBGC(("mk_conf_addr: returning pci_addr 0x%lx\n", addr));
 	return 0;
 }
 
@@ -132,81 +108,52 @@ static unsigned int
 conf_read(unsigned long addr, unsigned char type1)
 {
 	unsigned long flags;
-	unsigned int stat0, value;
-	unsigned int cia_cfg = 0;
+	int stat0, value;
+	int cia_cfg = 0;
 
-	value = 0xffffffffU;
-	mb();
-
-	__save_and_cli(flags);	/* avoid getting hit by machine check */
-
-	DBGC(("conf_read(addr=0x%lx, type1=%d)\n", addr, type1));
+	DBGC(("conf_read(addr=0x%lx, type1=%d) ", addr, type1));
+	__save_and_cli(flags);
 
 	/* Reset status register to avoid losing errors.  */
-	stat0 = *(vuip)CIA_IOC_CIA_ERR;
-	*(vuip)CIA_IOC_CIA_ERR = stat0;
+	stat0 = *(vip)CIA_IOC_CIA_ERR;
+	*(vip)CIA_IOC_CIA_ERR = stat0;
 	mb();
-	DBGC(("conf_read: CIA ERR was 0x%x\n", stat0));
 
 	/* If Type1 access, must set CIA CFG. */
 	if (type1) {
-		cia_cfg = *(vuip)CIA_IOC_CFG;
-		*(vuip)CIA_IOC_CFG = cia_cfg | 1;
+		cia_cfg = *(vip)CIA_IOC_CFG;
+		*(vip)CIA_IOC_CFG = (cia_cfg & ~3) | 1;
 		mb();
-		DBGC(("conf_read: TYPE1 access\n"));
+		*(vip)CIA_IOC_CFG;
 	}
 
-	mb();
 	draina();
-	CIA_mcheck_expected = 1;
-	CIA_mcheck_taken = 0;
+	mcheck_expected(0) = 1;
+	mcheck_taken(0) = 0;
 	mb();
 
 	/* Access configuration space.  */
-	value = *(vuip)addr;
+	value = *(vip)addr;
 	mb();
 	mb();  /* magic */
-	if (CIA_mcheck_taken) {
-		CIA_mcheck_taken = 0;
-		value = 0xffffffffU;
-		mb();
-	}
-	CIA_mcheck_expected = 0;
-	mb();
-
-#if 0
-	/* This code might be necessary if machine checks aren't taken,
-	   but I can't get it to work on CIA-2, so its disabled. */
-	draina();
-
-	/* Now look for any errors.  */
-	stat0 = *(vuip)CIA_IOC_CIA_ERR;
-	DBGC(("conf_read: CIA ERR after read 0x%x\n", stat0));
-
-	/* Is any error bit set? */
-	if (stat0 & 0x8FEF0FFFU) {
-		/* If not MAS_ABT, print status. */
-		if (!(stat0 & 0x0080)) {
-			printk("CIA.c:conf_read: got stat0=%x\n", stat0);
-		}
-
-		/* reset error status: */
-		*(vuip)CIA_IOC_CIA_ERR = stat0;
-		mb();
-		wrmces(0x7);			/* reset machine check */
+	if (mcheck_taken(0)) {
+		mcheck_taken(0) = 0;
 		value = 0xffffffff;
+		mb();
 	}
-#endif
+	mcheck_expected(0) = 0;
+	mb();
 
 	/* If Type1 access, must reset IOC CFG so normal IO space ops work.  */
 	if (type1) {
-		*(vuip)CIA_IOC_CFG = cia_cfg & ~1;
+		*(vip)CIA_IOC_CFG = cia_cfg;
 		mb();
+		*(vip)CIA_IOC_CFG;
 	}
 
-	DBGC(("conf_read(): finished\n"));
-
 	__restore_flags(flags);
+	DBGC(("done\n"));
+
 	return value;
 }
 
@@ -214,414 +161,610 @@ static void
 conf_write(unsigned long addr, unsigned int value, unsigned char type1)
 {
 	unsigned long flags;
-	unsigned int stat0;
-	unsigned int cia_cfg = 0;
+	int stat0, cia_cfg = 0;
 
-	__save_and_cli(flags);	/* avoid getting hit by machine check */
+	DBGC(("conf_write(addr=0x%lx, type1=%d) ", addr, type1));
+	__save_and_cli(flags);
 
 	/* Reset status register to avoid losing errors.  */
-	stat0 = *(vuip)CIA_IOC_CIA_ERR;
-	*(vuip)CIA_IOC_CIA_ERR = stat0;
+	stat0 = *(vip)CIA_IOC_CIA_ERR;
+	*(vip)CIA_IOC_CIA_ERR = stat0;
 	mb();
-	DBGC(("conf_write: CIA ERR was 0x%x\n", stat0));
 
 	/* If Type1 access, must set CIA CFG.  */
 	if (type1) {
-		cia_cfg = *(vuip)CIA_IOC_CFG;
-		*(vuip)CIA_IOC_CFG = cia_cfg | 1;
+		cia_cfg = *(vip)CIA_IOC_CFG;
+		*(vip)CIA_IOC_CFG = (cia_cfg & ~3) | 1;
 		mb();
-		DBGC(("conf_write: TYPE1 access\n"));
+		*(vip)CIA_IOC_CFG;
 	}
 
 	draina();
-	CIA_mcheck_expected = 1;
+	mcheck_expected(0) = 1;
+	mcheck_taken(0) = 0;
 	mb();
 
 	/* Access configuration space.  */
-	*(vuip)addr = value;
+	*(vip)addr = value;
 	mb();
 	mb();  /* magic */
 
-	CIA_mcheck_expected = 0;
+	mcheck_expected(0) = 0;
 	mb();
-
-#if 0
-	/* This code might be necessary if machine checks aren't taken,
-	   but I can't get it to work on CIA-2, so its disabled. */
-	draina();
-
-	/* Now look for any errors */
-	stat0 = *(vuip)CIA_IOC_CIA_ERR;
-	DBGC(("conf_write: CIA ERR after write 0x%x\n", stat0));
-
-	/* Is any error bit set? */
-	if (stat0 & 0x8FEF0FFFU) {
-		/* If not MAS_ABT, print status */
-		if (!(stat0 & 0x0080)) {
-			printk("CIA.c:conf_read: got stat0=%x\n", stat0);
-		}
-
-		/* Reset error status.  */
-		*(vuip)CIA_IOC_CIA_ERR = stat0;
-		mb();
-		wrmces(0x7);			/* reset machine check */
-		value = 0xffffffff;
-	}
-#endif
 
 	/* If Type1 access, must reset IOC CFG so normal IO space ops work.  */
 	if (type1) {
-		*(vuip)CIA_IOC_CFG = cia_cfg & ~1;
+		*(vip)CIA_IOC_CFG = cia_cfg;
 		mb();
+		*(vip)CIA_IOC_CFG;
 	}
 
-	DBGC(("conf_write(): finished\n"));
 	__restore_flags(flags);
+	DBGC(("done\n"));
 }
 
-int
-cia_hose_read_config_byte (u8 bus, u8 device_fn, u8 where, u8 *value,
-			   struct linux_hose_info *hose)
+static int
+cia_read_config_byte(struct pci_dev *dev, int where, u8 *value)
 {
-	unsigned long addr = CIA_CONF;
-	unsigned long pci_addr;
+	unsigned long addr, pci_addr;
 	unsigned char type1;
 
-	if (mk_conf_addr(bus, device_fn, where, &pci_addr, &type1))
+	if (mk_conf_addr(dev, where, &pci_addr, &type1))
 		return PCIBIOS_DEVICE_NOT_FOUND;
 
-	addr |= (pci_addr << 5) + 0x00;
+	addr = (pci_addr << 5) + 0x00 + CIA_CONF;
 	*value = conf_read(addr, type1) >> ((where & 3) * 8);
 	return PCIBIOS_SUCCESSFUL;
 }
 
-int 
-cia_hose_read_config_word (u8 bus, u8 device_fn, u8 where, u16 *value,
-			   struct linux_hose_info *hose)
+static int 
+cia_read_config_word(struct pci_dev *dev, int where, u16 *value)
 {
-	unsigned long addr = CIA_CONF;
-	unsigned long pci_addr;
+	unsigned long addr, pci_addr;
 	unsigned char type1;
 
-	if (mk_conf_addr(bus, device_fn, where, &pci_addr, &type1))
+	if (mk_conf_addr(dev, where, &pci_addr, &type1))
 		return PCIBIOS_DEVICE_NOT_FOUND;
 
-	addr |= (pci_addr << 5) + 0x08;
+	addr = (pci_addr << 5) + 0x08 + CIA_CONF;
 	*value = conf_read(addr, type1) >> ((where & 3) * 8);
 	return PCIBIOS_SUCCESSFUL;
 }
 
-int 
-cia_hose_read_config_dword (u8 bus, u8 device_fn, u8 where, u32 *value,
-			    struct linux_hose_info *hose)
+static int 
+cia_read_config_dword(struct pci_dev *dev, int where, u32 *value)
 {
-	unsigned long addr = CIA_CONF;
-	unsigned long pci_addr;
+	unsigned long addr, pci_addr;
 	unsigned char type1;
 
-	if (mk_conf_addr(bus, device_fn, where, &pci_addr, &type1))
+	if (mk_conf_addr(dev, where, &pci_addr, &type1))
 		return PCIBIOS_DEVICE_NOT_FOUND;
 
-	addr |= (pci_addr << 5) + 0x18;
+	addr = (pci_addr << 5) + 0x18 + CIA_CONF;
 	*value = conf_read(addr, type1);
 	return PCIBIOS_SUCCESSFUL;
 }
 
-int 
-cia_hose_write_config_byte (u8 bus, u8 device_fn, u8 where, u8 value,
-			    struct linux_hose_info *hose)
+static int 
+cia_write_config(struct pci_dev *dev, int where, u32 value, long mask)
 {
-	unsigned long addr = CIA_CONF;
-	unsigned long pci_addr;
+	unsigned long addr, pci_addr;
 	unsigned char type1;
 
-	if (mk_conf_addr(bus, device_fn, where, &pci_addr, &type1))
+	if (mk_conf_addr(dev, where, &pci_addr, &type1))
 		return PCIBIOS_DEVICE_NOT_FOUND;
 
-	addr |= (pci_addr << 5) + 0x00;
+	addr = (pci_addr << 5) + mask + CIA_CONF;
 	conf_write(addr, value << ((where & 3) * 8), type1);
 	return PCIBIOS_SUCCESSFUL;
 }
 
-int 
-cia_hose_write_config_word (u8 bus, u8 device_fn, u8 where, u16 value,
-			    struct linux_hose_info *hose)
+static int
+cia_write_config_byte(struct pci_dev *dev, int where, u8 value)
 {
-	unsigned long addr = CIA_CONF;
-	unsigned long pci_addr;
-	unsigned char type1;
-
-	if (mk_conf_addr(bus, device_fn, where, &pci_addr, &type1))
-		return PCIBIOS_DEVICE_NOT_FOUND;
-
-	addr |= (pci_addr << 5) + 0x08;
-	conf_write(addr, value << ((where & 3) * 8), type1);
-	return PCIBIOS_SUCCESSFUL;
+	return cia_write_config(dev, where, value, 0x00);
 }
 
-int 
-cia_hose_write_config_dword (u8 bus, u8 device_fn, u8 where, u32 value,
-			     struct linux_hose_info *hose)
+static int 
+cia_write_config_word(struct pci_dev *dev, int where, u16 value)
 {
-	unsigned long addr = CIA_CONF;
-	unsigned long pci_addr;
-	unsigned char type1;
+	return cia_write_config(dev, where, value, 0x08);
+}
 
-	if (mk_conf_addr(bus, device_fn, where, &pci_addr, &type1))
-		return PCIBIOS_DEVICE_NOT_FOUND;
+static int 
+cia_write_config_dword(struct pci_dev *dev, int where, u32 value)
+{
+	return cia_write_config(dev, where, value, 0x18);
+}
 
-	addr |= (pci_addr << 5) + 0x18;
-	conf_write(addr, value << ((where & 3) * 8), type1);
-	return PCIBIOS_SUCCESSFUL;
+struct pci_ops cia_pci_ops = 
+{
+	read_byte:	cia_read_config_byte,
+	read_word:	cia_read_config_word,
+	read_dword:	cia_read_config_dword,
+	write_byte:	cia_write_config_byte,
+	write_word:	cia_write_config_word,
+	write_dword:	cia_write_config_dword
+};
+
+/*
+ * CIA Pass 1 and PYXIS Pass 1 and 2 have a broken scatter-gather tlb.
+ * It cannot be invalidated.  Rather than hard code the pass numbers,
+ * actually try the tbia to see if it works.
+ */
+
+void
+cia_pci_tbi(struct pci_controler *hose, dma_addr_t start, dma_addr_t end)
+{
+	wmb();
+	*(vip)CIA_IOC_PCI_TBIA = 3;	/* Flush all locked and unlocked.  */
+	mb();
+	*(vip)CIA_IOC_PCI_TBIA;
+}
+
+/*
+ * Fixup attempt number 1.
+ *
+ * Write zeros directly into the tag registers.
+ */
+
+static void
+cia_pci_tbi_try1(struct pci_controler *hose,
+		 dma_addr_t start, dma_addr_t end)
+{
+	wmb();
+	*(vip)CIA_IOC_TB_TAGn(0) = 0;
+	*(vip)CIA_IOC_TB_TAGn(1) = 0;
+	*(vip)CIA_IOC_TB_TAGn(2) = 0;
+	*(vip)CIA_IOC_TB_TAGn(3) = 0;
+	*(vip)CIA_IOC_TB_TAGn(4) = 0;
+	*(vip)CIA_IOC_TB_TAGn(5) = 0;
+	*(vip)CIA_IOC_TB_TAGn(6) = 0;
+	*(vip)CIA_IOC_TB_TAGn(7) = 0;
+	mb();
+	*(vip)CIA_IOC_TB_TAGn(0);
+}
+
+#if 0
+/*
+ * Fixup attempt number 2.  This is the method NT and NetBSD use.
+ *
+ * Allocate mappings, and put the chip into DMA loopback mode to read a
+ * garbage page.  This works by causing TLB misses, causing old entries to
+ * be purged to make room for the new entries coming in for the garbage page.
+ */
+
+#define CIA_BROKEN_TBI_TRY2_BASE	0xE0000000
+
+static void __init
+cia_enable_broken_tbi_try2(void)
+{
+	unsigned long *ppte, pte;
+	long i;
+
+	ppte = __alloc_bootmem(PAGE_SIZE, 32768, 0);
+	pte = (virt_to_phys(ppte) >> (PAGE_SHIFT - 1)) | 1;
+
+	for (i = 0; i < PAGE_SIZE / sizeof(unsigned long); ++i)
+		ppte[i] = pte;
+
+	*(vip)CIA_IOC_PCI_W3_BASE = CIA_BROKEN_TBI_TRY2_BASE | 3;
+	*(vip)CIA_IOC_PCI_W3_MASK = (PAGE_SIZE - 1) & 0xfff00000;
+	*(vip)CIA_IOC_PCI_T3_BASE = virt_to_phys(ppte) >> 2;
+}
+
+static void
+cia_pci_tbi_try2(struct pci_controler *hose,
+		 dma_addr_t start, dma_addr_t end)
+{
+	unsigned long flags;
+	unsigned long bus_addr;
+	int ctrl;
+	long i;
+
+	__save_and_cli(flags);
+
+	/* Put the chip into PCI loopback mode.  */
+	mb();
+	ctrl = *(vip)CIA_IOC_CIA_CTRL;
+	*(vip)CIA_IOC_CIA_CTRL = ctrl | CIA_CTRL_PCI_LOOP_EN;
+	mb();
+	*(vip)CIA_IOC_CIA_CTRL;
+	mb();
+
+	/* Read from PCI dense memory space at TBI_ADDR, skipping 32k on
+	   each read.  This forces SG TLB misses.  NetBSD claims that the
+	   TLB entries are not quite LRU, meaning that we need to read more
+	   times than there are actual tags.  The 2117x docs claim strict
+	   round-robin.  Oh well, we've come this far...  */
+
+	bus_addr = cia_ioremap(CIA_BROKEN_TBI_TRY2_BASE);
+	for (i = 0; i < 12; ++i, bus_addr += 32768)
+		cia_readl(bus_addr);
+
+	/* Restore normal PCI operation.  */
+	mb();
+	*(vip)CIA_IOC_CIA_CTRL = ctrl;
+	mb();
+	*(vip)CIA_IOC_CIA_CTRL;
+	mb();
+
+	__restore_flags(flags);
+}
+#endif
+
+static void __init
+verify_tb_operation(void)
+{
+	static int page[PAGE_SIZE/4]
+		__attribute__((aligned(PAGE_SIZE)))
+		__initlocaldata = { 0 };
+
+	struct pci_iommu_arena *arena = pci_isa_hose->sg_isa;
+	int ctrl, addr0, tag0, pte0, data0;
+	int temp;
+
+	/* Put the chip into PCI loopback mode.  */
+	mb();
+	ctrl = *(vip)CIA_IOC_CIA_CTRL;
+	*(vip)CIA_IOC_CIA_CTRL = ctrl | CIA_CTRL_PCI_LOOP_EN;
+	mb();
+	*(vip)CIA_IOC_CIA_CTRL;
+	mb();
+
+	/* Write a valid entry directly into the TLB registers.  */
+
+	addr0 = arena->dma_base;
+	tag0 = addr0 | 1;
+	pte0 = (virt_to_phys(page) >> (PAGE_SHIFT - 1)) | 1;
+
+	*(vip)CIA_IOC_TB_TAGn(0) = tag0;
+	*(vip)CIA_IOC_TB_TAGn(1) = 0;
+	*(vip)CIA_IOC_TB_TAGn(2) = 0;
+	*(vip)CIA_IOC_TB_TAGn(3) = 0;
+	*(vip)CIA_IOC_TB_TAGn(4) = 0;
+	*(vip)CIA_IOC_TB_TAGn(5) = 0;
+	*(vip)CIA_IOC_TB_TAGn(6) = 0;
+	*(vip)CIA_IOC_TB_TAGn(7) = 0;
+	*(vip)CIA_IOC_TBn_PAGEm(0,0) = pte0;
+	*(vip)CIA_IOC_TBn_PAGEm(0,1) = 0;
+	*(vip)CIA_IOC_TBn_PAGEm(0,2) = 0;
+	*(vip)CIA_IOC_TBn_PAGEm(0,3) = 0;
+	mb();
+
+	/* First, verify we can read back what we've written.  If
+	   this fails, we can't be sure of any of the other testing
+	   we're going to do, so bail.  */
+	/* ??? Actually, we could do the work with machine checks.
+	   By passing this register update test, we pretty much
+	   guarantee that cia_pci_tbi_try1 works.  If this test
+	   fails, cia_pci_tbi_try2 might still work.  */
+
+	temp = *(vip)CIA_IOC_TB_TAGn(0);
+	if (temp != tag0) {
+		printk("pci: failed tb register update test "
+		       "(tag0 %#x != %#x)\n", temp, tag0);
+		goto failed;
+	}
+	temp = *(vip)CIA_IOC_TB_TAGn(1);
+	if (temp != 0) {
+		printk("pci: failed tb register update test "
+		       "(tag1 %#x != 0)\n", temp);
+		goto failed;
+	}
+	temp = *(vip)CIA_IOC_TBn_PAGEm(0,0);
+	if (temp != pte0) {
+		printk("pci: failed tb register update test "
+		       "(pte0 %#x != %#x)\n", temp, pte0);
+		goto failed;
+	}
+	printk("pci: passed tb register update test\n");
+
+	/* Second, verify we can actually do I/O through this entry.  */
+
+	data0 = 0xdeadbeef;
+	page[0] = data0;
+	mcheck_expected(0) = 1;
+	mcheck_taken(0) = 0;
+	mb();
+	temp = cia_readl(cia_ioremap(addr0));
+	mb();
+	mcheck_expected(0) = 0;
+	mb();
+	if (mcheck_taken(0)) {
+		printk("pci: failed sg loopback i/o read test (mcheck)\n");
+		goto failed;
+	}
+	if (temp != data0) {
+		printk("pci: failed sg loopback i/o read test "
+		       "(%#x != %#x)\n", temp, data0);
+		goto failed;
+	}
+	printk("pci: passed sg loopback i/o read test\n");
+
+	/* Third, try to invalidate the TLB.  */
+
+	cia_pci_tbi(arena->hose, 0, -1);
+	temp = *(vip)CIA_IOC_TB_TAGn(0);
+	if (temp & 1) {
+		cia_pci_tbi_try1(arena->hose, 0, -1);
+	
+		temp = *(vip)CIA_IOC_TB_TAGn(0);
+		if (temp & 1) {
+			printk("pci: failed tbia test; "
+			       "no usable workaround\n");
+			goto failed;
+		}
+
+		alpha_mv.mv_pci_tbi = cia_pci_tbi_try1;
+		printk("pci: failed tbia test; workaround 1 succeeded\n");
+	} else {
+		printk("pci: passed tbia test\n");
+	}
+
+	/* Fourth, verify the TLB snoops the EV5's caches when
+	   doing a tlb fill.  */
+
+	data0 = 0x5adda15e;
+	page[0] = data0;
+	arena->ptes[4] = pte0;
+	mcheck_expected(0) = 1;
+	mcheck_taken(0) = 0;
+	mb();
+	temp = cia_readl(cia_ioremap(addr0 + 4*PAGE_SIZE));
+	mb();
+	mcheck_expected(0) = 0;
+	mb();
+	if (mcheck_taken(0)) {
+		printk("pci: failed pte write cache snoop test (mcheck)\n");
+		goto failed;
+	}
+	if (temp != data0) {
+		printk("pci: failed pte write cache snoop test "
+		       "(%#x != %#x)\n", temp, data0);
+		goto failed;
+	}
+	printk("pci: passed pte write cache snoop test\n");
+
+	/* Fifth, verify that a previously invalid PTE entry gets
+	   filled from the page table.  */
+
+	data0 = 0xabcdef12;
+	page[0] = data0;
+	arena->ptes[5] = pte0;
+	mcheck_expected(0) = 1;
+	mcheck_taken(0) = 0;
+	mb();
+	temp = cia_readl(cia_ioremap(addr0 + 5*PAGE_SIZE));
+	mb();
+	mcheck_expected(0) = 0;
+	mb();
+	if (mcheck_taken(0)) {
+		printk("pci: failed valid tag invalid pte reload test "
+		       "(mcheck; workaround available)\n");
+		/* Work around this bug by aligning new allocations
+		   on 4 page boundaries.  */
+		arena->align_entry = 4;
+	} else if (temp != data0) {
+		printk("pci: failed valid tag invalid pte reload test "
+		       "(%#x != %#x)\n", temp, data0);
+		goto failed;
+	} else {
+		printk("pci: passed valid tag invalid pte reload test\n");
+	}
+
+	/* Sixth, verify machine checks are working.  Test invalid
+	   pte under the same valid tag as we used above.  */
+
+	mcheck_expected(0) = 1;
+	mcheck_taken(0) = 0;
+	mb();
+	temp = cia_readl(cia_ioremap(addr0 + 6*PAGE_SIZE));
+	mb();
+	mcheck_expected(0) = 0;
+	mb();
+	printk("pci: %s pci machine check test\n",
+	       mcheck_taken(0) ? "passed" : "failed");
+
+	/* Clean up after the tests.  */
+	arena->ptes[4] = 0;
+	arena->ptes[5] = 0;
+	alpha_mv.mv_pci_tbi(arena->hose, 0, -1);
+
+exit:
+	/* Restore normal PCI operation.  */
+	mb();
+	*(vip)CIA_IOC_CIA_CTRL = ctrl;
+	mb();
+	*(vip)CIA_IOC_CIA_CTRL;
+	mb();
+	return;
+
+failed:
+	printk("pci: disabling sg translation window\n");
+	*(vip)CIA_IOC_PCI_W0_BASE = 0;
+	alpha_mv.mv_pci_tbi = NULL;
+	goto exit;
+}
+
+static void __init
+do_init_arch(int is_pyxis)
+{
+	struct pci_controler *hose;
+	int temp;
+	int cia_rev;
+
+	cia_rev = *(vip)CIA_IOC_CIA_REV & CIA_REV_MASK;
+	printk("pci: cia revision %d%s\n",
+	       cia_rev, is_pyxis ? " (pyxis)" : "");
+
+	/* Set up error reporting.  */
+	temp = *(vip)CIA_IOC_ERR_MASK;
+	temp &= ~(CIA_ERR_CPU_PE | CIA_ERR_MEM_NEM | CIA_ERR_PA_PTE_INV
+		  | CIA_ERR_RCVD_MAS_ABT | CIA_ERR_RCVD_TAR_ABT);
+	*(vip)CIA_IOC_ERR_MASK = temp;
+
+	/* Clear all currently pending errors.  */
+	*(vip)CIA_IOC_CIA_ERR = 0;
+
+	/* Turn on mchecks.  */
+	temp = *(vip)CIA_IOC_CIA_CTRL;
+	temp |= CIA_CTRL_FILL_ERR_EN | CIA_CTRL_MCHK_ERR_EN;
+	*(vip)CIA_IOC_CIA_CTRL = temp;
+
+	/* Clear the CFG register, which gets used for PCI config space
+	   accesses.  That is the way we want to use it, and we do not
+	   want to depend on what ARC or SRM might have left behind.  */
+	*(vip)CIA_IOC_CFG = 0;
+ 
+	/* Zero the HAEs.  */
+	*(vip)CIA_IOC_HAE_MEM = 0;
+	*(vip)CIA_IOC_HAE_IO = 0;
+
+	/* For PYXIS, we always use BWX bus and i/o accesses.  To that end,
+	   make sure they're enabled on the controler.  */
+	if (is_pyxis) {
+		temp = *(vip)CIA_IOC_CIA_CNFG;
+		temp |= CIA_CNFG_IOA_BWEN;
+		*(vip)CIA_IOC_CIA_CNFG = temp;
+	}
+
+	/* Syncronize with all previous changes.  */
+	mb();
+	*(vip)CIA_IOC_CIA_REV;
+
+	/*
+	 * Create our single hose.
+	 */
+
+	pci_isa_hose = hose = alloc_pci_controler();
+	hose->io_space = &ioport_resource;
+	hose->mem_space = &iomem_resource;
+	hose->index = 0;
+
+	if (! is_pyxis) {
+		struct resource *hae_mem = alloc_resource();
+		hose->mem_space = hae_mem;
+
+		hae_mem->start = 0;
+		hae_mem->end = CIA_MEM_R1_MASK;
+		hae_mem->name = pci_hae0_name;
+		hae_mem->flags = IORESOURCE_MEM;
+
+		if (request_resource(&iomem_resource, hae_mem) < 0)
+			printk(KERN_ERR "Failed to request HAE_MEM\n");
+
+		hose->sparse_mem_base = CIA_SPARSE_MEM - IDENT_ADDR;
+		hose->dense_mem_base = CIA_DENSE_MEM - IDENT_ADDR;
+		hose->sparse_io_base = CIA_IO - IDENT_ADDR;
+		hose->dense_io_base = 0;
+	} else {
+		hose->sparse_mem_base = 0;
+		hose->dense_mem_base = CIA_BW_MEM - IDENT_ADDR;
+		hose->sparse_io_base = 0;
+		hose->dense_io_base = CIA_BW_IO - IDENT_ADDR;
+	}
+
+	/*
+	 * Set up the PCI to main memory translation windows.
+	 *
+	 * Window 0 is scatter-gather 8MB at 8MB (for isa)
+	 * Window 1 is direct access 1GB at 1GB
+	 * Window 2 is direct access 1GB at 2GB
+	 *
+	 * We must actually use 2 windows to direct-map the 2GB space,
+	 * because of an idiot-syncrasy of the CYPRESS chip used on 
+	 * many PYXIS systems.  It may respond to a PCI bus address in
+	 * the last 1MB of the 4GB address range.
+	 *
+	 * ??? NetBSD hints that page tables must be aligned to 32K,
+	 * possibly due to a hardware bug.  This is over-aligned
+	 * from the 8K alignment one would expect for an 8MB window. 
+	 * No description of what revisions affected.
+	 */
+
+	hose->sg_pci = NULL;
+	hose->sg_isa = iommu_arena_new(hose, 0x00800000, 0x00800000, 32768);
+	__direct_map_base = 0x40000000;
+	__direct_map_size = 0x80000000;
+
+	*(vip)CIA_IOC_PCI_W0_BASE = hose->sg_isa->dma_base | 3;
+	*(vip)CIA_IOC_PCI_W0_MASK = (hose->sg_isa->size - 1) & 0xfff00000;
+	*(vip)CIA_IOC_PCI_T0_BASE = virt_to_phys(hose->sg_isa->ptes) >> 2;
+
+	*(vip)CIA_IOC_PCI_W1_BASE = 0x40000000 | 1;
+	*(vip)CIA_IOC_PCI_W1_MASK = (0x40000000 - 1) & 0xfff00000;
+	*(vip)CIA_IOC_PCI_T1_BASE = 0;
+
+	*(vip)CIA_IOC_PCI_W2_BASE = 0x80000000 | 1;
+	*(vip)CIA_IOC_PCI_W2_MASK = (0x40000000 - 1) & 0xfff00000;
+	*(vip)CIA_IOC_PCI_T2_BASE = 0x40000000;
+
+	*(vip)CIA_IOC_PCI_W3_BASE = 0;
 }
 
 void __init
-cia_init_arch(unsigned long *mem_start, unsigned long *mem_end)
+cia_init_arch(void)
 {
-        unsigned int cia_tmp;
+	do_init_arch(0);
+}
 
-#ifdef DEBUG_DUMP_REGS
-	{
-		unsigned int temp;
-		temp = *(vuip)CIA_IOC_CIA_REV; mb();
-		printk("cia_init: CIA_REV was 0x%x\n", temp);
-		temp = *(vuip)CIA_IOC_PCI_LAT; mb();
-		printk("cia_init: CIA_PCI_LAT was 0x%x\n", temp);
-		temp = *(vuip)CIA_IOC_CIA_CTRL; mb();
-		printk("cia_init: CIA_CTRL was 0x%x\n", temp);
-		temp = *(vuip)0xfffffc8740000140UL; mb();
-		printk("cia_init: CIA_CTRL1 was 0x%x\n", temp);
-		temp = *(vuip)CIA_IOC_HAE_MEM; mb();
-		printk("cia_init: CIA_HAE_MEM was 0x%x\n", temp);
-		temp = *(vuip)CIA_IOC_HAE_IO; mb();
-		printk("cia_init: CIA_HAE_IO was 0x%x\n", temp);
-		temp = *(vuip)CIA_IOC_CFG; mb();
-		printk("cia_init: CIA_CFG was 0x%x\n", temp);
-		temp = *(vuip)CIA_IOC_CACK_EN; mb();
-		printk("cia_init: CIA_CACK_EN was 0x%x\n", temp);
-		temp = *(vuip)CIA_IOC_CFG; mb();
-		printk("cia_init: CIA_CFG was 0x%x\n", temp);
-		temp = *(vuip)CIA_IOC_CIA_DIAG; mb();
-		printk("cia_init: CIA_DIAG was 0x%x\n", temp);
-		temp = *(vuip)CIA_IOC_DIAG_CHECK; mb();
-		printk("cia_init: CIA_DIAG_CHECK was 0x%x\n", temp);
-		temp = *(vuip)CIA_IOC_PERF_MONITOR; mb();
-		printk("cia_init: CIA_PERF_MONITOR was 0x%x\n", temp);
-		temp = *(vuip)CIA_IOC_PERF_CONTROL; mb();
-		printk("cia_init: CIA_PERF_CONTROL was 0x%x\n", temp);
-		temp = *(vuip)CIA_IOC_CIA_ERR; mb();
-		printk("cia_init: CIA_ERR was 0x%x\n", temp);
-		temp = *(vuip)CIA_IOC_CIA_STAT; mb();
-		printk("cia_init: CIA_STAT was 0x%x\n", temp);
-		temp = *(vuip)CIA_IOC_MCR; mb();
-		printk("cia_init: CIA_MCR was 0x%x\n", temp);
-		temp = *(vuip)CIA_IOC_CIA_CTRL; mb();
-		printk("cia_init: CIA_CTRL was 0x%x\n", temp);
-		temp = *(vuip)CIA_IOC_ERR_MASK; mb();
-		printk("cia_init: CIA_ERR_MASK was 0x%x\n", temp);
-		temp = *((vuip)CIA_IOC_PCI_W0_BASE); mb();
-		printk("cia_init: W0_BASE was 0x%x\n", temp);
-		temp = *((vuip)CIA_IOC_PCI_W1_BASE); mb();
-		printk("cia_init: W1_BASE was 0x%x\n", temp);
-		temp = *((vuip)CIA_IOC_PCI_W2_BASE); mb();
-		printk("cia_init: W2_BASE was 0x%x\n", temp);
-		temp = *((vuip)CIA_IOC_PCI_W3_BASE); mb();
-		printk("cia_init: W3_BASE was 0x%x\n", temp);
-	}
-#endif /* DEBUG_DUMP_REGS */
+void __init
+pyxis_init_arch(void)
+{
+	do_init_arch(1);
+}
 
-        /* 
-	 * Set up error reporting.
-	 */
-	cia_tmp = *(vuip)CIA_IOC_CIA_ERR;
-	cia_tmp |= 0x180;   /* master, target abort */
-	*(vuip)CIA_IOC_CIA_ERR = cia_tmp;
+void __init
+cia_init_pci(void)
+{
+	/* Must delay this from init_arch, as we need machine checks.  */
+	verify_tb_operation();
+	common_init_pci();
+}
+
+static inline void
+cia_pci_clr_err(void)
+{
+	int jd;
+
+	jd = *(vip)CIA_IOC_CIA_ERR;
+	*(vip)CIA_IOC_CIA_ERR = jd;
 	mb();
-
-	cia_tmp = *(vuip)CIA_IOC_CIA_CTRL;
-	cia_tmp |= 0x400;	/* turn on FILL_ERR to get mchecks */
-	*(vuip)CIA_IOC_CIA_CTRL = cia_tmp;
-	mb();
-
-	switch (alpha_use_srm_setup)
-	{
-	default:
-#if defined(CONFIG_ALPHA_GENERIC) || defined(CONFIG_ALPHA_SRM_SETUP)
-		/* Check window 0 for enabled and mapped to 0 */
-		if (((*(vuip)CIA_IOC_PCI_W0_BASE & 3) == 1)
-		    && (*(vuip)CIA_IOC_PCI_T0_BASE == 0)) {
-			CIA_DMA_WIN_BASE = *(vuip)CIA_IOC_PCI_W0_BASE & 0xfff00000U;
-			CIA_DMA_WIN_SIZE = *(vuip)CIA_IOC_PCI_W0_MASK & 0xfff00000U;
-			CIA_DMA_WIN_SIZE += 0x00100000U;
-#if 1
-			printk("cia_init: using Window 0 settings\n");
-			printk("cia_init: BASE 0x%x MASK 0x%x TRANS 0x%x\n",
-			       *(vuip)CIA_IOC_PCI_W0_BASE,
-			       *(vuip)CIA_IOC_PCI_W0_MASK,
-			       *(vuip)CIA_IOC_PCI_T0_BASE);
-#endif
-			break;
-		}
-
-		/* Check window 1 for enabled and mapped to 0.  */
-		if (((*(vuip)CIA_IOC_PCI_W1_BASE & 3) == 1)
-		    && (*(vuip)CIA_IOC_PCI_T1_BASE == 0)) {
-			CIA_DMA_WIN_BASE = *(vuip)CIA_IOC_PCI_W1_BASE & 0xfff00000U;
-			CIA_DMA_WIN_SIZE = *(vuip)CIA_IOC_PCI_W1_MASK & 0xfff00000U;
-			CIA_DMA_WIN_SIZE += 0x00100000U;
-#if 1
-			printk("cia_init: using Window 1 settings\n");
-			printk("cia_init: BASE 0x%x MASK 0x%x TRANS 0x%x\n",
-			       *(vuip)CIA_IOC_PCI_W1_BASE,
-			       *(vuip)CIA_IOC_PCI_W1_MASK,
-			       *(vuip)CIA_IOC_PCI_T1_BASE);
-#endif
-			break;
-		}
-
-		/* Check window 2 for enabled and mapped to 0.  */
-		if (((*(vuip)CIA_IOC_PCI_W2_BASE & 3) == 1)
-		    && (*(vuip)CIA_IOC_PCI_T2_BASE == 0)) {
-			CIA_DMA_WIN_BASE = *(vuip)CIA_IOC_PCI_W2_BASE & 0xfff00000U;
-			CIA_DMA_WIN_SIZE = *(vuip)CIA_IOC_PCI_W2_MASK & 0xfff00000U;
-			CIA_DMA_WIN_SIZE += 0x00100000U;
-#if 1
-			printk("cia_init: using Window 2 settings\n");
-			printk("cia_init: BASE 0x%x MASK 0x%x TRANS 0x%x\n",
-			       *(vuip)CIA_IOC_PCI_W2_BASE,
-			       *(vuip)CIA_IOC_PCI_W2_MASK,
-			       *(vuip)CIA_IOC_PCI_T2_BASE);
-#endif
-			break;
-		}
-
-		/* Check window 3 for enabled and mapped to 0.  */
-		if (((*(vuip)CIA_IOC_PCI_W3_BASE & 3) == 1)
-		    && (*(vuip)CIA_IOC_PCI_T3_BASE == 0)) {
-			CIA_DMA_WIN_BASE = *(vuip)CIA_IOC_PCI_W3_BASE & 0xfff00000U;
-			CIA_DMA_WIN_SIZE = *(vuip)CIA_IOC_PCI_W3_MASK & 0xfff00000U;
-			CIA_DMA_WIN_SIZE += 0x00100000U;
-#if 1
-			printk("cia_init: using Window 3 settings\n");
-			printk("cia_init: BASE 0x%x MASK 0x%x TRANS 0x%x\n",
-			       *(vuip)CIA_IOC_PCI_W3_BASE,
-			       *(vuip)CIA_IOC_PCI_W3_MASK,
-			       *(vuip)CIA_IOC_PCI_T3_BASE);
-#endif
-			break;
-		}
-
-		/* Otherwise, we must use our defaults.  */
-		CIA_DMA_WIN_BASE = CIA_DMA_WIN_BASE_DEFAULT;
-		CIA_DMA_WIN_SIZE = CIA_DMA_WIN_SIZE_DEFAULT;
-#endif
-	case 0:
-		/*
-		 * Set up the PCI->physical memory translation windows.
-		 * For now, windows 2 and 3 are disabled.  In the future,
-		 * we may want to use them to do scatter/gather DMA. 
-		 *
-		 * Window 0 goes at 1 GB and is 1 GB large.
-		 * Window 1 goes at 2 GB and is 1 GB large.
-		 */
-		*(vuip)CIA_IOC_PCI_W0_BASE = CIA_DMA_WIN0_BASE_DEFAULT | 1U;
-		*(vuip)CIA_IOC_PCI_W0_MASK = (CIA_DMA_WIN0_SIZE_DEFAULT - 1) &
-						0xfff00000U;
-		*(vuip)CIA_IOC_PCI_T0_BASE = CIA_DMA_WIN0_TRAN_DEFAULT >> 2;
-
-		*(vuip)CIA_IOC_PCI_W1_BASE = CIA_DMA_WIN1_BASE_DEFAULT | 1U;
-		*(vuip)CIA_IOC_PCI_W1_MASK = (CIA_DMA_WIN1_SIZE_DEFAULT - 1) &
-						0xfff00000U;
-		*(vuip)CIA_IOC_PCI_T1_BASE = CIA_DMA_WIN1_TRAN_DEFAULT >> 2;
-
-		*(vuip)CIA_IOC_PCI_W2_BASE = 0x0;
-		*(vuip)CIA_IOC_PCI_W3_BASE = 0x0;
-		mb();
-		break;
-	}
-
-        /*
-         * Next, clear the CIA_CFG register, which gets used
-         * for PCI Config Space accesses. That is the way
-         * we want to use it, and we do not want to depend on
-         * what ARC or SRM might have left behind...
-         */
-	*((vuip)CIA_IOC_CFG) = 0; mb();
- 
-
-	/*
-	 * Sigh... For the SRM setup, unless we know apriori what the HAE
-	 * contents will be, we need to setup the arbitrary region bases
-	 * so we can test against the range of addresses and tailor the
-	 * region chosen for the SPARSE memory access.
-	 *
-	 * See include/asm-alpha/cia.h for the SPARSE mem read/write.
-	 */
-	if (alpha_use_srm_setup) {
-		unsigned int cia_hae_mem = *((vuip)CIA_IOC_HAE_MEM);
-
-		alpha_mv.sm_base_r1 = (cia_hae_mem      ) & 0xe0000000UL;
-		alpha_mv.sm_base_r2 = (cia_hae_mem << 16) & 0xf8000000UL;
-		alpha_mv.sm_base_r3 = (cia_hae_mem << 24) & 0xfc000000UL;
-
-		/*
-		 * Set the HAE cache, so that setup_arch() code
-		 * will use the SRM setting always. Our readb/writeb
-		 * code in cia.h expects never to have to change
-		 * the contents of the HAE.
-		 */
-		alpha_mv.hae_cache = cia_hae_mem;
-
-		alpha_mv.mv_readb = cia_srm_readb;
-		alpha_mv.mv_readw = cia_srm_readw;
-		alpha_mv.mv_writeb = cia_srm_writeb;
-		alpha_mv.mv_writew = cia_srm_writew;
-	} else {
-		*((vuip)CIA_IOC_HAE_MEM) = 0; mb();
-		*((vuip)CIA_IOC_HAE_MEM); /* read it back. */
-		*((vuip)CIA_IOC_HAE_IO) = 0; mb();
-		*((vuip)CIA_IOC_HAE_IO);  /* read it back. */
-        }
-
-	/* Tell userland where I/O space is located.  */
-	default_hose.pci_sparse_io_space = CIA_IO - IDENT_ADDR;
-	default_hose.pci_sparse_mem_space = CIA_SPARSE_MEM - IDENT_ADDR;
-	default_hose.pci_dense_io_space = 0;
-	default_hose.pci_dense_mem_space = CIA_DENSE_MEM - IDENT_ADDR;
+	*(vip)CIA_IOC_CIA_ERR;		/* re-read to force write.  */
 }
 
 void
 cia_machine_check(unsigned long vector, unsigned long la_ptr,
 		  struct pt_regs * regs)
 {
-	struct el_common *mchk_header;
-	struct el_CIA_procdata *mchk_procdata;
-	struct el_CIA_sysdata_mcheck *mchk_sysdata;
+	int expected;
 
-	mchk_header = (struct el_common *)la_ptr;
-
-	mchk_procdata = (struct el_CIA_procdata *)
-		(la_ptr + mchk_header->proc_offset);
-
-	mchk_sysdata = (struct el_CIA_sysdata_mcheck *)
-		(la_ptr + mchk_header->sys_offset);
-
-	/* Clear the error before any reporting. */
+	/* Clear the error before any reporting.  */
 	mb();
 	mb();  /* magic */
 	draina();
-
-	CIA_jd = *(vuip)CIA_IOC_CIA_ERR;
-	*(vuip)CIA_IOC_CIA_ERR = CIA_jd;
-	mb();
-	CIA_jd = *(vuip)CIA_IOC_CIA_ERR; /* re-read to force write */
-
-	wrmces(rdmces());	/* reset machine check pending flag */
+	cia_pci_clr_err();
+	wrmces(rdmces());	/* reset machine check pending flag.  */
 	mb();
 
-	process_mcheck_info(vector, la_ptr, regs, "CIA",
-			  DEBUG_MCHECK, CIA_mcheck_expected);
+	expected = mcheck_expected(0);
+	if (!expected && vector == 0x660) {
+		struct el_common *com;
+		struct el_common_EV5_uncorrectable_mcheck *ev5;
+		struct el_CIA_sysdata_mcheck *cia;
 
-	CIA_mcheck_expected = 0;
-	CIA_mcheck_taken = 1;
+		com = (void *)la_ptr;
+		ev5 = (void *)(la_ptr + com->proc_offset);
+		cia = (void *)(la_ptr + com->sys_offset);
+
+		if (com->code == 0x202) {
+			printk(KERN_CRIT "CIA PCI machine check: err0=%08x "
+			       "err1=%08x err2=%08x\n",
+			       (int) cia->pci_err0, (int) cia->pci_err1,
+			       (int) cia->pci_err2);
+			expected = 1;
+		}
+	}
+	process_mcheck_info(vector, la_ptr, regs, "CIA", expected);
 }

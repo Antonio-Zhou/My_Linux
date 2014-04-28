@@ -12,14 +12,12 @@
  * It is in the public domain, so share and enjoy.  Try to make a profit
  * off of it; go on, I dare you.  
  */
-  
-#include <linux/config.h>
-#include <linux/version.h>
-#include <linux/pci.h>
-#include <linux/module.h>
-#include <linux/delay.h>
-#include <linux/apm_bios.h>
 
+#define __NO_VERSION__
+#include <linux/pci.h>
+#include <linux/init.h>
+#include <linux/module.h>
+#include <linux/pm.h>
 #include "sound_config.h"
 #include "soundmodule.h"
 #include "nm256.h"
@@ -41,19 +39,13 @@ static int nm256_grabInterrupt (struct nm256_info *card);
 static int nm256_releaseInterrupt (struct nm256_info *card);
 static void nm256_interrupt (int irq, void *dev_id, struct pt_regs *dummy);
 static void nm256_interrupt_zx (int irq, void *dev_id, struct pt_regs *dummy);
+static int handle_pm_event (struct pm_dev *dev, pm_request_t rqst, void *data);
 
 /* These belong in linux/pci.h. */
 #define PCI_DEVICE_ID_NEOMAGIC_NM256AV_AUDIO 0x8005
 #define PCI_DEVICE_ID_NEOMAGIC_NM256ZX_AUDIO 0x8006
 
-/* eeeew. */
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2,3,0)
 #define RSRCADDRESS(dev,num) ((dev)->resource[(num)].start)
-#else
-#define RSRCADDRESS(dev,num) ((dev)->base_address[(num)] \
-			      & PCI_BASE_ADDRESS_MEM_MASK)
-
-#endif
 
 /* List of cards.  */
 static struct nm256_info *nmcard_list;
@@ -383,11 +375,11 @@ nm256_write_block (struct nm256_info *card, char *buffer, u32 amt)
 	u32 rem = ringsize - card->curPlayPos;
 
 	nm256_writeBuffer8 (card, buffer, 1,
-			    card->abuf1 + card->curPlayPos,
-			    rem);
+			      card->abuf1 + card->curPlayPos,
+			      rem);
 	if (amt > rem)
-	    nm256_writeBuffer8 (card, buffer + rem, 1, card->abuf1,
-				amt - rem);
+	    nm256_writeBuffer8 (card, buffer, 1, card->abuf1,
+				  amt - rem);
     } 
     else
 	nm256_writeBuffer8 (card, buffer, 1,
@@ -1044,6 +1036,7 @@ static int
 nm256_install(struct pci_dev *pcidev, enum nm256rev rev, char *verstr)
 {
     struct nm256_info *card;
+    struct pm_dev *pmdev;
     int x;
 
     card = kmalloc (sizeof (struct nm256_info), GFP_KERNEL);
@@ -1106,7 +1099,7 @@ nm256_install(struct pci_dev *pcidev, enum nm256rev rev, char *verstr)
 	    }
 	}
 	else {
-	    printk (KERN_INFO "NM256: Congratulations. You're not running Eunice.\n");
+	 /*   printk (KERN_INFO "NM256: Congratulations. You're not running Eunice.\n")*/;
 	}
 	card->port[0].end_offset = 2560 * 1024;
 	card->introutine = nm256_interrupt;
@@ -1218,50 +1211,42 @@ nm256_install(struct pci_dev *pcidev, enum nm256rev rev, char *verstr)
 
     nm256_install_mixer (card);
 
+    pmdev = pm_register(PM_PCI_DEV, PM_PCI_ID(pcidev), handle_pm_event);
+    if (pmdev)
+        pmdev->data = card;
+
     return 1;
 }
 
 
-#ifdef CONFIG_APM
 /*
- * APM event handler, so the card is properly reinitialized after a power
+ * PM event handler, so the card is properly reinitialized after a power
  * event.
  */
 static int
-handle_apm_event (apm_event_t event)
+handle_pm_event (struct pm_dev *dev, pm_request_t rqst, void *data)
 {
-    static int down = 0;
-
-    switch (event)
-	{
-	case APM_SYS_SUSPEND:
-	case APM_USER_SUSPEND:
-	    down++;
+    struct nm256_info *crd = (struct nm256_info*) dev->data;
+    if (crd) {
+        switch (rqst) {
+	case PM_SUSPEND:
 	    break;
-	case APM_NORMAL_RESUME:
-	case APM_CRITICAL_RESUME:
-	    if (down)
-		{
-		    struct nm256_info *crd;
-
-		    down = 0;
-		    for (crd = nmcard_list;  crd != NULL; crd = crd->next_card)
-			{
-			    int playing = crd->playing;
-			    nm256_full_reset (crd);
-			    /*
-			     * A little ugly, but that's ok; pretend the
-			     * block we were playing is done. 
-			     */
-			    if (playing)
-				DMAbuf_outputintr (crd->dev_for_play, 1);
-			}
-		}
+	case PM_RESUME:
+            {
+                int playing = crd->playing;
+                nm256_full_reset (crd);
+                /*
+                 * A little ugly, but that's ok; pretend the
+                 * block we were playing is done. 
+                 */
+                if (playing)
+                    DMAbuf_outputintr (crd->dev_for_play, 1);
+            }
 	    break;
 	}
+    }
     return 0;
 }
-#endif
 
 /*
  * 	This loop walks the PCI configuration database and finds where
@@ -1291,10 +1276,6 @@ init_nm256(void)
 
     if (count == 0)
 	return -ENODEV;
-
-#ifdef CONFIG_APM
-    apm_register_callback (&handle_apm_event);
-#endif
 
     printk (KERN_INFO "Done installing NM256 audio driver.\n");
     return 0;
@@ -1659,8 +1640,6 @@ static struct audio_driver nm256_audio_driver =
 
 EXPORT_SYMBOL(init_nm256);
 
-#ifdef MODULE
-
 static int loaded = 0;
 
 MODULE_PARM (usecache, "i");
@@ -1668,8 +1647,7 @@ MODULE_PARM (buffertop, "i");
 MODULE_PARM (nm256_debug, "i");
 MODULE_PARM (force_load, "i");
 
-int
-init_module (void)
+static int __init do_init_nm256(void)
 {
     nmcard_list = NULL;
     printk (KERN_INFO "NeoMagic 256AV/256ZX audio driver, version 1.1\n");
@@ -1683,8 +1661,7 @@ init_module (void)
 	return -ENODEV;
 }
 
-void
-cleanup_module (void)
+static void __exit cleanup_nm256 (void)
 {
     if (loaded) {
 	struct nm256_info *card;
@@ -1706,12 +1683,12 @@ cleanup_module (void)
 	}
 	nmcard_list = NULL;
     }
-#ifdef CONFIG_APM
-    apm_unregister_callback (&handle_apm_event);
-#endif
+    pm_unregister_all (&handle_pm_event);
 }
-#endif
-
+
+module_init(do_init_nm256);
+module_exit(cleanup_nm256);
+
 /*
  * Local variables:
  *  c-basic-offset: 4

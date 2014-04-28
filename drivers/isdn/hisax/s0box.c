@@ -1,24 +1,19 @@
-/* $Id: s0box.c,v 1.1.2.1 2001/12/31 13:26:45 kai Exp $
+/* $Id: s0box.c,v 2.2 1999/07/12 21:05:25 keil Exp $
+
+ * s0box.c      low level stuff for Creatix S0BOX
  *
- * low level stuff for Creatix S0BOX
+ * Author       S0BOX specific stuff: Enrik Berkhan (enrik@starfleet.inka.de)
  *
- * Author       Enrik Berkhan
- * Copyright    by Enrik Berkhan <enrik@starfleet.inka.de>
- *
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
  *
  */
-
 #define __NO_VERSION__
-#include <linux/init.h>
 #include "hisax.h"
 #include "isac.h"
 #include "hscx.h"
 #include "isdnl1.h"
 
 extern const char *CardType[];
-const char *s0box_revision = "$Revision: 1.1.2.1 $";
+const char *s0box_revision = "$Revision: 2.2 $";
 
 static inline void
 writereg(unsigned int padr, signed int addr, u_char off, u_char val) {
@@ -217,8 +212,8 @@ S0Box_card_msg(struct IsdnCardState *cs, int mt, void *arg)
 	return(0);
 }
 
-int __init
-setup_s0box(struct IsdnCard *card)
+__initfunc(int
+setup_s0box(struct IsdnCard *card))
 {
 	struct IsdnCardState *cs = card->cs;
 	char tmp[64];

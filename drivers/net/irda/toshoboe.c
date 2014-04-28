@@ -56,7 +56,6 @@ static char *rcsid = "$Id: toshoboe.c,v 1.91 1999/06/29 14:21:06 root Exp $";
 /* No user servicable parts below here */
 
 #include <linux/module.h>
-
 #include <linux/kernel.h>
 #include <linux/types.h>
 #include <linux/skbuff.h>
@@ -77,9 +76,8 @@ static char *rcsid = "$Id: toshoboe.c,v 1.91 1999/06/29 14:21:06 root Exp $";
 #include <net/irda/irlap_frame.h>
 #include <net/irda/irda_device.h>
 
-#ifdef CONFIG_APM
-#include <linux/apm_bios.h>
-#endif
+#include <linux/pm.h>
+static int toshoboe_pmproc (struct pm_dev *dev, pm_request_t rqst, void *data);
 
 #include <net/irda/toshoboe.h>
 
@@ -262,7 +260,7 @@ toshoboe_initbuffs (struct toshoboe_cb *self)
 
 /*Transmit something */
 static int
-toshoboe_hard_xmit (struct sk_buff *skb, struct device *dev)
+toshoboe_hard_xmit (struct sk_buff *skb, struct net_device *dev)
 {
   struct toshoboe_cb *self;
   __u32 speed;
@@ -277,6 +275,8 @@ toshoboe_hard_xmit (struct sk_buff *skb, struct device *dev)
   if ((speed = irda_get_speed(skb)) != self->io.speed)
 	  self->new_speed = speed;
 
+  netif_stop_queue(dev);
+  
   if (self->stopped) {
 	  dev_kfree_skb(skb);
     return 0;
@@ -320,17 +320,14 @@ toshoboe_hard_xmit (struct sk_buff *skb, struct device *dev)
 
   self->txpending++;
 
-  /*FIXME: ask about tbusy,media_busy stuff, for the moment */
-  /*tbusy means can't queue any more */
+  /*FIXME: ask about busy,media_busy stuff, for the moment */
+  /*busy means can't queue any more */
 #ifndef ONETASK
-  if (self->txpending == TX_SLOTS)
-    {
-#else
+  if (self->txpending != TX_SLOTS)
   {
-#endif
-    if (irda_lock ((void *) &dev->tbusy) == FALSE)
-      return -EBUSY;
+  	netif_wake_queue(dev);
   }
+#endif
 
   outb_p (0x80, OBOE_RST);
   outb_p (1, OBOE_REG_9);
@@ -381,10 +378,8 @@ toshoboe_interrupt (int irq, void *dev_id, struct pt_regs *regs)
 
 	      self->new_speed = 0;
       }
-      self->netdev->tbusy = 0; /* Unlock */
-      
       /* Tell network layer that we want more frames */
-      mark_bh(NET_BH);
+      netif_wake_queue(self->netdev);
     }
 
   if (irqstat & OBOE_ISR_RXDONE)
@@ -456,7 +451,7 @@ toshoboe_interrupt (int irq, void *dev_id, struct pt_regs *regs)
 }
 
 static int
-toshoboe_net_init (struct device *dev)
+toshoboe_net_init (struct net_device *dev)
 {
   IRDA_DEBUG (4, __FUNCTION__ "()\n");
 
@@ -502,7 +497,7 @@ toshoboe_initptrs (struct toshoboe_cb *self)
 
 
 static int
-toshoboe_net_open (struct device *dev)
+toshoboe_net_open (struct net_device *dev)
 {
   struct toshoboe_cb *self;
 
@@ -531,10 +526,7 @@ toshoboe_net_open (struct device *dev)
   toshoboe_initptrs (self);
 
   /* Ready to play! */
-  dev->tbusy = 0;
-  dev->interrupt = 0;
-  dev->start = 1;
-  
+  netif_start_queue(dev);  
   /* 
    * Open new IrLAP layer instance, now that everything should be
    * initialized properly 
@@ -550,7 +542,7 @@ toshoboe_net_open (struct device *dev)
 }
 
 static int
-toshoboe_net_close (struct device *dev)
+toshoboe_net_close (struct net_device *dev)
 {
   struct toshoboe_cb *self;
 
@@ -561,9 +553,8 @@ toshoboe_net_close (struct device *dev)
   self = (struct toshoboe_cb *) dev->priv;
 
   /* Stop device */
-  dev->tbusy = 1;
-  dev->start = 0;
-  
+  netif_stop_queue(dev);
+    
   /* Stop and remove instance of IrLAP */
   if (self->irlap)
 	  irlap_close(self->irlap);
@@ -591,7 +582,7 @@ toshoboe_net_close (struct device *dev)
  *    Process IOCTL commands for this device
  *
  */
-static int toshoboe_net_ioctl(struct device *dev, struct ifreq *rq, int cmd)
+static int toshoboe_net_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 {
 	struct if_irda_req *irq = (struct if_irda_req *) rq;
 	struct toshoboe_cb *self;
@@ -612,12 +603,7 @@ static int toshoboe_net_ioctl(struct device *dev, struct ifreq *rq, int cmd)
 	
 	switch (cmd) {
 	case SIOCSBANDWIDTH: /* Set bandwidth */
-		/*
-		 * This function will also be used by IrLAP to change the
-		 * speed, so we still must allow for speed change within
-		 * interrupt context.
-		 */
-		if (!in_interrupt() && !capable(CAP_NET_ADMIN))
+		if (!capable(CAP_NET_ADMIN))
 			return -EPERM;
 		/* toshoboe_setbaud(self, irq->ifr_baudrate); */
                 /* Just change speed once - inserted by Paul Bristow */
@@ -680,8 +666,6 @@ toshoboe_close (struct toshoboe_cb *self)
 	  rtnl_lock();
 	  unregister_netdevice(self->netdev);
 	  rtnl_unlock();
-	  /* Must free the old-style 2.2.x device */
-	  kfree(self->netdev);
   }
 
   kfree (self->taskfilebuf);
@@ -700,7 +684,8 @@ static int
 toshoboe_open (struct pci_dev *pci_dev)
 {
   struct toshoboe_cb *self;
-  struct device *dev;
+  struct net_device *dev;
+  struct pm_dev *pmdev;
   int i = 0;
   int ok = 0;
   int err;
@@ -732,7 +717,7 @@ toshoboe_open (struct pci_dev *pci_dev)
   self->open = 0;
   self->stopped = 0;
   self->pdev = pci_dev;
-  self->base = pci_dev->base_address[0] & PCI_BASE_ADDRESS_IO_MASK;
+  self->base = pci_dev->resource[0].start;
 
   self->io.sir_base = self->base;
   self->io.irq = pci_dev->irq;
@@ -850,9 +835,6 @@ toshoboe_open (struct pci_dev *pci_dev)
 	  ERROR(__FUNCTION__ "(), dev_alloc() failed!\n");
 	  return -ENOMEM;
   }
-  /* dev_alloc doesn't clear the struct, so lets do a little hack */
-  memset(((__u8*)dev)+sizeof(char*),0,sizeof(struct device)-sizeof(char*));
-
   dev->priv = (void *) self;
   self->netdev = dev;
   
@@ -872,6 +854,10 @@ toshoboe_open (struct pci_dev *pci_dev)
 	  return -1;
   }
 
+  pmdev = pm_register (PM_PCI_DEV, PM_PCI_ID(pci_dev), toshoboe_pmproc);
+  if (pmdev)
+	  pmdev->data = self;
+
   printk (KERN_WARNING "ToshOboe: Using ");
 #ifdef ONETASK
   printk ("single");
@@ -883,7 +869,6 @@ toshoboe_open (struct pci_dev *pci_dev)
   return (0);
 }
 
-#ifdef CONFIG_APM
 static void 
 toshoboe_gotosleep (struct toshoboe_cb *self)
 {
@@ -902,7 +887,7 @@ toshoboe_gotosleep (struct toshoboe_cb *self)
 /*FIXME: can't sleep here wait one second */
 
   while ((i--) && (self->txpending))
-    mdelay (100);
+    udelay (100000);
 
   toshoboe_stopchip (self);
   toshoboe_disablebm (self);
@@ -915,7 +900,7 @@ toshoboe_gotosleep (struct toshoboe_cb *self)
 static void 
 toshoboe_wakeup (struct toshoboe_cb *self)
 {
-  struct device *dev = self->netdev;
+  struct net_device *dev = self->netdev;
   unsigned long flags;
 
   if (!self->stopped)
@@ -938,62 +923,29 @@ toshoboe_wakeup (struct toshoboe_cb *self)
 
   toshoboe_initptrs (self);
 
-  dev->tbusy = 0;
-  dev->interrupt = 0;
-  dev->start = 1;
-  self->stopped = 0;
-
+  netif_wake_queue(self->netdev);
   restore_flags (flags);
   printk (KERN_WARNING "ToshOboe: waking up\n");
 
 }
 
 static int 
-toshoboe_apmproc (apm_event_t event)
+toshoboe_pmproc (struct pm_dev *dev, pm_request_t rqst, void *data)
 {
-  static int down = 0;          /*Filter out double events */
-  int i;
-
-  switch (event)
-    {
-    case APM_SYS_SUSPEND:
-    case APM_USER_SUSPEND:
-      if (!down)
-        {
-
-          for (i = 0; i < 4; i++)
-            {
-              if (dev_self[i])
-                toshoboe_gotosleep (dev_self[i]);
-            }
-
-        }
-      down = 1;
-      break;
-    case APM_NORMAL_RESUME:
-    case APM_CRITICAL_RESUME:
-      if (down)
-        {
-
-
-
-          for (i = 0; i < 4; i++)
-            {
-              if (dev_self[i])
-                toshoboe_wakeup (dev_self[i]);
-            }
-
-
-
-        }
-      down = 0;
-      break;
-    }
+  struct toshoboe_cb *self = (struct toshoboe_cb *) dev->data;
+  if (self) {
+	  switch (rqst) {
+	  case PM_SUSPEND:
+		  toshoboe_gotosleep (self);
+		  break;
+	  case PM_RESUME:
+		  toshoboe_wakeup (self);
+		  break;
+	  }
+  }
   return 0;
 }
 
-
-#endif
 
 int __init toshoboe_init (void)
 {
@@ -1007,11 +959,11 @@ int __init toshoboe_init (void)
       if (pci_dev)
         {
           printk (KERN_WARNING "ToshOboe: Found 701 chip at 0x%0lx irq %d\n",
-                  pci_dev->base_address[0] & PCI_BASE_ADDRESS_IO_MASK,
+		  pci_dev->resource[0].start,
                   pci_dev->irq);
 
           if (!toshoboe_open (pci_dev))
-            found++;
+	      found++;
         }
 
     }
@@ -1020,9 +972,6 @@ int __init toshoboe_init (void)
 
   if (found)
     {
-#ifdef CONFIG_APM
-      apm_register_callback (toshoboe_apmproc);
-#endif
       return 0;
     }
 
@@ -1044,10 +993,7 @@ toshoboe_cleanup (void)
         toshoboe_close (dev_self[i]);
     }
 
-#ifdef CONFIG_APM
-  apm_unregister_callback (toshoboe_apmproc);
-#endif
-
+  pm_unregister_all (toshoboe_pmproc);
 }
 
 

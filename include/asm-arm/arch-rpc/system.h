@@ -1,15 +1,35 @@
 /*
  * linux/include/asm-arm/arch-rpc/system.h
  *
- * Copyright (c) 1996-1999 Russell King
+ * Copyright (c) 1996-1999 Russell King.
  */
-#ifndef __ASM_ARCH_SYSTEM_H
-#define __ASM_ARCH_SYSTEM_H
-
+#include <asm/arch/hardware.h>
 #include <asm/iomd.h>
 #include <asm/io.h>
 
-#define arch_do_idle()		processor.u.armv3v4._do_idle()
+extern __inline__ void arch_idle(void)
+{
+	unsigned long start_idle;
+
+	start_idle = jiffies;
+
+	do {
+		if (current->need_resched || hlt_counter)
+			goto slow_out;
+		cpu_do_idle(IDLE_WAIT_FAST);
+	} while (time_before(start_idle, jiffies + HZ/3));
+
+	cpu_do_idle(IDLE_CLOCK_SLOW);
+
+	while (!current->need_resched && !hlt_counter) {
+		cpu_do_idle(IDLE_WAIT_SLOW);
+	}
+
+	cpu_do_idle(IDLE_CLOCK_FAST);
+slow_out:
+}
+
+#define arch_power_off()	do { } while (0)
 
 extern __inline__ void arch_reset(char mode)
 {
@@ -22,6 +42,5 @@ extern __inline__ void arch_reset(char mode)
 	/*
 	 * Jump into the ROM
 	 */
-	processor.u.armv3v4.reset(0);
+	cpu_reset(0);
 }
-#endif

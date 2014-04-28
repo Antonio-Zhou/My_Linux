@@ -99,16 +99,18 @@
  *
  *	sizeof(struct) + 2*sizeof(void*) == n * 16, n >= 1
  *
+ * We use the dma_addr fields under Linux to keep track of the
+ * DMA address of the packet data, for later pci_unmap_single. -DaveM
  */
 
 struct s_txd_os {	// os-specific part of transmit descriptor
 	struct sk_buff *skb;
-	long		padding;
+	dma_addr_t dma_addr;
 } ;
 
 struct s_rxd_os {	// os-specific part of receive descriptor
 	struct sk_buff *skb;
-	long		padding;
+	dma_addr_t dma_addr;
 } ;
 
 

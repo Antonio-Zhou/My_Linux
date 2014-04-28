@@ -6,7 +6,7 @@
  * Status:        Experimental.
  * Author:        Dag Brattli <dagb@cs.uit.no>
  * Created at:    Thu Jun 10 14:39:09 1999
- * Modified at:   Wed Jan  5 14:46:17 2000
+ * Modified at:   Wed Jan  5 14:45:43 2000
  * Modified by:   Dag Brattli <dagb@cs.uit.no>
  * 
  *     Copyright (c) 1999-2000 Dag Brattli, All Rights Reserved.

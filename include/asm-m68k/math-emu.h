@@ -124,22 +124,22 @@ extern unsigned int fp_debugprint;
 	}						\
 })
 
-#define FPDATA		((struct fp_data *)current->tss.fp)
+#define FPDATA		((struct fp_data *)current->thread.fp)
 
 #else	/* __ASSEMBLY__ */
 
 #define FPDATA		%a2
 
 /* offsets from the base register to the floating point data in the task struct */
-#define FPD_FPREG	(TASK_TSS+TSS_FPREG+0)
-#define FPD_FPCR	(TASK_TSS+TSS_FPREG+96)
-#define FPD_FPSR	(TASK_TSS+TSS_FPREG+100)
-#define FPD_FPIAR	(TASK_TSS+TSS_FPREG+104)
-#define FPD_PREC	(TASK_TSS+TSS_FPREG+108)
-#define FPD_RND		(TASK_TSS+TSS_FPREG+110)
-#define FPD_TEMPFP1	(TASK_TSS+TSS_FPREG+112)
-#define FPD_TEMPFP2	(TASK_TSS+TSS_FPREG+124)
-#define FPD_SIZEOF	(TASK_TSS+TSS_FPREG+136)
+#define FPD_FPREG	(TASK_THREAD+THREAD_FPREG+0)
+#define FPD_FPCR	(TASK_THREAD+THREAD_FPREG+96)
+#define FPD_FPSR	(TASK_THREAD+THREAD_FPREG+100)
+#define FPD_FPIAR	(TASK_THREAD+THREAD_FPREG+104)
+#define FPD_PREC	(TASK_THREAD+THREAD_FPREG+108)
+#define FPD_RND		(TASK_THREAD+THREAD_FPREG+110)
+#define FPD_TEMPFP1	(TASK_THREAD+THREAD_FPREG+112)
+#define FPD_TEMPFP2	(TASK_THREAD+THREAD_FPREG+124)
+#define FPD_SIZEOF	(TASK_THREAD+THREAD_FPREG+136)
 
 /* offsets on the stack to access saved registers,
  * these are only used during instruction decoding

@@ -1,8 +1,8 @@
-/* $Id: traps.c,v 1.58.2.3 1999/12/19 23:59:28 davem Exp $
+/* $Id: traps.c,v 1.66 2000/05/09 17:40:14 davem Exp $
  * arch/sparc64/kernel/traps.c
  *
  * Copyright (C) 1995,1997 David S. Miller (davem@caip.rutgers.edu)
- * Copyright (C) 1997,1999 Jakub Jelinek (jj@sunsite.mff.cuni.cz)
+ * Copyright (C) 1997,1999,2000 Jakub Jelinek (jakub@redhat.com)
  */
 
 /*
@@ -148,12 +148,12 @@ void syscall_trace_entry(unsigned long g1, struct pt_regs *regs)
 			if(i)
 				printk(",");
 			if(!sdp->arg_is_string[i]) {
-				if (current->tss.flags & SPARC_FLAG_32BIT)
+				if (current->thread.flags & SPARC_FLAG_32BIT)
 					printk("%08x", (unsigned int)regs->u_regs[UREG_I0 + i]);
 				else
 					printk("%016lx", regs->u_regs[UREG_I0 + i]);
 			} else {
-				if (current->tss.flags & SPARC_FLAG_32BIT)
+				if (current->thread.flags & SPARC_FLAG_32BIT)
 					strncpy_from_user(scall_strbuf,
 							  (char *)(regs->u_regs[UREG_I0 + i] & 0xffffffff),
 							  512);
@@ -179,7 +179,7 @@ unsigned long syscall_trace_exit(unsigned long retval, struct pt_regs *regs)
 }
 #endif /* SYSCALL_TRACING */
 
-#if 0
+#if 1
 void rtrap_check(struct pt_regs *regs)
 {
 	register unsigned long pgd_phys asm("o1");
@@ -220,7 +220,7 @@ void rtrap_check(struct pt_regs *regs)
 
 	if((pgd_phys != __pa(current->mm->pgd)) ||
 	   ((pgd_cache != 0) &&
-	    (pgd_cache != pgd_val(current->mm->pgd[0]))) ||
+	    (pgd_cache != pgd_val(current->mm->pgd[0])<<11UL)) ||
 	   (g1_or_g3 != (0xfffffffe00000000UL | 0x0000000000000018UL)) ||
 #define KERN_HIGHBITS		((_PAGE_VALID | _PAGE_SZ4MB) ^ 0xfffff80000000000)
 #define KERN_LOWBITS		(_PAGE_CP | _PAGE_CV | _PAGE_P | _PAGE_W)
@@ -229,18 +229,17 @@ void rtrap_check(struct pt_regs *regs)
 #undef KERN_LOWBITS
 	   ((ctx != (current->mm->context & 0x3ff)) ||
 	    (ctx == 0) ||
-	    (current->tss.ctx != ctx))) {
+	    (CTX_HWBITS(current->mm->context) != ctx))) {
 		printk("SHIT[%s:%d]: "
-		       "(PP[%016lx] CACH[%016lx] CTX[%x] g1g3[%016lx] g2[%016lx]) ",
+		       "(PP[%016lx] CACH[%016lx] CTX[%lx] g1g3[%016lx] g2[%016lx]) ",
 		       current->comm, current->pid,
 		       pgd_phys, pgd_cache, ctx, g1_or_g3, g2);
 		printk("SHIT[%s:%d]: "
-		       "[PP[%016lx] CACH[%016lx] CTX[%x:%x]] PC[%016lx:%016lx]\n",
+		       "[PP[%016lx] CACH[%016lx] CTX[%lx]] PC[%016lx:%016lx]\n",
 		       current->comm, current->pid,
 		       __pa(current->mm->pgd),
 		       pgd_val(current->mm->pgd[0]),
 		       current->mm->context & 0x3ff,
-		       current->tss.ctx,
 		       regs->tpc, regs->tnpc);
 		show_regs(regs);
 #if 1
@@ -254,6 +253,8 @@ void rtrap_check(struct pt_regs *regs)
 
 void bad_trap (struct pt_regs *regs, long lvl)
 {
+	siginfo_t info;
+
 	lock_kernel ();
 	if (lvl < 0x100) {
 		char buffer[24];
@@ -263,9 +264,12 @@ void bad_trap (struct pt_regs *regs, long lvl)
 	}
 	if (regs->tstate & TSTATE_PRIV)
 		die_if_kernel ("Kernel bad trap", regs);
-        current->tss.sig_desc = SUBSIG_BADTRAP(lvl - 0x100);
-        current->tss.sig_address = regs->tpc;
-        force_sig(SIGILL, current);
+	info.si_signo = SIGILL;
+	info.si_errno = 0;
+	info.si_code = ILL_ILLTRP;
+	info.si_addr = (void *)regs->tpc;
+	info.si_trapno = lvl - 0x100;
+	force_sig_info(SIGILL, &info, current);
 	unlock_kernel ();
 }
 
@@ -282,18 +286,30 @@ void bad_trap_tl1 (struct pt_regs *regs, long lvl)
 void instruction_access_exception (struct pt_regs *regs,
 				   unsigned long sfsr, unsigned long sfar)
 {
+	siginfo_t info;
+
 	lock_kernel();
+	if (regs->tstate & TSTATE_PRIV) {
 #if 1
-	printk("instruction_access_exception: Shit SFSR[%016lx] SFAR[%016lx], going.\n",
-	       sfsr, sfar);
+		printk("instruction_access_exception: Shit SFSR[%016lx] SFAR[%016lx], going.\n",
+		       sfsr, sfar);
 #endif
-	die_if_kernel("Iax", regs);
+		die_if_kernel("Iax", regs);
+	}
+	info.si_signo = SIGSEGV;
+	info.si_errno = 0;
+	info.si_code = SEGV_MAPERR;
+	info.si_addr = (void *)regs->tpc;
+	info.si_trapno = 0;
+	force_sig_info(SIGSEGV, &info, current);
 	unlock_kernel();
 }
 
 void data_access_exception (struct pt_regs *regs,
 			    unsigned long sfsr, unsigned long sfar)
 {
+	siginfo_t info;
+
 	if (regs->tstate & TSTATE_PRIV) {
 		/* Test if this comes from uaccess places. */
 		unsigned long fixup, g2;
@@ -322,8 +338,13 @@ void data_access_exception (struct pt_regs *regs,
 	else
 		rtrap_check(regs);
 #endif
+	info.si_signo = SIGSEGV;
+	info.si_errno = 0;
+	info.si_code = SEGV_MAPERR;
+	info.si_addr = (void *)sfar;
+	info.si_trapno = 0;
 	lock_kernel();
-	force_sig(SIGSEGV, current);
+	force_sig_info(SIGSEGV, &info, current);
 	unlock_kernel();
 }
 
@@ -357,6 +378,22 @@ static __inline__ void clean_and_reenable_l1_caches(void)
 			     : "memory");
 }
 
+void do_iae(struct pt_regs *regs)
+{
+	siginfo_t info;
+
+	clean_and_reenable_l1_caches();
+
+	info.si_signo = SIGBUS;
+	info.si_errno = 0;
+	info.si_code = BUS_OBJERR;
+	info.si_addr = (void *)0;
+	info.si_trapno = 0;
+	lock_kernel();
+	force_sig_info(SIGBUS, &info, current);
+	unlock_kernel();
+}
+
 void do_dae(struct pt_regs *regs)
 {
 #ifdef CONFIG_PCI
@@ -377,19 +414,7 @@ void do_dae(struct pt_regs *regs)
 		return;
 	}
 #endif
-	clean_and_reenable_l1_caches();
-	lock_kernel();
-	force_sig(SIGSEGV, current);
-	unlock_kernel();
-}
-
-void do_iae(struct pt_regs *regs)
-{
-	clean_and_reenable_l1_caches();
-
-	lock_kernel();
-	force_sig(SIGSEGV, current);
-	unlock_kernel();
+	do_iae(regs);
 }
 
 static char ecc_syndrome_table[] = {
@@ -516,30 +541,34 @@ void do_fpe_common(struct pt_regs *regs)
 		regs->tpc = regs->tnpc;
 		regs->tnpc += 4;
 	} else {
-		unsigned long fsr = current->tss.xfsr[0];
+		unsigned long fsr = current->thread.xfsr[0];
+		siginfo_t info;
 
-		current->tss.sig_address = regs->tpc;
-		current->tss.sig_desc = SUBSIG_FPERROR;
+		info.si_signo = SIGFPE;
+		info.si_errno = 0;
+		info.si_addr = (void *)regs->tpc;
+		info.si_trapno = 0;
+		info.si_code = __SI_FAULT;
 		if ((fsr & 0x1c000) == (1 << 14)) {
-			if (fsr & 0x01)
-				current->tss.sig_desc = SUBSIG_FPINEXACT;
-			else if (fsr & 0x02)
-				current->tss.sig_desc = SUBSIG_FPDIVZERO;
-			else if (fsr & 0x04)
-				current->tss.sig_desc = SUBSIG_FPUNFLOW;
+			if (fsr & 0x10)
+				info.si_code = FPE_FLTINV;
 			else if (fsr & 0x08)
-				current->tss.sig_desc = SUBSIG_FPOVFLOW;
-			else if (fsr & 0x10)
-				current->tss.sig_desc = SUBSIG_FPINTOVFL;
+				info.si_code = FPE_FLTOVF;
+			else if (fsr & 0x04)
+				info.si_code = FPE_FLTUND;
+			else if (fsr & 0x02)
+				info.si_code = FPE_FLTDIV;
+			else if (fsr & 0x01)
+				info.si_code = FPE_FLTRES;
 		}
-		send_sig(SIGFPE, current, 1);
+		send_sig_info(SIGFPE, &info, current);
 	}
 }
 
 void do_fpieee(struct pt_regs *regs)
 {
 #ifdef DEBUG_FPU
-	printk("fpieee %016lx\n", current->tss.xfsr[0]);
+	printk("fpieee %016lx\n", current->thread.xfsr[0]);
 #endif
 	do_fpe_common(regs);
 }
@@ -551,7 +580,7 @@ void do_fpother(struct pt_regs *regs)
 	struct fpustate *f = FPUSTATE;
 	int ret = 0;
 
-	switch ((current->tss.xfsr[0] & 0x1c000)) {
+	switch ((current->thread.xfsr[0] & 0x1c000)) {
 	case (2 << 14): /* unfinished_FPop */
 	case (3 << 14): /* unimplemented_FPop */
 		ret = do_mathemu(regs, f);
@@ -559,36 +588,64 @@ void do_fpother(struct pt_regs *regs)
 	}
 	if (ret) return;
 #ifdef DEBUG_FPU
-	printk("fpother %016lx\n", current->tss.xfsr[0]);
+	printk("fpother %016lx\n", current->thread.xfsr[0]);
 #endif
 	do_fpe_common(regs);
 }
 
 void do_tof(struct pt_regs *regs)
 {
+	siginfo_t info;
+
 	if(regs->tstate & TSTATE_PRIV)
 		die_if_kernel("Penguin overflow trap from kernel mode", regs);
-	current->tss.sig_address = regs->tpc;
-	current->tss.sig_desc = SUBSIG_TAG; /* as good as any */
-	send_sig(SIGEMT, current, 1);
+	info.si_signo = SIGEMT;
+	info.si_errno = 0;
+	info.si_code = EMT_TAGOVF;
+	info.si_addr = (void *)regs->tpc;
+	info.si_trapno = 0;
+	send_sig_info(SIGEMT, &info, current);
 }
 
 void do_div0(struct pt_regs *regs)
 {
-	current->tss.sig_address = regs->tpc;
-	current->tss.sig_desc = SUBSIG_IDIVZERO;
-	send_sig(SIGFPE, current, 1);
+	siginfo_t info;
+
+	info.si_signo = SIGFPE;
+	info.si_errno = 0;
+	info.si_code = FPE_INTDIV;
+	info.si_addr = (void *)regs->tpc;
+	info.si_trapno = 0;
+	send_sig_info(SIGFPE, &info, current);
 }
 
 void instruction_dump (unsigned int *pc)
 {
 	int i;
-	
+
 	if((((unsigned long) pc) & 3))
 		return;
 
+	printk("Instruction DUMP:");
 	for(i = -3; i < 6; i++)
 		printk("%c%08x%c",i?' ':'<',pc[i],i?' ':'>');
+	printk("\n");
+}
+
+void user_instruction_dump (unsigned int *pc)
+{
+	int i;
+	unsigned int buf[9];
+	
+	if((((unsigned long) pc) & 3))
+		return;
+		
+	if(copy_from_user(buf, pc - 3, sizeof(buf)))
+		return;
+
+	printk("Instruction DUMP:");
+	for(i = 0; i < 9; i++)
+		printk("%c%08x%c",i==3?' ':'<',buf[i],i==3?' ':'>');
 	printk("\n");
 }
 
@@ -596,6 +653,8 @@ void die_if_kernel(char *str, struct pt_regs *regs)
 {
 	extern void __show_regs(struct pt_regs * regs);
 	extern void smp_report_regs(void);
+	int count = 0;
+	struct reg_window *lastrw;
 	
 	/* Amuse the user. */
 	printk(
@@ -607,26 +666,29 @@ void die_if_kernel(char *str, struct pt_regs *regs)
 	printk("%s(%d): %s\n", current->comm, current->pid, str);
 	__asm__ __volatile__("flushw");
 	__show_regs(regs);
-	{
+	if(regs->tstate & TSTATE_PRIV) {
 		struct reg_window *rw = (struct reg_window *)
 			(regs->u_regs[UREG_FP] + STACK_BIAS);
 
 		/* Stop the back trace when we hit userland or we
 		 * find some badly aligned kernel stack.
 		 */
+		lastrw = (struct reg_window *)current;
 		while(rw					&&
-		      (((unsigned long) rw) >= PAGE_OFFSET)	&&
+		      count++ < 30				&&
+		      rw >= lastrw				&&
+		      (char *) rw < ((char *) current)
+		        + sizeof (union task_union) 		&&
 		      !(((unsigned long) rw) & 0x7)) {
 			printk("Caller[%016lx]\n", rw->ins[7]);
+			lastrw = rw;
 			rw = (struct reg_window *)
 				(rw->ins[6] + STACK_BIAS);
 		}
-	}
-	if(regs->tstate & TSTATE_PRIV) {
-		printk("Instruction DUMP:");
 		instruction_dump ((unsigned int *) regs->tpc);
-	}
-#ifdef __SMP__
+	} else
+		user_instruction_dump ((unsigned int *) regs->tpc);
+#ifdef CONFIG_SMP
 	smp_report_regs();
 #endif
                                                 	
@@ -644,10 +706,11 @@ void do_illegal_instruction(struct pt_regs *regs)
 	unsigned long pc = regs->tpc;
 	unsigned long tstate = regs->tstate;
 	u32 insn;
+	siginfo_t info;
 
 	if(tstate & TSTATE_PRIV)
 		die_if_kernel("Kernel illegal instruction", regs);
-	if(current->tss.flags & SPARC_FLAG_32BIT)
+	if(current->thread.flags & SPARC_FLAG_32BIT)
 		pc = (u32)pc;
 	if (get_user(insn, (u32 *)pc) != -EFAULT) {
 		if ((insn & 0xc1ffc000) == 0x81700000) /* POPC */ {
@@ -658,56 +721,48 @@ void do_illegal_instruction(struct pt_regs *regs)
 				return;
 		}
 	}
-	current->tss.sig_address = pc;
-	current->tss.sig_desc = SUBSIG_ILLINST;
-	send_sig(SIGILL, current, 1);
+	info.si_signo = SIGILL;
+	info.si_errno = 0;
+	info.si_code = ILL_ILLOPC;
+	info.si_addr = (void *)pc;
+	info.si_trapno = 0;
+	send_sig_info(SIGILL, &info, current);
 }
 
 void mem_address_unaligned(struct pt_regs *regs, unsigned long sfar, unsigned long sfsr)
 {
+	siginfo_t info;
+
 	if(regs->tstate & TSTATE_PRIV) {
 		extern void kernel_unaligned_trap(struct pt_regs *regs,
 						  unsigned int insn, 
 						  unsigned long sfar, unsigned long sfsr);
 
 		return kernel_unaligned_trap(regs, *((unsigned int *)regs->tpc), sfar, sfsr);
-	} else {
-		current->tss.sig_address = regs->tpc;
-		current->tss.sig_desc = SUBSIG_PRIVINST;
-		send_sig(SIGBUS, current, 1);
 	}
+	info.si_signo = SIGBUS;
+	info.si_errno = 0;
+	info.si_code = BUS_ADRALN;
+	info.si_addr = (void *)sfar;
+	info.si_trapno = 0;
+	send_sig_info(SIGBUS, &info, current);
 }
 
 void do_privop(struct pt_regs *regs)
 {
-	current->tss.sig_address = regs->tpc;
-	current->tss.sig_desc = SUBSIG_PRIVINST;
-	send_sig(SIGILL, current, 1);
+	siginfo_t info;
+
+	info.si_signo = SIGILL;
+	info.si_errno = 0;
+	info.si_code = ILL_PRVOPC;
+	info.si_addr = (void *)regs->tpc;
+	info.si_trapno = 0;
+	send_sig_info(SIGILL, &info, current);
 }
 
 void do_privact(struct pt_regs *regs)
 {
-	current->tss.sig_address = regs->tpc;
-	current->tss.sig_desc = SUBSIG_PRIVINST;
-	send_sig(SIGILL, current, 1);
-}
-
-void do_priv_instruction(struct pt_regs *regs, unsigned long pc, unsigned long npc,
-			 unsigned long tstate)
-{
-	if(tstate & TSTATE_PRIV)
-		die_if_kernel("Penguin instruction from Penguin mode??!?!", regs);
-	current->tss.sig_address = pc;
-	current->tss.sig_desc = SUBSIG_PRIVINST;
-	send_sig(SIGILL, current, 1);
-}
-
-void handle_hw_divzero(struct pt_regs *regs, unsigned long pc,
-		       unsigned long npc, unsigned long psr)
-{
-	current->tss.sig_address = regs->tpc;
-	current->tss.sig_desc = SUBSIG_IDIVZERO;
-	send_sig(SIGFPE, current, 1);
+	do_privop(regs);
 }
 
 /* Trap level 1 stuff or other traps we should never see... */
@@ -799,7 +854,7 @@ void do_tof_tl1(struct pt_regs *regs)
 #ifdef CONFIG_EC_FLUSH_TRAP
 void cache_flush_trap(struct pt_regs *regs)
 {
-#ifndef __SMP__
+#ifndef CONFIG_SMP
 	unsigned node = linux_cpus[get_cpuid()].prom_node;
 #else
 #error cache_flush_trap not supported on sparc64/SMP yet
@@ -843,4 +898,11 @@ void do_getpsr(struct pt_regs *regs)
 
 void trap_init(void)
 {
+	/* Attach to the address space of init_task. */
+	atomic_inc(&init_mm.mm_count);
+	current->active_mm = &init_mm;
+
+	/* NOTE: Other cpus have this done as they are started
+	 *       up on SMP.
+	 */
 }

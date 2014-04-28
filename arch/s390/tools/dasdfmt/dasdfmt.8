@@ -3,7 +3,8 @@
 .SH NAME
 dasdfmt \- formatting of DSAD (ECKD) disk drives.
 .SH SYNOPSIS
-\fBdasdfmt\fR [-tvyLV] [-b \fIblockSize\fR] [-l \fIdiskLabel\fR] \fIdiskSpec\fR
+\fBdasdfmt\fR [-tvyV] [-b \fIblockSize\fR] [\fIblockRange\fI]
+	\fIdiskSpec\fR
 .SH DESCRIPTION
 \fBdasdfmt\fR formats a DASD (ECKD) disk drive to prepare it
 for usage with Linux for S/390. \fBWARNING\fR: Incautious usage of
@@ -24,17 +25,8 @@ Increases verbosity.
 Start formatting without further user-confirmation.
 
 .TP
-\fB-L\fR 
-Omit the writing of a disk label after formatting.
-
-.TP
 \fB-V\fR 
 Print version number and exit.
-
-.TP
-\fB-F\fR 
-Formats the device without checking, if the device is mounted or used
-as swap space.
 
 .TP
 \fB-b\fR \fIblockSize\fR
@@ -43,17 +35,26 @@ and always be a power of two. Due due some limitations in the driver,
 it is \fBstrongly\fR recommended to use a \fIblockSize\fR of \fI4096\fR.
 
 .TP
-\fB-l\fR \fIdiskLabel\fR
-Specify the label to be written to disk after formatting. If no label is
-specified, a sensible default is used. \fIdiskLabel\fR is interpreted as
-ASCII string and is automatically converted to EBCDIC.
+\fIblockRange\fR
+This parameter specifies the number of the first and last block to be
+formatted. If this parameter is \fBomitted\fR, formatting the \fBwhole\fR disk
+is assumed. The \fIblockRange\fR can be specified in two different formats:
+.sp
+	\fB-s\fR \fIstartBlock\fR \fB-e\fR \fIendBlock\fR
+.br
+or
+.br
+	\fB-r\fR \fIstartBlock\fR-\fIendBlock\fR
+.sp
+If \fIstartBlock\fR is omitted, block \fB0\fR is assumed. If
+\fIendBlock\fR is omitted, the last block of the disk is assumed.
 
 .TP
 \fIdiskSpec\fR
 This parameter specified the device to be formatted. It also can be
 given in two variants:
 .sp
-	\fB-f\fR \fB/dev/dasd\fR\fIX\fR
+	\fB-f\fR \fB/dev/dd\fR\fIX\fR
 .br
 or
 .br
@@ -62,7 +63,7 @@ or
 The first form uses the commonly used
 .SM UNIX
 device notation where \fIX\fR is a single lowercase letter.
-The second form uses simply the device number.
+The second form uses simply the VM vdev number.
 
 .SH BUGS
 None so far ;-)

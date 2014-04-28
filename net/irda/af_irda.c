@@ -6,11 +6,11 @@
  * Status:        Stable
  * Author:        Dag Brattli <dagb@cs.uit.no>
  * Created at:    Sun May 31 10:12:43 1998
- * Modified at:   Tue Apr 11 19:06:24 2000
+ * Modified at:   Sat Dec 25 21:10:23 1999
  * Modified by:   Dag Brattli <dagb@cs.uit.no>
- * Sources:       af_netrom.c, af_ax25.c, af_rose.c, af_x25.c etc.
+ * Sources:       af_netroom.c, af_ax25.c, af_rose.c, af_x25.c etc.
  * 
- *     Copyright (c) 1999-2000 Dag Brattli <dagb@cs.uit.no>
+ *     Copyright (c) 1999 Dag Brattli <dagb@cs.uit.no>
  *     Copyright (c) 1999 Jean Tourrilhes <jeant@rockfort.hpl.hp.com>
  *     All Rights Reserved.
  *
@@ -42,6 +42,7 @@
  *     
  ********************************************************************/
 
+#include <linux/config.h>
 #include <linux/types.h>
 #include <linux/socket.h>
 #include <linux/sockios.h>
@@ -64,7 +65,7 @@
 
 extern int  irda_init(void);
 extern void irda_cleanup(void);
-extern int  irlap_driver_rcv(struct sk_buff *, struct device *, 
+extern int  irlap_driver_rcv(struct sk_buff *, struct net_device *, 
 			     struct packet_type *);
 
 static int irda_create(struct socket *sock, int protocol);
@@ -79,7 +80,7 @@ static struct proto_ops irda_ultra_ops;
 #endif /* CONFIG_IRDA_ULTRA */
 
 static hashbin_t *cachelog = NULL;
-static struct wait_queue *discovery_wait; /* Wait for discovery */
+static DECLARE_WAIT_QUEUE_HEAD(discovery_wait); /* Wait for discovery */
 
 #define IRDA_MAX_HEADER (TTP_MAX_HEADER)
 
@@ -735,19 +736,17 @@ static int irda_accept(struct socket *sock, struct socket *newsock, int flags)
 	struct sock *sk = sock->sk;
 	struct sock *newsk;
 	struct sk_buff *skb;
-#if 0 /* Linux 2.3 only */
 	int err;
-#endif
 
 	IRDA_DEBUG(2, __FUNCTION__ "()\n");
 
 	self = sk->protinfo.irda;
 	ASSERT(self != NULL, return -1;);
-#if 0 /* Linux 2.3 only */
+
 	err = irda_create(newsock, sk->protocol);
 	if (err)
 		return err;
-#endif
+
 	if (sock->state != SS_UNCONNECTED)
 		return -EINVAL;
 
@@ -958,6 +957,8 @@ static int irda_create(struct socket *sock, int protocol)
 		return -ENOMEM;
 	memset(self, 0, sizeof(struct irda_sock));
 
+	init_waitqueue_head(&self->ias_wait);
+
 	self->sk = sk;
 	sk->protinfo.irda = self;
 	sock_init_data(sock, sk);
@@ -1050,12 +1051,12 @@ void irda_destroy_socket(struct irda_sock *self)
 }
 
 /*
- * Function irda_release (sock, peer)
+ * Function irda_release (sock)
  *
  *    
  *
  */
-static int irda_release(struct socket *sock, struct socket *peer)
+static int irda_release(struct socket *sock)
 {
 	struct sock *sk = sock->sk;
 	
@@ -1073,7 +1074,7 @@ static int irda_release(struct socket *sock, struct socket *peer)
 
         sock->sk   = NULL;      
         sk->socket = NULL;      /* Not used, but we should do this. */
-	sk->protinfo.irda = NULL;
+
         return 0;
 }
 
@@ -1214,9 +1215,9 @@ static int irda_recvmsg_dgram(struct socket *sock, struct msghdr *msg,
 static void irda_data_wait(struct sock *sk)
 {
 	if (!skb_peek(&sk->receive_queue)) {
-		sk->socket->flags |= SO_WAITDATA;
+		set_bit(SOCK_ASYNC_WAITDATA, &sk->socket->flags);
 		interruptible_sleep_on(sk->sleep);
-		sk->socket->flags &= ~SO_WAITDATA;
+		clear_bit(SOCK_ASYNC_WAITDATA, &sk->socket->flags);
 	}
 }
 
@@ -1240,7 +1241,7 @@ static int irda_recvmsg_stream(struct socket *sock, struct msghdr *msg,
 	self = sk->protinfo.irda;
 	ASSERT(self != NULL, return -1;);
 
-	if (sock->flags & SO_ACCEPTCON) 
+	if (sock->flags & __SO_ACCEPTCON) 
 		return(-EINVAL);
 
 	if (flags & MSG_OOB)
@@ -1521,7 +1522,7 @@ static unsigned int irda_poll(struct file * file, struct socket *sock,
 	 * we set writable also when the other side has shut down the
 	 * connection. This prevents stuck sockets.
 	 */
-	if (sk->sndbuf - (int)atomic_read(&sk->wmem_alloc) >= MIN_WRITE_SPACE)
+	if (sk->sndbuf - (int)atomic_read(&sk->wmem_alloc) >= SOCK_MIN_WRITE_SPACE)
 			mask |= POLLOUT | POLLWRNORM | POLLWRBAND;
 
 	return mask;
@@ -1842,9 +1843,6 @@ static int irda_getsockopt(struct socket *sock, int level, int optname,
 	if (get_user(len, optlen))
 		return -EFAULT;
 
-	if (len < 0)
-		return -EINVAL;
-		
 	switch (optname) {
 	case IRLMP_ENUMDEVICES:
 		/* Tell IrLMP we want to be notified */
@@ -1910,9 +1908,6 @@ static int irda_getsockopt(struct socket *sock, int level, int optname,
 			return -EFAULT;
 		break;
 	case IRLMP_MAX_SDU_SIZE:
-		IRDA_DEBUG(2, __FUNCTION__ "(), max_data_size=%d\n", 
-			   self->max_data_size);
-
 		val = self->max_data_size;
 		len = sizeof(int);
 		if (put_user(len, optlen))
@@ -2019,91 +2014,92 @@ static struct net_proto_family irda_family_ops =
 	irda_create
 };
 
-static struct proto_ops irda_stream_ops = {
-	PF_IRDA,
+static struct proto_ops SOCKOPS_WRAPPED(irda_stream_ops) = {
+	family:		PF_IRDA,
 	
-	sock_no_dup,
-	irda_release,
-	irda_bind,
-	irda_connect,
-	sock_no_socketpair,
-	irda_accept,
-	irda_getname,
-	irda_poll,
-	irda_ioctl,
-	irda_listen,
-	irda_shutdown,
-	irda_setsockopt,
-	irda_getsockopt,
-	sock_no_fcntl,
-	irda_sendmsg,
-	irda_recvmsg_stream,
+	release:	irda_release,
+	bind:		irda_bind,
+	connect:	irda_connect,
+	socketpair:	sock_no_socketpair,
+	accept:		irda_accept,
+	getname:	irda_getname,
+	poll:		irda_poll,
+	ioctl:		irda_ioctl,
+	listen:		irda_listen,
+	shutdown:	irda_shutdown,
+	setsockopt:	irda_setsockopt,
+	getsockopt:	irda_getsockopt,
+	sendmsg:	irda_sendmsg,
+	recvmsg:	irda_recvmsg_stream,
+	mmap:		sock_no_mmap,
 };
 
-static struct proto_ops irda_seqpacket_ops = {
-	PF_IRDA,
-       
-	sock_no_dup,
-	irda_release,
-	irda_bind,
-	irda_connect,
-	sock_no_socketpair,
-	irda_accept,
-	irda_getname,
-	datagram_poll,
-	irda_ioctl,
-	irda_listen,
-	irda_shutdown,
-	irda_setsockopt,
-	irda_getsockopt,
-	sock_no_fcntl,
-	irda_sendmsg,
-	irda_recvmsg_dgram,
+static struct proto_ops SOCKOPS_WRAPPED(irda_seqpacket_ops) = {
+	family:		PF_IRDA,
+	
+	release:	irda_release,
+	bind:		irda_bind,
+	connect:	irda_connect,
+	socketpair:	sock_no_socketpair,
+	accept:		irda_accept,
+	getname:	irda_getname,
+	poll:		datagram_poll,
+	ioctl:		irda_ioctl,
+	listen:		irda_listen,
+	shutdown:	irda_shutdown,
+	setsockopt:	irda_setsockopt,
+	getsockopt:	irda_getsockopt,
+	sendmsg:	irda_sendmsg,
+	recvmsg:	irda_recvmsg_dgram,
+	mmap:		sock_no_mmap,
 };
 
-static struct proto_ops irda_dgram_ops = {
-	PF_IRDA,
+static struct proto_ops SOCKOPS_WRAPPED(irda_dgram_ops) = {
+	family:		PF_IRDA,
        
-	sock_no_dup,
-	irda_release,
-	irda_bind,
-	irda_connect,
-	sock_no_socketpair,
-	irda_accept,
-	irda_getname,
-	datagram_poll,
-	irda_ioctl,
-	irda_listen,
-	irda_shutdown,
-	irda_setsockopt,
-	irda_getsockopt,
-	sock_no_fcntl,
-	irda_sendmsg_dgram,
-	irda_recvmsg_dgram,
+	release:	irda_release,
+	bind:		irda_bind,
+	connect:	irda_connect,
+	socketpair:	sock_no_socketpair,
+	accept:		irda_accept,
+	getname:	irda_getname,
+	poll:		datagram_poll,
+	ioctl:		irda_ioctl,
+	listen:		irda_listen,
+	shutdown:	irda_shutdown,
+	setsockopt:	irda_setsockopt,
+	getsockopt:	irda_getsockopt,
+	sendmsg:	irda_sendmsg_dgram,
+	recvmsg:	irda_recvmsg_dgram,
+	mmap:		sock_no_mmap,
 };
 
 #ifdef CONFIG_IRDA_ULTRA
-static struct proto_ops irda_ultra_ops = {
-	PF_IRDA,
+static struct proto_ops SOCKOPS_WRAPPED(irda_ultra_ops) = {
+	family:		PF_IRDA,
        
-	sock_no_dup,
-	irda_release,
-	irda_bind,
-	sock_no_connect,
-	sock_no_socketpair,
-	sock_no_accept,
-	irda_getname,
-	datagram_poll,
-	irda_ioctl,
-	sock_no_listen,
-	irda_shutdown,
-	irda_setsockopt,
-	irda_getsockopt,
-	sock_no_fcntl,
-	irda_sendmsg_ultra,
-	irda_recvmsg_dgram,
+	release:	irda_release,
+	bind:		irda_bind,
+	connect:	sock_no_connect,
+	socketpair:	sock_no_socketpair,
+	accept:		sock_no_accept,
+	getname:	irda_getname,
+	poll:		datagram_poll,
+	ioctl:		irda_ioctl,
+	listen:		sock_no_listen,
+	shutdown:	irda_shutdown,
+	setsockopt:	irda_setsockopt,
+	getsockopt:	irda_getsockopt,
+	sendmsg:	irda_sendmsg_ultra,
+	recvmsg:	irda_recvmsg_dgram,
+	mmap:		sock_no_mmap,
 };
 #endif /* CONFIG_IRDA_ULTRA */
+
+#include <linux/smp_lock.h>
+SOCKOPS_WRAP(irda_stream, PF_IRDA);
+SOCKOPS_WRAP(irda_seqpacket, PF_IRDA);
+SOCKOPS_WRAP(irda_dgram, PF_IRDA);
 
 /*
  * Function irda_device_event (this, event, ptr)
@@ -2114,7 +2110,7 @@ static struct proto_ops irda_ultra_ops = {
 static int irda_device_event(struct notifier_block *this, unsigned long event,
 			     void *ptr)
 {
-	struct device *dev = (struct device *) ptr;
+	struct net_device *dev = (struct net_device *) ptr;
 	
         /* Reject non IrDA devices */
 	if (dev->type != ARPHRD_IRDA) 

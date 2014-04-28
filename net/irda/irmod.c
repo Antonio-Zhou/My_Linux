@@ -6,7 +6,7 @@
  * Status:        Experimental.
  * Author:        Dag Brattli <dagb@cs.uit.no>
  * Created at:    Mon Dec 15 13:55:39 1997
- * Modified at:   Mon Jan 17 11:21:56 2000
+ * Modified at:   Wed Jan  5 15:12:41 2000
  * Modified by:   Dag Brattli <dagb@cs.uit.no>
  * 
  *     Copyright (c) 1997, 1999-2000 Dag Brattli, All Rights Reserved.
@@ -73,7 +73,7 @@ extern int irlpt_server_init(void);
 
 #ifdef CONFIG_IRDA_COMPRESSION
 #ifdef CONFIG_IRDA_DEFLATE
-extern irda_deflate_init(void);
+extern irda_deflate_init();
 #endif /* CONFIG_IRDA_DEFLATE */
 #endif /* CONFIG_IRDA_COMPRESSION */
 
@@ -88,18 +88,12 @@ static ssize_t irda_write(struct file *file, const char *buffer,
 static u_int irda_poll(struct file *file, poll_table *wait);
 
 static struct file_operations irda_fops = {
-	NULL,	       /* seek */
-	irda_read,     /* read */
-	irda_write,    /* write */
-	NULL,	       /* readdir */
-	irda_poll,     /* poll */
-	irda_ioctl,    /* ioctl */
-	NULL,	       /* mmap */
-	irda_open,
-	NULL,
-	irda_close,
-	NULL,
-	NULL,          /* fasync */
+	read:		irda_read,
+	write:		irda_write,
+	poll:		irda_poll,
+	ioctl:		irda_ioctl,
+	open:		irda_open,
+	release:	irda_close,
 };
 
 /* IrTTP */
@@ -212,7 +206,7 @@ EXPORT_SYMBOL(irtty_set_packet_mode);
 
 int __init irda_init(void)
 {
-	MESSAGE("IrDA (tm) Protocols for Linux-2.2 (Dag Brattli)\n");
+	MESSAGE("IrDA (tm) Protocols for Linux-2.3 (Dag Brattli)\n");
 	
  	irlmp_init();
 	irlap_init();
@@ -229,6 +223,7 @@ int __init irda_init(void)
 #ifdef CONFIG_SYSCTL
 	irda_sysctl_register();
 #endif
+	init_waitqueue_head(&irda.wait_queue);
 	irda.dev.minor = MISC_DYNAMIC_MINOR;
 	irda.dev.name = "irda";
 	irda.dev.fops = &irda_fops;
@@ -236,6 +231,8 @@ int __init irda_init(void)
 	misc_register(&irda.dev);
 
 	irda.in_use = FALSE;
+	
+	init_waitqueue_head(&irda.wait_queue);
 
 	/* 
 	 * Initialize modules that got compiled into the kernel 
@@ -329,8 +326,9 @@ void irda_execute_as_process( void *self, TODO_CALLBACK callback, __u32 param)
 	struct irmanager_event event;
 
 	/* Make sure irmanager is running */
-	if (!irda.in_use)
+	if (!irda.in_use) {
 		return;
+	}
 
 	/* Make new todo event */
 	new = (struct irda_todo *) kmalloc( sizeof(struct irda_todo),
@@ -366,8 +364,9 @@ void irmanager_notify( struct irmanager_event *event)
 	IRDA_DEBUG(4, __FUNCTION__ "()\n");
 	
 	/* Make sure irmanager is running */
-	if (!irda.in_use)
+	if (!irda.in_use) {
 		return;
+	}
 
 	/* Make new IrDA Event */
 	new = (struct irda_event *) kmalloc( sizeof(struct irda_event),

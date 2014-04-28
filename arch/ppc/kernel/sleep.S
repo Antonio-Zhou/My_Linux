@@ -1,6 +1,6 @@
 /*
  * This file contains sleep low-level functions for PowerBook G3.
- *    Copyright (C) 1999 Benjamin Herrenschmidt (benh@kernel.crashing.org)
+ *    Copyright (C) 1999 Benjamin Herrenschmidt (bh40@calva.net)
  *    and Paul Mackerras (paulus@cs.anu.edu.au).
  *
  * This program is free software; you can redistribute it and/or
@@ -113,8 +113,8 @@ _GLOBAL(low_sleep_handler)
 	stw	r4,SL_HID0(r1)
 
 	/* Set up stuff at address 0 */
-	lis	r5,grackle_wake_up@ha
-	addi	r5,r5,grackle_wake_up@l
+	lis	r5,wake_up@ha
+	addi	r5,r5,wake_up@l
 	tophys(r5,r5)
 	stw	r5,SL_PC(r1)
 	lis	r4,KERNELBASE@h
@@ -124,28 +124,22 @@ _GLOBAL(low_sleep_handler)
 	addi	r6,r6,MAGIC@l
 	stw	r5,0(r4)
 	stw	r6,4(r4)
-	/* Setup stuffs at 0x80-0x84 for Core99 */
-	lis	r3,core99_wake_up@ha
-	addi	r3,r3,core99_wake_up@l
-	tophys(r3,r3)
-	stw	r3,0x80(r4)
-	stw	r5,0x84(r4)
 
 /*
- * Flush the L1 data cache by reading the first 128kB of RAM
+ * Flush the L1 data cache by reading the first 64kB of RAM
  * and then flushing the same area with the dcbf instruction.
  * The L2 cache has already been disabled.
  */
-	li	r4,0x1000	/* 128kB / 32B */
+	li	r4,0x0800	/* 64kB / 32B */
 	mtctr	r4
 	lis	r4,KERNELBASE@h
 1:
 	lwz	r0,0(r4)
-	addi	r4,r4,0x0020	/* Go to start of next cache line */
+	addi	r4,r4,0x0020		/* Go to start of next cache line */
 	bdnz	1b
 	sync
 	
-	li	r4,0x1000	/* 128kB / 32B */
+	li	r4,0x0800	/* 64k */
 	mtctr	r4
 	lis	r4,KERNELBASE@h
 1:
@@ -153,14 +147,6 @@ _GLOBAL(low_sleep_handler)
 	addi	r4,r4,0x0020	/* Go to start of next cache line */
 	bdnz	1b
 	sync
-
-/* Turn off L1 (necessary ?) */
-	mfspr	r3,HID0
-	ori	r3,r3, HID0_ICE|HID0_DCE
-	xori	r3,r3, HID0_ICE|HID0_DCE
-	mtspr	HID0,r3
-	sync
-	isync
 
 /*
  * Set the HID0 and MSR for sleep.
@@ -177,50 +163,20 @@ _GLOBAL(low_sleep_handler)
 1:	sync
 	mtmsr	r2
 	isync
-	b	1b		
+	b	1b
 
-	
 /* 
  * Here is the resume code.
- * Core99 machines resume here
- * r4 has the physical address of SL_PC(sp).
- */
-
-core99_wake_up:
-	mr	r1,r4
-	mfspr	r3,HID0
-	/* use rlwinm ... */
-	oris	r3,r3,HID0_SLEEP@h
-	xoris	r3,r3,HID0_SLEEP@h
-	mtspr	HID0,r3
-	sync
-	isync
-	
-	/* sanitize MSR */
-	mfmsr	r3
-	ori	r3,r3,MSR_EE|MSR_IP
-	xori	r3,r3,MSR_EE|MSR_IP
-	mtmsr	r3
-	sync
-	isync
-		
-/* 
- * Here is the resume code for older machines.
  * r1 has the physical address of SL_PC(sp).
  */
 	
-grackle_wake_up:
-	/* Enable and then Flash inval the instruction cache */
+wake_up:
+	/* Flash inval the instruction cache */
 	mfspr	r3,HID0
-	ori	r3,r3, HID0_ICE|HID0_ICFI|HID0_DCE|HID0_DCI
-	sync
+	ori	r3,r3, HID0_ICFI
+	mtspr	HID0,r3
 	isync
-	mtspr	HID0,r3
-	xori	r3,r3, HID0_ICFI|HID0_DCI
-	mtspr	HID0,r3
-	sync
-	
-	/* Restore the remaining bits of the HID0 register. */
+	/* Restore the HID0 register.  This turns on the L1 caches. */
 	subi	r1,r1,SL_PC
 	lwz	r3,SL_HID0(r1)
 	sync
@@ -283,13 +239,6 @@ grackle_wake_up:
 	lwz	r4,SL_IBAT3+4(r1)
 	mtibatl	3,r4
 
-	/* Flush all TLBs */
-	lis	r4, 0x1000
-1:	addic.	r4, r4, -0x1000
-	tlbie	r4
-	blt	1b
-	sync
-
 	/* restore the MSR and turn on the MMU */
 	lwz	r3,SL_MSR(r1)
 	bl	turn_on_mmu	
@@ -298,8 +247,6 @@ grackle_wake_up:
 	tovirt(r1,r1)
 
 	/* Restore TB */
-	lis r3,0
-	mttbl	r3
 	lwz	r3,SL_TB(r1)
 	lwz	r4,SL_TB+4(r1)
 	mttbu	r3
@@ -320,4 +267,3 @@ turn_on_mmu:
 	mtsrr1	r3
 	sync
 	rfi
-	sync

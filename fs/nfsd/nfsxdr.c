@@ -26,7 +26,7 @@
  * Mapping of S_IF* types to NFS file types
  */
 static u32	nfs_ftypes[] = {
-	NFNON,  NFCHR,  NFCHR, NFBAD,
+	NFNON,  NFFIFO, NFCHR, NFBAD,
 	NFDIR,  NFBAD,  NFBLK, NFBAD,
 	NFREG,  NFBAD,  NFLNK, NFBAD,
 	NFSOCK, NFBAD,  NFLNK, NFBAD,
@@ -39,19 +39,20 @@ static u32	nfs_ftypes[] = {
 static inline u32 *
 decode_fh(u32 *p, struct svc_fh *fhp)
 {
-	fh_init(fhp);
-	memcpy(&fhp->fh_handle, p, sizeof(struct knfs_fh));
+	fh_init(fhp, NFS_FHSIZE);
+	memcpy(&fhp->fh_handle.fh_base, p, NFS_FHSIZE);
+	fhp->fh_handle.fh_size = NFS_FHSIZE;
 
 	/* FIXME: Look up export pointer here and verify
 	 * Sun Secure RPC if requested */
-	return p + (sizeof(struct knfs_fh) >> 2);
+	return p + (NFS_FHSIZE >> 2);
 }
 
 static inline u32 *
 encode_fh(u32 *p, struct svc_fh *fhp)
 {
-	memcpy(p, &fhp->fh_handle, sizeof(struct knfs_fh));
-	return p + (sizeof(struct knfs_fh) >> 2);
+	memcpy(p, &fhp->fh_handle.fh_base, NFS_FHSIZE);
+	return p + (NFS_FHSIZE>> 2);
 }
 
 /*
@@ -135,25 +136,20 @@ decode_sattr(u32 *p, struct iattr *iap)
 static inline u32 *
 encode_fattr(struct svc_rqst *rqstp, u32 *p, struct inode *inode)
 {
-	int type = (inode->i_mode & S_IFMT);
 	if (!inode)
 		return 0;
-	*p++ = htonl(nfs_ftypes[type >> 12]);
+	*p++ = htonl(nfs_ftypes[(inode->i_mode & S_IFMT) >> 12]);
 	*p++ = htonl((u32) inode->i_mode);
 	*p++ = htonl((u32) inode->i_nlink);
 	*p++ = htonl((u32) nfsd_ruid(rqstp, inode->i_uid));
 	*p++ = htonl((u32) nfsd_rgid(rqstp, inode->i_gid));
-
-	if (S_ISLNK(type) && inode->i_size > NFS_MAXPATHLEN) {
+	if (S_ISLNK(inode->i_mode) && inode->i_size > NFS_MAXPATHLEN) {
 		*p++ = htonl(NFS_MAXPATHLEN);
 	} else {
 		*p++ = htonl((u32) inode->i_size);
 	}
 	*p++ = htonl((u32) inode->i_blksize);
-	if (S_ISCHR(type) || S_ISBLK(type))
-		*p++ = htonl((u32) inode->i_rdev);
-	else
-		*p++ = htonl(0xffffffff);
+	*p++ = htonl((u32) inode->i_rdev);
 	*p++ = htonl((u32) inode->i_blocks);
 	*p++ = htonl((u32) inode->i_dev);
 	*p++ = htonl((u32) inode->i_ino);
@@ -416,9 +412,11 @@ nfssvc_encode_entry(struct readdir_cd *cd, const char *name,
 		cd->eob = 1;
 		return -EINVAL;
 	}
-	*p++ = xdr_one;				/* mark entry present */
-	*p++ = htonl((u32) ino);		/* file id */
-	p    = xdr_encode_string(p, name, namlen);/* name length & name */
+	*p++ = xdr_one;			/* mark entry present */
+	*p++ = htonl((u32) ino);	/* file id */
+	*p++ = htonl((u32) namlen);	/* name length & name */
+	memcpy(p, name, namlen);
+	p += slen;
 	cd->offset = p;			/* remember pointer */
 	*p++ = ~(u32) 0;		/* offset of next entry */
 

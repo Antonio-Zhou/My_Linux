@@ -4,11 +4,8 @@
 
 #include <linux/config.h>
 
-#if defined(CONFIG_GEMINI)
+#ifdef CONFIG_GEMINI
 #include <asm/gemini_serial.h>
-#else
-#if defined(CONFIG_APUS)
-#include <asm-m68k/serial.h>
 #else
 
 /*
@@ -19,6 +16,22 @@
  * megabits/second; but this requires the faster clock.
  */
 #define BASE_BAUD ( 1843200 / 16 )
+
+#ifdef CONFIG_SERIAL_MANY_PORTS
+#define RS_TABLE_SIZE  64
+#else
+#define RS_TABLE_SIZE  4
+#endif
+
+#ifdef CONFIG_PMAC
+/*
+ * Auto-probing will cause machine checks on powermacs.
+ */
+#define SERIAL_PORT_DFNS
+#else
+/*
+ * PReP, CHRP, etc.
+ */
 
 /* Standard COM flags (except for COM4, because of the 8514 problem) */
 #ifdef CONFIG_SERIAL_DETECT_IRQ
@@ -122,5 +135,6 @@
 	EXTRA_SERIAL_PORT_DEFNS		\
 	HUB6_SERIAL_PORT_DFNS		\
 	MCA_SERIAL_PORT_DFNS
-#endif
-#endif
+
+#endif /* CONFIG_PMAC */
+#endif /* CONFIG_GEMINI */

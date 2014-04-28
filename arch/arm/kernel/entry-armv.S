@@ -16,12 +16,19 @@
 #include <asm/errno.h>
 #include <asm/hardware.h>
 #include <asm/arch/irqs.h>
+#include <asm/proc-fns.h>
 
 #include "../lib/constants.h"
 
 #ifndef MODE_SVC
 #define MODE_SVC 0x13
 #endif
+
+		.macro	zero_fp
+#ifdef CONFIG_FRAME_POINTER
+		mov	fp, #0
+#endif
+		.endm
 
 		.text
 
@@ -194,6 +201,38 @@ irq_prio_ebsa110:
 		.byte	 6, 6, 6, 6, 2, 2, 2, 2, 3, 3, 6, 6, 2, 2, 2, 2
 		.endm
 
+#elif defined(CONFIG_ARCH_SHARK)
+
+		.macro	disable_fiq
+		.endm
+
+		.macro	get_irqnr_and_base, irqnr, irqstat, base
+		mov	r4, #0xe0000000
+		orr	r4, r4, #0x20
+
+		mov	\irqstat, #0x0C
+		strb	\irqstat, [r4]			@outb(0x0C, 0x20) /* Poll command */
+		ldrb	\irqnr, [r4]			@irq = inb(0x20) & 7
+		and	\irqstat, \irqnr, #0x80
+		teq	\irqstat, #0
+		beq	43f
+		and	\irqnr, \irqnr, #7
+		teq	\irqnr, #2
+		bne	44f
+43:		mov	\irqstat, #0x0C
+		strb	\irqstat, [r4, #0x80]		@outb(0x0C, 0xA0) /* Poll command */
+		ldrb	\irqnr, [r4, #0x80]		@irq = (inb(0xA0) & 7) + 8
+		and	\irqstat, \irqnr, #0x80
+		teq	\irqstat, #0
+		beq	44f
+		and	\irqnr, \irqnr, #7
+		add	\irqnr, \irqnr, #8
+44:		teq	\irqstat, #0
+		.endm
+
+		.macro	irq_prio_table
+		.endm
+
 #elif defined(CONFIG_HOST_FOOTBRIDGE) || defined(CONFIG_ADDIN_FOOTBRIDGE)
 #include <asm/dec21285.h>
 
@@ -288,9 +327,12 @@ irq_prio_ebsa110:
 		.endm
 
 		.macro	get_irqnr_and_base, irqnr, irqstat, base
-		ldr	r4, =0xffe00000
-		ldr	\irqstat, [r4, #0x180]		@ get interrupts
+		ldr	\irqstat, =INTCONT_BASE
+		ldr	\base, =soft_irq_mask
+		ldr	\irqstat, [\irqstat]		@ get interrupts
+		ldr	\base, [\base]
 		mov	\irqnr, #0
+		and	\irqstat, \irqstat, \base	@ mask out disabled ones
 1001:		tst	\irqstat, #1
 		addeq	\irqnr, \irqnr, #1
 		moveq	\irqstat, \irqstat, lsr #1
@@ -300,7 +342,84 @@ irq_prio_ebsa110:
 		.endm
 
 		.macro	irq_prio_table
+		.ltorg
+		.bss
+ENTRY(soft_irq_mask)
+		.word	0
+		.text
 		.endm
+
+#elif defined(CONFIG_ARCH_TBOX)
+
+		.macro	disable_fiq
+		.endm
+
+		.macro	get_irqnr_and_base, irqnr, irqstat, base
+		ldr	\irqstat, =0xffff7000
+		ldr	\irqstat, [\irqstat]		@ get interrupts
+		ldr	\base, =soft_irq_mask
+		ldr	\base, [\base]
+		mov	\irqnr, #0
+		and	\irqstat, \irqstat, \base	@ mask out disabled ones
+1001:		tst	\irqstat, #1
+		addeq	\irqnr, \irqnr, #1
+		moveq	\irqstat, \irqstat, lsr #1
+		tsteq	\irqnr, #32
+		beq	1001b
+		teq	\irqnr, #32
+		.endm
+
+		.macro	irq_prio_table
+		.ltorg
+		.bss
+ENTRY(soft_irq_mask)
+		.word	0
+		.text
+		.endm
+
+#elif defined(CONFIG_ARCH_SA1100)
+
+		.macro	disable_fiq
+		.endm
+
+		.macro	get_irqnr_and_base, irqnr, irqstat, base
+		mov	r4, #0xfa000000			@ ICIP = 0xfa050000
+		add	r4, r4, #0x00050000
+		ldr	\irqstat, [r4]			@ get irqs
+		ldr	\irqnr, [r4, #4]		@ ICMR = 0xfa050004
+		ands	\irqstat, \irqstat, \irqnr
+		mov	\irqnr, #0
+		beq	1002f
+1001:		tst	\irqstat, #1
+		addeq	\irqnr, \irqnr, #1
+		moveq	\irqstat, \irqstat, lsr #1
+		beq	1001b
+1002:
+		.endm
+
+		.macro	irq_prio_table
+		.endm
+
+#elif defined(CONFIG_ARCH_L7200)
+/* Don't use fast interrupts */
+		.macro  disable_fiq
+		.endm
+ 
+		.macro  get_irqnr_and_base, irqnr, irqstat, base
+		ldr     r4, =0xe0001000			@ Virt addr status reg
+		ldr     \irqstat, [r4]			@ get interrupts
+		mov     \irqnr, #0
+1001:		tst     \irqstat, #1
+		addeq   \irqnr, \irqnr, #1
+		moveq   \irqstat, \irqstat, lsr #1
+		tsteq   \irqnr, #32
+		beq     1001b
+		teq     \irqnr, #32
+		.endm
+
+		.macro  irq_prio_table
+		.endm
+
 #else
 #error Unknown architecture
 #endif
@@ -322,8 +441,7 @@ irq_prio_ebsa110:
 
 		.macro	restore_user_regs
 		ldr	r0, [sp, #S_PSR]		@ Get calling cpsr
-		mov	r1, #I_BIT | MODE_SVC		@ disable IRQs
-		msr	cpsr_c, r1
+		msr	cpsr_c, #I_BIT | MODE_SVC	@ disable IRQs
 		msr	spsr, r0			@ save in spsr_svc
 		ldmia	sp, {r0 - lr}^			@ Get calling r0 - lr
 		mov	r0, r0
@@ -338,8 +456,6 @@ irq_prio_ebsa110:
 		/* If we're optimising for StrongARM the resulting code won't 
 		   run on an ARM7 and we can save a couple of instructions.  
 									--pb */
-		.macro	arm700_bug_check, instr, temp
-		.endm
 		.macro	arm700_bug_check, instr, temp
 #ifndef __ARM_ARCH_4__
 		and	\temp, \instr, #0x0f000000	@ check for SWI
@@ -399,7 +515,7 @@ __und_invalid:	sub	sp, sp, #S_FRAME_SIZE
 		ldr	r4, .LCund
 		mov	r1, #BAD_UNDEFINSTR		@ int reason
 
-1:		mov	fp, #0
+1:		zero_fp
 		ldmia	r4, {r5 - r7}			@ Get XXX pc, cpsr, old_r0
 		add	r4, sp, #S_PC
 		stmia	r4, {r5 - r7}			@ Save XXX pc, cpsr, old_r0
@@ -407,7 +523,10 @@ __und_invalid:	sub	sp, sp, #S_FRAME_SIZE
 		and	r2, r6, #31			@ int mode
 		b	SYMBOL_NAME(bad_mode)
 
-
+#ifdef CONFIG_NWFPE
+		/* The FPE is always present */
+		.equ	fpe_not_present, 0
+#else
 wfs_mask_data:	.word	0x0e200110			@ WFS/RFS
 		.word	0x0fef0fff
 		.word	0x0d0d0100			@ LDF [sp]/STF [sp]
@@ -444,6 +563,7 @@ fpe_not_present:
 		add	r5, r5, r4, lsl #2
 		str	r5, [sp, r6, lsr #14]		@ Save reg
 		mov	pc, r9
+#endif
 
 /*
  * SVC mode handlers
@@ -464,9 +584,13 @@ __dabt_svc:	sub	sp, sp, #S_FRAME_SIZE
 /*
  * This routine must not corrupt r9
  */
+#ifdef MULTI_CPU
 		ldr	r2, .LCprocfns
 		mov	lr, pc
-		ldr	pc, [r2, #8]			@ call processor specific code
+		ldr	pc, [r2]			@ call processor specific code
+#else
+		bl	cpu_data_abort
+#endif
 		msr	cpsr_c, r9
 		mov	r3, sp
 		bl	SYMBOL_NAME(do_DataAbort)
@@ -521,7 +645,9 @@ __und_svc:	sub	sp, sp, #S_FRAME_SIZE
 .LCirq:		.word	__temp_irq
 .LCund:		.word	__temp_und
 .LCabt:		.word	__temp_abt
+#ifdef MULTI_CPU
 .LCprocfns:	.word	SYMBOL_NAME(processor)
+#endif
 .LCfp:		.word	SYMBOL_NAME(fp_enter)
 #ifdef CONFIG_ALIGNMENT_TRAP
 .LCswi:		.word	SYMBOL_NAME(cr_alignment)
@@ -541,10 +667,14 @@ __dabt_usr:	sub	sp, sp, #S_FRAME_SIZE		@ Allocate frame size in one go
 		stmia	r3, {r0 - r2}			@ Save USR pc, cpsr, old_r0
 		stmdb	r3, {sp, lr}^
 		alignment_trap r4, r7, __temp_abt
-		mov	fp, #0
+		zero_fp
+#ifdef MULTI_CPU
 		ldr	r2, .LCprocfns
 		mov	lr, pc
-		ldr	pc, [r2, #8]			@ call processor specific code
+		ldr	pc, [r2]			@ call processor specific code
+#else
+		bl	cpu_data_abort
+#endif
 		msr	cpsr_c, #MODE_SVC		@ Enable interrupts
 		mov	r3, sp
 		adrsvc	al, lr, ret_from_sys_call
@@ -559,7 +689,7 @@ __irq_usr:	sub	sp, sp, #S_FRAME_SIZE
 		stmia	r8, {r5 - r7}			@ save pc, psr, old_r0
 		stmdb	r8, {sp, lr}^
 		alignment_trap r4, r7, __temp_irq
-		mov	fp, #0
+		zero_fp
 1:		get_irqnr_and_base r0, r6, r5
 		movne	r1, sp
 		adrsvc	ne, lr, 1b
@@ -579,7 +709,7 @@ __und_usr:	sub	sp, sp, #S_FRAME_SIZE		@ Allocate frame size in one go
 		stmia	r8, {r5 - r7}			@ Save USR pc, cpsr, old_r0
 		stmdb	r8, {sp, lr}^			@ Save user r0 - r12
 		alignment_trap r4, r7, __temp_und
-		mov	fp, #0
+		zero_fp
 		adrsvc	al, r9, ret_from_sys_call	@ r9  = normal FP return
 		adrsvc	al, lr, fpundefinstr		@ lr  = undefined instr return
 
@@ -592,7 +722,7 @@ call_fpe:	get_current_task r10
 
 fpundefinstr:	mov	r0, lr
 		mov	r1, sp
-		msr	cpsr_c, #MODE_SVC
+		msr	cpsr_c, #MODE_SVC		@ Enable interrupts
 		adrsvc	al, lr, ret_from_sys_call
 		b	SYMBOL_NAME(do_undefinstr)
 
@@ -605,7 +735,7 @@ __pabt_usr:	sub	sp, sp, #S_FRAME_SIZE		@ Allocate frame size in one go
 		stmia	r8, {r5 - r7}			@ Save USR pc, cpsr, old_r0
 		stmdb	r8, {sp, lr}^			@ Save sp_usr lr_usr
 		alignment_trap r4, r7, __temp_abt
-		mov	fp, #0
+		zero_fp
 		msr	cpsr_c, #MODE_SVC		@ Enable interrupts
 		mov	r0, r5				@ address (pc)
 		mov	r1, sp				@ regs
@@ -643,6 +773,23 @@ t:		.ascii "Prefetch -> undefined instruction\n\0"
 		add	sp, sp, #S_FRAME_SIZE
 		movs	pc, lr
 #endif
+
+/*
+ * Register switch for ARMv3 and ARMv4 processors
+ * r0 = previous, r1 = next, return previous.
+ * previous and next are guaranteed not to be the same.
+ */
+ENTRY(__switch_to)
+		stmfd	sp!, {r4 - sl, fp, lr}		@ Store most regs on stack
+		mrs	ip, cpsr
+		str	ip, [sp, #-4]!			@ Save cpsr_SVC
+		str	sp, [r0, #TSS_SAVE]		@ Save sp_SVC
+		ldr	sp, [r1, #TSS_SAVE]		@ Get saved sp_SVC
+		ldr	r2, [r1, #TSS_DOMAIN]
+		ldr	ip, [sp], #4
+		mcr	p15, 0, r2, c3, c0		@ Set domain register
+		msr	spsr, ip			@ Save tasks CPSR into SPSR for this return
+		ldmfd	sp!, {r4 - sl, fp, pc}^		@ Load all regs saved previously
 
 		.section ".text.init",#alloc,#execinstr
 /*
@@ -850,7 +997,7 @@ __stubs_end:
 		b	__real_stubs_start + (vector_IRQ - __stubs_start)
 		b	__real_stubs_start + (vector_FIQ - __stubs_start)
 
-ENTRY(trap_init)
+ENTRY(__trap_init)
 		stmfd	sp!, {r4 - r6, lr}
 
 		adr	r1, .LCvectors			@ set up the vectors

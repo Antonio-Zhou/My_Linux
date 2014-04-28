@@ -190,7 +190,7 @@ static int fd_request_irq(void)
 
 static unsigned long dma_mem_alloc(unsigned long size)
 {
-	return __get_dma_pages(GFP_KERNEL,__get_order(size));
+	return __get_dma_pages(GFP_KERNEL,get_order(size));
 }
 
 
@@ -207,7 +207,7 @@ static void _fd_dma_mem_free(unsigned long addr, unsigned long size)
 	if((unsigned int) addr >= (unsigned int) high_memory)
 		return vfree((void *)addr);
 	else
-		free_pages(addr, __get_order(size));		
+		free_pages(addr, get_order(size));		
 }
 
 #define fd_dma_mem_free(addr, size)  _fd_dma_mem_free(addr, size) 
@@ -285,23 +285,8 @@ struct fd_routine_l {
 static int FDC1 = 0x3f0;
 static int FDC2 = -1;
 
-#define FLOPPY0_TYPE	({				\
-	unsigned long flags;				\
-	unsigned char val;				\
-	spin_lock_irqsave(&rtc_lock, flags);		\
-	val = (CMOS_READ(0x10) >> 4) & 15;		\
-	spin_unlock_irqrestore(&rtc_lock, flags);	\
-	val;						\
-})
-
-#define FLOPPY1_TYPE	({				\
-	unsigned long flags;				\
-	unsigned char val;				\
-	spin_lock_irqsave(&rtc_lock, flags);		\
-	val = CMOS_READ(0x10) & 15;			\
-	spin_unlock_irqrestore(&rtc_lock, flags);	\
-	val;						\
-})
+#define FLOPPY0_TYPE	((CMOS_READ(0x10) >> 4) & 15)
+#define FLOPPY1_TYPE	(CMOS_READ(0x10) & 15)
 
 #define N_FDC 2
 #define N_DRIVE 8

@@ -1,21 +1,104 @@
-/* $Id: l3dss1.c,v 1.1.2.1 2001/12/31 13:26:45 kai Exp $
- *
+/* $Id: l3dss1.c,v 2.24 2000/03/19 15:26:35 kai Exp $
+
  * EURO/DSS1 D-channel protocol
  *
- * German 1TR6 D-channel protocol
- *
- * Author       Karsten Keil
+ * Author       Karsten Keil (keil@isdn4linux.de)
  *              based on the teles driver from Jan den Ouden
- * Copyright    by Karsten Keil      <keil@isdn4linux.de>
- * 
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
  *
- * For changes and modifications please read
- * ../../../Documentation/isdn/HiSax.cert
+ *		This file is (c) under GNU PUBLIC LICENSE
+ *		For changes and modifications please read
+ *		../../../Documentation/isdn/HiSax.cert
  *
  * Thanks to    Jan den Ouden
  *              Fritz Elfert
+ *
+ * $Log: l3dss1.c,v $
+ * Revision 2.24  2000/03/19 15:26:35  kai
+ * changed keypad to use specified bearer, instead of always a-law
+ *
+ * Revision 2.23  2000/02/26 01:38:14  keil
+ * Fixes for V.110 encoding LLC from Jens Jakobsen
+ *
+ * Revision 2.22  2000/01/20 19:44:20  keil
+ * Fixed uninitialiesed location
+ * Fixed redirecting number IE in Setup
+ * Changes from certification
+ * option for disabling use of KEYPAD protocol
+ *
+ * Revision 2.21  1999/12/19 20:25:17  keil
+ * fixed LLC for outgoing analog calls
+ * IE Signal is valid on older local switches
+ *
+ * Revision 2.20  1999/10/11 22:16:27  keil
+ * Suspend/Resume is possible without explicit ID too
+ *
+ * Revision 2.19  1999/08/25 16:55:23  keil
+ * Fix for test case TC10011
+ *
+ * Revision 2.18  1999/08/11 20:54:39  keil
+ * High layer compatibility is valid in SETUP
+ *
+ * Revision 2.17  1999/07/25 16:18:25  keil
+ * Fix Suspend/Resume
+ *
+ * Revision 2.16  1999/07/21 14:46:23  keil
+ * changes from EICON certification
+ *
+ * Revision 2.14  1999/07/09 08:30:08  keil
+ * cosmetics
+ *
+ * Revision 2.13  1999/07/01 08:11:58  keil
+ * Common HiSax version for 2.0, 2.1, 2.2 and 2.3 kernel
+ *
+ * Revision 2.12  1998/11/15 23:55:10  keil
+ * changes from 2.0
+ *
+ * Revision 2.11  1998/08/13 23:36:51  keil
+ * HiSax 3.1 - don't work stable with current LinkLevel
+ *
+ * Revision 2.10  1998/05/25 14:10:20  keil
+ * HiSax 3.0
+ * X.75 and leased are working again.
+ *
+ * Revision 2.9  1998/05/25 12:58:17  keil
+ * HiSax golden code from certification, Don't use !!!
+ * No leased lines, no X75, but many changes.
+ *
+ * Revision 2.8  1998/03/19 13:18:47  keil
+ * Start of a CAPI like interface for supplementary Service
+ * first service: SUSPEND
+ *
+ * Revision 2.7  1998/02/12 23:08:01  keil
+ * change for 2.1.86 (removing FREE_READ/FREE_WRITE from [dev]_kfree_skb()
+ *
+ * Revision 2.6  1998/02/03 23:26:35  keil
+ * V110 extensions from Thomas Pfeiffer
+ *
+ * Revision 2.5  1998/02/02 13:34:28  keil
+ * Support australian Microlink net and german AOCD
+ *
+ * Revision 2.4  1997/11/06 17:12:25  keil
+ * KERN_NOTICE --> KERN_INFO
+ *
+ * Revision 2.3  1997/10/29 19:03:01  keil
+ * changes for 2.1
+ *
+ * Revision 2.2  1997/08/07 17:44:36  keil
+ * Fix RESTART
+ *
+ * Revision 2.1  1997/08/03 14:36:33  keil
+ * Implement RESTART procedure
+ *
+ * Revision 2.0  1997/07/27 21:15:43  keil
+ * New Callref based layer3
+ *
+ * Revision 1.17  1997/06/26 11:11:46  keil
+ * SET_SKBFREE now on creation of a SKB
+ *
+ * Revision 1.15  1997/04/17 11:50:48  keil
+ * pa->loc was undefined, if it was not send by the exchange
+ *
+ * Old log removed /KKe
  *
  */
 
@@ -27,7 +110,7 @@
 #include <linux/config.h>
 
 extern char *HiSax_getrev(const char *revision);
-const char *dss1_revision = "$Revision: 1.1.2.1 $";
+const char *dss1_revision = "$Revision: 2.24 $";
 
 #define EXT_BEARER_CAPS 1
 
@@ -49,8 +132,7 @@ const char *dss1_revision = "$Revision: 1.1.2.1 $";
 static unsigned char new_invoke_id(struct PStack *p)
 {
 	unsigned char retval;
-	unsigned long flags;
-	int i;
+	int flags,i;
   
 	i = 32; /* maximum search depth */
 
@@ -78,7 +160,7 @@ static unsigned char new_invoke_id(struct PStack *p)
 /* free a used invoke id */
 /*************************/
 static void free_invoke_id(struct PStack *p, unsigned char id)
-{ unsigned long flags;
+{ int flags;
 
   if (!id) return; /* 0 = invalid value */
 
@@ -432,9 +514,9 @@ l3dss1_parse_facility(struct PStack *st, struct l3_process *pc,
 #undef FOO1
 
 			}
-#else  /* not HISAX_DE_AOC */
+#else  not HISAX_DE_AOC
                         l3_debug(st, "invoke break");
-#endif /* not HISAX_DE_AOC */
+#endif not HISAX_DE_AOC 
 			break;
 		case 2:	/* return result */
 			 /* if no process available handle separately */ 
@@ -444,12 +526,12 @@ l3dss1_parse_facility(struct PStack *st, struct l3_process *pc,
                            return; 
                          }   
                         if ((pc->prot.dss1.invoke_id) && (pc->prot.dss1.invoke_id == id))
-                          { /* Diversion successful */
+                          { /* Diversion successfull */
                             free_invoke_id(st,pc->prot.dss1.invoke_id);
                             pc->prot.dss1.remote_result = 0; /* success */     
                             pc->prot.dss1.invoke_id = 0;
                             pc->redir_result = pc->prot.dss1.remote_result; 
-                            st->l3.l3l4(st, CC_REDIR | INDICATION, pc);                                  } /* Diversion successful */
+                            st->l3.l3l4(st, CC_REDIR | INDICATION, pc);                                  } /* Diversion successfull */
                         else
                           l3_debug(st,"return error unknown identifier");
 			break;
@@ -727,9 +809,6 @@ check_infoelements(struct l3_process *pc, struct sk_buff *skb, int *checklist)
 	u_char *p, ie;
 	int l, newpos, oldpos;
 	int err_seq = 0, err_len = 0, err_compr = 0, err_ureg = 0;
-	u_char codeset = 0;
-	u_char old_codeset = 0;
-	u_char codelock = 1;
 	
 	p = skb->data;
 	/* skip cr */
@@ -738,34 +817,20 @@ check_infoelements(struct l3_process *pc, struct sk_buff *skb, int *checklist)
 	p += l;
 	mt = *p++;
 	oldpos = 0;
+/* shift codeset procedure not implemented in the moment */
 	while ((p - skb->data) < skb->len) {
-		if ((*p & 0xf0) == 0x90) { /* shift codeset */
-			old_codeset = codeset;
-			codeset = *p & 7;
-			if (*p & 0x08)
-				codelock = 0;
-			else
-				codelock = 1;
-			if (pc->debug & L3_DEB_CHECK)
-				l3_debug(pc->st, "check IE shift%scodeset %d->%d",
-					codelock ? " locking ": " ", old_codeset, codeset);
-			p++;
-			continue;
-		}
-		if (!codeset) { /* only codeset 0 */
-			if ((newpos = ie_in_set(pc, *p, cl))) {
-				if (newpos > 0) {
-					if (newpos < oldpos)
-						err_seq++;
-					else
-						oldpos = newpos;
-				}
-			} else {
-				if (ie_in_set(pc, *p, comp_required))
-					err_compr++;
+		if ((newpos = ie_in_set(pc, *p, cl))) {
+			if (newpos > 0) {
+				if (newpos < oldpos)
+					err_seq++;
 				else
-					err_ureg++;
+					oldpos = newpos;
 			}
+		} else {
+			if (ie_in_set(pc, *p, comp_required))
+				err_compr++;
+			else
+				err_ureg++;
 		}
 		ie = *p++;
 		if (ie & 0x80) {
@@ -775,19 +840,12 @@ check_infoelements(struct l3_process *pc, struct sk_buff *skb, int *checklist)
 			p += l;
 			l += 2;
 		}
-		if (!codeset && (l > getmax_ie_len(ie)))
+		if (l > getmax_ie_len(ie))
 			err_len++;
-		if (!codelock) {
-			if (pc->debug & L3_DEB_CHECK)
-				l3_debug(pc->st, "check IE shift back codeset %d->%d",
-					codeset, old_codeset);
-			codeset = old_codeset;
-			codelock = 1;
-		}
 	}
 	if (err_compr | err_ureg | err_len | err_seq) {
 		if (pc->debug & L3_DEB_CHECK)
-			l3_debug(pc->st, "check IE MT(%x) %d/%d/%d/%d",
+			l3_debug(pc->st, "check_infoelements mt %x %d/%d/%d/%d",
 				mt, err_compr, err_ureg, err_len, err_seq);
 		if (err_compr)
 			return(ERR_IE_COMPREHENSION);
@@ -989,7 +1047,7 @@ l3dss1_release_cmpl(struct l3_process *pc, u_char pr, void *arg)
 
 #if EXT_BEARER_CAPS
 
-static u_char *
+u_char *
 EncodeASyncParams(u_char * p, u_char si2)
 {				// 7c 06 88  90 21 42 00 bb
 
@@ -1054,7 +1112,7 @@ EncodeASyncParams(u_char * p, u_char si2)
 	return p + 3;
 }
 
-static  u_char
+u_char
 EncodeSyncParams(u_char si2, u_char ai)
 {
 
@@ -1919,16 +1977,6 @@ l3dss1_proceed_req(struct l3_process *pc, u_char pr,
 	pc->st->l3.l3l4(pc->st, CC_PROCEED_SEND | INDICATION, pc); 
 }
 
-static void
-l3dss1_setup_ack_req(struct l3_process *pc, u_char pr,
-		   void *arg)
-{
-	newl3state(pc, 25);
-	L3DelTimer(&pc->timer);
-	L3AddTimer(&pc->timer, T302, CC_T302);
-	l3dss1_message(pc, MT_SETUP_ACKNOWLEDGE);
-}
-
 /********************************************/
 /* deliver a incoming display message to HL */
 /********************************************/
@@ -1966,7 +2014,7 @@ l3dss1_progress(struct l3_process *pc, u_char pr, void *arg)
 		if (p[1] != 2) {
 			err = 1;
 			pc->para.cause = 100;
-		} else if (!(p[2] & 0x70)) {
+		} else if (p[2] & 0x60) {
 			switch (p[2]) {
 				case 0x80:
 				case 0x81:
@@ -2070,22 +2118,9 @@ l3dss1_information(struct l3_process *pc, u_char pr, void *arg)
 {
 	int ret;
 	struct sk_buff *skb = arg;
-	u_char *p;
-	char tmp[32];
 
 	ret = check_infoelements(pc, skb, ie_INFORMATION);
-	if (ret)
-		l3dss1_std_ie_err(pc, ret);
-	if (pc->state == 25) { /* overlap receiving */
-		L3DelTimer(&pc->timer);
-		p = skb->data;
-		if ((p = findie(p, skb->len, 0x70, 0))) {
-			iecpy(tmp, p, 1);
-			strcat(pc->para.setup.eazmsn, tmp);
-			pc->st->l3.l3l4(pc->st, CC_MORE_INFO | INDICATION, pc);
-		}
-		L3AddTimer(&pc->timer, T302, CC_T302);
-	}
+	l3dss1_std_ie_err(pc, ret);
 }
 
 /******************************/
@@ -2118,7 +2153,7 @@ static void l3dss1_redir_req(struct l3_process *pc, u_char pr, void *arg)
         MsgHead(p, pc->callref, MT_FACILITY);
 
         for (subp = pc->chan->setup.phone; (*subp) && (*subp != '.'); subp++) len_phone++; /* len of phone number */
-        if (*subp++ == '.') len_sub = strlen(subp) + 2; /* length including info subaddress element */ 
+        if (*subp++ == '.') len_sub = strlen(subp) + 2; /* length including info subadress element */ 
 
 	*p++ = 0x1c;   /* Facility info element */
         *p++ = len_phone + len_sub + 2 + 2 + 8 + 3 + 3; /* length of element */
@@ -2144,7 +2179,7 @@ static void l3dss1_redir_req(struct l3_process *pc, u_char pr, void *arg)
 	 *p++ = pc->chan->setup.phone[l];
 
         if (len_sub)
-	  { *p++ = 0x04; /* called party subaddress */
+	  { *p++ = 0x04; /* called party subadress */
             *p++ = len_sub - 2;
             while (*subp) *p++ = *subp++;
           }
@@ -2311,16 +2346,6 @@ l3dss1_dummy(struct l3_process *pc, u_char pr, void *arg)
 }
 
 static void
-l3dss1_t302(struct l3_process *pc, u_char pr, void *arg)
-{
-	L3DelTimer(&pc->timer);
-	pc->para.loc = 0;
-	pc->para.cause = 28; /* invalid number */
-	l3dss1_disconnect_req(pc, pr, NULL);
-	pc->st->l3.l3l4(pc->st, CC_SETUP_ERR, pc);
-}
-
-static void
 l3dss1_t303(struct l3_process *pc, u_char pr, void *arg)
 {
 	if (pc->N303 > 0) {
@@ -2339,7 +2364,6 @@ static void
 l3dss1_t304(struct l3_process *pc, u_char pr, void *arg)
 {
 	L3DelTimer(&pc->timer);
-	pc->para.loc = 0;
 	pc->para.cause = 102;
 	l3dss1_disconnect_req(pc, pr, NULL);
 	pc->st->l3.l3l4(pc->st, CC_SETUP_ERR, pc);
@@ -2379,7 +2403,6 @@ static void
 l3dss1_t310(struct l3_process *pc, u_char pr, void *arg)
 {
 	L3DelTimer(&pc->timer);
-	pc->para.loc = 0;
 	pc->para.cause = 102;
 	l3dss1_disconnect_req(pc, pr, NULL);
 	pc->st->l3.l3l4(pc->st, CC_SETUP_ERR, pc);
@@ -2389,7 +2412,6 @@ static void
 l3dss1_t313(struct l3_process *pc, u_char pr, void *arg)
 {
 	L3DelTimer(&pc->timer);
-	pc->para.loc = 0;
 	pc->para.cause = 102;
 	l3dss1_disconnect_req(pc, pr, NULL);
 	pc->st->l3.l3l4(pc->st, CC_CONNECT_ERR, pc);
@@ -2779,36 +2801,32 @@ static struct stateentry downstatelist[] =
 	 CC_SETUP | REQUEST, l3dss1_setup_req},
 	{SBIT(0),
 	 CC_RESUME | REQUEST, l3dss1_resume_req},
-	{SBIT(1) | SBIT(2) | SBIT(3) | SBIT(4) | SBIT(6) | SBIT(7) | SBIT(8) | SBIT(9) | SBIT(10) | SBIT(25),
+	{SBIT(1) | SBIT(2) | SBIT(3) | SBIT(4) | SBIT(6) | SBIT(7) | SBIT(8) | SBIT(9) | SBIT(10),
 	 CC_DISCONNECT | REQUEST, l3dss1_disconnect_req},
 	{SBIT(12),
 	 CC_RELEASE | REQUEST, l3dss1_release_req},
 	{ALL_STATES,
 	 CC_RESTART | REQUEST, l3dss1_restart},
-	{SBIT(6) | SBIT(25),
-	 CC_IGNORE | REQUEST, l3dss1_reset},
-	{SBIT(6) | SBIT(25),
-	 CC_REJECT | REQUEST, l3dss1_reject_req},
-	{SBIT(6) | SBIT(25),
-	 CC_PROCEED_SEND | REQUEST, l3dss1_proceed_req},
 	{SBIT(6),
-	 CC_MORE_INFO | REQUEST, l3dss1_setup_ack_req},
-	{SBIT(25),
-	 CC_MORE_INFO | REQUEST, l3dss1_dummy},
-	{SBIT(6) | SBIT(9) | SBIT(25),
+	 CC_IGNORE | REQUEST, l3dss1_reset},
+	{SBIT(6),
+	 CC_REJECT | REQUEST, l3dss1_reject_req},
+	{SBIT(6),
+	 CC_PROCEED_SEND | REQUEST, l3dss1_proceed_req},
+	{SBIT(6) | SBIT(9),
 	 CC_ALERTING | REQUEST, l3dss1_alert_req},
-	{SBIT(6) | SBIT(7) | SBIT(9) | SBIT(25),
+	{SBIT(6) | SBIT(7) | SBIT(9),
 	 CC_SETUP | RESPONSE, l3dss1_setup_rsp},
 	{SBIT(10),
 	 CC_SUSPEND | REQUEST, l3dss1_suspend_req},
-        {SBIT(7) | SBIT(9) | SBIT(25),
+        {SBIT(6),
+         CC_PROCEED_SEND | REQUEST, l3dss1_proceed_req},
+        {SBIT(7) | SBIT(9),
          CC_REDIR | REQUEST, l3dss1_redir_req},
         {SBIT(6),
          CC_REDIR | REQUEST, l3dss1_redir_req_early},
         {SBIT(9) | SBIT(25),
          CC_DISCONNECT | REQUEST, l3dss1_disconnect_req},
-	{SBIT(25),
-	 CC_T302, l3dss1_t302},
 	{SBIT(1),
 	 CC_T303, l3dss1_t303},
 	{SBIT(2),
@@ -3151,7 +3169,7 @@ dss1down(struct PStack *st, int pr, void *arg)
 		if ((proc = dss1_new_l3_process(st, cr))) {
 			proc->chan = chan;
 			chan->proc = proc;
-			memcpy(&proc->para.setup, &chan->setup, sizeof(setup_parm));
+			proc->para.setup = chan->setup;
 			proc->callref = cr;
 		}
 	} else {

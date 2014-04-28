@@ -23,6 +23,9 @@
  *	Added soft_margin; use upon insmod to change the timer delay.
  *	NB: uses same minor as wdt (WATCHDOG_MINOR); we could use separate
  *	    minors.
+ *
+ *  19980911 Alan Cox
+ *	Made SMP safe for 2.3.x
  */
  
 #include <linux/module.h>
@@ -80,9 +83,7 @@ static int softdog_open(struct inode *inode, struct file *file)
 	/*
 	 *	Activate timer
 	 */
-	del_timer(&watchdog_ticktock);
-	watchdog_ticktock.expires=jiffies + (soft_margin * HZ);
-	add_timer(&watchdog_ticktock);
+	mod_timer(&watchdog_ticktock, jiffies+(soft_margin*HZ));
 	timer_alive=1;
 	return 0;
 }
@@ -101,17 +102,6 @@ static int softdog_release(struct inode *inode, struct file *file)
 	return 0;
 }
 
-static void softdog_ping(void)
-{
-	/*
-	 *	Refresh the timer.
-	 */
-	del_timer(&watchdog_ticktock);
-	watchdog_ticktock.expires=jiffies + (soft_margin * HZ);
-	add_timer(&watchdog_ticktock);
-	return;
-}
-
 static ssize_t softdog_write(struct file *file, const char *data, size_t len, loff_t *ppos)
 {
 	/*  Can't seek (pwrite) on this device  */
@@ -121,9 +111,8 @@ static ssize_t softdog_write(struct file *file, const char *data, size_t len, lo
 	/*
 	 *	Refresh the timer.
 	 */
-	if(len)
-	{
-		softdog_ping();
+	if(len) {
+		mod_timer(&watchdog_ticktock, jiffies+(soft_margin*HZ));
 		return 1;
 	}
 	return 0;
@@ -141,7 +130,7 @@ static int softdog_ioctl(struct inode *inode, struct file *file,
 	switch(cmd)
 	{
 		default:
-			return -ENOTTY;
+			return -ENOIOCTLCMD;
 		case WDIOC_GETSUPPORT:
 			if(copy_to_user((struct watchdog_info *)arg, &ident, sizeof(ident)))
 				return -EFAULT;
@@ -150,25 +139,17 @@ static int softdog_ioctl(struct inode *inode, struct file *file,
 		case WDIOC_GETBOOTSTATUS:
 			return put_user(0,(int *)arg);
 		case WDIOC_KEEPALIVE:
-			softdog_ping();
+			mod_timer(&watchdog_ticktock, jiffies+(soft_margin*HZ));
 			return 0;
 	}
 }
 
 static struct file_operations softdog_fops=
 {
-	NULL,		/* Seek */
-	NULL,		/* Read */
-	softdog_write,	/* Write */
-	NULL,		/* Readdir */
-	NULL,		/* Select */
-	softdog_ioctl,	/* Ioctl */
-	NULL,		/* MMap */
-	softdog_open,
-	NULL,		/* flush */
-	softdog_release,
-	NULL,		
-	NULL		/* Fasync */
+	write:		softdog_write,
+	ioctl:		softdog_ioctl,
+	open:		softdog_open,
+	release:	softdog_release,
 };
 
 static struct miscdevice softdog_miscdev=
@@ -178,7 +159,7 @@ static struct miscdevice softdog_miscdev=
 	&softdog_fops
 };
 
-__initfunc(void watchdog_init(void))
+void __init watchdog_init(void)
 {
 	misc_register(&softdog_miscdev);
 	init_timer(&watchdog_ticktock);

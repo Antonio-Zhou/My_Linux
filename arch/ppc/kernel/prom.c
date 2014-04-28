@@ -1,5 +1,5 @@
 /*
- * $Id: prom.c,v 1.54.2.12 1999/09/10 01:08:04 paulus Exp $
+ * $Id: prom.c,v 1.79 1999/10/08 01:56:32 paulus Exp $
  *
  * Procedures for interfacing to the Open Firmware PROM on
  * Power Macintosh computers.
@@ -16,9 +16,10 @@
 #include <linux/string.h>
 #include <linux/init.h>
 #include <linux/version.h>
-#include <linux/fs.h>
-#include <linux/console.h>
-#include <asm/spinlock.h>
+#include <linux/threads.h>
+#include <linux/spinlock.h>
+
+#include <asm/init.h>
 #include <asm/prom.h>
 #include <asm/page.h>
 #include <asm/processor.h>
@@ -28,11 +29,10 @@
 #include <asm/bootx.h>
 #include <asm/system.h>
 #include <asm/gemini.h>
+
+#ifdef CONFIG_FB
 #include <asm/linux_logo.h>
-#include <asm/mmu.h>
-#include <asm/pgtable.h>
-#include <asm/adb.h>
-#include <asm/pmu.h>
+#endif
 
 /*
  * Properties whose value is longer than this get excluded from our
@@ -90,19 +90,18 @@ static interpret_func interpret_root_props;
 #ifndef FB_MAX			/* avoid pulling in all of the fb stuff */
 #define FB_MAX	8
 #endif
-char *prom_display_paths[FB_MAX] __pmacdata = { 0, };
+char *prom_display_paths[FB_MAX] __initdata = { 0, };
 unsigned int prom_num_displays = 0;
 char *of_stdout_device = 0;
 
 prom_entry prom = 0;
 ihandle prom_chosen = 0, prom_stdout = 0, prom_disp_node = 0;
-int prom_version = 0;
 
 extern char *klimit;
 char *bootpath = 0;
 char *bootdevice = 0;
 
-unsigned int rtas_data = 0;   /* physical pointer */
+unsigned int rtas_data = 0;   /* virtual pointer */
 unsigned int rtas_entry = 0;  /* physical pointer */
 unsigned int rtas_size = 0;
 unsigned int old_rtas = 0;
@@ -115,55 +114,27 @@ static struct device_node *allnodes = 0;
 
 #ifdef CONFIG_BOOTX_TEXT
 
-/*
- * The VGA font is in the _pmac section. Can't this cause problems with CHRP
- * using some of the prom_xxxx functions ?
- * All this need to be moved in a separate source file anyway
- */
-
 static void clearscreen(void);
 static void flushscreen(void);
 
-void drawchar(char c);
-void drawstring(const char *c);
-void drawhex(unsigned long v);
 static void scrollscreen(void);
-static void prepare_disp_BAT(void);
-static void boot_console_write(struct console *co, const char *s,
-				 unsigned count);
 
 static void draw_byte(unsigned char c, long locX, long locY);
 static void draw_byte_32(unsigned char *bits, unsigned long *base, int rb);
 static void draw_byte_16(unsigned char *bits, unsigned long *base, int rb);
 static void draw_byte_8(unsigned char *bits, unsigned long *base, int rb);
 
-/* We want those in the data section */
+/* We want those in data, not BSS */
 static long				g_loc_X = 0;
 static long				g_loc_Y = 0;
 static long				g_max_loc_X = 0;
-static long				g_max_loc_Y = 0; 
-
-unsigned long disp_BATL = 0;
-unsigned long disp_BATU = 0;
+static long				g_max_loc_Y = 0;
 
 #define cmapsz	(16*256)
 
 static unsigned char vga_font[cmapsz];
 
-static struct console boot_cons = {
-	"boot",
-	boot_console_write,
-	NULL,
-	NULL,
-	NULL,
-	NULL,
-	NULL,
-	CON_PRINTBUFFER,
-	0,
-	0,
-	NULL
-};
-static int boot_cons_registered = 0;
+int bootx_text_mapped = 1;
 
 #endif /* CONFIG_BOOTX_TEXT */
 
@@ -194,6 +165,7 @@ boot_infos_t *boot_infos = 0;	/* init it so it's in data segment not bss */
 boot_infos_t *disp_bi = 0;
 boot_infos_t fake_bi = {0,};
 #endif
+unsigned long dev_tree_size;
 
 /*
  * prom_init() is called very early on, before the kernel text
@@ -276,7 +248,7 @@ call_prom(const char *service, int nargs, int nret, ...)
 	return prom_args.args[nargs];
 }
 
-/*__init*/
+__init
 void
 prom_print(const char *msg)
 {
@@ -287,7 +259,7 @@ prom_print(const char *msg)
 	{
 #ifdef CONFIG_BOOTX_TEXT
 		if (RELOC(disp_bi) != 0)
-			drawstring(msg);
+			prom_drawstring(msg);
 #endif
 		return;
 	}		
@@ -307,23 +279,7 @@ prom_print(const char *msg)
 	}
 }
 
-void
-prom_print_hex(unsigned int v)
-{
-	char buf[16];
-	int i, c;
-
-	for (i = 0; i < 8; ++i) {
-		c = (v >> ((7-i)*4)) & 0xf;
-		c += (c >= 10)? ('a' - 10): '0';
-		buf[i] = c;
-	}
-	buf[i] = ' ';
-	buf[i+1] = 0;
-	prom_print(buf);
-}
-
-unsigned long smp_ibm_chrp_hack __initdata = 0;
+unsigned long smp_chrp_cpu_nr __initdata = 1;
 
 /*
  * We enter here early on, when the Open Firmware prom is still
@@ -334,29 +290,25 @@ unsigned long
 prom_init(int r3, int r4, prom_entry pp)
 {
 #ifdef CONFIG_SMP	
-	int cpu = 0, i;
+	int i;
 	phandle node;
 	char type[16], *path;
-#endif	
+#endif
 	int chrp = 0;
 	unsigned long mem;
 	ihandle prom_rtas, prom_mmu, prom_op;
 	unsigned long offset = reloc_offset();
 	int l;
 	char *p, *d;
+	int prom_version = 0;
  	unsigned long phys;
- 	
+
  	/* Default */
  	phys = offset + KERNELBASE;
-	
-#ifdef CONFIG_GEMINI
-	gemini_prom_init();
-		return phys;
-#endif /* CONFIG_GEMINI */
-	
+
 	/* check if we're apus, return if we are */
 	if ( r3 == 0x61707573 )
- 		return phys;
+		return phys;
 
 	/* If we came here from BootX, clear the screen,
 	 * set up some pointers and return. */
@@ -369,6 +321,7 @@ prom_init(int r3, int r4, prom_entry pp)
 		RELOC(boot_infos) = PTRUNRELOC(bi);
 		if (!BOOT_INFO_IS_V2_COMPATIBLE(bi))
 			bi->logicalDisplayBase = 0;
+
 #ifdef CONFIG_BOOTX_TEXT
 		RELOC(g_loc_X) = 0;
 		RELOC(g_loc_Y) = 0;
@@ -390,8 +343,8 @@ prom_init(int r3, int r4, prom_entry pp)
 		
 		prom_welcome(bi, phys);
 		flushscreen();
-#endif /* CONFIG_BOOTX_TEXT */
-
+#endif	/* CONFIG_BOOTX_TEXT */	
+		
 		/* New BootX enters kernel with MMU off, i/os are not allowed
 		   here. This hack will have been done by the boostrap anyway.
 		 */
@@ -432,13 +385,13 @@ prom_init(int r3, int r4, prom_entry pp)
 		}
 		
 #ifdef CONFIG_BOOTX_TEXT
-		prepare_disp_BAT();
 		prom_print(RELOC("booting...\n"));
 		flushscreen();
+		RELOC(bootx_text_mapped) = 0;
 #endif
 		return phys;
 	}
-	
+
 	/* check if we're prep, return if we are */
 	if ( *(unsigned long *)(0) == 0xdeadc0de )
 		return phys;
@@ -464,24 +417,26 @@ prom_init(int r3, int r4, prom_entry pp)
 
 	/* Find the OF version */
 	prom_op = call_prom(RELOC("finddevice"), 1, 1, RELOC("/openprom"));
-	RELOC(prom_version) = 0;
+	prom_version = 0;
 	if (prom_op != (void*)-1) {
-	    char model[64];
-	    int sz;
-	    sz = (int)call_prom(RELOC("getprop"), 4, 1, prom_op, RELOC("model"), model, 64);
-	    if (sz > 0) {
-		if ( strncmp(model,RELOC("IBM"),3) ) {
-	    	    char *c;
-		    for (c = model; *c; c++)
-		        if (*c >= '0' && *c <= '9') {
-			    RELOC(prom_version) = *c - '0';
-			    break;
-		        }
-		} else
-		    chrp = 1;
-	    }
+		char model[64];
+		int sz;
+		sz = (int)call_prom(RELOC("getprop"), 4, 1, prom_op, RELOC("model"), model, 64);
+		if (sz > 0) {
+			char *c;
+			/* hack to skip the ibm chrp firmware # */
+			if ( strncmp(model,RELOC("IBM"),3) ) {
+				for (c = model; *c; c++)
+					if (*c >= '0' && *c <= '9') {
+						prom_version = *c - '0';
+						break;
+					}
+			}
+			else
+				chrp = 1;
+		}
 	}
-	if (RELOC(prom_version) >= 3)
+	if (prom_version >= 3)
 		prom_print(RELOC("OF Version 3 detected.\n"));
 
 	/* Get the boot device and translate it to a full OF pathname. */
@@ -498,6 +453,15 @@ prom_init(int r3, int r4, prom_entry pp)
 		RELOC(bootdevice) = PTRUNRELOC(d);
 		mem = ALIGN(mem + strlen(d) + 1);
 	}
+
+	mem = check_display(mem);
+
+	prom_print(RELOC("copying OF device tree..."));
+	mem = copy_device_tree(mem, mem + (1<<20));
+	prom_print(RELOC("done\n"));
+
+
+	RELOC(klimit) = (char *) (mem - offset);
 	
 	prom_rtas = call_prom(RELOC("finddevice"), 1, 1, RELOC("/rtas"));
 	if (prom_rtas != (void *) -1) {
@@ -509,14 +473,18 @@ prom_init(int r3, int r4, prom_entry pp)
 			RELOC(rtas_data) = 0;
 		} else {
 			/*
-			 * Ask OF for some space for RTAS.
+			 * We do _not_ want the rtas_data inside the klimit
+			 * boundry since it'll be squashed when we do the
+			 * relocate of the kernel on chrp right after prom_init()
+			 * in head.S.  So, we just pick a spot in memory.
+			 * -- Cort
 			 */
-			RELOC(rtas_data) = (unsigned int)
-				call_prom(RELOC("claim"), 3, 1, 0,
-					  RELOC(rtas_size), 0x1000);
-			prom_print(RELOC("rtas at "));
-			prom_print_hex(RELOC(rtas_data));
-			prom_print(RELOC("\n"));
+#if 0
+			mem = (mem + 4095) & -4096;
+			RELOC(rtas_data) = mem + KERNELBASE;
+			mem += RELOC(rtas_size);
+#endif
+			RELOC(rtas_data) = (6<<20) + KERNELBASE;
 		}
 		prom_rtas = call_prom(RELOC("open"), 1, 1, RELOC("/rtas"));
 		{
@@ -528,7 +496,7 @@ prom_init(int r3, int r4, prom_entry pp)
 			prom_args.nret = 2;
 			prom_args.args[0] = RELOC("instantiate-rtas");
 			prom_args.args[1] = prom_rtas;
-			prom_args.args[2] = (void *) RELOC(rtas_data);
+			prom_args.args[2] = ((void *)(RELOC(rtas_data)-KERNELBASE));
 			RELOC(prom)(&prom_args);
 			if (prom_args.args[nargs] != 0)
 				i = 0;
@@ -541,15 +509,6 @@ prom_init(int r3, int r4, prom_entry pp)
 		else
 			prom_print(RELOC(" done\n"));
 	}
-
-	mem = check_display(mem);
-
-	prom_print(RELOC("copying OF device tree..."));
-	/* N.B. do this *after* any claims */
-	mem = copy_device_tree(mem, mem + (1<<20));
-	prom_print(RELOC("done\n"));
-
-	RELOC(klimit) = (char *) (mem - offset);
 
 	/* If we are already running at 0xc0000000, we assume we were loaded by
 	 * an OF bootloader which did set a BAT for us. This breaks OF translate
@@ -581,9 +540,9 @@ prom_init(int r3, int r4, prom_entry pp)
 			phys = (unsigned long)prom_args.args[nargs+3];
 	    }
 	}
-	    
+
 #ifdef CONFIG_BOOTX_TEXT
-	if (RELOC(prom_disp_node) != 0)
+	if (!chrp && RELOC(prom_disp_node) != 0)
 		setup_disp_fake_bi(RELOC(prom_disp_node));
 #endif
 
@@ -607,11 +566,7 @@ prom_init(int r3, int r4, prom_entry pp)
 	 * is in its holding pattern code.
 	 *
 	 * -- Cort
-	 * 
-	 * This code crashes on some pmacs since the memory at 8M is not
-	 * claim'ed and so can be unmapped. -- BenH
 	 */
-	if (chrp)
 	{
 		extern void __secondary_hold(void);
 		unsigned long i;
@@ -637,7 +592,7 @@ prom_init(int r3, int r4, prom_entry pp)
 	}
 
 	/* look for cpus */
-	for (node = 0; chrp && prom_next_node(&node);)
+	for (node = 0; prom_next_node(&node);)
 	{
 		type[0] = 0;
 		call_prom(RELOC("getprop"), 4, 1, node, RELOC("device_type"),
@@ -650,42 +605,40 @@ prom_init(int r3, int r4, prom_entry pp)
 				    node, path, 255) < 0)
 			continue;
 		/* XXX: hack - don't start cpu 0, this cpu -- Cort */
-		if ( cpu++ == 0 )
+		if ( smp_chrp_cpu_nr++ == 0 )
 			continue;
-		RELOC(smp_ibm_chrp_hack) = 1;
 		prom_print(RELOC("starting cpu "));
 		prom_print(path);
 		*(unsigned long *)(0x4) = 0;
 		asm volatile("dcbf 0,%0": : "r" (0x4) : "memory");
-		call_prom(RELOC("start-cpu"), 3, 0, node, 8<<20, cpu-1);
+		call_prom(RELOC("start-cpu"), 3, 0, node, 8<<20, smp_chrp_cpu_nr-1);
 		for ( i = 0 ; (i < 10000) &&
 			      (*(ulong *)(0x4) == (ulong)0); i++ )
 			;
-		if (*(ulong *)(0x4) == (ulong)cpu-1 )
+		if (*(ulong *)(0x4) == (ulong)smp_chrp_cpu_nr-1 )
 			prom_print(RELOC("...ok\n"));
 		else
 			prom_print(RELOC("...failed\n"));
 	}
-	
-#endif	
-	/* If PowerMac, then use quiesce call */
-	if (!chrp) {
-	    prom_print(RELOC("Calling quiesce ...\n"));
-	    call_prom(RELOC("quiesce"), 0, 0);
-	    offset = reloc_offset();
-	    phys = offset + KERNELBASE;
+#endif
+	/* If OpenFirmware version >= 3, then use quiesce call */
+	if (prom_version >= 3) {
+		prom_print(RELOC("Calling quiesce ...\n"));
+		call_prom(RELOC("quiesce"), 0, 0);
+		offset = reloc_offset();
+		phys = offset + KERNELBASE;
 	}
 
 #ifdef CONFIG_BOOTX_TEXT
 	if (!chrp && RELOC(disp_bi)) {
 		RELOC(prom_stdout) = 0;
 		clearscreen();
-		prepare_disp_BAT();
 		prom_welcome(PTRRELOC(RELOC(disp_bi)), phys);
+		prom_print(RELOC("booting...\n"));
 	}
+	RELOC(bootx_text_mapped) = 0;
 #endif
 
-	prom_print(RELOC("booting...\n"));
 	return phys;
 }
 
@@ -699,82 +652,36 @@ prom_welcome(boot_infos_t* bi, unsigned long phys)
 	
 	prom_print(RELOC("Welcome to Linux, kernel " UTS_RELEASE "\n"));
 	prom_print(RELOC("\nstarted at       : 0x"));
-	drawhex(phys);
+	prom_drawhex(phys);
 	prom_print(RELOC("\nlinked at        : 0x"));
-	drawhex(KERNELBASE);
+	prom_drawhex(KERNELBASE);
 	prom_print(RELOC("\nframe buffer at  : 0x"));
-	drawhex((unsigned long)bi->dispDeviceBase);
+	prom_drawhex((unsigned long)bi->dispDeviceBase);
 	prom_print(RELOC(" (phys), 0x"));
-	drawhex((unsigned long)bi->logicalDisplayBase);
+	prom_drawhex((unsigned long)bi->logicalDisplayBase);
 	prom_print(RELOC(" (log)"));
+	prom_print(RELOC("\nklimit           : 0x"));
+	prom_drawhex(RELOC(klimit));
 	prom_print(RELOC("\nMSR              : 0x"));
 	__asm__ __volatile__ ("mfmsr %0" : "=r" (flags));
-	drawhex(flags);
+	prom_drawhex(flags);
 	__asm__ __volatile__ ("mfspr %0, 287" : "=r" (pvr));
 	pvr >>= 16;
 	if (pvr > 1) {
 	    prom_print(RELOC("\nHID0             : 0x"));
 	    __asm__ __volatile__ ("mfspr %0, 1008" : "=r" (flags));
-	    drawhex(flags);
+	    prom_drawhex(flags);
 	}
 	if (pvr == 8 || pvr == 12) {
 	    prom_print(RELOC("\nICTC             : 0x"));
 	    __asm__ __volatile__ ("mfspr %0, 1019" : "=r" (flags));
-	    drawhex(flags);
+	    prom_drawhex(flags);
 	}
 	prom_print(RELOC("\n\n"));
 }
-
-void showvalue(char *str, unsigned long val)
-{
-	drawstring(str);
-	drawhex(val);
-	drawstring("\n");
-}
-
-/* Calc BAT values for mapping the display and store them
- * in disp_BATH and disp_BATL. Those values are then used
- * from head.S to map the display during identify_machine()
- * and MMU_Init()
- * 
- * For now, the display is mapped in place (1:1). This should
- * be changed if the display physical address overlaps
- * KERNELBASE, which is fortunately not the case on any machine
- * I know of. This mapping is temporary and will disappear as
- * soon as the setup done by MMU_Init() is applied
- * 
- * For now, we align the BAT and then map 8Mb on 601 and 16Mb
- * on other PPCs. This may cause trouble if the framebuffer
- * is really badly aligned, but I didn't encounter this case
- * yet.
- */
-__init
-static void
-prepare_disp_BAT(void)
-{
-	unsigned long offset = reloc_offset();
-	boot_infos_t* bi = PTRRELOC(RELOC(disp_bi));
-	unsigned long addr = (unsigned long)bi->dispDeviceBase;
-	
-	if ((_get_PVR() >> 16) != 1) {
-		/* 603, 604, G3, G4, ... */
-		addr &= 0xFF000000UL;
-		RELOC(disp_BATU) = addr | (BL_16M<<2) | 2;
-		RELOC(disp_BATL) = addr | (_PAGE_NO_CACHE | _PAGE_GUARDED | BPP_RW);		
-	} else {
-		/* 601 */
-		addr &= 0xFF800000UL;
-		RELOC(disp_BATU) = addr | (_PAGE_NO_CACHE | PP_RWXX) | 4;
-		RELOC(disp_BATL) = addr | BL_8M | 0x40;
-	}
-	bi->logicalDisplayBase = bi->dispDeviceBase;
-}
-
 #endif
 
-__init
-static int
-prom_set_color(ihandle ih, int i, int r, int g, int b)
+static int prom_set_color(ihandle ih, int i, int r, int g, int b)
 {
 	struct prom_args prom_args;
 	unsigned long offset = reloc_offset();
@@ -804,12 +711,11 @@ __init
 static unsigned long
 check_display(unsigned long mem)
 {
-#ifdef CONFIG_FB
 	phandle node;
 	ihandle ih;
 	int i;
 	unsigned long offset = reloc_offset();
-	char type[16], *path, name[32];
+	char type[16], *path;
 	static unsigned char default_colors[] = {
 		0x00, 0x00, 0x00,
 		0x00, 0x00, 0xaa,
@@ -837,12 +743,6 @@ check_display(unsigned long mem)
 			  type, sizeof(type));
 		if (strcmp(type, RELOC("display")) != 0)
 			continue;
-		name[0] = 0;
-		call_prom(RELOC("getprop"), 4, 1, node, RELOC("name"),
-			  name, sizeof(name));
-		if (!strcmp(name, RELOC("offscreen-display")))
-	    		continue;
-
 		/* It seems OF doesn't null-terminate the path :-( */
 		path = (char *) mem;
 		memset(path, 0, 256);
@@ -860,7 +760,7 @@ check_display(unsigned long mem)
 
 		if (RELOC(prom_disp_node) == 0)
 			RELOC(prom_disp_node) = node;
-
+			
 		/* Setup a useable color table when the appropriate
 		 * method is available. Should update this to set-colors */
 		for (i = 0; i < 32; i++)
@@ -869,12 +769,14 @@ check_display(unsigned long mem)
 					   RELOC(default_colors)[i*3+2]) != 0)
 				break;
 
+#ifdef CONFIG_FB
 		for (i = 0; i < LINUX_LOGO_COLORS; i++)
 			if (prom_set_color(ih, i + 32,
 					   RELOC(linux_logo_red)[i],
 					   RELOC(linux_logo_green)[i],
 					   RELOC(linux_logo_blue)[i]) != 0)
 				break;
+#endif /* CONFIG_FB */
 
 		/*
 		 * If this display is the device that OF is using for stdout,
@@ -892,7 +794,6 @@ check_display(unsigned long mem)
 		if (RELOC(prom_num_displays) >= FB_MAX)
 			break;
 	}
-#endif /* CONFIG_FB */
 	return ALIGN(mem);
 }
 
@@ -904,47 +805,25 @@ __init
 static void
 setup_disp_fake_bi(ihandle dp)
 {
-	unsigned int len;
 	int width = 640, height = 480, depth = 8, pitch;
-	unsigned  address;
+	unsigned address;
 	boot_infos_t* bi;
 	unsigned long offset = reloc_offset();
 	
-	prom_print(RELOC("Initing fake screen\n"));
+	prom_print(RELOC("Initializing fake screen\n"));
 
-	len = 0;
-	call_prom(RELOC("getprop"), 4, 1, dp, RELOC("depth"), &len, sizeof(len));
-	if (len == 0)
-		prom_print(RELOC("Warning: assuming display depth = 8\n"));
-	else
-		depth = len;
-	width = len = 0;
-	call_prom(RELOC("getprop"), 4, 1, dp, RELOC("width"), &len, sizeof(len));
-	width = len;
-	if (width == 0) {
-		prom_print(RELOC("Failed to get width\n"));
-		return;
-	}
-	height = len = 0;
-	call_prom(RELOC("getprop"), 4, 1, dp, RELOC("height"), &len, sizeof(len));
-	height = len;
-	if (height == 0) {
-		prom_print(RELOC("Failed to get height\n"));
-		return;
-	}
-	pitch = len = 0;
-	call_prom(RELOC("getprop"), 4, 1, dp, RELOC("linebytes"), &len, sizeof(len));
-	pitch = len;
-	if (pitch == 0) {
-		prom_print(RELOC("Failed to get pitch\n"));
-		return;
-	}
-	if (pitch == 1)
-		pitch = 0x1000;
-	address = len = 0;
-	len = 0xfa000000;
-	call_prom(RELOC("getprop"), 4, 1, dp, RELOC("address"), &len, sizeof(len));
-	address = len;
+	call_prom(RELOC("getprop"), 4, 1, dp, RELOC("width"),
+		  &width, sizeof(width));
+	call_prom(RELOC("getprop"), 4, 1, dp, RELOC("height"),
+		  &height, sizeof(height));
+	call_prom(RELOC("getprop"), 4, 1, dp, RELOC("depth"),
+		  &depth, sizeof(depth));
+	pitch = width * ((depth + 7) / 8);
+	call_prom(RELOC("getprop"), 4, 1, dp, RELOC("linebytes"),
+		  &pitch, sizeof(pitch));
+	address = 0;
+	call_prom(RELOC("getprop"), 4, 1, dp, RELOC("address"),
+		  &address, sizeof(address));
 	if (address == 0) {
 		prom_print(RELOC("Failed to get address\n"));
 		return;
@@ -1106,21 +985,20 @@ finish_device_tree(void)
 {
 	unsigned long mem = (unsigned long) klimit;
 
-	/* All newworld machines and CHRP now use the interrupt tree */
+	/* All newworld machines now use the interrupt tree */
 	struct device_node *np = allnodes;
-	while(np && (_machine == _MACH_Pmac)) {
+	while(np) {
 		if (get_property(np, "interrupt-parent", 0)) {
 			pmac_newworld = 1;
 			break;
 		}
 		np = np->allnext;
 	}
-	if ((_machine == _MACH_chrp) || (boot_infos == 0 && pmac_newworld))
+	if (boot_infos == 0 && pmac_newworld)
 		use_of_interrupt_tree = 1;
 
 	mem = finish_node(allnodes, mem, NULL);
-	printk(KERN_INFO "device tree used %lu bytes\n",
-	       mem - (unsigned long) allnodes);
+	dev_tree_size = mem - (unsigned long) allnodes;
 	klimit = (char *) mem;
 }
 
@@ -1258,25 +1136,6 @@ finish_node_interrupts(struct device_node *np, unsigned long mem_start)
 		    for (j=2; j<isize; j++)
 		    	interrupts++;
 		}
-		/*
-		 *  On the CHRP LongTrail, ISA interrupts are cascaded through
-		 *  the OpenPIC. For compatibility reasons, ISA interrupts are
-		 *  numbered 0-15 and OpenPIC interrupts start at 16.
-		 *  Hence we have to fixup the interrupt numbers for sources
-		 *  that are attached to the OpenPIC and thus have an
-		 *  interrupt-controller named `open-pic'.
-		 *
-		 *  FIXME: The name of the interrupt-controller node for the
-		 *         `ide' node has no name, although its parent is
-		 *         correctly specified in interrupt-map, so we check
-		 *         for a NULL name as well.
-		 */
-		if (_machine == _MACH_chrp &&
-		    ((node->name && !strcmp(node->name, "open-pic")) ||
-		     !node->name)) {
-		    for (i = 0; i < np->n_intrs; ++i)
-			np->intrs[i].line = np->intrs[i].line + NUM_8259_INTERRUPTS;
-		}
 		return mem_start;
 	    }
 	    /* We lookup for an interrupt-map. This code can only handle one interrupt
@@ -1351,6 +1210,7 @@ finish_node_interrupts(struct device_node *np, unsigned long mem_start)
 
 	return mem_start;
 }
+
 
 /*
  * When BootX makes a copy of the device tree from the MacOS
@@ -1578,7 +1438,7 @@ interpret_macio_props(struct device_node *np, unsigned long mem_start)
 			/* CHRP machines */
 			np->n_intrs = l / (2 * sizeof(int));
 			for (i = 0; i < np->n_intrs; ++i) {
-				np->intrs[i].line = (*ip++) + NUM_8259_INTERRUPTS;
+				np->intrs[i].line = openpic_to_irq(*ip++);
 				np->intrs[i].sense = *ip++;
 			}
 		}
@@ -1723,17 +1583,9 @@ find_pci_device_OFnode(unsigned char bus, unsigned char dev_fn)
 	int l;
 	
 	for (np = allnodes; np != 0; np = np->allnext) {
-		int in_macio = 0;
-		struct device_node* parent = np->parent;
-		while(parent) {
-			char *pname = (char *)get_property(parent, "name", &l);
-			if (pname && strcmp(pname, "mac-io") == 0) {
-				in_macio = 1;
-				break;
-			}
-			parent = parent->parent;
-		}
-		if (in_macio)
+		char *pname = np->parent ?
+			(char *)get_property(np->parent, "name", &l) : 0;
+		if (pname && strcmp(pname, "mac-io") == 0)
 			continue;
 		reg = (unsigned int *) get_property(np, "reg", &l);
 		if (reg == 0 || l < sizeof(struct reg_property))
@@ -1784,6 +1636,23 @@ device_is_compatible(struct device_node *device, const char *compat)
 	}
 
 	return 0;
+}
+
+
+/*
+ * Indicates whether the root node has a given value in its
+ * compatible property.
+ */
+__openfirmware
+int
+machine_is_compatible(const char *compat)
+{
+	struct device_node *root;
+	
+	root = find_path_device("/");
+	if (root == 0)
+		return 0;
+	return device_is_compatible(root, compat);
 }
 
 /*
@@ -1851,7 +1720,7 @@ get_property(struct device_node *np, const char *name, int *lenp)
 	struct property *pp;
 
 	for (pp = np->properties; pp != 0; pp = pp->next)
-		if (pp->name && strcmp(pp->name, name) == 0) {
+		if (strcmp(pp->name, name) == 0) {
 			if (lenp != 0)
 				*lenp = pp->length;
 			return pp->value;
@@ -1919,7 +1788,8 @@ call_rtas(const char *service, int nargs, int nret,
 	  unsigned long *outputs, ...)
 {
 	va_list list;
-	int i, s;
+	int i;
+	unsigned long s;
 	struct device_node *rtas;
 	int *tokp;
 	union {
@@ -1945,6 +1815,7 @@ call_rtas(const char *service, int nargs, int nret,
 
 	save_flags(s);
 	cli();
+	
 	enter_rtas((void *)__pa(&u));
 	restore_flags(s);
 	if (nret > 1 && outputs != NULL)
@@ -1960,24 +1831,9 @@ abort()
 #ifdef CONFIG_XMON
 	xmon(NULL);
 #endif
-	prom_exit();
+	for (;;)
+		prom_exit();
 }
-
-/* Indicates whether the root node has a given value in its
- * compatible property.
- */
-__openfirmware
-int
-machine_is_compatible(const char *compat)
-{
-	struct device_node *root;
-	
-	root = find_path_device("/");
-	if (root == 0)
-		return 0;
-	return device_is_compatible(root, compat);
-}
-
 
 #ifdef CONFIG_BOOTX_TEXT
 
@@ -1995,30 +1851,12 @@ __init
 void
 map_bootx_text(void)
 {
-	unsigned long base, offset, size;
 	if (disp_bi == 0)
 		return;
-	base = ((unsigned long) disp_bi->dispDeviceBase) & 0xFFFFF000UL;
-	offset = ((unsigned long) disp_bi->dispDeviceBase) - base;
-	size = disp_bi->dispDeviceRowBytes * disp_bi->dispDeviceRect[3] + offset
-		+ disp_bi->dispDeviceRect[0];
-	disp_bi->logicalDisplayBase = ioremap(base, size) + offset;
-}
-
-__init
-void
-install_boot_console(void)
-{
-	register_console(&boot_cons);
-	boot_cons_registered = 1;
-}
-
-void
-remove_boot_console(void)
-{
-	if (boot_cons_registered)
-		unregister_console(&boot_cons);
-	boot_cons_registered = 0;
+	disp_bi->logicalDisplayBase =
+		ioremap((unsigned long) disp_bi->dispDeviceBase,
+			disp_bi->dispDeviceRowBytes * disp_bi->dispDeviceRect[3]);
+	bootx_text_mapped = 1;
 }
 
 /* Calc the base address of a given point (x,y) */
@@ -2094,11 +1932,7 @@ scrollscreen(void)
 	unsigned long width		= ((bi->dispDeviceRect[2] - bi->dispDeviceRect[0]) *
 						(bi->dispDeviceDepth >> 3)) >> 2;
 	int i,j;
-
-#ifdef CONFIG_POWERMAC
-	pmu_suspend();
-#endif
-
+	
 	for (i=0; i<(bi->dispDeviceRect[3] - bi->dispDeviceRect[1] - 16); i++)
 	{
 		unsigned long *src_ptr = src;
@@ -2115,17 +1949,17 @@ scrollscreen(void)
 			*(dst_ptr++) = 0;
 		dst += (bi->dispDeviceRowBytes >> 2);
 	}
-
-#ifdef CONFIG_POWERMAC
-	pmu_resume();
-#endif
 }
 
 __pmac
 void
-drawchar(char c)
+prom_drawchar(char c)
 {
 	unsigned long offset = reloc_offset();
+	int cline = 0, x;
+
+	if (!RELOC(bootx_text_mapped))
+		return;
 
 	switch (c) {
 	case '\b':
@@ -2141,6 +1975,7 @@ drawchar(char c)
 	case '\n':
 		RELOC(g_loc_X) = 0;
 		RELOC(g_loc_Y)++;
+		cline = 1;
 		break;
 	default:
 		draw_byte(c, RELOC(g_loc_X)++, RELOC(g_loc_Y));
@@ -2148,46 +1983,54 @@ drawchar(char c)
 	if (RELOC(g_loc_X) >= RELOC(g_max_loc_X)) {
 		RELOC(g_loc_X) = 0;
 		RELOC(g_loc_Y)++;
+		cline = 1;
 	}
+#if 0
 	while (RELOC(g_loc_Y) >= RELOC(g_max_loc_Y)) {
 		scrollscreen();
 		RELOC(g_loc_Y)--;
 	}
-}
-
-__pmac
-void
-drawstring(const char *c)
-{
-	while (*c)
-		drawchar(*c++);
-}
-
-#ifdef CONFIG_BOOTX_TEXT
-__pmac
-static void boot_console_write(struct console *co, const char *s,
-				 unsigned count)
-{
-	while(count--)
-		drawchar(*s++);
-}
+#else
+	/* wrap around from bottom to top of screen so we don't
+	   waste time scrolling each line.  -- paulus. */
+	if (RELOC(g_loc_Y) >= RELOC(g_max_loc_Y))
+		RELOC(g_loc_Y) = 0;
+	if (cline) {
+		for (x = 0; x < RELOC(g_max_loc_X); ++x)
+			draw_byte(' ', x, RELOC(g_loc_Y));
+	}
 #endif
+}
 
 __pmac
 void
-drawhex(unsigned long v)
+prom_drawstring(const char *c)
+{
+	unsigned long offset	= reloc_offset();
+
+	if (!RELOC(bootx_text_mapped))
+		return;
+	while (*c)
+		prom_drawchar(*c++);
+}
+
+__pmac
+void
+prom_drawhex(unsigned long v)
 {
 	static char hex_table[] = "0123456789abcdef";
 	unsigned long offset	= reloc_offset();
 	
-	drawchar(RELOC(hex_table)[(v >> 28) & 0x0000000FUL]);
-	drawchar(RELOC(hex_table)[(v >> 24) & 0x0000000FUL]);
-	drawchar(RELOC(hex_table)[(v >> 20) & 0x0000000FUL]);
-	drawchar(RELOC(hex_table)[(v >> 16) & 0x0000000FUL]);
-	drawchar(RELOC(hex_table)[(v >> 12) & 0x0000000FUL]);
-	drawchar(RELOC(hex_table)[(v >>  8) & 0x0000000FUL]);
-	drawchar(RELOC(hex_table)[(v >>  4) & 0x0000000FUL]);
-	drawchar(RELOC(hex_table)[(v >>  0) & 0x0000000FUL]);
+	if (!RELOC(bootx_text_mapped))
+		return;
+	prom_drawchar(RELOC(hex_table)[(v >> 28) & 0x0000000FUL]);
+	prom_drawchar(RELOC(hex_table)[(v >> 24) & 0x0000000FUL]);
+	prom_drawchar(RELOC(hex_table)[(v >> 20) & 0x0000000FUL]);
+	prom_drawchar(RELOC(hex_table)[(v >> 16) & 0x0000000FUL]);
+	prom_drawchar(RELOC(hex_table)[(v >> 12) & 0x0000000FUL]);
+	prom_drawchar(RELOC(hex_table)[(v >>  8) & 0x0000000FUL]);
+	prom_drawchar(RELOC(hex_table)[(v >>  4) & 0x0000000FUL]);
+	prom_drawchar(RELOC(hex_table)[(v >>  0) & 0x0000000FUL]);
 }
 
 
@@ -2253,7 +2096,6 @@ draw_byte_32(unsigned char *font, unsigned long *base, int rb)
 	int fg = 0xFFFFFFFFUL;
 	int bg = 0x00000000UL;
 	
-
 	for (l = 0; l < 16; ++l)
 	{
 		bits = *font++;
@@ -2656,3 +2498,4 @@ static unsigned char vga_font[cmapsz] = {
 };
 
 #endif /* CONFIG_BOOTX_TEXT */
+

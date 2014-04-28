@@ -11,7 +11,7 @@
 #ifndef _MC146818RTC_H
 #define _MC146818RTC_H
 #include <asm/io.h>
-#include <linux/rtc.h>
+#include <linux/rtc.h> /* get the user-level API */
 
 #ifndef RTC_PORT
 #define RTC_PORT(x)	(0x70 + (x))
@@ -26,10 +26,6 @@ inb_p(RTC_PORT(1)); \
 outb_p((addr),RTC_PORT(0)); \
 outb_p((val),RTC_PORT(1)); \
 })
-
-#ifdef __KERNEL__
-extern spinlock_t rtc_lock;	/* You must hold this lock to use CMOS_* ops */
-#endif
 
 /**********************************************************************
  * register summary

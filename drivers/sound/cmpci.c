@@ -62,7 +62,7 @@
  *    18.08.99   1.5   Only deallocate DMA buffer when unloading.
  *    02.09.99   1.6   Enable SPDIF LOOP
  *                     Change the mixer read back
- *    21.09.99   2.33  Use RCS version aas driver version.
+ *    21.09.99   2.33  Use RCS version as driver version.
  *                     Add support for modem, S/PDIF loop and 4 channels.
  *                     (8738 only)
  *                     Fix bug cause x11amp cannot play.
@@ -113,7 +113,7 @@
 #include <asm/dma.h>
 #include <linux/init.h>
 #include <linux/poll.h>
-#include <asm/spinlock.h>
+#include <linux/spinlock.h>
 #include <asm/uaccess.h>
 #include <asm/hardirq.h>
 
@@ -271,8 +271,7 @@ struct cm_state {
 	spinlock_t lock;
 	struct semaphore open_sem;
 	mode_t open_mode;
-	struct wait_queue *open_wait;
-	struct wait_queue *poll_wait;
+	wait_queue_head_t open_wait;
 
 	struct dmabuf {
 		void *rawbuf;
@@ -283,7 +282,7 @@ struct cm_state {
 		unsigned total_bytes;
 		int count;
 		unsigned error; /* over/underrun */
-		struct wait_queue *wait;
+		wait_queue_head_t wait;
 		/* redundant, but makes calculations easier */
 		unsigned fragsize;
 		unsigned dmasize;
@@ -302,9 +301,8 @@ struct cm_state {
 	struct {
 		unsigned ird, iwr, icnt;
 		unsigned ord, owr, ocnt;
-		struct wait_queue *iwait;
-		struct wait_queue *owait;
-		struct wait_queue *pollwait;
+		wait_queue_head_t iwait;
+		wait_queue_head_t owait;
 		struct timer_list timer;
 		unsigned char ibuf[MIDIINBUF];
 		unsigned char obuf[MIDIOUTBUF];
@@ -489,44 +487,6 @@ static void set_dac_rate(struct cm_state *s, unsigned rate)
 	    	}
 	}
 	s->ratedac = rate;
-	if ( !(inb(s->iobase+CODEC_CMI_FUNCTRL1)&0x80) ) {
-		int functrl1;
-		outb(inb(s->iobase + CODEC_CMI_FUNCTRL1) & ~0x80, s->iobase + CODEC_CMI_FUNCTRL1);
-		if ( rate == 44100 || rate == 48000 ) {
-			functrl1 = inb(s->iobase + 0x16);
-			functrl1 |=  0x80;  /* enable XSPDIF/OUT */
-			outb(functrl1, s->iobase + 0x16);
-			functrl1 = inb(s->iobase + 0x16);
-			functrl1 |=  0x20;  /* enable DAC2SPDO */
-			outb(functrl1, s->iobase + 0x16);
-			functrl1 = inb(s->iobase + 0x19);
-			if ( rate == 44100 )
-				functrl1 &= ~0x80;  /* 0:44.1/ 1:48kHz */
-			else
-				functrl1 |=  0x80;  /* 0:44.1/ 1:48kHz */
-			outb(functrl1, s->iobase + 0x19);
-			functrl1 = inb(s->iobase + 0x05);
-			functrl1 |=  0x01;  /* SPDIF out */
-			outb(functrl1, s->iobase + 0x05);
-			functrl1 = inb(s->iobase + 0x24);
-			functrl1 &=  ~0x01;  /* SPDIF in to DAC*/
-			outb(functrl1, s->iobase + 0x24);
-		}
-		else {
-			functrl1 = inb(s->iobase + 0x16);
-			functrl1 &= ~0x80;  /* disable XSPDIF/OUT */
-			outb(functrl1, s->iobase + 0x16);
-			functrl1 = inb(s->iobase + 0x16);
-			functrl1 &= ~0x20;  /* disable DAC2SPDO */
-			outb(functrl1, s->iobase + 0x16);
-			functrl1 = inb(s->iobase + 0x05);
-			functrl1 &= ~0x01;  /* disable SPDIF out */
-			outb(functrl1, s->iobase + 0x05);
-			functrl1 = inb(s->iobase + 0x24);
-			functrl1 &=  ~0x01;  /* SPDIF in to DAC*/
-			outb(functrl1, s->iobase + 0x24);
-		}
-	}
 	freq <<= 2;
 	spin_lock_irqsave(&s->lock, flags);
 	val = inb(s->iobase + CODEC_CMI_FUNCTRL1 + 1) & ~0x1c; 
@@ -791,10 +751,7 @@ static void cm_update_ptr(struct cm_state *s)
 		if (s->dma_dac.mapped) {
 			s->dma_dac.count += diff;
 			if (s->dma_dac.count >= (signed)s->dma_dac.fragsize)
-			{
 				wake_up(&s->dma_dac.wait);
-				wake_up(&s->poll_wait);
-			}
 		} else {
 			s->dma_dac.count -= diff;
 			if (s->dma_dac.count <= 0) {
@@ -806,10 +763,7 @@ static void cm_update_ptr(struct cm_state *s)
 				s->dma_dac.endcleared = 1;
 			}
 			if (s->dma_dac.count + (signed)s->dma_dac.fragsize <= (signed)s->dma_dac.dmasize)
-			{
 				wake_up(&s->dma_dac.wait);
-				wake_up(&s->poll_wait);
-			}
 		}
 	}
 }
@@ -819,7 +773,6 @@ static void cm_handle_midi(struct cm_state *s)
 {
 	unsigned char ch;
 	int wake;
-	int timeout;
 
 	wake = 0;
 	while (!(inb(s->iomidi+1) & 0x80)) {
@@ -832,17 +785,7 @@ static void cm_handle_midi(struct cm_state *s)
 		wake = 1;
 	}
 	if (wake)
-	{
 		wake_up(&s->midi.iwait);
-		wake_up(&s->midi.pollwait);
-	}
-	for (timeout = 120000; timeout > 0 && (inb(s->iomidi+1)&0x40); timeout--);
-/*
-	if((inb(s->iomidi+1) & 0x40)) {
-	  	  printk(KERN_WARNING "cmpci: UART Timeout - Device not responding\n");
-	          return;
-	}
-*/
 	wake = 0;
 	while (!(inb(s->iomidi+1) & 0x40) && s->midi.ocnt > 0) {
 		outb(s->midi.obuf[s->midi.ord], s->iomidi);
@@ -852,10 +795,7 @@ static void cm_handle_midi(struct cm_state *s)
 			wake = 1;
 	}
 	if (wake)
-	{
 		wake_up(&s->midi.owait);
-		wake_up(&s->midi.pollwait);
-	}
 }
 
 static void cm_interrupt(int irq, void *dev_id, struct pt_regs *regs)
@@ -883,7 +823,7 @@ static void cm_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 		outb(intstat | 2, s->iobase + CODEC_CMI_INT_HLDCLR + 2);
 	}
 	cm_update_ptr(s);
-	/*cm_handle_midi(s);*/
+	cm_handle_midi(s);
 	spin_unlock(&s->lock);
 }
 
@@ -1044,9 +984,9 @@ static int mixer_ioctl(struct cm_state *s, unsigned int cmd, unsigned long arg)
 	}
 	if (cmd == OSS_GETVERSION)
 		return put_user(SOUND_VERSION, (int *)arg);
-	if (_IOC_TYPE(cmd) != 'M' || _SIOC_SIZE(cmd) != sizeof(int))
+	if (_IOC_TYPE(cmd) != 'M' || _IOC_SIZE(cmd) != sizeof(int))
                 return -EINVAL;
-        if (_SIOC_DIR(cmd) == _SIOC_READ) {
+        if (_IOC_DIR(cmd) == _IOC_READ) {
                 switch (_IOC_NR(cmd)) {
                 case SOUND_MIXER_RECSRC: /* Arg contains a bit for each recording source */
 			return put_user(mixer_recmask(s), (int *)arg);
@@ -1094,7 +1034,7 @@ static int mixer_ioctl(struct cm_state *s, unsigned int cmd, unsigned long arg)
 #endif /* OSS_DOCUMENTED_MIXER_SEMANTICS */
 		}
 	}
-        if (_SIOC_DIR(cmd) != (_SIOC_READ|_SIOC_WRITE)) 
+        if (_IOC_DIR(cmd) != (_IOC_READ|_IOC_WRITE)) 
 		return -EINVAL;
 	s->mix.modcnt++;
 	switch (_IOC_NR(cmd)) {
@@ -1240,26 +1180,17 @@ static int cm_ioctl_mixdev(struct inode *inode, struct file *file, unsigned int 
 }
 
 static /*const*/ struct file_operations cm_mixer_fops = {
-	&cm_llseek,
-	NULL,  /* read */
-	NULL,  /* write */
-	NULL,  /* readdir */
-	NULL,  /* poll */
-	&cm_ioctl_mixdev,
-	NULL,  /* mmap */
-	&cm_open_mixdev,
-	NULL,	/* flush */
-	&cm_release_mixdev,
-	NULL,  /* fsync */
-	NULL,  /* fasync */
-	NULL,  /* lock */
+	llseek:		cm_llseek,
+	ioctl:		cm_ioctl_mixdev,
+	open:		cm_open_mixdev,
+	release:	cm_release_mixdev,
 };
 
 /* --------------------------------------------------------------------- */
 
 static int drain_dac(struct cm_state *s, int nonblock)
 {
-	struct wait_queue wait = { current, NULL} ;
+        DECLARE_WAITQUEUE(wait, current);
 	unsigned long flags;
 	int count, tmo;
 
@@ -1433,6 +1364,7 @@ static ssize_t cm_write(struct file *file, const char *buffer, size_t count, lof
 	return ret;
 }
 
+/* No kernel lock - fine (we have our own spinlock) */
 static unsigned int cm_poll(struct file *file, struct poll_table_struct *wait)
 {
 	struct cm_state *s = (struct cm_state *)file->private_data;
@@ -1440,8 +1372,10 @@ static unsigned int cm_poll(struct file *file, struct poll_table_struct *wait)
 	unsigned int mask = 0;
 
 	VALIDATE_STATE(s);
-	if (file->f_mode & (FMODE_WRITE|FMODE_READ))
-		poll_wait(file, &s->poll_wait, wait);
+	if (file->f_mode & FMODE_WRITE)
+		poll_wait(file, &s->dma_dac.wait, wait);
+	if (file->f_mode & FMODE_READ)
+		poll_wait(file, &s->dma_adc.wait, wait);
 	spin_lock_irqsave(&s->lock, flags);
 	cm_update_ptr(s);
 	if (file->f_mode & FMODE_READ) {
@@ -1479,7 +1413,7 @@ static int cm_mmap(struct file *file, struct vm_area_struct *vma)
 		db = &s->dma_adc;
 	} else 
 		return -EINVAL;
-	if (vma->vm_offset != 0)
+	if (vma->vm_pgoff != 0)
 		return -EINVAL;
 	size = vma->vm_end - vma->vm_start;
 	if (size > (PAGE_SIZE << db->buforder))
@@ -1859,19 +1793,14 @@ static int cm_release(struct inode *inode, struct file *file)
 }
 
 static /*const*/ struct file_operations cm_audio_fops = {
-	&cm_llseek,
-	&cm_read,
-	&cm_write,
-	NULL,  /* readdir */
-	&cm_poll,
-	&cm_ioctl,
-	&cm_mmap,
-	&cm_open,
-	NULL,	/* flush */
-	&cm_release,
-	NULL,  /* fsync */
-	NULL,  /* fasync */
-	NULL,  /* lock */
+	llseek:		cm_llseek,
+	read:		cm_read,
+	write:		cm_write,
+	poll:		cm_poll,
+	ioctl:		cm_ioctl,
+	mmap:		cm_mmap,
+	open:		cm_open,
+	release:	cm_release,
 };
 
 /* --------------------------------------------------------------------- */
@@ -1879,7 +1808,7 @@ static /*const*/ struct file_operations cm_audio_fops = {
 static ssize_t cm_midi_read(struct file *file, char *buffer, size_t count, loff_t *ppos)
 {
 	struct cm_state *s = (struct cm_state *)file->private_data;
-	struct wait_queue wait = { current , NULL };
+	DECLARE_WAITQUEUE(wait, current);
 	ssize_t ret;
 	unsigned long flags;
 	unsigned ptr;
@@ -1910,7 +1839,7 @@ static ssize_t cm_midi_read(struct file *file, char *buffer, size_t count, loff_
 					ret = -EAGAIN;
 				break;
 			}
-			current->state = TASK_INTERRUPTIBLE;
+			__set_current_state(TASK_INTERRUPTIBLE);
 			schedule();
 			if (signal_pending(current)) 
 			{
@@ -1935,7 +1864,7 @@ static ssize_t cm_midi_read(struct file *file, char *buffer, size_t count, loff_
 		ret += cnt;
 		break;
 	}
-	current->state = TASK_RUNNING;
+	__set_current_state(TASK_RUNNING);
 	remove_wait_queue(&s->midi.iwait, &wait);
 	return ret;
 }
@@ -1943,7 +1872,7 @@ static ssize_t cm_midi_read(struct file *file, char *buffer, size_t count, loff_
 static ssize_t cm_midi_write(struct file *file, const char *buffer, size_t count, loff_t *ppos)
 {
 	struct cm_state *s = (struct cm_state *)file->private_data;
-	struct wait_queue wait = { current, NULL };
+	DECLARE_WAITQUEUE(wait, current);
 	ssize_t ret;
 	unsigned long flags;
 	unsigned ptr;
@@ -1975,7 +1904,7 @@ static ssize_t cm_midi_write(struct file *file, const char *buffer, size_t count
 					ret = -EAGAIN;
 				break;
 			}
- 			current->state = TASK_INTERRUPTIBLE;
+			__set_current_state(TASK_INTERRUPTIBLE);
 			schedule();
 			if (signal_pending(current)) {
 				if (!ret)
@@ -2001,7 +1930,7 @@ static ssize_t cm_midi_write(struct file *file, const char *buffer, size_t count
 		cm_handle_midi(s);
 		spin_unlock_irqrestore(&s->lock, flags);
 	}
-	current->state = TASK_RUNNING;
+	__set_current_state(TASK_RUNNING);
 	remove_wait_queue(&s->midi.owait, &wait);
 	return ret;
 }
@@ -2013,8 +1942,10 @@ static unsigned int cm_midi_poll(struct file *file, struct poll_table_struct *wa
 	unsigned int mask = 0;
 
 	VALIDATE_STATE(s);
-	if (file->f_mode & (FMODE_WRITE|FMODE_READ))
-		poll_wait(file, &s->midi.pollwait, wait);
+	if (file->f_mode & FMODE_WRITE)
+		poll_wait(file, &s->midi.owait, wait);
+	if (file->f_mode & FMODE_READ)
+		poll_wait(file, &s->midi.iwait, wait);
 	spin_lock_irqsave(&s->lock, flags);
 	if (file->f_mode & FMODE_READ) {
 		if (s->midi.icnt > 0)
@@ -2088,15 +2019,14 @@ static int cm_midi_open(struct inode *inode, struct file *file)
 static int cm_midi_release(struct inode *inode, struct file *file)
 {
 	struct cm_state *s = (struct cm_state *)file->private_data;
-	struct wait_queue wait = { current, NULL};
-
+        DECLARE_WAITQUEUE(wait, current);
 	unsigned long flags;
 	unsigned count, tmo;
 
 	VALIDATE_STATE(s);
 
 	if (file->f_mode & FMODE_WRITE) {
-		current->state = TASK_INTERRUPTIBLE;
+		__set_current_state(TASK_INTERRUPTIBLE);
 		add_wait_queue(&s->midi.owait, &wait);
 		for (;;) {
 			spin_lock_irqsave(&s->lock, flags);
@@ -2107,14 +2037,16 @@ static int cm_midi_release(struct inode *inode, struct file *file)
 			if (signal_pending(current))
 				break;
 			if (file->f_flags & O_NONBLOCK) {
-				break;
+				remove_wait_queue(&s->midi.owait, &wait);
+				set_current_state(TASK_RUNNING);
+				return -EBUSY;
 			}
 			tmo = (count * HZ) / 3100;
 			if (!schedule_timeout(tmo ? : 1) && tmo)
 				printk(KERN_DEBUG "cmpci: midi timed out??\n");
 		}
 		remove_wait_queue(&s->midi.owait, &wait);
-		current->state = TASK_RUNNING;
+		set_current_state(TASK_RUNNING);
 	}
 	down(&s->open_sem);
 	s->open_mode &= (~(file->f_mode << FMODE_MIDI_SHIFT)) & (FMODE_MIDI_READ|FMODE_MIDI_WRITE);
@@ -2135,19 +2067,12 @@ static int cm_midi_release(struct inode *inode, struct file *file)
 }
 
 static /*const*/ struct file_operations cm_midi_fops = {
-	&cm_llseek,
-	&cm_midi_read,
-	&cm_midi_write,
-	NULL,  /* readdir */
-	&cm_midi_poll,
-	NULL,  /* ioctl */
-	NULL,  /* mmap */
-	&cm_midi_open,
-	NULL,	/* flush */
-	&cm_midi_release,
-	NULL,  /* fsync */
-	NULL,  /* fasync */
-	NULL,  /* lock */
+	llseek:		cm_llseek,
+	read:		cm_midi_read,
+	write:		cm_midi_write,
+	poll:		cm_midi_poll,
+	open:		cm_midi_open,
+	release:	cm_midi_release,
 };
 
 /* --------------------------------------------------------------------- */
@@ -2307,19 +2232,10 @@ static int cm_dmfm_release(struct inode *inode, struct file *file)
 }
 
 static /*const*/ struct file_operations cm_dmfm_fops = {
-	&cm_llseek,
-	NULL,  /* read */
-	NULL,  /* write */
-	NULL,  /* readdir */
-	NULL,  /* poll */
-	&cm_dmfm_ioctl,
-	NULL,  /* mmap */
-	&cm_dmfm_open,
-	NULL,	/* flush */
-	&cm_dmfm_release,
-	NULL,  /* fsync */
-	NULL,  /* fasync */
-	NULL,  /* lock */
+	llseek:		cm_llseek,
+	ioctl:		cm_dmfm_ioctl,
+	open:		cm_dmfm_open,
+	release:	cm_dmfm_release,
 };
 
 /* --------------------------------------------------------------------- */
@@ -2346,8 +2262,6 @@ static struct initvol {
 	{ SOUND_MIXER_WRITE_VOLUME, 0x4040 },
 	{ SOUND_MIXER_WRITE_PCM, 0x4040 }
 };
-static int mpu_io = 0;
-static int synth_io = 0;
 
 #ifdef MODULE
 static int	spdif_loop = 0;
@@ -2356,8 +2270,7 @@ static int	rear_out = 0;
 MODULE_PARM(spdif_loop, "i");
 MODULE_PARM(four_ch, "i");
 MODULE_PARM(rear_out, "i");
-MODULE_PARM(mpu_io, "i");
-MODULE_PARM(synth_io, "i");
+
 int  __init init_module(void)
 #else
 #ifdef CONFIG_SOUND_CMPCI_SPDIFLOOP
@@ -2424,46 +2337,18 @@ int __init init_cmpci(void)
 			}
 		}
 		memset(s, 0, sizeof(struct cm_state));
-		init_waitqueue(&s->dma_adc.wait);
-		init_waitqueue(&s->poll_wait);
-		init_waitqueue(&s->dma_dac.wait);
-		init_waitqueue(&s->open_wait);
-		init_waitqueue(&s->midi.iwait);
-		init_waitqueue(&s->midi.owait);
-		init_waitqueue(&s->midi.pollwait);
-		s->open_sem = MUTEX;
+		init_waitqueue_head(&s->dma_adc.wait);
+		init_waitqueue_head(&s->dma_dac.wait);
+		init_waitqueue_head(&s->open_wait);
+		init_waitqueue_head(&s->midi.iwait);
+		init_waitqueue_head(&s->midi.owait);
+		init_MUTEX(&s->open_sem);
+		spin_lock_init(&s->lock);
 		s->magic = CM_MAGIC;
-		s->iobase = pcidev->base_address[0] & PCI_BASE_ADDRESS_IO_MASK;
-		switch (synth_io) {
-		case 0x3c8:
-			s->iosynth = 0x3c8;
-			break;
-		case 0x3e0:
-			s->iosynth = 0x3e0;
-			break;
-		case 0x3e8:
-			s->iosynth = 0x3e8;
-			break;
-		case 0x388:
-		default:
-			s->iosynth = 0x388;
-			break;
-		}
-		switch (mpu_io) {
-		case 0x300:
-			s->iomidi = 0x300;
-			break;
-		case 0x310:
-			s->iomidi = 0x310;
-			break;
-		case 0x320:
-			s->iomidi = 0x320;
-			break;
-		case 0x330:
-		default:
-			s->iomidi = 0x330;
-			break;
-		}
+		s->iobase = pcidev->resource[0].start;
+		s->iosynth = 0x388;
+		s->iomidi = 0x330;
+		spin_lock_init(&s->lock);
 		if (s->iobase == 0)
 			continue;
 		s->irq = pcidev->irq;
@@ -2480,21 +2365,8 @@ int __init init_cmpci(void)
 		else
 		{
 			request_region(s->iomidi, CM_EXTENT_MIDI, "cmpci Midi");
-			/* set IO based at specified address */
-			switch (s->iomidi) {
-			case 0x300:
-				outb(inb(s->iobase + CODEC_CMI_LEGACY_CTRL + 3) | 0x60, s->iobase + CODEC_CMI_LEGACY_CTRL + 3);
-				break;
-			case 0x310:
-				outb((inb(s->iobase + CODEC_CMI_LEGACY_CTRL + 3) & ~0x60) | 0x40, s->iobase + CODEC_CMI_LEGACY_CTRL + 3);
-				break;
-			case 0x320:
-				outb((inb(s->iobase + CODEC_CMI_LEGACY_CTRL + 3) & ~0x60) | 0x20, s->iobase + CODEC_CMI_LEGACY_CTRL + 3);
-				break;
-			default: /* 0x330 */
-				outb(inb(s->iobase + CODEC_CMI_LEGACY_CTRL + 3) & ~0x60, s->iobase + CODEC_CMI_LEGACY_CTRL + 3);
-				break;
-			}
+			/* set IO based at 0x330 */
+			outb(inb(s->iobase + CODEC_CMI_LEGACY_CTRL + 3) & ~0x60, s->iobase + CODEC_CMI_LEGACY_CTRL + 3);
 		}
 		if (check_region(s->iosynth, CM_EXTENT_SYNTH)) {
 			printk(KERN_WARNING "cmpci: io ports %#x-%#x in use, synth disabled.\n", s->iosynth, s->iosynth+CM_EXTENT_SYNTH-1);
@@ -2505,22 +2377,6 @@ int __init init_cmpci(void)
 			request_region(s->iosynth, CM_EXTENT_SYNTH, "cmpci FM");
 			/* enable FM */
 			outb(inb(s->iobase + CODEC_CMI_MISC_CTRL + 2) | 8, s->iobase + CODEC_CMI_MISC_CTRL);
-
-			/* set IO base at specified address */
-			switch (s->iosynth) {
-			case 0x3e8:
-				outb(inb(s->iobase + CODEC_CMI_LEGACY_CTRL + 3) | 0x03, s->iobase + CODEC_CMI_LEGACY_CTRL+3);
-				break;
-				case 0x3e0:
-				outb((inb(s->iobase + CODEC_CMI_LEGACY_CTRL + 3) & ~0x03) | 0x02, s->iobase + CODEC_CMI_LEGACY_CTRL+3);
-				break;
-			case 0x3c8:
-				outb((inb(s->iobase + CODEC_CMI_LEGACY_CTRL + 3) & ~0x03) | 0x01, s->iobase + CODEC_CMI_LEGACY_CTRL+3);
-				break;
-			default: /* 0x388 */
-				outb(inb(s->iobase + CODEC_CMI_LEGACY_CTRL + 3) & ~0x03, s->iobase + CODEC_CMI_LEGACY_CTRL+3);
-				break;
-			}
 		}
 		/* initialize codec registers */
 		outb(0, s->iobase + CODEC_CMI_INT_HLDCLR + 2);  /* disable ints */
@@ -2567,10 +2423,8 @@ int __init init_cmpci(void)
 				outb(inb(s->iobase + CODEC_CMI_FUNCTRL1) | 0x80, s->iobase + CODEC_CMI_FUNCTRL1);
 				printk(KERN_INFO "cmpci: Enable SPDIF loop\n");
 			}
-			else {
+			else
 				outb(inb(s->iobase + CODEC_CMI_FUNCTRL1) & ~0x80, s->iobase + CODEC_CMI_FUNCTRL1);
-			}
-
 			/* enable 4 channels mode */
 			if (four_ch)
 			{

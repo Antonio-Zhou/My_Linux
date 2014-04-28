@@ -208,6 +208,14 @@ extern struct mac_booter_data
 #endif
 
     /*
+     *  Apollo-specific tags
+     */
+
+#define BI_APOLLO_MODEL         0x8000  /* model (u_long) */
+
+
+
+    /*
      * Stuff for bootinfo interface versioning
      *
      * At the start of kernel code, a 'struct bootversion' is located.

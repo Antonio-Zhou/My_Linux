@@ -40,7 +40,7 @@ extern unsigned char pckbd_sysrq_xlate[128];
 #define SYSRQ_KEY 0x54
 
 /* resource allocation */
-#define kbd_request_region() request_region(0x60, 16, "keyboard")
+#define kbd_request_region()
 #define kbd_request_irq(handler) request_irq(KEYBOARD_IRQ, handler, 0, \
                                              "keyboard", NULL)
 

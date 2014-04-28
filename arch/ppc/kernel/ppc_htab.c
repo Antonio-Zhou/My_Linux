@@ -1,5 +1,5 @@
 /*
- * $Id: ppc_htab.c,v 1.26.2.2 1999/08/10 01:55:03 paulus Exp $
+ * $Id: ppc_htab.c,v 1.29 1999/09/10 05:05:50 paulus Exp $
  *
  * PowerPC hash table management proc entry.  Will show information
  * about the current hash table and will allow changes to it.
@@ -44,43 +44,6 @@ extern unsigned long htab_evicts;
 extern unsigned long pte_misses;
 extern unsigned long pte_errors;
 
-static struct file_operations ppc_htab_operations = {
-    ppc_htab_lseek,	/* lseek   */
-    ppc_htab_read,	/* read	   */
-    ppc_htab_write,	/* write   */
-    NULL,		/* readdir */
-    NULL,		/* poll    */
-    NULL,		/* ioctl   */
-    NULL,		/* mmap	   */
-    NULL,		/* no special open code	   */
-    NULL,		/* flush */
-    NULL,		/* no special release code */
-    NULL		/* can't fsync */
-};
-
-/*
- * proc files can do almost nothing..
- */
-struct inode_operations proc_ppc_htab_inode_operations = {
-    &ppc_htab_operations,  /* default proc file-ops */
-    NULL,	    /* create	   */
-    NULL,	    /* lookup	   */
-    NULL,	    /* link	   */
-    NULL,	    /* unlink	   */
-    NULL,	    /* symlink	   */
-    NULL,	    /* mkdir	   */
-    NULL,	    /* rmdir	   */
-    NULL,	    /* mknod	   */
-    NULL,	    /* rename	   */
-    NULL,	    /* readlink	   */
-    NULL,	    /* follow_link */
-    NULL,	    /* readpage	   */
-    NULL,	    /* writepage   */
-    NULL,	    /* bmap	   */
-    NULL,	    /* truncate	   */
-    NULL	    /* permission  */
-};
-
 /* these will go into processor.h when I'm done debugging -- Cort */
 #define MMCR0 952
 #define MMCR0_PMC1_CYCLES (0x1<<7)
@@ -93,6 +56,12 @@ struct inode_operations proc_ppc_htab_inode_operations = {
 
 #define PMC1 953
 #define PMC2 954
+
+struct file_operations ppc_htab_operations = {
+        llseek:         ppc_htab_lseek,
+        read:           ppc_htab_read,
+        write:          ppc_htab_write,
+};
 
 char *pmc1_lookup(unsigned long mmcr0)
 {
@@ -533,7 +502,7 @@ int proc_dol2crvec(ctl_table *table, int write, struct file *filp,
 	#define TMPBUFLEN 256
 	char buf[TMPBUFLEN], *p;
 	static const char *sizestrings[4] = {
-		"unknown size", "256KB", "512KB", "1MB"
+		"2MB", "256KB", "512KB", "1MB"
 	};
 	static const char *clockstrings[8] = {
 		"clock disabled", "+1 clock", "+1.5 clock", "reserved(3)",
@@ -587,8 +556,9 @@ int proc_dol2crvec(ctl_table *table, int write, struct file *filp,
 			buffer += len;
 			left -= len;
 			_set_L2CR(0);
-			if (val)
-				_set_L2CR(val);
+			_set_L2CR(val);
+			while ( _get_L2CR() & 0x1 )
+				/* wait for invalidate to finish */;
 			  
 		} else {
 			p = buf;

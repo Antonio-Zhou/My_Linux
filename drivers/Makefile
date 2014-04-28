@@ -7,10 +7,11 @@
 #
 # Note 2! The CFLAGS definitions are now in the main makefile.
 
-SUB_DIRS     := block char net misc sound
+SUB_DIRS     := block char net parport sound misc
 MOD_SUB_DIRS := $(SUB_DIRS)
-ALL_SUB_DIRS := $(SUB_DIRS) pci sgi scsi sbus cdrom isdn pnp \
-				macintosh video dio zorro fc4 nubus usb telephony i2o
+ALL_SUB_DIRS := $(SUB_DIRS) pci sgi ide scsi sbus cdrom isdn pnp i2o \
+				ieee1394 macintosh video dio zorro fc4 \
+				usb nubus tc atm pcmcia i2c telephony
 
 ifdef CONFIG_DIO
 SUB_DIRS += dio
@@ -19,6 +20,14 @@ endif
 
 ifdef CONFIG_PCI
 SUB_DIRS += pci
+endif
+
+ifeq ($(CONFIG_PCMCIA),y)
+SUB_DIRS += pcmcia
+else
+  ifeq ($(CONFIG_PCMCIA),m)
+  MOD_SUB_DIRS += pcmcia
+  endif
 endif
 
 ifdef CONFIG_SBUS
@@ -43,6 +52,11 @@ SUB_DIRS += video
 MOD_SUB_DIRS += video
 endif
 
+ifdef CONFIG_MAC
+SUB_DIRS += macintosh
+MOD_SUB_DIRS += macintosh
+endif
+
 ifdef CONFIG_PPC
 SUB_DIRS += macintosh
 MOD_SUB_DIRS += macintosh
@@ -54,16 +68,41 @@ MOD_SUB_DIRS += usb
 else
   ifeq ($(CONFIG_USB),m)
   MOD_SUB_DIRS += usb
-  else
-    ifdef CONFIG_INPUT_ADBHID
-    SUB_DIRS += usb
-    endif
   endif
 endif 
 
-ifdef CONFIG_SGI
+ifeq ($(CONFIG_PHONE),y)
+SUB_DIRS += telephony
+MOD_SUB_DIRS += telephony
+else
+  ifeq ($(CONFIG_PHONE),m)
+  MOD_SUB_DIRS += telephony
+  endif
+endif 
+
+ifdef CONFIG_SGI_IP22
 SUB_DIRS += sgi
 MOD_SUB_DIRS += sgi
+endif
+
+ifeq ($(CONFIG_I2O),y)
+SUB_DIRS += i2o
+MOD_SUB_DIRS += i2o
+else
+  ifeq ($(CONFIG_I2O),m)
+  MOD_SUB_DIRS += i2o
+  endif
+endif 
+
+# If CONFIG_IDE is set, the core of ATA support will be added to the kernel,
+# but some of the low-level things may also be modules.
+ifeq ($(CONFIG_IDE),y)
+SUB_DIRS += ide
+MOD_SUB_DIRS += ide
+else
+  ifeq ($(CONFIG_IDE),m)
+  MOD_SUB_DIRS += ide
+  endif
 endif
 
 # If CONFIG_SCSI is set, the core of SCSI support will be added to the kernel,
@@ -74,6 +113,15 @@ MOD_SUB_DIRS += scsi
 else
   ifeq ($(CONFIG_SCSI),m)
   MOD_SUB_DIRS += scsi
+  endif
+endif
+
+ifeq ($(CONFIG_IEEE1394),y)
+SUB_DIRS += ieee1394
+MOD_SUB_DIRS += ieee1394
+else
+  ifeq ($(CONFIG_IEEE1394),m)
+  MOD_SUB_DIRS += ieee1394
   endif
 endif
 
@@ -100,9 +148,9 @@ else
   endif
 endif
 
-ifeq ($(CONFIG_AP1000),y)
-SUB_DIRS += ap1000
-ALL_SUB_DIRS += ap1000
+ifdef CONFIG_ATM
+SUB_DIRS += atm
+MOD_SUB_DIRS += atm
 endif
 
 ifeq ($(CONFIG_FC4),y)
@@ -114,26 +162,6 @@ else
   endif
 endif
 
-ifeq ($(CONFIG_PHONE),y)
-SUB_DIRS += telephony
-MOD_SUB_DIRS += telephony
-else
-  ifeq ($(CONFIG_PHONE),m)
-  MOD_SUB_DIRS += telephony
-  endif
-endif
-
-ifeq ($(CONFIG_I2O),y)
-SUB_DIRS += i2o
-MOD_SUB_DIRS += i2o
-else
-  ifeq ($(CONFIG_I2O),m)
-  MOD_SUB_DIRS += i2o
-  endif
-endif
-
-
-
 # When MOD_LIST_NAME is set, make will try to add $(MOD_SUB_DIRS).o to
 # modules/MOD_LIST_NAME.  We don't have hamradio.o and Linus
 # sort of insisted on making hamradio/ a subdirectory of drivers/net/.
@@ -141,6 +169,15 @@ endif
 ifeq ($(CONFIG_HAMRADIO),y)
   SUB_DIRS += net/hamradio
   MOD_SUB_DIRS += net/hamradio
+endif
+
+ifeq ($(CONFIG_I2C),y)
+SUB_DIRS += i2c
+MOD_SUB_DIRS += i2c
+else
+  ifeq ($(CONFIG_I2C),m)
+  MOD_SUB_DIRS += i2c
+  endif
 endif
 
 include $(TOPDIR)/Rules.make

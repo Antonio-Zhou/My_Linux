@@ -41,7 +41,7 @@
 
 struct irix_usema {
 	struct file *filp;
-	struct wait_queue *proc_list;
+	wait_queue_head_t proc_list;
 };
 
 
@@ -53,8 +53,8 @@ sgi_usema_attach (usattach_t * attach, struct irix_usema *usema)
 	if (newfd < 0)
 		return newfd;
 	
-	current->files->fd [newfd] = usema->filp;
-	usema->filp->f_count++;
+	get_file(usema->filp);
+	fd_install(newfd, usema->filp);
 	/* Is that it? */
 	printk("UIOCATTACHSEMA: new usema fd is %d", newfd);
 	return newfd;
@@ -157,10 +157,11 @@ sgi_usemaclone_open(struct inode *inode, struct file *filp)
 		return -ENOMEM;
 	
 	usema->filp        = filp;
-	usema->proc_list   = NULL;
+	init_waitqueue_head(&usema->proc_list);
 	filp->private_data = usema;
+
 	return 0;
-}	
+}
 
 static int
 sgi_usemaclone_release(struct inode *inode, struct file *filp)
@@ -169,20 +170,10 @@ sgi_usemaclone_release(struct inode *inode, struct file *filp)
 }
 
 struct file_operations sgi_usemaclone_fops = {
-	NULL,			/* llseek */
-	NULL,			/* read */
-	NULL,			/* write */
-	NULL,			/* readdir */
-	sgi_usemaclone_poll,	/* poll */
-	sgi_usemaclone_ioctl,	/* ioctl */
-	NULL,			/* mmap */
-	sgi_usemaclone_open,	/* open */
-	NULL,			/* flush */
-	sgi_usemaclone_release,	/* release */
-	NULL,			/* fsync */
-	NULL,			/* check_media_change */
-	NULL,			/* revalidate */
-	NULL			/* lock */
+	poll:		sgi_usemaclone_poll,
+	ioctl:		sgi_usemaclone_ioctl,
+	open:		sgi_usemaclone_open,
+	release:	sgi_usemaclone_release,
 };
 
 static struct miscdevice dev_usemaclone = {

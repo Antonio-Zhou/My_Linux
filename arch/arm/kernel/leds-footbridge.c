@@ -21,8 +21,8 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/init.h>
+#include <linux/spinlock.h>
 
-#include <asm/spinlock.h>
 #include <asm/hardware.h>
 #include <asm/leds.h>
 #include <asm/system.h>
@@ -37,7 +37,7 @@ extern spinlock_t gpio_lock;
 
 #ifdef CONFIG_FOOTBRIDGE
 
-static void __ebsa285_text ebsa285_leds_event(led_event_t evt)
+static void ebsa285_leds_event(led_event_t evt)
 {
 	unsigned long flags;
 
@@ -129,7 +129,7 @@ static void __ebsa285_text ebsa285_leds_event(led_event_t evt)
 
 #ifdef CONFIG_ARCH_NETWINDER
 
-static void __netwinder_text netwinder_leds_event(led_event_t evt)
+static void netwinder_leds_event(led_event_t evt)
 {
 	unsigned long flags;
 

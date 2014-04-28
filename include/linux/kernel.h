@@ -15,11 +15,15 @@
 #define barrier() __asm__ __volatile__("": : :"memory")
 
 #define INT_MAX		((int)(~0U>>1))
+#define INT_MIN		(-INT_MAX - 1)
 #define UINT_MAX	(~0U)
 #define LONG_MAX	((long)(~0UL>>1))
+#define LONG_MIN	(-LONG_MAX - 1)
 #define ULONG_MAX	(~0UL)
 
 #define STACK_MAGIC	0xdeadbeef
+
+#define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 
 #define	KERN_EMERG	"<0>"	/* system is unusable			*/
 #define	KERN_ALERT	"<1>"	/* action must be taken immediately	*/
@@ -48,13 +52,10 @@ NORET_TYPE void do_exit(long error_code)
 	ATTRIB_NORET;
 extern unsigned long simple_strtoul(const char *,char **,unsigned int);
 extern long simple_strtol(const char *,char **,unsigned int);
-extern char *get_options(char *str, int *ints);
-extern int sprintf(char *buf, const char *fmt, ...)
-	__attribute__ ((format (printf, 2, 3)));
-extern int vsprintf(char *buf, const char *, va_list)
-	__attribute__ ((format (printf, 2, 0)));
-extern int _vsnprintf(char *buf, int n, const char *, va_list)
-	__attribute__ ((format (printf, 3, 0)));
+extern int sprintf(char * buf, const char * fmt, ...);
+extern int vsprintf(char *buf, const char *, va_list);
+extern int get_option(char **str, int *pint);
+extern char *get_options(char *str, int nints, int *ints);
 
 extern int session_of_pgrp(int pgrp);
 
@@ -82,6 +83,12 @@ asmlinkage int printk(const char * fmt, ...)
 	((unsigned char *)&addr)[2], \
 	((unsigned char *)&addr)[3]
 
+#define HIPQUAD(addr) \
+	((unsigned char *)&addr)[3], \
+	((unsigned char *)&addr)[2], \
+	((unsigned char *)&addr)[1], \
+	((unsigned char *)&addr)[0]
+
 #endif /* __KERNEL__ */
 
 #define SI_LOAD_SHIFT	16
@@ -95,7 +102,10 @@ struct sysinfo {
 	unsigned long totalswap;	/* Total swap space size */
 	unsigned long freeswap;		/* swap space still available */
 	unsigned short procs;		/* Number of current processes */
-	char _f[22];			/* Pads structure to 64 bytes */
+	unsigned long totalhigh;	/* Total high memory size */
+	unsigned long freehigh;		/* Available high memory size */
+	unsigned int mem_unit;		/* Memory unit size in bytes */
+	char _f[20-2*sizeof(long)-sizeof(int)];	/* Padding: libc5 uses this.. */
 };
 
 #endif

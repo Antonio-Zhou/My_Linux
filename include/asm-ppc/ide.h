@@ -1,8 +1,7 @@
 /*
  *  linux/include/asm-ppc/ide.h
  *
- *  Copyright (C) 1994-1996  Linus Torvalds & authors
- */
+ *  Copyright (C) 1994-1996 Linus Torvalds & authors */
 
 /*
  *  This file contains the ppc architecture specific IDE code.
@@ -18,10 +17,11 @@
 #define MAX_HWIFS	4
 #endif
 
-typedef unsigned int ide_ioreg_t;
+#include <asm/hdreg.h>
 
 #ifdef __KERNEL__
 
+#include <linux/config.h>
 #include <linux/hdreg.h>
 #include <linux/ioport.h>
 #include <asm/io.h>
@@ -36,33 +36,44 @@ extern ide_ioreg_t chrp_ide_regbase[MAX_HWIFS];
 extern ide_ioreg_t chrp_idedma_regbase; /* one for both channels */
 extern unsigned int chrp_ide_irq;
 extern void chrp_ide_probe(void);
-extern void ide_pmac_init(void);
 
 struct ide_machdep_calls {
         void        (*insw)(ide_ioreg_t port, void *buf, int ns);
         void        (*outsw)(ide_ioreg_t port, void *buf, int ns);
         int         (*default_irq)(ide_ioreg_t base);
         ide_ioreg_t (*default_io_base)(int index);
-        int         (*check_region)(ide_ioreg_t from, unsigned int extent);
-        void        (*request_region)(ide_ioreg_t from,
+        int         (*ide_check_region)(ide_ioreg_t from, unsigned int extent);
+        void        (*ide_request_region)(ide_ioreg_t from,
                                       unsigned int extent,
                                       const char *name);
-        void        (*release_region)(ide_ioreg_t from,
+        void        (*ide_release_region)(ide_ioreg_t from,
                                       unsigned int extent);
         void        (*fix_driveid)(struct hd_driveid *id);
-        void        (*ide_init_hwif)(ide_ioreg_t *p,
-                                     ide_ioreg_t base,
-                                     int *irq); 
+        void        (*ide_init_hwif)(hw_regs_t *hw,
+                                     ide_ioreg_t data_port,
+                                     ide_ioreg_t ctrl_port,
+                                     int *irq);
 
         int io_base;
 };
 
 extern struct ide_machdep_calls ppc_ide_md;
 
-void ide_init_hwif_ports(ide_ioreg_t *p, ide_ioreg_t base, int *irq);
 void ide_insw(ide_ioreg_t port, void *buf, int ns);
 void ide_outsw(ide_ioreg_t port, void *buf, int ns);
 void ppc_generic_ide_fix_driveid(struct hd_driveid *id);
+
+#if 0
+#undef insw
+#define insw(port, buf, ns) 	do {				\
+	ppc_ide_md.insw((port), (buf), (ns));			\
+} while (0)
+     
+#undef outsw
+#define outsw(port, buf, ns) 	do {				\
+	ppc_ide_md.outsw((port), (buf), (ns));			\
+} while (0)
+#endif
 
 #undef	SUPPORT_SLOW_DATA_PORTS
 #define	SUPPORT_SLOW_DATA_PORTS	0
@@ -73,34 +84,73 @@ void ppc_generic_ide_fix_driveid(struct hd_driveid *id);
 
 static __inline__ int ide_default_irq(ide_ioreg_t base)
 {
-	return ppc_ide_md.default_irq(base);
+	if ( ppc_ide_md.default_irq )
+		return ppc_ide_md.default_irq(base);
+	else
+		return -1;
 }
 
 static __inline__ ide_ioreg_t ide_default_io_base(int index)
 {
-	return ppc_ide_md.default_io_base(index);
+	if ( ppc_ide_md.default_io_base )
+		return ppc_ide_md.default_io_base(index);
+	else
+		return -1;
+}
+
+static __inline__ void  ide_init_hwif_ports(hw_regs_t *hw,
+					   ide_ioreg_t data_port,
+					   ide_ioreg_t ctrl_port, int *irq)
+{
+	if (ppc_ide_md.ide_init_hwif != NULL)
+		ppc_ide_md.ide_init_hwif(hw, data_port, ctrl_port, irq);
+}
+
+static __inline__ void ide_init_default_hwifs(void)
+{
+#ifndef CONFIG_BLK_DEV_IDEPCI
+	hw_regs_t hw;
+	int index;
+	ide_ioreg_t base;
+
+	for (index = 0; index < MAX_HWIFS; index++) {
+		base = ide_default_io_base(index);
+		if (base == 0)
+			continue;
+		ide_init_hwif_ports(&hw, base, 0, NULL);
+		hw.irq = ide_default_irq(base);
+		ide_register_hw(&hw, NULL);
+	}
+#endif /* CONFIG_BLK_DEV_IDEPCI */
 }
 
 static __inline__ int ide_check_region (ide_ioreg_t from, unsigned int extent)
 {
-	return ppc_ide_md.check_region(from, extent);
+	if ( ppc_ide_md.ide_check_region )
+		return ppc_ide_md.ide_check_region(from, extent);
+	else
+		return -1;
 }
 
 static __inline__ void ide_request_region (ide_ioreg_t from, unsigned int extent, const char *name)
 {
-	ppc_ide_md.request_region(from, extent, name);
+	if ( ppc_ide_md.ide_request_region )
+		ppc_ide_md.ide_request_region(from, extent, name);
 }
 
 static __inline__ void ide_release_region (ide_ioreg_t from, unsigned int extent)
 {
-	ppc_ide_md.release_region(from, extent);
+	if ( ppc_ide_md.ide_release_region )
+		ppc_ide_md.ide_release_region(from, extent);
 }
 
-static __inline__ void ide_fix_driveid (struct hd_driveid *id) {
-        ppc_ide_md.fix_driveid(id);
+static __inline__ void ide_fix_driveid (struct hd_driveid *id)
+{
+        if ( ppc_ide_md.fix_driveid )
+		ppc_ide_md.fix_driveid(id);
 }
 
-#if 0	/* standard inb/outb is OK now -- paulus */
+#if 0	/* inb/outb from io.h is OK now -- paulus */
 #undef inb
 #define inb(port)	in_8((unsigned char *)((port) + ppc_ide_md.io_base))
 #undef inb_p
@@ -124,21 +174,17 @@ typedef union {
 	} b;
 } select_t;
 
-static __inline__ int ide_request_irq(unsigned int irq, void (*handler)(int, void *, struct pt_regs *),
-			unsigned long flags, const char *device, void *dev_id)
-{
-	return request_irq(irq, handler, flags, device, dev_id);
-}			
-
-static __inline__ void ide_free_irq(unsigned int irq, void *dev_id)
-{
-	free_irq(irq, dev_id);
-}
+#define ide_request_irq(irq,hand,flg,dev,id)	request_irq((irq),(hand),(flg),(dev),(id))
+#define ide_free_irq(irq,dev_id)		free_irq((irq), (dev_id))
 
 /*
  * The following are not needed for the non-m68k ports
  */
-#define ide_ack_intr(base, irq)		(1)
+#ifdef CONFIG_APUS
+#define ide_ack_intr(hwif) (hwif->hw.ack_intr ? hwif->hw.ack_intr(hwif) : 1)
+#else
+#define ide_ack_intr(hwif)		(1)
+#endif
 #define ide_release_lock(lock)		do {} while (0)
 #define ide_get_lock(lock, hdlr, data)	do {} while (0)
 

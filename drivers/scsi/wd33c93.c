@@ -75,13 +75,9 @@
 #include <linux/string.h>
 #include <linux/delay.h>
 #include <linux/version.h>
+#include <linux/init.h>
 #include <asm/irq.h>
-
-#if LINUX_VERSION_CODE >= 0x010300
 #include <linux/blk.h>
-#else
-#include "../block/blk.h"
-#endif
 
 #include "scsi.h"
 #include "hosts.h"
@@ -1403,11 +1399,7 @@ uchar sr;
 
 
 
-#if LINUX_VERSION_CODE >= 0x010300
 int wd33c93_reset(Scsi_Cmnd *SCpnt, unsigned int reset_flags)
-#else
-int wd33c93_reset(Scsi_Cmnd *SCpnt)
-#endif
 {
 struct Scsi_Host *instance;
 struct WD33C93_hostdata *hostdata;
@@ -1596,10 +1588,10 @@ static char setup_buffer[SETUP_BUFFER_SIZE];
 static char setup_used[MAX_SETUP_ARGS];
 static int done_setup = 0;
 
-void wd33c93_setup (char *str, int *ints)
+int wd33c93_setup (char *str)
 {
-int i,x;
-char *p1,*p2;
+   int i;
+   char *p1,*p2;
 
    /* The kernel does some processing of the command-line before calling
     * this function: If it begins with any decimal or hex number arguments,
@@ -1612,12 +1604,17 @@ char *p1,*p2;
 
    p1 = setup_buffer;
    *p1 = '\0';
+#if 0
+/*
+ * Old style command line arguments are now dead
+ */
    if (ints[0]) {
       for (i=0; i<ints[0]; i++) {
          x = vsprintf(p1,"nosync:0x%02x,",&(ints[i+1]));
          p1 += x;
          }
       }
+#endif
    if (str)
       strncpy(p1, str, SETUP_BUFFER_SIZE - strlen(setup_buffer));
    setup_buffer[SETUP_BUFFER_SIZE - 1] = '\0';
@@ -1640,7 +1637,11 @@ char *p1,*p2;
    for (i=0; i<MAX_SETUP_ARGS; i++)
       setup_used[i] = 0;
    done_setup = 1;
+
+   return 1;
 }
+
+__setup("wd33c93", wd33c93_setup);
 
 
 /* check_setup_args() returns index if key found, 0 if not
@@ -1685,7 +1686,7 @@ int val;
 char buf[32];
 
    if (!done_setup && setup_strings)
-      wd33c93_setup(setup_strings,0);
+      wd33c93_setup(setup_strings);
 
    hostdata = (struct WD33C93_hostdata *)instance->hostdata;
 

@@ -6,7 +6,6 @@
  *  Copyright (C) 1996-1997 R?gis Duchesne
  *  Copyright (C) 1998 Joseph Malicki
  *  Copyright (C) 1999 Steve Dodd
- *  Copyright (C) 2000 Anton Altaparmakov
  */
 
 #include "ntfstypes.h"
@@ -259,7 +258,7 @@ static void ntfs_load_attributes(ntfs_inode* ino)
 	if( !buf )
 		return;
 	delta=0;
-	for(offset=0;datasize;datasize-=len)
+	for(offset=0;datasize;datasize-=len,offset+=len)
 	{
 		ntfs_io io;
 		io.fn_put=ntfs_put;
@@ -269,7 +268,7 @@ static void ntfs_load_attributes(ntfs_inode* ino)
 		if(ntfs_read_attr(ino,vol->at_attribute_list,0,offset,&io)){
 			ntfs_error("error in load_attributes\n");
 		}
-		delta=len;
+		delta+=len;
 		parse_attributes(ino,buf,&delta);
 		if(delta)
 			/* move remaining bytes to buffer start */
@@ -552,11 +551,11 @@ int ntfs_readwrite_attr(ntfs_inode *ino, ntfs_attribute *attr, int offset,
 		dest->size=chunk;
 		error=ntfs_getput_clusters(ino->vol,s_cluster,
 					   offset-s_vcn*clustersize,dest);
-		if(error)
+		if(error)/* FIXME: maybe return failure */
 		{
 			ntfs_error("Read error\n");
 			dest->size=copied;
-			return error;
+			return 0;
 		}
 		l-=chunk;
 		copied+=chunk;

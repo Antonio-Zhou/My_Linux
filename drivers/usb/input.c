@@ -1,7 +1,7 @@
 /*
- * $Id: input.c,v 1.7 2000/05/28 17:31:36 vojtech Exp $
+ *  input.c  Version 0.1
  *
- *  Copyright (c) 1999-2000 Vojtech Pavlik
+ *  Copyright (c) 1999 Vojtech Pavlik
  *
  *  The input layer module itself
  *
@@ -32,10 +32,8 @@
 #include <linux/input.h>
 #include <linux/module.h>
 #include <linux/random.h>
-#include <linux/kcomp.h>
 
 MODULE_AUTHOR("Vojtech Pavlik <vojtech@suse.cz>");
-MODULE_DESCRIPTION("Input layer module");
 
 EXPORT_SYMBOL(input_register_device);
 EXPORT_SYMBOL(input_unregister_device);
@@ -93,27 +91,11 @@ void input_event(struct input_dev *dev, unsigned int type, unsigned int code, in
 		
 		case EV_ABS:
 
-			if (code > ABS_MAX || !test_bit(code, dev->absbit))
-				return;
-
-			if (dev->absfuzz[code]) {
-				if ((value > dev->abs[code] - (dev->absfuzz[code] >> 1)) &&
-				    (value < dev->abs[code] + (dev->absfuzz[code] >> 1)))
-					return;
-
-				if ((value > dev->abs[code] - dev->absfuzz[code]) &&
-				    (value < dev->abs[code] + dev->absfuzz[code]))
-					value = (dev->abs[code] * 3 + value) >> 2;
-
-				if ((value > dev->abs[code] - (dev->absfuzz[code] << 1)) &&
-				    (value < dev->abs[code] + (dev->absfuzz[code] << 1)))
-					value = (dev->abs[code] + value) >> 1;
-			}
-
-			if (dev->abs[code] == value)
+			if (code > ABS_MAX || !test_bit(code, dev->absbit) || (value == dev->abs[code]))
 				return;
 
 			dev->abs[code] = value;
+
 			break;
 
 		case EV_REL:
@@ -379,8 +361,8 @@ devfs_handle_t input_register_minor(char *name, int minor, int minor_base)
 {
 	char devfs_name[16];
 	sprintf(devfs_name, name, minor);
-	return devfs_register(input_devfs_handle, devfs_name, DEVFS_FL_DEFAULT, INPUT_MAJOR, minor + minor_base,
-		S_IFCHR | S_IRUGO | S_IWUSR, &input_fops, NULL);
+	return devfs_register(input_devfs_handle, devfs_name, 0, DEVFS_FL_DEFAULT, INPUT_MAJOR, minor + minor_base,
+		S_IFCHR | S_IRUGO | S_IWUSR, 0, 0, &input_fops, NULL);
 }
 
 void input_unregister_minor(devfs_handle_t handle)

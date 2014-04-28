@@ -1,22 +1,6 @@
-/*
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
- *
- */
-
-#include <linux/module.h>
-#include <linux/init.h>
 #include "includes.h"
 #include "hardware.h"
 #include "card.h"
-
-MODULE_DESCRIPTION("ISDN4Linux: Driver for Spellcaster card");
-MODULE_AUTHOR("Spellcaster Telecommunications Inc.");
-MODULE_LICENSE("GPL");
-MODULE_PARM( io, "1-" __MODULE_STRING(MAX_CARDS) "i");
-MODULE_PARM(irq, "1-" __MODULE_STRING(MAX_CARDS) "i");
-MODULE_PARM(ram, "1-" __MODULE_STRING(MAX_CARDS) "i");
-MODULE_PARM(do_reset, "i");
 
 board *adapter[MAX_CARDS];
 int cinst;
@@ -53,7 +37,23 @@ int irq_supported(int irq_x)
 	return 0;
 }
 
-static int __init sc_init(void)
+#ifdef MODULE
+MODULE_PARM(io, "1-4i");
+MODULE_PARM(irq, "1-4i");
+MODULE_PARM(ram, "1-4i");
+MODULE_PARM(do_reset, "i");
+#define init_sc init_module
+#else
+/*
+Initialization code for non-module version to be included
+
+void sc_setup(char *str, int *ints)
+{
+}
+*/
+#endif
+
+int init_sc(void)
 {
 	int b = -1;
 	int i, j;
@@ -302,7 +302,7 @@ static int __init sc_init(void)
 			/*
 			 * No interrupt could be used
 			 */
-			pr_debug("Failed to acquire an IRQ line\n");
+			pr_debug("Failed to aquire an IRQ line\n");
 			continue;
 		}
 
@@ -410,7 +410,8 @@ static int __init sc_init(void)
 	return status;
 }
 
-static void  sc_exit(void)
+#ifdef MODULE
+void cleanup_module(void)
 {
 	int i, j;
 
@@ -462,6 +463,7 @@ static void  sc_exit(void)
 	}
 	pr_info("SpellCaster ISA ISDN Adapter Driver Unloaded.\n");
 }
+#endif
 
 int identify_board(unsigned long rambase, unsigned int iobase) 
 {
@@ -577,6 +579,3 @@ int identify_board(unsigned long rambase, unsigned int iobase)
 		
 	return -1;
 }
-
-module_init(sc_init);
-module_exit(sc_exit);

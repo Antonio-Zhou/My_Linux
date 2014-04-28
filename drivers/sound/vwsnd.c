@@ -138,12 +138,12 @@
  *	This happens in pcm_copy_{in,out}().
  */
 
-#include <linux/config.h>
 #include <linux/module.h>
 #include <linux/stddef.h>
+#include <linux/spinlock.h>
 #include <asm/fixmap.h>
-#include <asm/sgi-cobalt.h>
-#include <asm/spinlock.h>
+#include <asm/cobalt.h>
+#include <asm/semaphore.h>
 
 #include "sound_config.h"
 
@@ -1453,7 +1453,7 @@ typedef enum vwsnd_port_flags {
 typedef struct vwsnd_port {
 
 	spinlock_t	lock;
-	struct wait_queue *queue;
+	wait_queue_head_t queue;
 	vwsnd_port_swstate_t swstate;
 	vwsnd_port_hwstate_t hwstate;
 	vwsnd_port_flags_t flags;
@@ -1507,7 +1507,7 @@ typedef struct vwsnd_dev {
 	struct semaphore io_sema;
 	struct semaphore mix_sema;
 	mode_t		open_mode;
-	struct wait_queue *open_wait;
+	wait_queue_head_t open_wait;
 
 	lithium_t	lith;
 
@@ -1826,7 +1826,7 @@ static void pcm_shutdown_port(vwsnd_dev_t *devc,
 {
 	unsigned long flags;
 	vwsnd_port_hwstate_t hwstate;
-	struct wait_queue wait = { current, NULL };
+	DECLARE_WAITQUEUE(wait, current);
 
 	aport->swstate = SW_INITIAL;
 	add_wait_queue(&aport->queue, &wait);
@@ -2194,7 +2194,7 @@ static void pcm_flush_frag(vwsnd_dev_t *devc)
 static void pcm_write_sync(vwsnd_dev_t *devc)
 {
 	vwsnd_port_t *wport = &devc->wport;
-	struct wait_queue wait = { current, NULL };
+	DECLARE_WAITQUEUE(wait, current);
 	unsigned long flags;
 	vwsnd_port_hwstate_t hwstate;
 
@@ -2286,7 +2286,7 @@ static ssize_t vwsnd_audio_do_read(struct file *file,
 		return -EFAULT;
 	ret = 0;
 	while (count) {
-		struct wait_queue wait = { current, NULL };
+		DECLARE_WAITQUEUE(wait, current);
 		add_wait_queue(&rport->queue, &wait);
 		current->state = TASK_INTERRUPTIBLE;
 		while ((nb = swb_inc_u(rport, 0)) == 0) {
@@ -2362,7 +2362,7 @@ static ssize_t vwsnd_audio_do_write(struct file *file,
 		return -EFAULT;
 	ret = 0;
 	while (count) {
-		struct wait_queue wait = { current, NULL };
+		DECLARE_WAITQUEUE(wait, current);
 		add_wait_queue(&wport->queue, &wait);
 		current->state = TASK_INTERRUPTIBLE;
 		while ((nb = swb_inc_u(wport, 0)) == 0) {
@@ -2409,6 +2409,7 @@ static ssize_t vwsnd_audio_write(struct file *file,
 	return ret;
 }
 
+/* No kernel lock - fine */
 static unsigned int vwsnd_audio_poll(struct file *file,
 				     struct poll_table_struct *wait)
 {
@@ -3029,21 +3030,14 @@ static int vwsnd_audio_release(struct inode *inode, struct file *file)
 }
 
 static struct file_operations vwsnd_audio_fops = {
-	&vwsnd_audio_llseek,
-	&vwsnd_audio_read,
-	&vwsnd_audio_write,
-	NULL,				/* readdir */
-	&vwsnd_audio_poll,
-	&vwsnd_audio_ioctl,
-	&vwsnd_audio_mmap,
-	&vwsnd_audio_open,
-	NULL,				/* flush */
-	&vwsnd_audio_release,
-	NULL,				/* fsync */
-	NULL,				/* fasync */
-	NULL,				/* check_media_change */
-	NULL,				/* revalidate */
-	NULL,				/* lock */
+	llseek:		vwsnd_audio_llseek,
+	read:		vwsnd_audio_read,
+	write:		vwsnd_audio_write,
+	poll:		vwsnd_audio_poll,
+	ioctl:		vwsnd_audio_ioctl,
+	mmap:		vwsnd_audio_mmap,
+	open:		vwsnd_audio_open,
+	release:	vwsnd_audio_release,
 };
 
 /*****************************************************************************/
@@ -3240,21 +3234,10 @@ static int vwsnd_mixer_ioctl(struct inode *ioctl,
 }
 
 static struct file_operations vwsnd_mixer_fops = {
-	&vwsnd_mixer_llseek,
-	NULL,				/* read */
-	NULL,				/* write */
-	NULL,				/* readdir */
-	NULL,				/* poll */
-	&vwsnd_mixer_ioctl,
-	NULL,				/* mmap */
-	&vwsnd_mixer_open,
-	NULL,				/* flush */
-	&vwsnd_mixer_release,
-	NULL,				/* fsync */
-	NULL,				/* fasync */
-	NULL,				/* check_media_change */
-	NULL,				/* revalidate */
-	NULL,				/* lock */
+	llseek:		vwsnd_mixer_llseek,
+	ioctl:		vwsnd_mixer_ioctl,
+	open:		vwsnd_mixer_open,
+	release:	vwsnd_mixer_release,
 };
 
 /*****************************************************************************/

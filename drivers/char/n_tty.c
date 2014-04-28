@@ -42,7 +42,6 @@
 #include <asm/uaccess.h>
 #include <asm/system.h>
 #include <asm/bitops.h>
-#include <asm/spinlock.h>
 
 #define CONSOLE_DEV MKDEV(TTY_MAJOR,0)
 #define SYSCONS_DEV  MKDEV(TTYAUX_MAJOR,1)
@@ -122,7 +121,6 @@ void n_tty_flush_buffer(struct tty_struct * tty)
 	if (tty->link->packet) {
 		tty->ctrl_status |= TIOCPKT_FLUSHREAD;
 		wake_up_interruptible(&tty->link->read_wait);
-		wake_up_interruptible(&tty->link->poll_wait);
 	}
 }
 
@@ -231,7 +229,7 @@ static ssize_t opost_block(struct tty_struct * tty,
 
 	if (copy_from_user(buf, inbuf, nr))
 		return -EFAULT;
-	
+
 	for (i = 0, cp = buf; i < nr; i++, cp++) {
 		switch (*cp) {
 		case '\n':
@@ -442,7 +440,6 @@ static inline void n_tty_receive_break(struct tty_struct *tty)
 	}
 	put_tty_queue('\0', tty);
 	wake_up_interruptible(&tty->read_wait);
-	wake_up_interruptible(&tty->poll_wait);
 }
 
 static inline void n_tty_receive_overrun(struct tty_struct *tty)
@@ -473,7 +470,6 @@ static inline void n_tty_receive_parity_error(struct tty_struct *tty,
 	else
 		put_tty_queue(c, tty);
 	wake_up_interruptible(&tty->read_wait);
-	wake_up_interruptible(&tty->poll_wait);
 }
 
 static inline void n_tty_receive_char(struct tty_struct *tty, unsigned char c)
@@ -635,12 +631,9 @@ send_signal:
 			tty->canon_head = tty->read_head;
 			tty->canon_data++;
 			if (tty->fasync)
-				kill_fasync(tty->fasync, SIGIO);
-			if (tty->read_wait || tty->poll_wait)
-			{
+				kill_fasync(tty->fasync, SIGIO, POLL_IN);
+			if (waitqueue_active(&tty->read_wait))
 				wake_up_interruptible(&tty->read_wait);
-				wake_up_interruptible(&tty->poll_wait);
-			}
 			return;
 		}
 	}
@@ -743,12 +736,9 @@ static void n_tty_receive_buf(struct tty_struct *tty, const unsigned char *cp,
 
 	if (!tty->icanon && (tty->read_cnt >= tty->minimum_to_wake)) {
 		if (tty->fasync)
-			kill_fasync(tty->fasync, SIGIO);
-		if (tty->read_wait||tty->poll_wait)
-		{
+			kill_fasync(tty->fasync, SIGIO, POLL_IN);
+		if (waitqueue_active(&tty->read_wait))
 			wake_up_interruptible(&tty->read_wait);
-			wake_up_interruptible(&tty->poll_wait);
-		}
 	}
 
 	/*
@@ -851,7 +841,7 @@ static int n_tty_open(struct tty_struct *tty)
 
 	if (!tty->read_buf) {
 		tty->read_buf = (unsigned char *)
-			get_free_page(in_interrupt() ? GFP_ATOMIC : GFP_KERNEL);
+			get_zeroed_page(in_interrupt() ? GFP_ATOMIC : GFP_KERNEL);
 		if (!tty->read_buf)
 			return -ENOMEM;
 	}
@@ -914,7 +904,7 @@ static ssize_t read_chan(struct tty_struct *tty, struct file *file,
 			 unsigned char *buf, size_t nr)
 {
 	unsigned char *b = buf;
-	struct wait_queue wait = { current, NULL };
+	DECLARE_WAITQUEUE(wait, current);
 	int c;
 	int minimum, time;
 	ssize_t retval = 0;
@@ -956,7 +946,7 @@ do_it_again:
 		if (minimum) {
 			if (time)
 				tty->minimum_to_wake = 1;
-			else if ((!waitqueue_active(&tty->read_wait) && !waitqueue_active(&tty->poll_wait)) ||
+			else if (!waitqueue_active(&tty->read_wait) ||
 				 (tty->minimum_to_wake > minimum))
 				tty->minimum_to_wake = minimum;
 		} else {
@@ -995,7 +985,7 @@ do_it_again:
 		/* This statement must be first before checking for input
 		   so that any interrupt will set the state back to
 		   TASK_RUNNING. */
-		current->state = TASK_INTERRUPTIBLE;
+		set_current_state(TASK_INTERRUPTIBLE);
 		
 		if (((minimum - (b - buf)) < tty->minimum_to_wake) &&
 		    ((minimum - (b - buf)) >= 1))
@@ -1088,7 +1078,7 @@ do_it_again:
 	up(&tty->atomic_read);
 	remove_wait_queue(&tty->read_wait, &wait);
 
-	if (!waitqueue_active(&tty->read_wait) && !waitqueue_active(&tty->poll_wait))
+	if (!waitqueue_active(&tty->read_wait))
 		tty->minimum_to_wake = minimum;
 
 	current->state = TASK_RUNNING;
@@ -1107,7 +1097,7 @@ static ssize_t write_chan(struct tty_struct * tty, struct file * file,
 			  const unsigned char * buf, size_t nr)
 {
 	const unsigned char *b = buf;
-	struct wait_queue wait = { current, NULL };
+	DECLARE_WAITQUEUE(wait, current);
 	int c;
 	ssize_t retval = 0;
 
@@ -1122,7 +1112,7 @@ static ssize_t write_chan(struct tty_struct * tty, struct file * file,
 
 	add_wait_queue(&tty->write_wait, &wait);
 	while (1) {
-		current->state = TASK_INTERRUPTIBLE;
+		set_current_state(TASK_INTERRUPTIBLE);
 		if (signal_pending(current)) {
 			retval = -ERESTARTSYS;
 			break;
@@ -1142,7 +1132,9 @@ static ssize_t write_chan(struct tty_struct * tty, struct file * file,
 				nr -= num;
 				if (nr == 0)
 					break;
+				current->state = TASK_RUNNING;
 				get_user(c, b);
+				current->state = TASK_INTERRUPTIBLE;
 				if (opost(c, tty) < 0)
 					break;
 				b++; nr--;
@@ -1150,7 +1142,9 @@ static ssize_t write_chan(struct tty_struct * tty, struct file * file,
 			if (tty->driver.flush_chars)
 				tty->driver.flush_chars(tty);
 		} else {
+			current->state = TASK_RUNNING;
 			c = tty->driver.write(tty, 1, b, nr);
+			current->state = TASK_INTERRUPTIBLE;
 			if (c < 0) {
 				retval = c;
 				goto break_out;
@@ -1172,11 +1166,13 @@ break_out:
 	return (b - buf) ? b - buf : retval;
 }
 
+/* Called without the kernel lock held - fine */
 static unsigned int normal_poll(struct tty_struct * tty, struct file * file, poll_table *wait)
 {
 	unsigned int mask = 0;
 
-	poll_wait(file, &tty->poll_wait, wait);
+	poll_wait(file, &tty->read_wait, wait);
+	poll_wait(file, &tty->write_wait, wait);
 	if (input_available_p(tty, TIME_CHAR(tty) ? 0 : MIN_CHAR(tty)))
 		mask |= POLLIN | POLLRDNORM;
 	if (tty->packet && tty->link->ctrl_status)

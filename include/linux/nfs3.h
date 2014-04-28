@@ -33,7 +33,7 @@
 enum nfs3_createmode {
 	NFS3_CREATE_UNCHECKED = 0,
 	NFS3_CREATE_GUARDED = 1,
-	NFS3_CREATE_EXCLUSIVE =	2
+	NFS3_CREATE_EXCLUSIVE = 2
 };
 
 /* NFSv3 file system properties */
@@ -56,11 +56,6 @@ enum nfs3_ftype {
 	NF3SOCK = 6,
 	NF3FIFO = 7,	/* changed from NFSv2 (was 8) */
 	NF3BAD  = 8
-};
-
-struct nfs3_fh {
-	unsigned short		size;
-	unsigned char		data[NFS3_FHSIZE];
 };
 
 #define NFS3_VERSION		3
@@ -93,12 +88,12 @@ struct nfs3_fh {
 #define MOUNTPROC3_MNT		1
 #define MOUNTPROC3_UMNT		3
 #define MOUNTPROC3_UMNTALL	4
+ 
 
 #if defined(__KERNEL__) || defined(NFS_NEED_KERNEL_TYPES)
 
 /* Number of 32bit words in post_op_attr */
-#define NFS3_POST_OP_ATTR_WORDS	22
- 
+#define NFS3_POST_OP_ATTR_WORDS		22
 
 #endif /* __KERNEL__ */
 #endif /* _LINUX_NFS3_H */

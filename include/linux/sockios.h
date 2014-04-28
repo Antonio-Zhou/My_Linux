@@ -20,6 +20,10 @@
 
 #include <asm/sockios.h>
 
+/* Linux-specific socket ioctls */
+#define SIOCINQ		FIONREAD
+#define SIOCOUTQ	TIOCOUTQ
+
 /* Routing table calls. */
 #define SIOCADDRT	0x890B		/* add routing table entry	*/
 #define SIOCDELRT	0x890C		/* delete routing table entry	*/
@@ -67,9 +71,6 @@
 
 #define SIOCGIFTXQLEN	0x8942		/* Get the tx queue length	*/
 #define SIOCSIFTXQLEN	0x8943		/* Set the tx queue length 	*/
-
-#define SIOCGIFDIVERT	0x8944		/* Frame diversion support */
-#define SIOCSIFDIVERT	0x8945		/* Set frame diversion options */
 
 
 /* ARP cache control calls. */

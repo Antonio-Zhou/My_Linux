@@ -1,35 +1,62 @@
-/* $Id: bkm_a4t.c,v 1.1.2.1 2001/12/31 13:26:45 kai Exp $
+/* $Id: bkm_a4t.c,v 1.9 1999/12/19 13:09:41 keil Exp $
+ * bkm_a4t.c    low level stuff for T-Berkom A4T
+ *              derived from the original file sedlbauer.c
+ *              derived from the original file niccy.c
+ *              derived from the original file netjet.c
  *
- * low level stuff for T-Berkom A4T
+ * Author       Roland Klabunde (R.Klabunde@Berkom.de)
  *
- * Author       Roland Klabunde
- * Copyright    by Roland Klabunde   <R.Klabunde@Berkom.de>
- * 
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
+ * $Log: bkm_a4t.c,v $
+ * Revision 1.9  1999/12/19 13:09:41  keil
+ * changed TASK_INTERRUPTIBLE into TASK_UNINTERRUPTIBLE for
+ * signal proof delays
+ *
+ * Revision 1.8  1999/09/04 06:20:05  keil
+ * Changes from kernel set_current_state()
+ *
+ * Revision 1.7  1999/08/22 20:26:55  calle
+ * backported changes from kernel 2.3.14:
+ * - several #include "config.h" gone, others come.
+ * - "struct device" changed to "struct net_device" in 2.3.14, added a
+ *   define in isdn_compat.h for older kernel versions.
+ *
+ * Revision 1.6  1999/08/11 21:01:22  keil
+ * new PCI codefix
+ *
+ * Revision 1.5  1999/08/10 16:01:46  calle
+ * struct pci_dev changed in 2.3.13. Made the necessary changes.
+ *
+ * Revision 1.4  1999/07/14 11:43:14  keil
+ * correct PCI_SUBSYSTEM_VENDOR_ID
+ *
+ * Revision 1.3  1999/07/12 21:04:58  keil
+ * fix race in IRQ handling
+ * added watchdog for lost IRQs
+ *
+ * Revision 1.2  1999/07/01 08:07:53  keil
+ * Initial version
+ *
  *
  */
 
 #define __NO_VERSION__
 
 #include <linux/config.h>
-#include <linux/init.h>
 #include "hisax.h"
 #include "isac.h"
 #include "hscx.h"
 #include "jade.h"
 #include "isdnl1.h"
-#include <linux/pci.h>
-#include <linux/isdn_compat.h>
 #include "bkm_ax.h"
+#include <linux/pci.h>
 
 extern const char *CardType[];
 
-const char *bkm_a4t_revision = "$Revision: 1.1.2.1 $";
+const char *bkm_a4t_revision = "$Revision: 1.9 $";
 
 
 static inline u_char
-readreg(unsigned int ale, unsigned long adr, u_char off)
+readreg(unsigned int ale, unsigned int adr, u_char off)
 {
 	register u_int ret;
 	long flags;
@@ -47,7 +74,7 @@ readreg(unsigned int ale, unsigned long adr, u_char off)
 
 
 static inline void
-readfifo(unsigned int ale, unsigned long adr, u_char off, u_char * data, int size)
+readfifo(unsigned int ale, unsigned int adr, u_char off, u_char * data, int size)
 {
 	/* fifo read without cli because it's allready done  */
 	int i;
@@ -57,7 +84,7 @@ readfifo(unsigned int ale, unsigned long adr, u_char off, u_char * data, int siz
 
 
 static inline void
-writereg(unsigned int ale, unsigned long adr, u_char off, u_char data)
+writereg(unsigned int ale, unsigned int adr, u_char off, u_char data)
 {
 	long flags;
 	unsigned int *po = (unsigned int *) adr;	/* Postoffice */
@@ -72,7 +99,7 @@ writereg(unsigned int ale, unsigned long adr, u_char off, u_char data)
 
 
 static inline void
-writefifo(unsigned int ale, unsigned long adr, u_char off, u_char * data, int size)
+writefifo(unsigned int ale, unsigned int adr, u_char off, u_char * data, int size)
 {
 	/* fifo write without cli because it's allready done  */
 	int i;
@@ -267,8 +294,8 @@ BKM_card_msg(struct IsdnCardState *cs, int mt, void *arg)
 
 static struct pci_dev *dev_a4t __initdata = NULL;
 
-int __init
-setup_bkm_a4t(struct IsdnCard *card)
+__initfunc(int
+	   setup_bkm_a4t(struct IsdnCard *card))
 {
 	struct IsdnCardState *cs = card->cs;
 	char tmp[64];
@@ -289,20 +316,15 @@ setup_bkm_a4t(struct IsdnCard *card)
 		printk(KERN_ERR "bkm_a4t: no PCI bus present\n");
 		return (0);
 	}
-	while ((dev_a4t = pci_find_device(PCI_VENDOR_ID_ZORAN,
-		PCI_DEVICE_ID_ZORAN_36120, dev_a4t))) {
-		u16 sub_sys;
-		u16 sub_vendor;
+	if ((dev_a4t = pci_find_device(I20_VENDOR_ID, I20_DEVICE_ID, dev_a4t))) {
+		u_int sub_sys_id = 0;
 
-		pci_read_config_word(dev_a4t, PCI_SUBSYSTEM_VENDOR_ID, &sub_vendor);
-		pci_read_config_word(dev_a4t, PCI_SUBSYSTEM_ID, &sub_sys);
-		if ((sub_sys == PCI_DEVICE_ID_BERKOM_A4T) && (sub_vendor == PCI_VENDOR_ID_BERKOM)) {
-			if (pci_enable_device(dev_a4t))
-				return(0);
+		pci_read_config_dword(dev_a4t, PCI_SUBSYSTEM_VENDOR_ID,
+			&sub_sys_id);
+		if (sub_sys_id == ((A4T_SUBSYS_ID << 16) | A4T_SUBVEN_ID)) {
 			found = 1;
-			pci_memaddr = dev_a4t->base_address[ 0] & PCI_BASE_ADDRESS_MEM_MASK;
+			pci_memaddr = dev_a4t->resource[ 0].start;
 			cs->irq = dev_a4t->irq;
-			break;
 		}
 	}
 	if (!found) {
@@ -317,11 +339,12 @@ setup_bkm_a4t(struct IsdnCard *card)
 		printk(KERN_WARNING "HiSax: %s: No Memory base address\n", CardType[card->typ]);
 		return (0);
 	}
-	cs->hw.ax.base = (long) ioremap(pci_memaddr, 4096);
+	pci_memaddr &= PCI_BASE_ADDRESS_MEM_MASK;
+	cs->hw.ax.base = (u_int) ioremap(pci_memaddr, 4096);
 	/* Check suspecious address */
 	pI20_Regs = (I20_REGISTER_FILE *) (cs->hw.ax.base);
 	if ((pI20_Regs->i20IntStatus & 0x8EFFFFFF) != 0) {
-		printk(KERN_WARNING "HiSax: %s address %lx-%lx suspicious\n",
+		printk(KERN_WARNING "HiSax: %s address %x-%x suspecious\n",
 		       CardType[card->typ], cs->hw.ax.base, cs->hw.ax.base + 4096);
 		iounmap((void *) cs->hw.ax.base);
 		cs->hw.ax.base = 0;
@@ -336,7 +359,7 @@ setup_bkm_a4t(struct IsdnCard *card)
 	printk(KERN_WARNING "HiSax: %s: unable to configure\n", CardType[card->typ]);
 	return (0);
 #endif				/* CONFIG_PCI */
-	printk(KERN_INFO "HiSax: %s: Card configured at 0x%lX IRQ %d\n",
+	printk(KERN_INFO "HiSax: %s: Card configured at 0x%X IRQ %d\n",
 	       CardType[card->typ], cs->hw.ax.base, cs->irq);
 
 	reset_bkm(cs);

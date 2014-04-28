@@ -24,11 +24,10 @@ then the system has crashed so hard (eg. hardware-wise) that either it
 cannot even accept NMI interrupts, or the crash has made the kernel
 unable to print messages.
 
-You can find NMI watchdog patch against Linux 2.2.x at 
-http://people.redhat.com/mingo/NMI-watchdog-patches/
-
+NOTE: currently the NMI-oopser is enabled unconditionally on x86 SMP
+boxes.
 
 [ feel free to send bug reports, suggestions and patches to
   Ingo Molnar <mingo@redhat.com> or the Linux SMP mailing
-  list at <linux-smp@vger.kernel.org> ]
+  list at <linux-smp@vger.rutgers.edu> ]
 

@@ -2,13 +2,13 @@
  *  arch/s390/kernel/cpcmd.c
  *
  *  S390 version
- *    Copyright (C) 1999 IBM Deutschland Entwicklung GmbH, IBM Corporation
+ *    Copyright (C) 1999,2000 IBM Deutschland Entwicklung GmbH, IBM Corporation
  *    Author(s): Martin Schwidefsky (schwidefsky@de.ibm.com),
  */
 
 #include <linux/stddef.h>
 #include <linux/kernel.h>
-#include <linux/string.h>
+#include <asm/string.h>
 #include <asm/ebcdic.h>
 
 void cpcmd(char *cmd, char *response, int rlen)
@@ -22,10 +22,10 @@ void cpcmd(char *cmd, char *response, int rlen)
         ASCEBC(obuffer,olen);
 
         if (response != NULL && rlen > 0) {
-                asm volatile ("LRA   2,0(%0)\n\t"
+                asm volatile ("LRA   2,0(0,%0)\n\t"
                               "LR    4,%1\n\t"
                               "O     4,%4\n\t"
-                              "LRA   3,0(%2)\n\t"
+                              "LRA   3,0(0,%2)\n\t"
                               "LR    5,%3\n\t"
                               ".long 0x83240008 # Diagnose 83\n\t"
                               : /* no output */
@@ -34,7 +34,7 @@ void cpcmd(char *cmd, char *response, int rlen)
                               : "2", "3", "4", "5" );
                 EBCASC(response, rlen);
         } else {
-                asm volatile ("LRA   2,0(%0)\n\t"
+                asm volatile ("LRA   2,0(0,%0)\n\t"
                               "LR    3,%1\n\t"
                               ".long 0x83230008 # Diagnose 83\n\t"
                               : /* no output */

@@ -9,7 +9,7 @@
  *	Al Longyear <longyear@netcom.com>, Paul Mackerras <Paul.Mackerras@cs.anu.edu.au>
  *
  * Original release 01/11/99
- * $Id: n_hdlc.c,v 2.4 2002/12/19 18:58:54 paulkf Exp $
+ * ==FILEDATE 19991217==
  *
  * This code is released under the GNU General Public License (GPL)
  *
@@ -78,7 +78,7 @@
  */
 
 #define HDLC_MAGIC 0x239e
-#define HDLC_VERSION "$Revision: 2.4 $"
+#define HDLC_VERSION "1.13"
 
 #include <linux/version.h>
 #include <linux/config.h>
@@ -93,12 +93,18 @@
 #undef VERSION
 #define VERSION(major,minor,patch) (((((major)<<8)+(minor))<<8)+(patch))
 
+#if LINUX_VERSION_CODE < VERSION(2,1,14)
+#include <linux/ioport.h>
+#endif
+
+#if LINUX_VERSION_CODE >= VERSION(2,1,23)
 #include <linux/poll.h>
+#endif
+
 #include <linux/in.h>
 #include <linux/malloc.h>
 #include <linux/tty.h>
 #include <linux/errno.h>
-#include <linux/init.h>
 #include <linux/string.h>	/* used in new tty drivers */
 #include <linux/signal.h>	/* used in new tty drivers */
 #include <asm/system.h>
@@ -112,23 +118,86 @@
 #include <linux/kerneld.h>
 #endif
 
-#if LINUX_VERSION_CODE < VERSION(2,2,18) 
+#if LINUX_VERSION_CODE < VERSION(2,3,0) 
 typedef struct wait_queue *wait_queue_head_t;
 #define DECLARE_WAITQUEUE(name,task) struct wait_queue (name) = {(task),NULL}
 #define init_waitqueue_head(head) *(head) = NULL
 #define set_current_state(a) current->state = (a)
 #endif
 
+#if LINUX_VERSION_CODE >= VERSION(2,1,4)
 #include <asm/segment.h>
 #define GET_USER(error,value,addr) error = get_user(value,addr)
 #define COPY_FROM_USER(error,dest,src,size) error = copy_from_user(dest,src,size) ? -EFAULT : 0
 #define PUT_USER(error,value,addr) error = put_user(value,addr)
 #define COPY_TO_USER(error,dest,src,size) error = copy_to_user(dest,src,size) ? -EFAULT : 0
 
+#if LINUX_VERSION_CODE >= VERSION(2,1,5)
 #include <asm/uaccess.h>
+#endif
 
+#else  /* 2.0.x and 2.1.x before 2.1.4 */
+
+#define GET_USER(error,value,addr)					  \
+do {									  \
+	error = verify_area (VERIFY_READ, (void *) addr, sizeof (value)); \
+	if (error == 0)							  \
+		value = get_user(addr);					  \
+} while (0)
+
+#define COPY_FROM_USER(error,dest,src,size)				  \
+do {									  \
+	error = verify_area (VERIFY_READ, (void *) src, size);		  \
+	if (error == 0)							  \
+		memcpy_fromfs (dest, src, size);			  \
+} while (0)
+
+#define PUT_USER(error,value,addr)					   \
+do {									   \
+	error = verify_area (VERIFY_WRITE, (void *) addr, sizeof (value)); \
+	if (error == 0)							   \
+		put_user (value, addr);					   \
+} while (0)
+
+#define COPY_TO_USER(error,dest,src,size)				  \
+do {									  \
+	error = verify_area (VERIFY_WRITE, (void *) dest, size);		  \
+	if (error == 0)							  \
+		memcpy_tofs (dest, src, size);				  \
+} while (0)
+
+#endif
+
+#if LINUX_VERSION_CODE < VERSION(2,1,0)
+#define __init
+typedef int spinlock_t;
+#define spin_lock_init(a)
+#define spin_lock_irqsave(a,b) {save_flags((b));cli();}
+#define spin_unlock_irqrestore(a,b) {restore_flags((b));}
+#define spin_lock(a)
+#define spin_unlock(a)
+#define schedule_timeout(a){current->timeout = jiffies + (a); schedule();}
+#endif
+
+#if LINUX_VERSION_CODE < VERSION(2,1,37)
+#define test_and_set_bit(nr, addr)	set_bit(nr, addr)
+#endif
+
+#if LINUX_VERSION_CODE < VERSION(2,1,57)
+#define signal_pending(p)	((p)->signal & ~(p)->blocked)
+#endif
+
+#if LINUX_VERSION_CODE < VERSION(2,1,25)
+#define net_device_stats	enet_statistics
+#endif
+
+#if LINUX_VERSION_CODE < VERSION(2,1,60)
+typedef int		rw_ret_t;
+typedef unsigned int	rw_count_t;
+#else
 typedef ssize_t		rw_ret_t;
 typedef size_t		rw_count_t;
+#endif
 
 /*
  * Buffers for individual HDLC frames
@@ -170,7 +239,6 @@ struct n_hdlc {
 	/* Queues for select() functionality */
 	wait_queue_head_t read_wait;
 	wait_queue_head_t write_wait;
-	wait_queue_head_t poll_wait;
 
 	int		tbusy;		/* reentrancy flag for tx wakeup code */
 	int		woke_up;
@@ -184,23 +252,25 @@ struct n_hdlc {
 /*
  * HDLC buffer list manipulation functions
  */
-static void n_hdlc_buf_list_init(N_HDLC_BUF_LIST *list);
-static void n_hdlc_buf_put(N_HDLC_BUF_LIST *list,N_HDLC_BUF *buf);
-static N_HDLC_BUF* n_hdlc_buf_get(N_HDLC_BUF_LIST *list);
+void n_hdlc_buf_list_init(N_HDLC_BUF_LIST *list);
+void n_hdlc_buf_put(N_HDLC_BUF_LIST *list,N_HDLC_BUF *buf);
+N_HDLC_BUF* n_hdlc_buf_get(N_HDLC_BUF_LIST *list);
 
 /* Local functions */
 
 static struct n_hdlc *n_hdlc_alloc (void);
 
+#if LINUX_VERSION_CODE >= VERSION(2,1,19) 
 MODULE_PARM(debuglevel, "i");
 MODULE_PARM(maxframe, "i");
+#endif
 
 /* debug level can be set by insmod for debugging purposes */
 #define DEBUG_LEVEL_INFO	1
-static int debuglevel=0;
+int debuglevel=0;
 
 /* max frame size for memory allocations */
-static ssize_t	maxframe=4096;
+ssize_t	maxframe=4096;
 
 /* TTY callbacks */
 
@@ -210,8 +280,13 @@ static rw_ret_t n_hdlc_tty_write(struct tty_struct *,
 	struct file *, const __u8 *, rw_count_t);
 static int n_hdlc_tty_ioctl(struct tty_struct *,
 	struct file *, unsigned int, unsigned long);
+#if LINUX_VERSION_CODE < VERSION(2,1,23)
+static int n_hdlc_tty_select (struct tty_struct *tty, struct inode *inode,
+		      struct file *filp, int sel_type, select_table * wait);
+#else
 static unsigned int n_hdlc_tty_poll (struct tty_struct *tty, struct file *filp,
 				  poll_table * wait);
+#endif
 static int n_hdlc_tty_open (struct tty_struct *);
 static void n_hdlc_tty_close (struct tty_struct *);
 static int n_hdlc_tty_room (struct tty_struct *tty);
@@ -242,7 +317,6 @@ static void n_hdlc_release (struct n_hdlc *n_hdlc)
 		
 	/* Ensure that the n_hdlcd process is not hanging on select()/poll() */
 	wake_up_interruptible (&n_hdlc->read_wait);
-	wake_up_interruptible (&n_hdlc->poll_wait);
 	wake_up_interruptible (&n_hdlc->write_wait);
 
 	if (tty != NULL && tty->disc_data == n_hdlc)
@@ -389,10 +463,9 @@ static void n_hdlc_send_frames (struct n_hdlc *n_hdlc, struct tty_struct *tty)
 	register int actual;
 	unsigned long flags;
 	N_HDLC_BUF *tbuf;
-
+	
 	if (debuglevel >= DEBUG_LEVEL_INFO)	
 		printk("%s(%d)n_hdlc_send_frames() called\n",__FILE__,__LINE__);
- check_again:
 		
 	save_flags(flags);
 	cli ();
@@ -402,7 +475,6 @@ static void n_hdlc_send_frames (struct n_hdlc *n_hdlc, struct tty_struct *tty)
 		return;
 	}
 	n_hdlc->tbusy = 1;
-	n_hdlc->woke_up = 0;
 	restore_flags(flags);
 
 	/* get current transmit buffer or get new transmit */
@@ -418,6 +490,7 @@ static void n_hdlc_send_frames (struct n_hdlc *n_hdlc, struct tty_struct *tty)
 				__FILE__,__LINE__,tbuf,tbuf->count);
 			
 		/* Send the next block of data to device */
+		n_hdlc->woke_up = 0;
 		tty->flags |= (1 << TTY_DO_WRITE_WAKEUP);
 		actual = tty->driver.write(tty, 0, tbuf->buf, tbuf->count);
 		    
@@ -439,7 +512,6 @@ static void n_hdlc_send_frames (struct n_hdlc *n_hdlc, struct tty_struct *tty)
 			
 			/* wait up sleeping writers */
 			wake_up_interruptible(&n_hdlc->write_wait);
-			wake_up_interruptible(&n_hdlc->poll_wait);
 	
 			/* get next pending transmit buffer */
 			tbuf = n_hdlc_buf_get(&n_hdlc->tx_buf_list);
@@ -449,6 +521,11 @@ static void n_hdlc_send_frames (struct n_hdlc *n_hdlc, struct tty_struct *tty)
 					__FILE__,__LINE__,tbuf);
 					
 			/* buffer not accepted by driver */
+			
+			/* check if wake up code called since last write call */
+			if (n_hdlc->woke_up)
+				continue;
+				
 			/* set this buffer as pending buffer */
 			n_hdlc->tbuf = tbuf;
 			break;
@@ -464,9 +541,6 @@ static void n_hdlc_send_frames (struct n_hdlc *n_hdlc, struct tty_struct *tty)
 	n_hdlc->tbusy = 0;
 	restore_flags(flags);
 	
-        if (n_hdlc->woke_up)
-	  goto check_again;
-
 	if (debuglevel >= DEBUG_LEVEL_INFO)	
 		printk("%s(%d)n_hdlc_send_frames() exit\n",__FILE__,__LINE__);
 		
@@ -494,8 +568,11 @@ static void n_hdlc_tty_wakeup (struct tty_struct *tty)
 		tty->flags &= ~(1 << TTY_DO_WRITE_WAKEUP);
 		return;
 	}
-
-	n_hdlc_send_frames (n_hdlc, tty);
+	
+	if (!n_hdlc->tbuf)
+		tty->flags &= ~(1 << TTY_DO_WRITE_WAKEUP);
+	else
+		n_hdlc_send_frames (n_hdlc, tty);
 		
 }	/* end of n_hdlc_tty_wakeup() */
 
@@ -582,12 +659,11 @@ static void n_hdlc_tty_receive(struct tty_struct *tty,
 	
 	/* wake up any blocked reads and perform async signalling */
 	wake_up_interruptible (&n_hdlc->read_wait);
-	wake_up_interruptible (&n_hdlc->poll_wait);
 	if (n_hdlc->tty->fasync != NULL)
-#if LINUX_VERSION_CODE >= VERSION(2,2,14) && defined(__rh_config_h__)
-		kill_fasync (n_hdlc->tty->fasync, SIGIO, POLL_IN);
-#else
+#if LINUX_VERSION_CODE < VERSION(2,3,0) 
 		kill_fasync (n_hdlc->tty->fasync, SIGIO);
+#else
+		kill_fasync (n_hdlc->tty->fasync, SIGIO, POLL_IN);
 #endif
 }	/* end of n_hdlc_tty_receive() */
 
@@ -712,30 +788,33 @@ static rw_ret_t n_hdlc_tty_write (struct tty_struct *tty, struct file *file,
 		count = maxframe;
 	}
 	
-	add_wait_queue(&n_hdlc->write_wait, &wait);
-	set_current_state(TASK_INTERRUPTIBLE);
-	
 	/* Allocate transmit buffer */
-	/* sleep until transmit buffer available */		
-	while (!(tbuf = n_hdlc_buf_get(&n_hdlc->tx_free_buf_list))) {
-		schedule();
-			
-		n_hdlc = tty2n_hdlc (tty);
-		if (!n_hdlc || n_hdlc->magic != HDLC_MAGIC || 
-		    tty != n_hdlc->tty) {
-			printk("n_hdlc_tty_write: %p invalid after wait!\n", n_hdlc);
-			error = -EIO;
-			break;
-		}
-			
-		if (signal_pending(current)) {
-			error = -EINTR;
-			break;
-		}
-	}
+	tbuf = n_hdlc_buf_get(&n_hdlc->tx_free_buf_list);
+	if (!tbuf) {
+		/* sleep until transmit buffer available */		
+		add_wait_queue(&n_hdlc->write_wait, &wait);
+		while (!tbuf) {
+			set_current_state(TASK_INTERRUPTIBLE);
+			schedule();
 
-	set_current_state(TASK_RUNNING);
-	remove_wait_queue(&n_hdlc->write_wait, &wait);
+			n_hdlc = tty2n_hdlc (tty);
+			if (!n_hdlc || n_hdlc->magic != HDLC_MAGIC || 
+			    tty != n_hdlc->tty) {
+				printk("n_hdlc_tty_write: %p invalid after wait!\n", n_hdlc);
+				error = -EIO;
+				break;
+			}
+			
+			if (signal_pending(current)) {
+				error = -EINTR;
+				break;
+			}
+			
+			tbuf = n_hdlc_buf_get(&n_hdlc->tx_free_buf_list);
+		}
+		set_current_state(TASK_RUNNING);
+		remove_wait_queue(&n_hdlc->write_wait, &wait);
+	}
 
 	if (!error) {		
 		/* Retrieve the user's buffer */
@@ -817,6 +896,73 @@ static int n_hdlc_tty_ioctl (struct tty_struct *tty, struct file * file,
 	
 }	/* end of n_hdlc_tty_ioctl() */
 
+#if LINUX_VERSION_CODE < VERSION(2,1,23)
+/* n_hdlc_tty_select()
+ * 
+ * 	Device select method. Determine if operation requires
+ * 	blocking and if so put appropriate wait queue in select
+ * 	table and return 0, otherwise return 1.
+ * 	
+ * Arguments:
+ * 
+ * 	tty		pointer to tty device instance data
+ * 	inode		pointer to inode for device
+ * 	filp		pointer to file object
+ * 	sel_type	identified the select type (read/write/exception)
+ * 	wait		select table for adding wait queue if appropriate
+ * 	
+ * Return Value:
+ * 
+ * 	1 if no need to block on operation
+ * 	0 if must block and wait queue added to select table
+ */
+static int n_hdlc_tty_select (struct tty_struct *tty, struct inode *inode,
+		struct file *filp, int sel_type, select_table * wait)
+{
+	struct n_hdlc *n_hdlc = tty2n_hdlc(tty);
+	int result = 1;
+	
+	if (debuglevel >= DEBUG_LEVEL_INFO)	
+		printk("%s(%d)n_hdlc_tty_select() called\n",__FILE__,__LINE__);
+		
+	/* Verify the status of the device */
+	if (!n_hdlc)
+		return -EBADF;
+
+	if (n_hdlc->magic != HDLC_MAGIC || tty != n_hdlc->tty)
+		return -EBADF;
+
+	switch (sel_type) {
+	case SEL_IN:
+		if (n_hdlc->rx_buf_list.head)
+			break;
+
+	case SEL_EX:	/* Exceptions or read errors */
+		/* Is this a pty link and the remote disconnected? */
+		if (tty->flags & (1 << TTY_OTHER_CLOSED))
+			break;
+
+		/* Is this a local link and the modem disconnected? */
+		if (tty_hung_up_p (filp))
+			break;
+
+		select_wait (&n_hdlc->read_wait, wait);
+		result = 0;
+		break;
+		
+	/* Write mode. A write is allowed if there is no current transmission */
+	case SEL_OUT:
+		if (!n_hdlc->tx_free_buf_list.head) {
+			select_wait (&n_hdlc->write_wait, wait);
+			result = 0;
+		}
+		break;
+	}
+	return result;
+}	/* end of n_hdlc_tty_select() */
+
+#else	/* 2.1.23 or later */
+
 /* n_hdlc_tty_poll()
  * 
  * 	TTY callback for poll system call. Determine which 
@@ -832,6 +978,8 @@ static int n_hdlc_tty_ioctl (struct tty_struct *tty, struct file * file,
  * Return Value:
  * 
  * 	bit mask containing info on which ops will not block
+ *
+ * Note: Called without the kernel lock held. Which is fine.
  */
 static unsigned int n_hdlc_tty_poll (struct tty_struct *tty,
 	 struct file *filp, poll_table * wait)
@@ -845,8 +993,13 @@ static unsigned int n_hdlc_tty_poll (struct tty_struct *tty,
 	if (n_hdlc && n_hdlc->magic == HDLC_MAGIC && tty == n_hdlc->tty) {
 		/* queue current process into any wait queue that */
 		/* may awaken in the future (read and write) */
-		poll_wait(filp, &n_hdlc->poll_wait, wait);
-
+#if LINUX_VERSION_CODE < VERSION(2,1,89)
+		poll_wait(&n_hdlc->read_wait, wait);
+		poll_wait(&n_hdlc->write_wait, wait);
+#else
+		poll_wait(filp, &n_hdlc->read_wait, wait);
+		poll_wait(filp, &n_hdlc->write_wait, wait);
+#endif
 		/* set bits for operations that wont block */
 		if(n_hdlc->rx_buf_list.head)
 			mask |= POLLIN | POLLRDNORM;	/* readable */
@@ -859,6 +1012,8 @@ static unsigned int n_hdlc_tty_poll (struct tty_struct *tty,
 	}
 	return mask;
 }	/* end of n_hdlc_tty_poll() */
+
+#endif
 
 /* n_hdlc_alloc()
  * 
@@ -907,7 +1062,6 @@ static struct n_hdlc *n_hdlc_alloc (void)
 
 	n_hdlc->flags  = 0;
 	init_waitqueue_head(&n_hdlc->read_wait);
-	init_waitqueue_head(&n_hdlc->poll_wait);
 	init_waitqueue_head(&n_hdlc->write_wait);
 	
 	return n_hdlc;
@@ -921,7 +1075,7 @@ static struct n_hdlc *n_hdlc_alloc (void)
  * Arguments:	 	list	pointer to buffer list
  * Return Value:	None	
  */
-static void n_hdlc_buf_list_init(N_HDLC_BUF_LIST *list)
+void n_hdlc_buf_list_init(N_HDLC_BUF_LIST *list)
 {
 	memset(list,0,sizeof(N_HDLC_BUF_LIST));
 	spin_lock_init(&list->spinlock);
@@ -938,7 +1092,7 @@ static void n_hdlc_buf_list_init(N_HDLC_BUF_LIST *list)
  * 
  * Return Value:	None	
  */
-static void n_hdlc_buf_put(N_HDLC_BUF_LIST *list,N_HDLC_BUF *buf)
+void n_hdlc_buf_put(N_HDLC_BUF_LIST *list,N_HDLC_BUF *buf)
 {
 	unsigned long flags;
 	spin_lock_irqsave(&list->spinlock,flags);
@@ -968,7 +1122,7 @@ static void n_hdlc_buf_put(N_HDLC_BUF_LIST *list,N_HDLC_BUF *buf)
  * 
  * 	pointer to HDLC buffer if available, otherwise NULL
  */
-static N_HDLC_BUF* n_hdlc_buf_get(N_HDLC_BUF_LIST *list)
+N_HDLC_BUF* n_hdlc_buf_get(N_HDLC_BUF_LIST *list)
 {
 	unsigned long flags;
 	N_HDLC_BUF *buf;
@@ -987,7 +1141,14 @@ static N_HDLC_BUF* n_hdlc_buf_get(N_HDLC_BUF_LIST *list)
 	
 }	/* end of n_hdlc_buf_get() */
 
-int __init n_hdlc_init()
+/* init_module()
+ *
+ *	called when module is loading to register line discipline
+ * 	
+ * Arguments:		None
+ * Return Value:	0 if success, otherwise error code
+ */
+int init_module(void)
 {
 	static struct tty_ldisc	n_hdlc_ldisc;
 	int    status;
@@ -1005,13 +1166,19 @@ int __init n_hdlc_init()
 	
 	memset(&n_hdlc_ldisc, 0, sizeof (n_hdlc_ldisc));
 	n_hdlc_ldisc.magic		= TTY_LDISC_MAGIC;
+#if LINUX_VERSION_CODE >= VERSION(2,1,28)
 	n_hdlc_ldisc.name          	= "hdlc";
+#endif
 	n_hdlc_ldisc.open		= n_hdlc_tty_open;
 	n_hdlc_ldisc.close		= n_hdlc_tty_close;
 	n_hdlc_ldisc.read		= n_hdlc_tty_read;
 	n_hdlc_ldisc.write		= n_hdlc_tty_write;
 	n_hdlc_ldisc.ioctl		= n_hdlc_tty_ioctl;
+#if LINUX_VERSION_CODE < VERSION(2,1,23)
+	n_hdlc_ldisc.select		= n_hdlc_tty_select;
+#else
 	n_hdlc_ldisc.poll		= n_hdlc_tty_poll;
+#endif
 	n_hdlc_ldisc.receive_room	= n_hdlc_tty_room;
 	n_hdlc_ldisc.receive_buf	= n_hdlc_tty_receive;
 	n_hdlc_ldisc.write_wakeup	= n_hdlc_tty_wakeup;
@@ -1025,14 +1192,16 @@ int __init n_hdlc_init()
 	if (status)
 		printk(KERN_INFO"N_HDLC: init failure %d\n", status);
 	return (status);
-}
+	
+}	/* end of init_module() */
 
-#ifdef MODULE
-int init_module(void)
-{
-	return n_hdlc_init();
-}
-
+/* cleanup_module()
+ *
+ *	called when module is unloading to unregister line discipline
+ * 	
+ * Arguments:		None
+ * Return Value:	None
+ */
 void cleanup_module(void)
 {
 	int status;
@@ -1042,4 +1211,3 @@ void cleanup_module(void)
 	else
 		printk("N_HDLC: line discipline unregistered\n");
 }
-#endif

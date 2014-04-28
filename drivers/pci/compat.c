@@ -3,7 +3,7 @@
  *
  *	PCI Bus Services -- Function For Backward Compatibility
  *
- *	Copyright 1998 Martin Mares
+ *	Copyright 1998--2000 Martin Mares <mj@suse.cz>
  */
 
 #include <linux/types.h>
@@ -11,9 +11,15 @@
 #include <linux/pci.h>
 
 int
+pcibios_present(void)
+{
+	return !list_empty(&pci_devices);
+}
+
+int
 pcibios_find_class(unsigned int class, unsigned short index, unsigned char *bus, unsigned char *devfn)
 {
-	struct pci_dev *dev = NULL;
+	const struct pci_dev *dev = NULL;
 	int cnt = 0;
 
 	while ((dev = pci_find_class(class, dev)))
@@ -30,7 +36,7 @@ int
 pcibios_find_device(unsigned short vendor, unsigned short device, unsigned short index,
 		    unsigned char *bus, unsigned char *devfn)
 {
-	struct pci_dev *dev = NULL;
+	const struct pci_dev *dev = NULL;
 	int cnt = 0;
 
 	while ((dev = pci_find_device(vendor, device, dev)))
@@ -42,30 +48,18 @@ pcibios_find_device(unsigned short vendor, unsigned short device, unsigned short
 	return PCIBIOS_DEVICE_NOT_FOUND;
 }
 
-/* 2.4 compatibility */
-
-unsigned long pci_resource_len (struct pci_dev *dev, int n_base)
-{
-        u32 l, sz;
-        int reg = PCI_BASE_ADDRESS_0 + (n_base << 2);
-
-        /* XXX temporarily disable I/O and memory decoding for this device? */
-
-        pci_read_config_dword (dev, reg, &l);
-        if (l == 0xffffffff)
-                return 0;
-
-        pci_write_config_dword (dev, reg, ~0);
-        pci_read_config_dword (dev, reg, &sz);
-        pci_write_config_dword (dev, reg, l);
-
-        if (!sz || sz == 0xffffffff)
-                return 0;
-        if ((l & PCI_BASE_ADDRESS_SPACE) == PCI_BASE_ADDRESS_SPACE_MEMORY) {
-                sz = ~(sz & PCI_BASE_ADDRESS_MEM_MASK);
-        } else {
-                sz = ~(sz & PCI_BASE_ADDRESS_IO_MASK) & 0xffff;
-        }
-
-        return sz + 1;
+#define PCI_OP(rw,size,type)							\
+int pcibios_##rw##_config_##size (unsigned char bus, unsigned char dev_fn,	\
+				  unsigned char where, unsigned type val)	\
+{										\
+	struct pci_dev *dev = pci_find_slot(bus, dev_fn);			\
+	if (!dev) return PCIBIOS_DEVICE_NOT_FOUND;				\
+	return pci_##rw##_config_##size(dev, where, val);			\
 }
+
+PCI_OP(read, byte, char *)
+PCI_OP(read, word, short *)
+PCI_OP(read, dword, int *)
+PCI_OP(write, byte, char)
+PCI_OP(write, word, short)
+PCI_OP(write, dword, int)

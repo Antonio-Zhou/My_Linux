@@ -59,10 +59,6 @@
 
 #define MAXHOSTS 32
 
-struct proc_dir_entry proc_scsi_i2o_scsi = {
-	PROC_SCSI_I2O, 8, "i2o_scsi", S_IFDIR | S_IRUGO | S_IXUGO, 2
-};
-
 struct i2o_scsi_host
 {
 	struct i2o_controller *controller;
@@ -266,7 +262,7 @@ static void i2o_scsi_reply(struct i2o_handler *h, struct i2o_controller *c, stru
 	
 	if(st)
 	{
-		/* An error has occurred */
+		/* An error has occured */
 
 		dprintk((KERN_DEBUG "SCSI error %08X", m[4]));
 			
@@ -617,10 +613,10 @@ int i2o_scsi_queuecommand(Scsi_Cmnd * SCpnt, void (*done) (Scsi_Cmnd *))
 		}
 	}
 	
-	writel(I2O_CMD_SCSI_EXEC<<24|HOST_TID<<12|tid, &msg[1]);
-	writel(scsi_context, &msg[2]);	/* So the I2O layer passes to us */
+	__raw_writel(I2O_CMD_SCSI_EXEC<<24|HOST_TID<<12|tid, &msg[1]);
+	__raw_writel(scsi_context, &msg[2]);	/* So the I2O layer passes to us */
 	/* Sorry 64bit folks. FIXME */
-	writel((u32)SCpnt, &msg[3]);	/* We want the SCSI control block back */
+	__raw_writel((u32)SCpnt, &msg[3]);	/* We want the SCSI control block back */
 
 	/* LSI_920_PCI_QUIRK
 	 *
@@ -663,7 +659,7 @@ int i2o_scsi_queuecommand(Scsi_Cmnd * SCpnt, void (*done) (Scsi_Cmnd *))
 	}
 
 	/* Direction, disconnect ok, tag, CDBLen */
-	writel(scsidir|0x20000000|SCpnt->cmd_len|tag, &msg[4]);
+	__raw_writel(scsidir|0x20000000|SCpnt->cmd_len|tag, &msg[4]);
 
 	mptr=msg+5;
 
@@ -698,8 +694,8 @@ int i2o_scsi_queuecommand(Scsi_Cmnd * SCpnt, void (*done) (Scsi_Cmnd *))
 			/*
 			 *	Need to chain!
 			 */
-			writel(direction|0xB0000000|(SCpnt->use_sg*2*4), mptr++);
-			writel(virt_to_bus(sg_chain_pool + sg_chain_tag), mptr);
+			__raw_writel(direction|0xB0000000|(SCpnt->use_sg*2*4), mptr++);
+			__raw_writel(virt_to_bus(sg_chain_pool + sg_chain_tag), mptr);
 			mptr = (u32*)(sg_chain_pool + sg_chain_tag);
 			if (SCpnt->use_sg > max_sg_len)
 			{
@@ -722,22 +718,22 @@ int i2o_scsi_queuecommand(Scsi_Cmnd * SCpnt, void (*done) (Scsi_Cmnd *))
 		{		
 			for(i = 0 ; i < SCpnt->use_sg; i++)
 			{
-				writel(direction|0x10000000|sg->length, mptr++);
+				__raw_writel(direction|0x10000000|sg->length, mptr++);
 				len+=sg->length;
-				writel(virt_to_bus(sg->address), mptr++);
+				__raw_writel(virt_to_bus(sg->address), mptr++);
 				sg++;
 			}
 
 			/* Make this an end of list. Again evade the 920 bug and
 			   unwanted PCI read traffic */
 		
-			writel(direction|0xD0000000|(sg-1)->length, &mptr[-2]);
+			__raw_writel(direction|0xD0000000|(sg-1)->length, &mptr[-2]);
 		}
 		
 		if(!chain)
 			reqlen = mptr - msg;
 		
-		writel(len, lenptr);
+		__raw_writel(len, lenptr);
 		
 		if(len != SCpnt->underflow)
 			printk("Cmd len %08X Cmd underflow %08X\n",
@@ -747,15 +743,15 @@ int i2o_scsi_queuecommand(Scsi_Cmnd * SCpnt, void (*done) (Scsi_Cmnd *))
 	{
 		dprintk(("non sg for %p, %d\n", SCpnt->request_buffer,
 				SCpnt->request_bufflen));
-		writel(len = SCpnt->request_bufflen, lenptr);
+		__raw_writel(len = SCpnt->request_bufflen, lenptr);
 		if(len == 0)
 		{
 			reqlen = 9;
 		}
 		else
 		{
-			writel(0xD0000000|direction|SCpnt->request_bufflen, mptr++);
-			writel(virt_to_bus(SCpnt->request_buffer), mptr++);
+			__raw_writel(0xD0000000|direction|SCpnt->request_bufflen, mptr++);
+			__raw_writel(virt_to_bus(SCpnt->request_buffer), mptr++);
 		}
 	}
 	
@@ -763,7 +759,7 @@ int i2o_scsi_queuecommand(Scsi_Cmnd * SCpnt, void (*done) (Scsi_Cmnd *))
 	 *	Stick the headers on 
 	 */
 
-	writel(reqlen<<16 | SGL_OFFSET_10, msg);
+	__raw_writel(reqlen<<16 | SGL_OFFSET_10, msg);
 	
 	/* Queue the message */
 	i2o_post_message(c,m);
@@ -830,11 +826,11 @@ int i2o_scsi_abort(Scsi_Cmnd * SCpnt)
 	while(m==0xFFFFFFFF);
 	msg = bus_to_virt(c->mem_offset + m);
 	
-	writel(FIVE_WORD_MSG_SIZE, &msg[0]);
-	writel(I2O_CMD_SCSI_ABORT<<24|HOST_TID<<12|tid, &msg[1]);
-	writel(scsi_context, &msg[2]);
-	writel(0, &msg[3]);	/* Not needed for an abort */
-	writel((u32)SCpnt, &msg[4]);	
+	__raw_writel(FIVE_WORD_MSG_SIZE, &msg[0]);
+	__raw_writel(I2O_CMD_SCSI_ABORT<<24|HOST_TID<<12|tid, &msg[1]);
+	__raw_writel(scsi_context, &msg[2]);
+	__raw_writel(0, &msg[3]);	/* Not needed for an abort */
+	__raw_writel((u32)SCpnt, &msg[4]);	
 	wmb();
 	i2o_post_message(c,m);
 	wmb();
@@ -877,12 +873,12 @@ int i2o_scsi_reset(Scsi_Cmnd * SCpnt, unsigned int reset_flags)
 		return SCSI_RESET_PUNT;
 	
 	msg = bus_to_virt(c->mem_offset + m);
-	writel(FOUR_WORD_MSG_SIZE|SGL_OFFSET_0, &msg[0]);
-	writel(I2O_CMD_SCSI_BUSRESET<<24|HOST_TID<<12|tid, &msg[1]);
-	writel(scsi_context|0x80000000, &msg[2]);
+	__raw_writel(FOUR_WORD_MSG_SIZE|SGL_OFFSET_0, &msg[0]);
+	__raw_writel(I2O_CMD_SCSI_BUSRESET<<24|HOST_TID<<12|tid, &msg[1]);
+	__raw_writel(scsi_context|0x80000000, &msg[2]);
 	/* We use the top bit to split controller and unit transactions */
 	/* Now store unit,tid so we can tie the completion back to a specific device */
-	writel(c->unit << 16 | tid, &msg[3]);
+	__raw_writel(c->unit << 16 | tid, &msg[3]);
 	i2o_post_message(c,m);
 	return SCSI_RESET_PENDING;
 }

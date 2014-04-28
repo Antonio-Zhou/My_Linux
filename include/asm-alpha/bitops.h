@@ -31,7 +31,7 @@ extern __inline__ void set_bit(unsigned long nr, volatile void * addr)
 	"	stl_c %0,%1\n"
 	"	beq %0,3f\n"
 	"2:\n"
-	".section .text2,\"ax\"\n"
+	".subsection 2\n"
 	"3:	br 1b\n"
 	".previous"
 	:"=&r" (temp), "=m" (*m), "=&r" (oldbit)
@@ -52,7 +52,7 @@ extern __inline__ void clear_bit(unsigned long nr, volatile void * addr)
 	"	stl_c %0,%1\n"
 	"	beq %0,3f\n"
 	"2:\n"
-	".section .text2,\"ax\"\n"
+	".subsection 2\n"
 	"3:	br 1b\n"
 	".previous"
 	:"=&r" (temp), "=m" (*m), "=&r" (oldbit)
@@ -69,15 +69,15 @@ extern __inline__ void change_bit(unsigned long nr, volatile void * addr)
 	"	xor %0,%2,%0\n"
 	"	stl_c %0,%1\n"
 	"	beq %0,3f\n"
-	".section .text2,\"ax\"\n"
+	".subsection 2\n"
 	"3:	br 1b\n"
 	".previous"
 	:"=&r" (temp), "=m" (*m)
 	:"Ir" (1UL << (nr & 31)), "m" (*m));
 }
 
-extern __inline__ unsigned long test_and_set_bit(unsigned long nr,
-						 volatile void * addr)
+extern __inline__ int test_and_set_bit(unsigned long nr,
+				       volatile void * addr)
 {
 	unsigned long oldbit;
 	unsigned long temp;
@@ -92,7 +92,7 @@ extern __inline__ unsigned long test_and_set_bit(unsigned long nr,
 	"	beq %0,3f\n"
 	"	mb\n"
 	"2:\n"
-	".section .text2,\"ax\"\n"
+	".subsection 2\n"
 	"3:	br 1b\n"
 	".previous"
 	:"=&r" (temp), "=m" (*m), "=&r" (oldbit)
@@ -101,8 +101,8 @@ extern __inline__ unsigned long test_and_set_bit(unsigned long nr,
 	return oldbit != 0;
 }
 
-extern __inline__ unsigned long test_and_clear_bit(unsigned long nr,
-						   volatile void * addr)
+extern __inline__ int test_and_clear_bit(unsigned long nr,
+					 volatile void * addr)
 {
 	unsigned long oldbit;
 	unsigned long temp;
@@ -117,7 +117,7 @@ extern __inline__ unsigned long test_and_clear_bit(unsigned long nr,
 	"	beq %0,3f\n"
 	"	mb\n"
 	"2:\n"
-	".section .text2,\"ax\"\n"
+	".subsection 2\n"
 	"3:	br 1b\n"
 	".previous"
 	:"=&r" (temp), "=m" (*m), "=&r" (oldbit)
@@ -126,8 +126,8 @@ extern __inline__ unsigned long test_and_clear_bit(unsigned long nr,
 	return oldbit != 0;
 }
 
-extern __inline__ unsigned long test_and_change_bit(unsigned long nr,
-						    volatile void * addr)
+extern __inline__ int test_and_change_bit(unsigned long nr,
+					  volatile void * addr)
 {
 	unsigned long oldbit;
 	unsigned long temp;
@@ -140,7 +140,7 @@ extern __inline__ unsigned long test_and_change_bit(unsigned long nr,
 	"	stl_c %0,%1\n"
 	"	beq %0,3f\n"
 	"	mb\n"
-	".section .text2,\"ax\"\n"
+	".subsection 2\n"
 	"3:	br 1b\n"
 	".previous"
 	:"=&r" (temp), "=m" (*m), "=&r" (oldbit)
@@ -149,9 +149,9 @@ extern __inline__ unsigned long test_and_change_bit(unsigned long nr,
 	return oldbit != 0;
 }
 
-extern __inline__ unsigned long test_bit(int nr, volatile void * addr)
+extern __inline__ int test_bit(int nr, volatile void * addr)
 {
-	return 1UL & (((const int *) addr)[nr >> 5] >> (nr & 31));
+	return (1UL & (((const int *) addr)[nr >> 5] >> (nr & 31))) != 0UL;
 }
 
 /*
@@ -271,8 +271,6 @@ extern inline unsigned long find_next_zero_bit(void * addr, unsigned long size, 
 	tmp = *p;
 found_first:
 	tmp |= ~0UL << size;
-	if (tmp == ~0UL)        /* Are any bits zero? */
-		return result + size; /* Nope. */
 found_middle:
 	return result + ffz(tmp);
 }

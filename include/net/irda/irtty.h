@@ -6,7 +6,7 @@
  * Status:        Experimental.
  * Author:        Dag Brattli <dagb@cs.uit.no>
  * Created at:    Tue Dec  9 21:13:12 1997
- * Modified at:   Tue Jan 11 12:32:03 2000
+ * Modified at:   Tue Jan 25 09:10:18 2000
  * Modified by:   Dag Brattli <dagb@cs.uit.no>
  *  
  *     Copyright (c) 1997, 1999-2000 Dag Brattli, All Rights Reserved.
@@ -48,7 +48,7 @@ struct irtty_cb {
 	queue_t q;     /* Must be first */
 	magic_t magic;
 
-	struct device *netdev; /* Yes! we are some kind of netdevice */
+	struct net_device *netdev; /* Yes! we are some kind of netdevice */
 	struct irda_task *task;
 	struct net_device_stats stats;
 

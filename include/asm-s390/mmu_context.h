@@ -12,10 +12,34 @@
 /*
  * get a new mmu context.. S390 don't know about contexts.
  */
-#define get_mmu_context(x) do { } while (0)
+#define init_new_context(tsk,mm)        do { } while (0)
 
-#define init_new_context(mm)	do { } while(0)
-#define destroy_context(mm)	do { } while(0)
-#define activate_context(tsk)	do { } while(0)
+#define destroy_context(mm)             flush_tlb_mm(mm)
+
+static inline void enter_lazy_tlb(struct mm_struct *mm,
+                                  struct task_struct *tsk, unsigned cpu)
+{
+}
+
+static inline void switch_mm(struct mm_struct *prev, struct mm_struct *next,
+                             struct task_struct *tsk, unsigned cpu)
+{
+        unsigned long pgd;
+
+        if (prev != next) {
+                pgd = (__pa(next->pgd) & PAGE_MASK) | _SEGMENT_TABLE;
+                /* Load page tables */
+                asm volatile("    lctl  7,7,%0\n"   /* secondary space */
+                             "    lctl  13,13,%0\n" /* home space */
+                             : : "m" (pgd) );
+        }
+	set_bit(cpu, &next->cpu_vm_mask);
+}
+
+extern inline void activate_mm(struct mm_struct *prev,
+                               struct mm_struct *next)
+{
+        switch_mm(prev, next, current, smp_processor_id());
+}
 
 #endif

@@ -35,6 +35,7 @@
  * OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <linux/config.h>
 #include "fp_emu.h"
 
 /*
@@ -221,7 +222,7 @@ fp_conv_ext2ext:
 	| The high bit is set, so normalization is irrelevant.
 fp_e2e_checkround:
 	subq.l	#4,%a0
-#ifdef CONFIG_FPU_EMU_EXTRAPREC
+#ifdef CONFIG_M68KFPU_EMU_EXTRAPREC
 	move.b	(%a0),%d0
 	jne	fp_e2e_round
 #endif
@@ -230,7 +231,7 @@ fp_e2e_checkround:
 	printf	PCONV,")\n"
 	moveq	#1,%d0
 	rts
-#ifdef CONFIG_FPU_EMU_EXTRAPREC
+#ifdef CONFIG_M68KFPU_EMU_EXTRAPREC
 fp_e2e_round:
 	fp_set_sr FPSR_EXC_INEX2
 	clr.b	(%a0)
@@ -270,7 +271,7 @@ fp_e2e_small:
 	jne	fp_e2e_small1		| high lword zero?
 	move.l	(4,%a0),%d0
 	jne	fp_e2e_small2
-#ifdef CONFIG_FPU_EMU_EXTRAPREC
+#ifdef CONFIG_M68KFPU_EMU_EXTRAPREC
 	clr.l	%d0
 	move.b	(-4,%a0),%d0
 	jne	fp_e2e_small3
@@ -306,7 +307,7 @@ fp_e2e_small1:
 	and.w	#0x1f,%d2
 	lsr.l	%d2,%d1
 	or.l	%d1,-(%a0)
-#ifdef CONFIG_FPU_EMU_EXTRAPREC
+#ifdef CONFIG_M68KFPU_EMU_EXTRAPREC
 fp_e2e_extra1:
 	clr.l	%d0
 	move.b	(-4,%a0),%d0
@@ -342,7 +343,7 @@ fp_e2e_small2:
 	jcs	1f
 	lsl.l	%d1,%d0			| lower lword needs only to be shifted
 	move.l	%d0,(%a0)		| into the higher lword
-#ifdef CONFIG_FPU_EMU_EXTRAPREC
+#ifdef CONFIG_M68KFPU_EMU_EXTRAPREC
 	clr.l	%d0
 	move.b	(-4,%a0),%d0
 	clr.b	(-4,%a0)
@@ -353,7 +354,7 @@ fp_e2e_small2:
 	jra	fp_e2e_checkround
 1:	neg.w	%d1			| lower lword is splitted between
 	bfins	%d0,(%a0){%d1,#32}	| higher and lower lword
-#ifndef CONFIG_FPU_EMU_EXTRAPREC
+#ifndef CONFIG_M68KFPU_EMU_EXTRAPREC
 	jra	fp_e2e_checkround
 #else
 	move.w	%d1,%d2
@@ -446,7 +447,7 @@ fp_normalize_ext:
 	| The high bit is set, so normalization is irrelevant.
 fp_ne_checkround:
 	subq.l	#4,%a0
-#ifdef CONFIG_FPU_EMU_EXTRAPREC
+#ifdef CONFIG_M68KFPU_EMU_EXTRAPREC
 	move.b	(%a0),%d0
 	jne	fp_ne_round
 #endif
@@ -454,7 +455,7 @@ fp_ne_checkround:
 	printx	PNORM,%a0@
 	printf	PNORM,")\n"
 	rts
-#ifdef CONFIG_FPU_EMU_EXTRAPREC
+#ifdef CONFIG_M68KFPU_EMU_EXTRAPREC
 fp_ne_round:
 	fp_set_sr FPSR_EXC_INEX2
 	clr.b	(%a0)
@@ -495,7 +496,7 @@ fp_ne_small:
 	jne	fp_ne_small1		| high lword zero?
 	move.l	(4,%a0),%d0
 	jne	fp_ne_small2
-#ifdef CONFIG_FPU_EMU_EXTRAPREC
+#ifdef CONFIG_M68KFPU_EMU_EXTRAPREC
 	clr.l	%d0
 	move.b	(-4,%a0),%d0
 	jne	fp_ne_small3
@@ -531,7 +532,7 @@ fp_ne_small1:
 	and.w	#0x1f,%d2
 	lsr.l	%d2,%d1
 	or.l	%d1,-(%a0)
-#ifdef CONFIG_FPU_EMU_EXTRAPREC
+#ifdef CONFIG_M68KFPU_EMU_EXTRAPREC
 fp_ne_extra1:
 	clr.l	%d0
 	move.b	(-4,%a0),%d0
@@ -568,7 +569,7 @@ fp_ne_small2:
 	jcs	1f
 	lsl.l	%d1,%d0			| lower lword needs only to be shifted
 	move.l	%d0,(%a0)		| into the higher lword
-#ifdef CONFIG_FPU_EMU_EXTRAPREC
+#ifdef CONFIG_M68KFPU_EMU_EXTRAPREC
 	clr.l	%d0
 	move.b	(-4,%a0),%d0
 	clr.b	(-4,%a0)
@@ -579,7 +580,7 @@ fp_ne_small2:
 	jra	fp_ne_checkround
 1:	neg.w	%d1			| lower lword is splitted between
 	bfins	%d0,(%a0){%d1,#32}	| higher and lower lword
-#ifndef CONFIG_FPU_EMU_EXTRAPREC
+#ifndef CONFIG_M68KFPU_EMU_EXTRAPREC
 	jra	fp_ne_checkround
 #else
 	move.w	%d1,%d2

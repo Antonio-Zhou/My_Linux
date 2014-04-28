@@ -37,7 +37,7 @@
 //********************
 
 typedef struct tty_struct *   PTTY;
-typedef struct wait_queue *   PWAITQ;
+typedef wait_queue_head_t   PWAITQ;
 
 typedef unsigned char         UCHAR;
 typedef unsigned int          UINT;

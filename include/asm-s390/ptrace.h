@@ -1,14 +1,14 @@
-
 /*
  *  include/asm-s390/ptrace.h
  *
  *  S390 version
- *    Copyright (C) 1999 IBM Deutschland Entwicklung GmbH, IBM Corporation
+ *    Copyright (C) 1999,2000 IBM Deutschland Entwicklung GmbH, IBM Corporation
  *    Author(s): Denis Joseph Barrow (djbarrow@de.ibm.com,barrow_dj@yahoo.com)
  */
 
 #ifndef _S390_PTRACE_H
 #define _S390_PTRACE_H
+#include <linux/config.h>
 #include <asm/s390-regs-common.h>
 #include <asm/current.h>
 #include <linux/types.h>
@@ -134,8 +134,6 @@ struct user_regs_struct
  * this is the way intel does it
  */
 	per_struct per_info;
-	addr_t  ieee_instruction_pointer; 
-	/* Used to give failing instruction back to user for ieee exceptions */
 };
 
 typedef struct user_regs_struct user_regs_struct;
@@ -145,8 +143,12 @@ typedef struct pt_regs pt_regs;
 #ifdef __KERNEL__
 #define user_mode(regs) ((regs)->psw.mask & PSW_PROBLEM_STATE)
 #define instruction_pointer(regs) ((regs)->psw.addr)
-extern void show_regs(struct pt_regs * regs);
-extern char *task_show_regs(struct task_struct *task, char *buffer);
+
+struct thread_struct;
+extern int sprintf_regs(int line,char *buff,struct task_struct * task,
+			struct thread_struct *tss,struct pt_regs * regs);
+extern void show_regs(struct task_struct * task,struct thread_struct *tss,
+		      struct pt_regs * regs);
 #endif
 
 
@@ -268,9 +270,8 @@ enum
 	PT_CR_9=pt_off(per_info.control_regs.words.cr[0]),
 	PT_CR_10=pt_off(per_info.control_regs.words.cr[1]),
 	PT_CR_11=pt_off(per_info.control_regs.words.cr[2]),
-	PT_IEEE_IP=pt_off(ieee_instruction_pointer),
-	PT_LASTOFF=PT_IEEE_IP,
-	PT_ENDREGS=sizeof(user_regs_struct)-1
+	PT_LASTOFF=PT_CR_11,
+	PT_ENDREGS=offsetof(user_regs_struct,per_info.lowcore.words.perc_atmid)
 };
 
 #define PTRACE_AREA \

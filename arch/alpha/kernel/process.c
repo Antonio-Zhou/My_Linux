@@ -30,10 +30,6 @@
 #include <linux/reboot.h>
 #include <linux/console.h>
 
-#ifdef CONFIG_RTC
-#include <linux/mc146818rtc.h>
-#endif
-
 #include <asm/reg.h>
 #include <asm/uaccess.h>
 #include <asm/system.h>
@@ -43,7 +39,7 @@
 #include <asm/fpu.h>
 
 #include "proto.h"
-#include "bios32.h"
+#include "pci_impl.h"
 
 /*
  * Initial task structure. Make this a per-architecture thing,
@@ -57,10 +53,10 @@ static struct vm_area_struct init_mmap = INIT_MMAP;
 static struct fs_struct init_fs = INIT_FS;
 static struct files_struct init_files = INIT_FILES;
 static struct signal_struct init_signals = INIT_SIGNALS;
-struct mm_struct init_mm = INIT_MM;
+struct mm_struct init_mm = INIT_MM(init_mm);
 
 union task_union init_task_union __attribute__((section("init_task")))
-	 = { task: INIT_TASK };
+	 = { task: INIT_TASK(init_task_union.task) };
 
 /*
  * No need to acquire the kernel lock, we're entirely local..
@@ -74,9 +70,8 @@ sys_sethae(unsigned long hae, unsigned long a1, unsigned long a2,
 	return 0;
 }
 
-#ifdef __SMP__
-int
-cpu_idle(void *unused)
+void
+cpu_idle(void)
 {
 	/* An endless idle loop with no priority at all.  */
 	current->priority = 0;
@@ -88,46 +83,25 @@ cpu_idle(void *unused)
 
 		/* Although we are an idle CPU, we do not want to 
 		   get into the scheduler unnecessarily.  */
-		barrier();
 		if (current->need_resched) {
 			schedule();
 			check_pgt_cache();
 		}
 	}
 }
-#endif
 
-asmlinkage int
-sys_idle(void)
-{
-	if (current->pid != 0)
-		return -EPERM;
-
-	/* An endless idle loop with no priority at all.  */
-	current->priority = 0;
-	current->counter = -100;
-	init_idle();
-
-	while (1) {
-		/* FIXME -- EV6 and LCA45 know how to power down
-		   the CPU.  */
-
-		schedule();
-		check_pgt_cache();
-	}
-}
 
 struct halt_info {
-	int	mode;
-	char *	restart_cmd;
+	int mode;
+	char *restart_cmd;
 };
 
 static void
-halt_processor(void * generic_ptr)
+common_shutdown_1(void *generic_ptr)
 {
-	struct percpu_struct * cpup;
-	struct halt_info * how = (struct halt_info *)generic_ptr;
-	unsigned long *flags;
+	struct halt_info *how = (struct halt_info *)generic_ptr;
+	struct percpu_struct *cpup;
+	unsigned long *pflags, flags;
 	int cpuid = smp_processor_id();
 
 	/* No point in taking interrupts anymore. */
@@ -136,66 +110,47 @@ halt_processor(void * generic_ptr)
 	cpup = (struct percpu_struct *)
 			((unsigned long)hwrpb + hwrpb->processor_offset
 			 + hwrpb->processor_size * cpuid);
-	flags = &cpup->flags;
+	pflags = &cpup->flags;
+	flags = *pflags;
 
 	/* Clear reason to "default"; clear "bootstrap in progress". */
-	*flags &= ~0x00ff0001UL;
+	flags &= ~0x00ff0001UL;
 
-#ifdef __SMP__
+#ifdef CONFIG_SMP
 	/* Secondaries halt here. */
-	if (cpuid != smp_boot_cpuid) {
-		*flags |= 0x00040000UL; /* "remain halted" */
+	if (cpuid != boot_cpuid) {
+		flags |= 0x00040000UL; /* "remain halted" */
+		*pflags = flags;
 		clear_bit(cpuid, &cpu_present_mask);
 		halt();
 	}
-#endif /* __SMP__ */
-
-#ifdef CONFIG_RTC
-	/* Reset rtc to defaults.  */
-	{
-		unsigned char control;
-
-		/* Reset periodic interrupt frequency.  */
-		CMOS_WRITE(0x26, RTC_FREQ_SELECT);
-
-		/* Turn on periodic interrupts.  */
-		control = CMOS_READ(RTC_CONTROL);
-		control |= RTC_PIE;
-		CMOS_WRITE(control, RTC_CONTROL);	
-		CMOS_READ(RTC_INTR_FLAGS);
-	}
-#endif /* CONFIG_RTC */
+#endif
 
 	if (how->mode == LINUX_REBOOT_CMD_RESTART) {
 		if (!how->restart_cmd) {
-			*flags |= 0x00020000UL; /* "cold bootstrap" */
-			cpup->ipc_buffer[0] = 0;
+			flags |= 0x00020000UL; /* "cold bootstrap" */
 		} else {
-		  /* NOTE: this could really only work when returning
-		     into MILO, rather than SRM console. The latter
-		     does NOT look at the ipc_buffer to get a new
-		     boot command. It could be done by using callbacks
-		     to change some of the SRM environment variables,
-		     but that is beyond our capabilities at this time.
-		     At the moment, SRM will use the last boot device,
-		     but the file and flags will be the defaults, when
-		     doing a "warm" bootstrap.
-		  */
-			*flags |=  0x00030000UL; /* "warm bootstrap" */
-			strncpy((char *)cpup->ipc_buffer,
-				how->restart_cmd,
-				sizeof(cpup->ipc_buffer));
-		}
-	} else
-		*flags |=  0x00040000UL; /* "remain halted" */
+			/* For SRM, we could probably set environment
+			   variables to get this to work.  We'd have to
+			   delay this until after srm_paging_stop unless
+			   we ever got srm_fixup working.
 
-#ifdef __SMP__
+			   At the moment, SRM will use the last boot device,
+			   but the file and flags will be the defaults, when
+			   doing a "warm" bootstrap.  */
+			flags |= 0x00030000UL; /* "warm bootstrap" */
+		}
+	} else {
+		flags |= 0x00040000UL; /* "remain halted" */
+	}
+	*pflags = flags;
+
+#ifdef CONFIG_SMP
 	/* Wait for the secondaries to halt. */
-	clear_bit(smp_boot_cpuid, &cpu_present_mask);
+	clear_bit(boot_cpuid, &cpu_present_mask);
 	while (cpu_present_mask)
-		/* Make sure we sample memory and not a register. */
 		barrier();
-#endif /* __SMP__ */
+#endif
 
         /* If booted from SRM, reset some of the original environment. */
 	if (alpha_using_srm) {
@@ -203,57 +158,59 @@ halt_processor(void * generic_ptr)
 		/* This has the effect of resetting the VGA video origin.  */
 		take_over_console(&dummy_con, 0, MAX_NR_CONSOLES-1, 1);
 #endif
-		reset_for_srm();
+		/* reset_for_srm(); */
 		set_hae(srm_hae);
 	}
-	else if (how->mode != LINUX_REBOOT_CMD_RESTART &&
-		 how->mode != LINUX_REBOOT_CMD_RESTART2) {
+
+	if (alpha_mv.kill_arch)
+		alpha_mv.kill_arch(how->mode);
+
+	if (! alpha_using_srm && how->mode != LINUX_REBOOT_CMD_RESTART) {
 		/* Unfortunately, since MILO doesn't currently understand
 		   the hwrpb bits above, we can't reliably halt the 
 		   processor and keep it halted.  So just loop.  */
 		return;
 	}
 
-	/* PRIMARY */
+	if (alpha_using_srm)
+		srm_paging_stop();
+
 	halt();
 }
 
-void
-generic_kill_arch(int mode, char * restart_cmd)
+static void
+common_shutdown(int mode, char *restart_cmd)
 {
-	struct halt_info copy_of_args;
-
-	copy_of_args.mode = mode;
-	copy_of_args.restart_cmd = restart_cmd;
-#ifdef __SMP__
-	/* A secondary can't wait here for the primary to finish, can it now? */
-	smp_call_function(halt_processor, (void *)&copy_of_args, 1, 0);
-#endif /* __SMP__ */
-	halt_processor(&copy_of_args);
+	struct halt_info args;
+	args.mode = mode;
+	args.restart_cmd = restart_cmd;
+#ifdef CONFIG_SMP
+	smp_call_function(common_shutdown_1, &args, 1, 0);
+#endif
+	common_shutdown_1(&args);
 }
 
 void
 machine_restart(char *restart_cmd)
 {
-	alpha_mv.kill_arch(LINUX_REBOOT_CMD_RESTART, restart_cmd);
+	common_shutdown(LINUX_REBOOT_CMD_RESTART, restart_cmd);
 }
 
 void
 machine_halt(void)
 {
-	alpha_mv.kill_arch(LINUX_REBOOT_CMD_HALT, NULL);
+	common_shutdown(LINUX_REBOOT_CMD_HALT, NULL);
 }
 
-void machine_power_off(void)
+void
+machine_power_off(void)
 {
-	alpha_mv.kill_arch(LINUX_REBOOT_CMD_POWER_OFF, NULL);
+	common_shutdown(LINUX_REBOOT_CMD_POWER_OFF, NULL);
 }
 
-void __show_regs(struct pt_regs * regs)
+void
+show_regs(struct pt_regs * regs)
 {
-	extern void dik_show_trace(unsigned long *);
-
-	printk("\nCPU: %d", smp_processor_id());
 	printk("\nps: %04lx pc: [<%016lx>]\n", regs->ps, regs->pc);
 	printk("rp: [<%016lx>] sp: %p\n", regs->r26, regs+1);
 	printk(" r0: %016lx  r1: %016lx  r2: %016lx  r3: %016lx\n",
@@ -268,21 +225,13 @@ void __show_regs(struct pt_regs * regs)
 	       regs->r23, regs->r24, regs->r25, regs->r26);
 	printk("r27: %016lx r28: %016lx r29: %016lx hae: %016lx\n",
 	       regs->r27, regs->r28, regs->gp, regs->hae);
-	dik_show_trace(regs+1);
-}
-
-void show_regs(struct pt_regs * regs)
-{
-	__show_regs(regs);
-#ifdef CONFIG_SMP
-	smp_show_regs();
-#endif
 }
 
 /*
  * Re-start a thread when doing execve()
  */
-void start_thread(struct pt_regs * regs, unsigned long pc, unsigned long sp)
+void
+start_thread(struct pt_regs * regs, unsigned long pc, unsigned long sp)
 {
 	set_fs(USER_DS);
 	regs->pc = pc;
@@ -293,19 +242,22 @@ void start_thread(struct pt_regs * regs, unsigned long pc, unsigned long sp)
 /*
  * Free current thread data structures etc..
  */
-void exit_thread(void)
+void
+exit_thread(void)
 {
 }
 
-void flush_thread(void)
+void
+flush_thread(void)
 {
 	/* Arrange for each exec'ed process to start off with a clean slate
 	   with respect to the FPU.  This is all exceptions disabled.  */
-	current->tss.flags &= ~IEEE_SW_MASK;
+	current->thread.flags &= ~IEEE_SW_MASK;
 	wrfpcr(FPCR_DYN_NORMAL | ieee_swcr_to_fpcr(0));
 }
 
-void release_thread(struct task_struct *dead_task)
+void
+release_thread(struct task_struct *dead_task)
 {
 }
 
@@ -318,15 +270,17 @@ void release_thread(struct task_struct *dead_task)
  * Notice that "fork()" is implemented in terms of clone,
  * with parameters (SIGCHLD, 0).
  */
-int alpha_clone(unsigned long clone_flags, unsigned long usp,
-		struct switch_stack * swstack)
+int
+alpha_clone(unsigned long clone_flags, unsigned long usp,
+	    struct switch_stack * swstack)
 {
 	if (!usp)
 		usp = rdusp();
 	return do_fork(clone_flags, usp, (struct pt_regs *) (swstack+1));
 }
 
-int alpha_vfork(struct switch_stack * swstack)
+int
+alpha_vfork(struct switch_stack * swstack)
 {
 	return do_fork(CLONE_VFORK | CLONE_VM | SIGCHLD, rdusp(),
 			(struct pt_regs *) (swstack+1));
@@ -343,8 +297,9 @@ int alpha_vfork(struct switch_stack * swstack)
  * for a kernel fork().
  */
 
-int copy_thread(int nr, unsigned long clone_flags, unsigned long usp,
-	struct task_struct * p, struct pt_regs * regs)
+int
+copy_thread(int nr, unsigned long clone_flags, unsigned long usp,
+	    struct task_struct * p, struct pt_regs * regs)
 {
 	extern void ret_from_sys_call(void);
 	extern void ret_from_smp_fork(void);
@@ -366,15 +321,15 @@ int copy_thread(int nr, unsigned long clone_flags, unsigned long usp,
 	stack = ((struct switch_stack *) regs) - 1;
 	childstack = ((struct switch_stack *) childregs) - 1;
 	*childstack = *stack;
-#ifdef __SMP__
+#ifdef CONFIG_SMP
 	childstack->r26 = (unsigned long) ret_from_smp_fork;
 #else
 	childstack->r26 = (unsigned long) ret_from_sys_call;
 #endif
-	p->tss.usp = usp;
-	p->tss.ksp = (unsigned long) childstack;
-	p->tss.pal_flags = 1;	/* set FEN, clear everything else */
-	p->tss.flags = current->tss.flags;
+	p->thread.usp = usp;
+	p->thread.ksp = (unsigned long) childstack;
+	p->thread.pal_flags = 1;	/* set FEN, clear everything else */
+	p->thread.flags = current->thread.flags;
 
 	return 0;
 }
@@ -382,7 +337,8 @@ int copy_thread(int nr, unsigned long clone_flags, unsigned long usp,
 /*
  * fill in the user structure for a core dump..
  */
-void dump_thread(struct pt_regs * pt, struct user * dump)
+void
+dump_thread(struct pt_regs * pt, struct user * dump)
 {
 	/* switch stack follows right below pt_regs: */
 	struct switch_stack * sw = ((struct switch_stack *) pt) - 1;
@@ -439,7 +395,8 @@ void dump_thread(struct pt_regs * pt, struct user * dump)
 	memcpy((char *)dump->regs + EF_SIZE, sw->fp, 32 * 8);
 }
 
-int dump_fpu (struct pt_regs * regs, elf_fpregset_t *r)
+int
+dump_fpu(struct pt_regs * regs, elf_fpregset_t *r)
 {
 	/* switch stack follows right below pt_regs: */
 	struct switch_stack * sw = ((struct switch_stack *) regs) - 1;
@@ -457,7 +414,8 @@ int dump_fpu (struct pt_regs * regs, elf_fpregset_t *r)
  *
  * Don't do this at home.
  */
-asmlinkage int sys_execve(unsigned long a0, unsigned long a1, unsigned long a2,
+asmlinkage int
+sys_execve(unsigned long a0, unsigned long a1, unsigned long a2,
 	unsigned long a3, unsigned long a4, unsigned long a5,
 	struct pt_regs regs)
 {
@@ -476,28 +434,35 @@ out:
 	return error;
 }
 
-#ifdef __SMP__
 /*
- * execve() system call for in kernel use.
- *
- * Two(user and kernel) execve() have quite different call path and
- * following function puts lock_kernel() and unlock_kernel() in kernel
- * execve().  You could put them in unistd.h but you will have to
- * modify many files to clear compile error -
- *
- * soohoon.lee@api-networks.com.  */
+ * These bracket the sleeping functions..
+ */
+extern void scheduling_functions_start_here(void);
+extern void scheduling_functions_end_here(void);
+#define first_sched	((unsigned long) scheduling_functions_start_here)
+#define last_sched	((unsigned long) scheduling_functions_end_here)
 
-asmlinkage int ___kernel_execve(char *filename, char **argp, char **envp,
-	struct pt_regs *regs)
+unsigned long
+get_wchan(struct task_struct *p)
 {
-	int error;
+	unsigned long schedule_frame;
+	unsigned long pc;
+	if (!p || p == current || p->state == TASK_RUNNING)
+		return 0;
+	/*
+	 * This one depends on the frame size of schedule().  Do a
+	 * "disass schedule" in gdb to find the frame size.  Also, the
+	 * code assumes that sleep_on() follows immediately after
+	 * interruptible_sleep_on() and that add_timer() follows
+	 * immediately after interruptible_sleep().  Ugly, isn't it?
+	 * Maybe adding a wchan field to task_struct would be better,
+	 * after all...
+	 */
 
-	lock_kernel();
-
-	error = do_execve(filename, argp, envp, regs);
-
-	unlock_kernel();
-
-	return error;
+	pc = thread_saved_pc(&p->thread);
+	if (pc >= first_sched && pc < last_sched) {
+		schedule_frame = ((unsigned long *)p->thread.ksp)[6];
+		return ((unsigned long *)schedule_frame)[12];
+	}
+	return pc;
 }
-#endif /* __SMP__ */

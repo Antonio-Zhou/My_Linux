@@ -42,7 +42,7 @@
 
 void tty_wait_until_sent(struct tty_struct * tty, long timeout)
 {
-	struct wait_queue wait = { current, NULL };
+	DECLARE_WAITQUEUE(wait, current);
 
 #ifdef TTY_DEBUG_WAIT_UNTIL_SENT
 	char buf[64];
@@ -59,7 +59,7 @@ void tty_wait_until_sent(struct tty_struct * tty, long timeout)
 		printk("waiting %s...(%d)\n", tty_name(tty, buf),
 		       tty->driver.chars_in_buffer(tty));
 #endif
-		current->state = TASK_INTERRUPTIBLE;
+		set_current_state(TASK_INTERRUPTIBLE);
 		if (signal_pending(current))
 			goto stop_waiting;
 		if (!tty->driver.chars_in_buffer(tty))
@@ -113,11 +113,8 @@ static void change_termios(struct tty_struct * tty, struct termios * new_termios
 	}
 	sti();
 	if (canon_change && !L_ICANON(tty) && tty->read_cnt)
-	{
 		/* Get characters left over from canonical mode. */
 		wake_up_interruptible(&tty->read_wait);
-		wake_up_interruptible(&tty->poll_wait);
-	}
 
 	/* see if packet mode change of state */
 
@@ -135,7 +132,6 @@ static void change_termios(struct tty_struct * tty, struct termios * new_termios
 			else
 				tty->ctrl_status |= TIOCPKT_NOSTOP;
 			wake_up_interruptible(&tty->link->read_wait);
-			wake_up_interruptible(&tty->link->poll_wait);
 		}
 	}
 

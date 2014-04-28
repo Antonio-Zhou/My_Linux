@@ -55,6 +55,7 @@ typedef	struct	{
  *      PCI definitions
  */
 
+ #define        DEVID_COUNT     9
  #define        VENDOR_ID       0x10b5
 
 /*
@@ -136,8 +137,6 @@ struct	isi_board {
 	struct isi_port		* ports;
 	signed char		count;
 	unsigned char		isa;
-	spinlock_t		card_lock; /* Card wide lock 11/5/00 -sameer */
-	unsigned long		flags;
 };
 
 struct	isi_port {
@@ -153,8 +152,8 @@ struct	isi_port {
 	long			pgrp;
 	struct isi_board	* card;
 	struct tty_struct 	* tty;
-	struct wait_queue	* close_wait;
-	struct wait_queue	* open_wait;
+	wait_queue_head_t	close_wait;
+	wait_queue_head_t	open_wait;
 	struct tq_struct	hangup_tq;
 	struct tq_struct	bh_tqueue;
 	unsigned char		* xmit_buf;
@@ -165,70 +164,6 @@ struct	isi_port {
 	struct termios		callout_termios;
 };
 
-/*
- *	Locking/UnLocking primitives...
- */
-
-extern inline unsigned char lock_card(struct isi_board *card)
-{
-	char		retries;
-	unsigned short base = card->base;
-
-	for (retries = 0; retries < 100; retries++) {
-		spin_lock_irqsave(&card->card_lock, card->flags);
-
-		if (inw(base + 0xe) & 0x1) {
-#ifdef ISICOM_DEBUG
-/*			printk(KERN_DEBUG "ISICOM:lock_card(0x%x)\n", 
-				card->base);*/
-#endif
-			return 1; 
-		}
-		else {
-			spin_unlock_irqrestore(&card->card_lock, card->flags);
-			schedule_timeout(HZ/100); /* 10ms */
-		}
-	}
-#ifdef ISICOM_DEBUG
-	printk(KERN_WARNING "ISICOM: Failed to lock Card (0x%x)\n", card->base);
-#endif /* ISICOM_DEBUG */
-	return 0;	/* Failed to aquire the card! */
-}
-
-extern inline unsigned char lock_card_at_interrupt(struct isi_board *card)
-{
-	unsigned char		retries;
-	unsigned short 		base = card->base;
-
-	for (retries = 0; retries < 200; retries++) {
-		spin_lock_irqsave(&card->card_lock, card->flags);
-
-		if (inw(base + 0xe) & 0x1) {
-#ifdef ISICOM_DEBUG
-/*			printk(KERN_DEBUG "ISICOM:lock_card_at_interrupt(0x%x)"
-				"\n", 
-				card->base);*/
-#endif
-			return 1; 
-		}
-		else {
-			spin_unlock_irqrestore(&card->card_lock, card->flags);
-		}
-	}
-#ifdef ISICOM_DEBUG
-	printk(KERN_WARNING "ISICOM: Failed to lock Card (0x%x)\n", card->base);
-#endif /* ISICOM_DEBUG */
-	return 0;	/* Failed to aquire the card! */
-}
-
-extern inline void unlock_card(struct isi_board *card)
-{
-	spin_unlock_irqrestore(&card->card_lock, card->flags);
-#ifdef ISICOM_DEBUG
-/*			printk(KERN_DEBUG "ISICOM:unlock_card(0x%x)\n", 
-				card->base);*/
-#endif
-}
 
 /*
  *  ISI Card specific ops ...
@@ -239,15 +174,9 @@ extern inline void raise_dtr(struct isi_port * port)
 	struct isi_board * card = port->card;
 	unsigned short base = card->base;
 	unsigned char channel = port->channel;
-
-/*	short wait=400;		SMPCHG
+	short wait=400;
 	while(((inw(base+0x0e) & 0x01) == 0) && (wait-- > 0));
 	if (wait <= 0) {
-		printk(KERN_WARNING "ISICOM: Card found busy in raise_dtr.\n");
-		return;
-	}
-*/
-	if (!lock_card(card)) {
 		printk(KERN_WARNING "ISICOM: Card found busy in raise_dtr.\n");
 		return;
 	}
@@ -258,7 +187,6 @@ extern inline void raise_dtr(struct isi_port * port)
 	outw(0x0504, base);
 	InterruptTheCard(base);
 	port->status |= ISI_DTR;
-	unlock_card(card);
 }
 
 extern inline void drop_dtr(struct isi_port * port)
@@ -266,15 +194,9 @@ extern inline void drop_dtr(struct isi_port * port)
 	struct isi_board * card = port->card;
 	unsigned short base = card->base;
 	unsigned char channel = port->channel;
-
-/*	short wait=400;		SMPCHG
+	short wait=400;
 	while(((inw(base+0x0e) & 0x01) == 0) && (wait-- > 0));
 	if (wait <= 0) {
-		printk(KERN_WARNING "ISICOM: Card found busy in drop_dtr.\n");
-		return;
-	}
-*/
-	if (!lock_card(card)) {
 		printk(KERN_WARNING "ISICOM: Card found busy in drop_dtr.\n");
 		return;
 	}
@@ -285,22 +207,15 @@ extern inline void drop_dtr(struct isi_port * port)
 	outw(0x0404, base);
 	InterruptTheCard(base);	
 	port->status &= ~ISI_DTR;
-	unlock_card(card);
 }
 extern inline void raise_rts(struct isi_port * port)
 {
 	struct isi_board * card = port->card;
 	unsigned short base = card->base;
 	unsigned char channel = port->channel;
-
-/*	short wait=400;		SMPCHG
+	short wait=400;
 	while(((inw(base+0x0e) & 0x01) == 0) && (wait-- > 0));
 	if (wait <= 0) {
-		printk(KERN_WARNING "ISICOM: Card found busy in raise_rts.\n");
-		return;
-	}
-*/
-	if (!lock_card(card)) {
 		printk(KERN_WARNING "ISICOM: Card found busy in raise_rts.\n");
 		return;
 	}
@@ -311,22 +226,15 @@ extern inline void raise_rts(struct isi_port * port)
 	outw(0x0a04, base);
 	InterruptTheCard(base);	
 	port->status |= ISI_RTS;
-	unlock_card(card);
 }
 extern inline void drop_rts(struct isi_port * port)
 {
 	struct isi_board * card = port->card;
 	unsigned short base = card->base;
 	unsigned char channel = port->channel;
-
-/*	short wait=400;		SMPCHG
+	short wait=400;
 	while(((inw(base+0x0e) & 0x01) == 0) && (wait-- > 0));
 	if (wait <= 0) {
-		printk(KERN_WARNING "ISICOM: Card found busy in drop_rts.\n");
-		return;
-	}
-*/
-	if (!lock_card(card)) {
 		printk(KERN_WARNING "ISICOM: Card found busy in drop_rts.\n");
 		return;
 	}
@@ -337,22 +245,15 @@ extern inline void drop_rts(struct isi_port * port)
 	outw(0x0804, base);
 	InterruptTheCard(base);	
 	port->status &= ~ISI_RTS;
-	unlock_card(card);
 }
 extern inline void raise_dtr_rts(struct isi_port * port)
 {
 	struct isi_board * card = port->card;
 	unsigned short base = card->base;
 	unsigned char channel = port->channel;
-
-/*	short wait=400;		SMPCHG
+	short wait=400;
 	while(((inw(base+0x0e) & 0x01) == 0) && (wait-- > 0));
 	if (wait <= 0) {
-		printk(KERN_WARNING "ISICOM: Card found busy in raise_dtr_rts.\n");
-		return;
-	}
-*/
-	if (!lock_card(card)) {
 		printk(KERN_WARNING "ISICOM: Card found busy in raise_dtr_rts.\n");
 		return;
 	}
@@ -363,22 +264,15 @@ extern inline void raise_dtr_rts(struct isi_port * port)
 	outw(0x0f04, base);
 	InterruptTheCard(base);
 	port->status |= (ISI_DTR | ISI_RTS);
-	unlock_card(card);
 }
 extern inline void drop_dtr_rts(struct isi_port * port)
 {
 	struct isi_board * card = port->card;
 	unsigned short base = card->base;
 	unsigned char channel = port->channel;
-
-/*	short wait=400;
+	short wait=400;
 	while(((inw(base+0x0e) & 0x01) == 0) && (wait-- > 0));
 	if (wait <= 0) {
-		printk(KERN_WARNING "ISICOM: Card found busy in drop_dtr_rts.\n");
-		return;
-	}
-*/
-	if (!lock_card(card)) {
 		printk(KERN_WARNING "ISICOM: Card found busy in drop_dtr_rts.\n");
 		return;
 	}
@@ -389,7 +283,6 @@ extern inline void drop_dtr_rts(struct isi_port * port)
 	outw(0x0c04, base);
 	InterruptTheCard(base);	
 	port->status &= ~(ISI_RTS | ISI_DTR);
-	unlock_card(card);
 }
 
 extern inline void kill_queue(struct isi_port * port, short queue)
@@ -397,15 +290,9 @@ extern inline void kill_queue(struct isi_port * port, short queue)
 	struct isi_board * card = port->card;
 	unsigned short base = card->base;
 	unsigned char channel = port->channel;
-
-/*	short wait=400;		SMPCHG
+	short wait=400;
 	while(((inw(base+0x0e) & 0x01) == 0) && (wait-- > 0));
 	if (wait <= 0) {
-		printk(KERN_WARNING "ISICOM: Card found busy in kill_queue.\n");
-		return;
-	}
-*/
-	if (!lock_card(card)) {
 		printk(KERN_WARNING "ISICOM: Card found busy in kill_queue.\n");
 		return;
 	}
@@ -415,27 +302,6 @@ extern inline void kill_queue(struct isi_port * port, short queue)
 	outw(0x8000 | (channel << card->shift_count) | 0x02 , base);
 	outw((queue << 8) | 0x06, base);
 	InterruptTheCard(base);	
-	unlock_card(card);
-}
-
-extern inline void set_signal_mask(struct isi_port * port, char mask)
-{
-	struct isi_board * card = port->card;
-	unsigned short base = card->base;
-	unsigned char channel = port->channel;
-
-	if (!lock_card(card)) {
-		printk(KERN_WARNING "ISICOM: Card found busy"
-					"in set_signal_mask.\n");
-		return;
-	}
-#ifdef ISICOM_DEBUG	
-	printk(KERN_DEBUG "ISICOM: set_signal_mask 0x%x.\n", mask);
-#endif	
-	outw(0x8000 | (channel << card->shift_count) | 0x02, base);
-	outw((mask << 8) | 0x7, base);
-	InterruptTheCard(base);
-	unlock_card(card);
 }
 
 #endif	/*	__KERNEL__	*/

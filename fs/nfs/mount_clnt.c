@@ -17,8 +17,6 @@
 #include <linux/sunrpc/clnt.h>
 #include <linux/sunrpc/xprt.h>
 #include <linux/sunrpc/sched.h>
-#include <linux/nfs2.h>
-#include <linux/nfs3.h>
 #include <linux/nfs_fs.h>
 
 #ifdef RPC_DEBUG
@@ -32,33 +30,33 @@
 #define MOUNT_UMNT		3
  */
 
-static int			nfs_gen_mount(struct sockaddr_in *, char *,
-					      struct nfs3_fh *, int);
+static int			nfs_gen_mount(struct sockaddr_in *,
+					      char *, struct nfs_fh *, int);
 static struct rpc_clnt *	mnt_create(char *, struct sockaddr_in *, int);
 extern struct rpc_program	mnt_program;
 
 struct mnt_fhstatus {
 	unsigned int		status;
-	struct nfs3_fh *	fh;
+	struct nfs_fh *		fh;
 };
 
+/*
+ * Obtain an NFS file handle for the given host and path
+ */
 int
-nfs_mount(struct sockaddr_in *addr, char *path, struct nfs3_fh *fh)
+nfs_mount(struct sockaddr_in *addr, char *path, struct nfs_fh *fh)
 {
 	return nfs_gen_mount(addr, path, fh, NFS_MNT_VERSION);
 }
 
 int
-nfs3_mount(struct sockaddr_in *addr, char *path, struct nfs3_fh *fh)
+nfs3_mount(struct sockaddr_in *addr, char *path, struct nfs_fh *fh)
 {
 	return nfs_gen_mount(addr, path, fh, NFS_MNT3_VERSION);
 }
 
-/*
- * Obtain an NFS file handle for the given host and path
- */
 static int
-nfs_gen_mount(struct sockaddr_in *addr, char *path, struct nfs3_fh *fh, int version)
+nfs_gen_mount(struct sockaddr_in *addr, char *path, struct nfs_fh *fh, int version)
 {
 	struct rpc_clnt		*mnt_clnt;
 	struct mnt_fhstatus	result = { 0, fh };
@@ -113,7 +111,7 @@ xdr_error(struct rpc_rqst *req, u32 *p, void *dummy)
 static int
 xdr_encode_dirpath(struct rpc_rqst *req, u32 *p, const char *path)
 {
-	p = xdr_encode_string(p, path, -1);
+	p = xdr_encode_string(p, path);
 
 	req->rq_slen = xdr_adjust_iovec(req->rq_svec, p);
 	return 0;
@@ -122,12 +120,12 @@ xdr_encode_dirpath(struct rpc_rqst *req, u32 *p, const char *path)
 static int
 xdr_decode_fhstatus(struct rpc_rqst *req, u32 *p, struct mnt_fhstatus *res)
 {
-	struct nfs3_fh	*fh = res->fh;
+	struct nfs_fh *fh = res->fh;
 
 	memset((void *)fh, 0, sizeof(*fh));
 	if ((res->status = ntohl(*p++)) == 0) {
-		res->fh->size = NFS2_FHSIZE;
-		memcpy(res->fh->data, p, NFS2_FHSIZE);
+		fh->size = NFS2_FHSIZE;
+		memcpy(fh->data, p, NFS2_FHSIZE);
 	}
 	return 0;
 }
@@ -135,25 +133,22 @@ xdr_decode_fhstatus(struct rpc_rqst *req, u32 *p, struct mnt_fhstatus *res)
 static int
 xdr_decode_fhstatus3(struct rpc_rqst *req, u32 *p, struct mnt_fhstatus *res)
 {
-	struct nfs3_fh	*fh = res->fh;
+	struct nfs_fh *fh = res->fh;
 
 	memset((void *)fh, 0, sizeof(*fh));
 	if ((res->status = ntohl(*p++)) == 0) {
-		unsigned int size = ntohl(*p++);
+		int size = ntohl(*p++);
 		if (size <= NFS3_FHSIZE) {
-			res->fh->size = size;
-			memcpy(res->fh->data, p, size);
-		}
+			fh->size = size;
+			memcpy(fh->data, p, size);
+		} else
+			res->status = -EBADHANDLE;
 	}
 	return 0;
 }
 
 #define MNT_dirpath_sz		(1 + 256)
 #define MNT_fhstatus_sz		(1 + 8)
-
-#ifndef MAX
-# define MAX(a, b)      (((a) > (b))? (a) : (b))
-#endif
 
 static struct rpc_procinfo	mnt_procedures[2] = {
 	{ "mnt_null",
@@ -162,7 +157,7 @@ static struct rpc_procinfo	mnt_procedures[2] = {
 	{ "mnt_mount",
 		(kxdrproc_t) xdr_encode_dirpath,	
 		(kxdrproc_t) xdr_decode_fhstatus,
-		MAX(MNT_dirpath_sz, MNT_fhstatus_sz) << 2, 0 },
+		MNT_dirpath_sz << 2, 0 },
 };
 
 static struct rpc_procinfo mnt3_procedures[2] = {
@@ -172,14 +167,15 @@ static struct rpc_procinfo mnt3_procedures[2] = {
 	{ "mnt3_mount",
 		(kxdrproc_t) xdr_encode_dirpath,
 		(kxdrproc_t) xdr_decode_fhstatus3,
-		MAX(MNT_dirpath_sz, MNT_fhstatus_sz) << 2, 0 },
+		MNT_dirpath_sz << 2, 0 },
 };
+
 
 static struct rpc_version	mnt_version1 = {
 	1, 2, mnt_procedures
 };
 
-static struct rpc_version	mnt_version3 = {
+static struct rpc_version       mnt_version3 = {
 	3, 2, mnt3_procedures
 };
 

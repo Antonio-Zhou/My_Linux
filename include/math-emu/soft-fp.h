@@ -24,7 +24,7 @@
 #ifndef SOFT_FP_H
 #define SOFT_FP_H
 
-#include "sfp-machine.h"
+#include <asm/sfp-machine.h>
 
 /* Allow sfp-machine to have its own byte order definitions. */
 #ifndef __BYTE_ORDER

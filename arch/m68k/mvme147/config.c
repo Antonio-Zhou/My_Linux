@@ -13,7 +13,6 @@
  * for more details.
  */
 
-#include <stdarg.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
@@ -100,8 +99,9 @@ static int mvme147_get_hardware_list(char *buffer)
 }
 
 
-__initfunc(void config_mvme147(void))
+void __init config_mvme147(void)
 {
+	mach_max_dma_address	= 0x01000000;
 	mach_sched_init		= mvme147_sched_init;
 	mach_keyb_init		= mvme147_keyb_init;
 	mach_kbdrate		= mvme147_kbdrate;
@@ -119,6 +119,10 @@ __initfunc(void config_mvme147(void))
 	disable_irq		= mvme147_disable_irq;
 	mach_get_model		= mvme147_get_model;
 	mach_get_hardware_list	= mvme147_get_hardware_list;
+
+	/* Board type is only set by newer versions of vmelilo/tftplilo */
+	if (!vme_brdtype)
+		vme_brdtype = VME_TYPE_MVME147;
 }
 
 

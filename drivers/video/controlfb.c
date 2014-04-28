@@ -43,11 +43,11 @@
 #ifdef CONFIG_FB_COMPAT_XPMAC
 #include <asm/vc_ioctl.h>
 #endif
+#include <linux/adb.h>
+#include <linux/cuda.h>
 #include <asm/io.h>
 #include <asm/prom.h>
 #include <asm/pgtable.h>
-#include <asm/adb.h>
-#include <asm/cuda.h>
 
 #include <video/fbcon.h>
 #include <video/fbcon-cfb8.h>
@@ -149,11 +149,11 @@ static int default_cmode = CMODE_NVRAM;
 /*
  * Exported functions
  */
-void control_init(void);
+int control_init(void);
 #ifdef CONFIG_FB_OF
 void control_of_init(struct device_node *dp);
 #endif
-void control_setup(char *options, int *ints);
+void control_setup(char *);
 
 static int read_control_sense(struct fb_info_control *p);
 static inline int control_vram_reqd(int video_mode, int color_mode);
@@ -185,13 +185,9 @@ static struct fb_ops controlfb_ops = {
 
 /********************  The functions for controlfb_ops ********************/
 
-#ifndef MODULE
-__openfirmware
-#endif
-
 /**********  Dummies for loading control as a module  **********/
 
-static int control_open(struct fb_info *info, int user)
+int control_open(struct fb_info *info, int user)
 {
 	MOD_INC_USE_COUNT;
 	return 0;
@@ -523,7 +519,7 @@ static void set_control_clock(unsigned char *params)
 }
 
 
-__initfunc(static void init_control(struct fb_info_control *p))
+static void __init init_control(struct fb_info_control *p)
 {
 	struct fb_par_control parstruct;
 	struct fb_par_control *par = &parstruct;
@@ -531,7 +527,6 @@ __initfunc(static void init_control(struct fb_info_control *p))
 
 	p->sense = read_control_sense(p);
 	printk(KERN_INFO "Monitor sense value = 0x%x, ", p->sense);
-	
 	/* Try to pick a video mode out of NVRAM if we have one. */
 	if (default_vmode == VMODE_NVRAM) {
 		par->vmode = nvram_read_byte(NV_VMODE);
@@ -550,7 +545,6 @@ __initfunc(static void init_control(struct fb_info_control *p))
 			par->cmode = CMODE_8;}
 	else
 		par->cmode=default_cmode;
-
 	/*
 	 * Reduce the pixel size if we don't have enough VRAM.
 	 */
@@ -668,7 +662,7 @@ static void control_set_hardware(struct fb_info_control *p, struct fb_par_contro
 #endif /* CONFIG_FB_COMPAT_XPMAC */
 }
 
-__initfunc(void control_init(void))
+int __init control_init(void)
 {
 #ifndef CONFIG_FB_OF
 	struct device_node *dp;
@@ -677,9 +671,10 @@ __initfunc(void control_init(void))
 	if (dp != 0)
 		control_of_init(dp);
 #endif /* CONFIG_FB_OF */
+	return 0;
 }
 
-__initfunc(void control_of_init(struct device_node *dp))
+void __init control_of_init(struct device_node *dp)
 {
 	struct fb_info_control	*p;
 	unsigned long		addr, size;
@@ -713,26 +708,48 @@ __initfunc(void control_of_init(struct device_node *dp))
 	p->cmap_regs = ioremap(p->cmap_regs_phys, 0x1000);
 
 	/* Work out which banks of VRAM we have installed. */
-	/* danj: I guess the card just ignores writes to nonexistant VRAM... */
+	/* According to Andrew Fyfe <bandr@best.com>, the VRAM behaves like so: */
+	/* afyfe: observations from an 8500:
+	 * - with 2M vram in bank 1, it appears at offsets 0, 2M and 4M
+	 * - with 2M vram in bank 2, it appears only at offset 6M
+	 * - with 4M vram, it appears only as a 4M block at offset 0.
+	 */
+
+	/* We know there is something at 2M if there is something at 0M. */
+	out_8(&p->frame_buffer[0x200000], 0xa5);
+	out_8(&p->frame_buffer[0x200001], 0x38);
+	asm volatile("eieio; dcbi 0,%0" : : "r" (&p->frame_buffer[0x200000]) : "memory" );
+
 	out_8(&p->frame_buffer[0], 0x5a);
 	out_8(&p->frame_buffer[1], 0xc7);
 	asm volatile("eieio; dcbi 0,%0" : : "r" (&p->frame_buffer[0]) : "memory" );
-	bank1 = (in_8(&p->frame_buffer[0]) == 0x5a) && (in_8(&p->frame_buffer[1]) == 0xc7);
 
-	out_8(&p->frame_buffer[0x600000], 0xa5);
-	out_8(&p->frame_buffer[0x600001], 0x38);
-	asm volatile("eieio; dcbi 0,%0" : : "r" (&p->frame_buffer[0x600000]) : "memory" );
-	bank2 = (in_8(&p->frame_buffer[0x600000]) == 0xa5)
-		&& (in_8(&p->frame_buffer[0x600001]) == 0x38);
-	
-	p->total_vram = (bank1 + bank2) * 0x200000;
-	/* If we don't have bank 1 installed, we hope we have bank 2 :-) */
-	p->control_use_bank2 = !bank1;
-	if (p->control_use_bank2) {
+	bank1 =  (in_8(&p->frame_buffer[0x000000]) == 0x5a)
+		&& (in_8(&p->frame_buffer[0x000001]) == 0xc7);
+	bank2 =  (in_8(&p->frame_buffer[0x200000]) == 0xa5)
+		&& (in_8(&p->frame_buffer[0x200001]) == 0x38);
+
+	if(bank2 && !bank1)
+		printk(KERN_INFO "controlfb: Found memory at 2MB but not at 0!  Please contact dan@debian.org\n");
+
+	if(!bank1) {
+		out_8(&p->frame_buffer[0x600000], 0xa5);
+		out_8(&p->frame_buffer[0x600001], 0x38);
+		asm volatile("eieio; dcbi 0,%0" : : "r" (&p->frame_buffer[0x600000]) : "memory" );
+		bank2 = (in_8(&p->frame_buffer[0x600000]) == 0xa5)
+			&& (in_8(&p->frame_buffer[0x600001]) == 0x38);
+		/* If we don't have bank 1 installed, we hope we have bank 2 :-) */
+		p->control_use_bank2 = 1;
 		p->frame_buffer += 0x600000;
 		p->frame_buffer_phys += 0x600000;
 	}
 	
+	p->total_vram = (bank1 + bank2) * 0x200000;
+	
+	printk(KERN_INFO "controlfb: Memory bank 1 %s, bank 2 %s, total VRAM %dMB\n",
+		bank1 ? "present" : "absent", bank2 ? "present" : "absent",
+		2 * (bank1 + bank2));
+
 	init_control(p);
 }
 
@@ -788,10 +805,14 @@ static int control_var_to_par(struct fb_var_screeninfo *var,
      *  bitfields, horizontal timing, vertical timing.
      */
 	/* swiped by jonh from atyfb.c */
-	if (xres <= 640 && yres <= 480)
+	if (xres <= 512 && yres <= 384)
+		par->vmode = VMODE_512_384_60;		/* 512x384, 60Hz */
+	else if (xres <= 640 && yres <= 480)
 		par->vmode = VMODE_640_480_67;		/* 640x480, 67Hz */
 	else if (xres <= 640 && yres <= 870)
 		par->vmode = VMODE_640_870_75P;		/* 640x870, 75Hz (portrait) */
+	else if (xres <= 768 && yres <= 576)
+		par->vmode = VMODE_768_576_50I;		/* 768x576, 50Hz (PAL full frame) */
 	else if (xres <= 800 && yres <= 600)
 		par->vmode = VMODE_800_600_75;		/* 800x600, 75Hz */
 	else if (xres <= 832 && yres <= 624)
@@ -1004,7 +1025,7 @@ static void control_par_to_fix(struct fb_par_control *par, struct fb_fix_screeni
 {
 	memset(fix, 0, sizeof(*fix));
 	strcpy(fix->id, "control");
-	fix->mmio_start = (char *)p->control_regs_phys;
+	fix->mmio_start = p->control_regs_phys;
 	fix->mmio_len = sizeof(struct control_regs);
 	fix->type = FB_TYPE_PACKED_PIXELS;
 	
@@ -1016,7 +1037,7 @@ static void control_par_to_fix(struct fb_par_control *par, struct fb_fix_screeni
 		fix->xpanstep = 0;
 	*/
 
-	fix->smem_start = (void *)(p->frame_buffer_phys
+	fix->smem_start = (p->frame_buffer_phys
 		+ control_reg_init[par->vmode-1]->offset[par->cmode]);
 	fix->smem_len = p->total_vram - control_reg_init[par->vmode-1]->offset[par->cmode];
 	fix->visual = (par->cmode == CMODE_8) ?
@@ -1158,7 +1179,7 @@ static void control_init_info(struct fb_info *info, struct fb_info_control *p)
 }
 
 /* Parse user speficied options (`video=controlfb:') */
-__initfunc(void control_setup(char *options, int *ints))
+void __init control_setup(char *options)
 {
 	char *this_opt;
 
@@ -1180,8 +1201,8 @@ __initfunc(void control_setup(char *options, int *ints))
 		}
 		if (!strncmp(this_opt, "vmode:", 6)) {
 			int vmode = simple_strtoul(this_opt+6, NULL, 0);
-			if (vmode > 0 && vmode <= VMODE_MAX)
-				default_vmode = vmode;
+		if (vmode > 0 && vmode <= VMODE_MAX)
+			default_vmode = vmode;
 		} else if (!strncmp(this_opt, "cmode:", 6)) {
 			int depth = simple_strtoul(this_opt+6, NULL, 0);
 			switch (depth) {

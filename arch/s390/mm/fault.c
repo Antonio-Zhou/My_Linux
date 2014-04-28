@@ -20,7 +20,6 @@
 #include <linux/mm.h>
 #include <linux/smp.h>
 #include <linux/smp_lock.h>
-#include <linux/compatmac.h>
 
 #include <asm/system.h>
 #include <asm/uaccess.h>
@@ -49,7 +48,6 @@ asmlinkage void do_page_fault(struct pt_regs *regs, unsigned long error_code)
         int write;
         unsigned long psw_mask;
         unsigned long psw_addr;
-	int kernel_address = 0;
 
         /*
          *  get psw mask of Program old psw to find out,
@@ -67,66 +65,33 @@ asmlinkage void do_page_fault(struct pt_regs *regs, unsigned long error_code)
 
         address = S390_lowcore.trans_exc_code&0x7ffff000;
 
-        tsk = current;
-        mm = tsk->mm;
-
         if (atomic_read(&S390_lowcore.local_irq_count))
                 die("page fault from irq handler",regs,error_code);
 
-	/*
-	 * Check which address space the address belongs to
-	 */
-	switch (S390_lowcore.trans_exc_code & 3)
-	{
-	case 0: /* Primary Segment Table Descriptor */
-		kernel_address = 1;
-		goto no_context;
-
-	case 1: /* STD determined via access register */
-		if (S390_lowcore.exc_access_id == 0)
-		{
-			kernel_address = 1;
-			goto no_context;
-		}
-		if (regs && S390_lowcore.exc_access_id < NUM_ACRS)
-		{
-			if (regs->acrs[S390_lowcore.exc_access_id] == 0)
-			{
-				kernel_address = 1;
-				goto no_context;
-			}
-			if (regs->acrs[S390_lowcore.exc_access_id] == 1)
-			{
-				/* user space address */
-				break;
-			}
-		}
-		die("page fault via unknown access register", regs, error_code);
-		break;
-
-	case 2: /* Secondary Segment Table Descriptor */
-	case 3: /* Home Segment Table Descriptor */
-		/* user space address */
-		break;
-	}
-
-
-	/*
-	 * When we get here, the fault happened in the current
-	 * task's user address space, so we search the VMAs
-	 */
+        tsk = current;
+        mm = tsk->mm;
 
         down(&mm->mmap_sem);
 
         vma = find_vma(mm, address);
-        if (!vma)
+        if (!vma) {
+	        printk("no vma for address %lX\n",address);
                 goto bad_area;
+        }
         if (vma->vm_start <= address) 
                 goto good_area;
-        if (!(vma->vm_flags & VM_GROWSDOWN))
+        if (!(vma->vm_flags & VM_GROWSDOWN)) {
+                printk("VM_GROWSDOWN not set, but address %lX \n",address);
+                printk("not in vma %p (start %lX end %lX)\n",vma,
+                       vma->vm_start,vma->vm_end);
                 goto bad_area;
-        if (expand_stack(vma, address))
+        }
+        if (expand_stack(vma, address)) {
+                printk("expand of vma failed address %lX\n",address);
+                printk("vma %p (start %lX end %lX)\n",vma,
+                       vma->vm_start,vma->vm_end);
                 goto bad_area;
+        }
 /*
  * Ok, we have a good vm_area for this memory access, so
  * we can handle it..
@@ -139,27 +104,19 @@ good_area:
                         break;
                 case 0x10:                                   /* not present*/
                 case 0x11:                                   /* not present*/
-                        if (!(vma->vm_flags & (VM_READ | VM_EXEC | VM_WRITE)))
+                        if (!(vma->vm_flags & (VM_READ | VM_EXEC | VM_WRITE))) {
+                                printk("flags %X of vma for address %lX wrong \n",
+                                       vma->vm_flags,address);
+                                printk("vma %p (start %lX end %lX)\n",vma,
+                                       vma->vm_start,vma->vm_end);
                                 goto bad_area;
+                        }
                         break;
                 default:
                        printk("code should be 4, 10 or 11 (%lX) \n",error_code&0xFF);  
                        goto bad_area;
         }
-
-	/*
-	 * If for any reason at all we couldn't handle the fault,
-	 * make sure we exit gracefully rather than endlessly redo
-	 * the fault.
-	 */
-survive:
-	{
-	  int fault = handle_mm_fault(tsk, vma, address, write);
-	  if (!fault)
-		  goto do_sigbus;
-	  if (fault < 0)
-		  goto out_of_memory;
-	}
+        handle_mm_fault(tsk, vma, address, write);
 
         up(&mm->mmap_sem);
         return;
@@ -173,19 +130,19 @@ bad_area:
 
         /* User mode accesses just cause a SIGSEGV */
         if (psw_mask & PSW_PROBLEM_STATE) {
-                tsk->tss.prot_addr = address;
-                tsk->tss.trap_no = error_code;
-#ifdef CONFIG_PROCESS_DEBUG
+                tsk->thread.prot_addr = address;
+                tsk->thread.error_code = error_code;
+                tsk->thread.trap_no = 14;
+
                 printk("User process fault: interruption code 0x%lX\n",error_code);
                 printk("failing address: %lX\n",address);
-		show_regs(regs);
-#endif
+		show_crashed_task_info();
                 force_sig(SIGSEGV, tsk);
                 return;
 	}
 
- no_context:
         /* Are we prepared to handle this kernel fault?  */
+
         if ((fixup = search_exception_table(regs->psw.addr)) != 0) {
                 regs->psw.addr = fixup;
                 return;
@@ -194,173 +151,53 @@ bad_area:
 /*
  * Oops. The kernel tried to access some bad page. We'll have to
  * terminate things with extreme prejudice.
+ *
+ * First we check if it was the bootup rw-test, though..
  */
-        if (kernel_address)
-                printk(KERN_ALERT "Unable to handle kernel pointer dereference"
-        	       " at virtual kernel address %08lx\n", address);
+        if (address < PAGE_SIZE)
+                printk(KERN_ALERT "Unable to handle kernel NULL pointer dereference");
         else
-                printk(KERN_ALERT "Unable to handle kernel paging request"
-		       " at virtual user address %08lx\n", address);
+                printk(KERN_ALERT "Unable to handle kernel paging request");
+        printk(" at virtual address %08lx\n",address);
 /*
  * need to define, which information is useful here
  */
 
+        lock_kernel();
         die("Oops", regs, error_code);
         do_exit(SIGKILL);
-
-
-/*
- * We ran out of memory, or some other thing happened to us that made
- * us unable to handle the page fault gracefully.
- */
-out_of_memory:
-	if (tsk->pid == 1)
-	{
-		tsk->policy |= SCHED_YIELD;
-		schedule();
-		goto survive;
-	}
-	up(&mm->mmap_sem);
-	if (psw_mask & PSW_PROBLEM_STATE)
-	{
-		printk("VM: killing process %s\n", tsk->comm);
-		do_exit(SIGKILL);
-	}
-	goto no_context;
-
-do_sigbus:
-	up(&mm->mmap_sem);
-
-	/*
-	 * Send a sigbus, regardless of whether we were in kernel
-	 * or user mode.
-	 */
-        tsk->tss.prot_addr = address;
-        tsk->tss.trap_no = error_code;
-	force_sig(SIGBUS, tsk);
-
-	/* Kernel mode? Handle exceptions or die */
-	if (!(psw_mask & PSW_PROBLEM_STATE))
-		goto no_context;
+        unlock_kernel();
 }
 
-typedef struct _pseudo_wait_t {
-       struct _pseudo_wait_t *next;
-       wait_queue_head_t queue;
-       unsigned long address;
-       int resolved;
-} pseudo_wait_t;
-
-static pseudo_wait_t *pseudo_lock_queue = NULL;
-static spinlock_t pseudo_wait_spinlock; /* spinlock to protect lock queue */
-
 /*
- * This routine handles pseudo page faults.
- */
-asmlinkage void
-do_pseudo_page_fault(struct pt_regs *regs, unsigned long error_code)
-{
-        DECLARE_WAITQUEUE(wait, current);
-        pseudo_wait_t wait_struct;
-        pseudo_wait_t *ptr, *last, *next;
-        unsigned long psw_mask;
-        unsigned long address;
-        int kernel_address;
+                {
+		  char c;
+                  int i,j;
+		  char *addr;
+		  addr = ((char*) psw_addr)-0x20;
+		  for (i=0;i<16;i++) {
+		    if (i == 2)
+		      printk("\n");
+		    printk ("%08X:    ",(unsigned long) addr);
+		    for (j=0;j<4;j++) {
+		      printk("%08X ",*(unsigned long*)addr);
+		      addr += 4;
+		    }
+		    addr -=0x10;
+		    printk(" | ");
+		    for (j=0;j<16;j++) {
+		      printk("%c",(c=*addr++) < 0x20 ? '.' : c );
+		    }
 
-        /*
-         *  get psw mask of Program old psw to find out,
-         *  if user or kernel mode
-         */
-        psw_mask = S390_lowcore.program_old_psw.mask;
-
-        /*
-         * get the failing address
-         * more specific the segment and page table portion of
-         * the address
-         */
-        address = S390_lowcore.trans_exc_code & 0xfffff000;
-
-        if (address & 0x80000000) {
-                /* high bit set -> a page has been swapped in by VM */
-                address &= 0x7fffffff;
-                spin_lock(&pseudo_wait_spinlock);
-                last = NULL;
-                ptr = pseudo_lock_queue;
-                while (ptr != NULL) {
-                        next = ptr->next;
-                        if (address == ptr->address) {
-                                /*
-                                 * This is one of the processes waiting
-                                 * for the page. Unchain from the queue.
-				 * There can be more than one process
-				 * waiting for the same page. VM presents
-				 * an initial and a completion interrupt for
-				 * every process that tries to access a 
-				 * page swapped out by VM. 
-                                 */
-                                if (last == NULL)
-                                        pseudo_lock_queue = next;
-                                else
-                                        last->next = next;
-                                /* now wake up the process */
-                                ptr->resolved = 1;
-                                wake_up(&ptr->queue);
-                        } else
-                                last = ptr;
-                        ptr = next;
+		    printk("\n");
+		  }
+                  printk("\n");
                 }
-                spin_unlock(&pseudo_wait_spinlock);
-        } else {
-                /* Pseudo page faults in kernel mode is a bad idea */
-                if (!(psw_mask & PSW_PROBLEM_STATE)) {
-                        /*
-			 * VM presents pseudo page faults if the interrupted
-			 * state was not disabled for interrupts. So we can
-			 * get pseudo page fault interrupts while running
-			 * in kernel mode. We simply access the page here
-			 * while we are running disabled. VM will then swap
-			 * in the page synchronously.
-                         */
-			kernel_address = 0;
-                         switch (S390_lowcore.trans_exc_code & 3) {
-                         case 0: /* Primary Segment Table Descriptor */
-                                 kernel_address = 1;
-                                 break;
-                         case 1: /* STD determined via access register */
-                                 if (S390_lowcore.exc_access_id == 0 ||
-                                     regs->acrs[S390_lowcore.exc_access_id]==0)
-                                         kernel_address = 1;
-                                 break;
-                         case 2: /* Secondary Segment Table Descriptor */
-                         case 3: /* Home Segment Table Descriptor */
-                                 break;
-                         }
-                         if (kernel_address)
-                                 /* dereference a virtual kernel address */
-                                 __asm__ __volatile__ (
-                                         "  ic 0,0(%0)"
-                                         : : "a" (address) : "0");
-                         else
-                                 /* dereference a virtual user address */
-                                 __asm__ __volatile__ (
-                                         "  la   2,0(%0)\n"
-                                         "  sacf 512\n"
-                                         "  ic   2,0(2)\n"
-                                         "  sacf 0"
-                                         : : "a" (address) : "2" );
 
-                        return;
-                }
-		/* initialize and add element to pseudo_lock_queue */
-                init_waitqueue_head (&wait_struct.queue);
-                wait_struct.address = address;
-                wait_struct.resolved = 0;
-                spin_lock(&pseudo_wait_spinlock);
-                wait_struct.next = pseudo_lock_queue;
-                pseudo_lock_queue = &wait_struct;
-                spin_unlock(&pseudo_wait_spinlock);
-                /* go to sleep */
-                wait_event(wait_struct.queue, wait_struct.resolved);
-        }
-}
-    
+*/
+
+
+
+
+
+

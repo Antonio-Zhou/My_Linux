@@ -1,13 +1,41 @@
-/* $Id: hysdn_procconf.c,v 1.1.2.1 2001/12/31 13:26:46 kai Exp $
- *
+/* $Id: hysdn_procconf.c,v 1.4 2000/03/03 16:37:12 kai Exp $
+
  * Linux driver for HYSDN cards, /proc/net filesystem dir and conf functions.
- *
  * written by Werner Cornelius (werner@titro.de) for Hypercope GmbH
  *
  * Copyright 1999  by Werner Cornelius (werner@titro.de)
  *
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2, or (at your option)
+ * any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ *
+ * $Log: hysdn_procconf.c,v $
+ * Revision 1.4  2000/03/03 16:37:12  kai
+ * incorporated some cosmetic changes from the official kernel tree back
+ * into CVS
+ *
+ * Revision 1.3  2000/03/02 00:11:07  werner
+ *
+ * Changes related to procfs for 2.3.48
+ *
+ * Revision 1.2  2000/02/14 19:23:03  werner
+ *
+ * Changed handling of proc filesystem tables to a more portable version
+ *
+ * Revision 1.1  2000/02/10 19:45:18  werner
+ *
+ * Initial release
+ *
  *
  */
 
@@ -20,7 +48,7 @@
 
 #include "hysdn_defs.h"
 
-static char *hysdn_procconf_revision = "$Revision: 1.1.2.1 $";
+static char *hysdn_procconf_revision = "$Revision: 1.4 $";
 
 #define INFO_OUT_LEN 80		/* length of info line including lf */
 
@@ -30,7 +58,7 @@ static char *hysdn_procconf_revision = "$Revision: 1.1.2.1 $";
 #define CONF_STATE_DETECT 0	/* waiting for detect */
 #define CONF_STATE_CONF   1	/* writing config data */
 #define CONF_STATE_POF    2	/* writing pof data */
-#define CONF_LINE_LEN   255	/* 255 chars max */
+#define CONF_LINE_LEN    80	/* 80 chars max */
 
 struct conf_writedata {
 	hysdn_card *card;	/* card the device is connected to */
@@ -45,7 +73,7 @@ struct conf_writedata {
 /***********************************************************************/
 /* process_line parses one config line and transfers it to the card if */
 /* necessary.                                                          */
-/* if the return value is negative an error occurred.                   */
+/* if the return value is negative an error occured.                   */
 /***********************************************************************/
 static int
 process_line(struct conf_writedata *cnf)
@@ -119,7 +147,7 @@ hysdn_conf_write(struct file *file, const char *buf, size_t count, loff_t * off)
 		if (ch == 0x1A) {
 			/* we detected a pof file */
 			if ((cnf->needed_size = pof_write_open(cnf->card, &cnf->pof_buffer)) <= 0)
-				return (cnf->needed_size);	/* an error occurred -> exit */
+				return (cnf->needed_size);	/* an error occured -> exit */
 			cnf->buf_size = 0;	/* buffer is empty */
 			cnf->state = CONF_STATE_POF;	/* new state */
 		} else {
@@ -147,7 +175,7 @@ hysdn_conf_write(struct file *file, const char *buf, size_t count, loff_t * off)
 			cnf->needed_size = pof_write_buffer(cnf->card, cnf->buf_size);	/* write data */
 			if (cnf->needed_size <= 0) {
 				cnf->card->state = CARD_STATE_BOOTERR;	/* show boot error */
-				return (cnf->needed_size);	/* an error occurred */
+				return (cnf->needed_size);	/* an error occured */
 			}
 			cnf->buf_size = 0;	/* buffer is empty again */
 		}
@@ -258,8 +286,9 @@ hysdn_conf_open(struct inode *ino, struct file *filep)
 	struct conf_writedata *cnf;
 	char *cp, *tmp;
 
+	MOD_INC_USE_COUNT;	/* lock module */
+
 	/* now search the addressed card */
-	MOD_INC_USE_COUNT;
 	card = card_root;
 	while (card) {
 		pd = card->procconf;
@@ -268,7 +297,7 @@ hysdn_conf_open(struct inode *ino, struct file *filep)
 		card = card->next;	/* search next entry */
 	}
 	if (!card) {
-		MOD_DEC_USE_COUNT;
+		MOD_DEC_USE_COUNT;	/* unlock module */
 		return (-ENODEV);	/* device is unknown/invalid */
 	}
 	if (card->debug_flags & (LOG_PROC_OPEN | LOG_PROC_ALL))
@@ -306,7 +335,7 @@ hysdn_conf_open(struct inode *ino, struct file *filep)
 		*cp++ = '\n';
 
 		/* and now the data */
-		sprintf(cp, "%d  %3d %4d %4d %3d 0x%04x 0x%08lx %7d %9d %3d   %s",
+		sprintf(cp, "%d  %3d %4d %4d %3d 0x%04x 0x%08x %7d %9d %3d   %s",
 			card->myid,
 			card->bus,
 			PCI_SLOT(card->devfn),
@@ -325,7 +354,7 @@ hysdn_conf_open(struct inode *ino, struct file *filep)
 		*cp++ = '\n';
 		*cp = 0;	/* end of string */
 	} else {		/* simultaneous read/write access forbidden ! */
-		MOD_DEC_USE_COUNT;
+		MOD_DEC_USE_COUNT;	/* unlock module */
 		return (-EPERM);	/* no permission this time */
 	}
 	return (0);
@@ -373,7 +402,7 @@ hysdn_conf_close(struct inode *ino, struct file *filep)
 		if (filep->private_data)
 			kfree(filep->private_data);	/* release memory */
 	}
-	MOD_DEC_USE_COUNT;
+	MOD_DEC_USE_COUNT;	/* reduce usage count */
 	return (retval);
 }				/* hysdn_conf_close */
 
@@ -389,7 +418,6 @@ static struct file_operations conf_fops =
 	release:        hysdn_conf_close,                                       
 };
 
-static struct inode_operations conf_inode_operations;
 /*****************************/
 /* hysdn subdir in /proc/net */
 /*****************************/
@@ -418,10 +446,7 @@ hysdn_procconf_init(void)
 		if ((card->procconf = (void *) create_proc_entry(conf_name,
 					     S_IFREG | S_IRUGO | S_IWUSR,
 					    hysdn_proc_entry)) != NULL) {
-			memset(&conf_inode_operations, 0, sizeof(struct inode_operations));
-			conf_inode_operations.default_file_ops = &conf_fops;
-
-			((struct proc_dir_entry *) card->procconf)->ops = &conf_inode_operations;
+			((struct proc_dir_entry *) card->procconf)->proc_fops = &conf_fops;
 			hysdn_proclog_init(card);	/* init the log file entry */
 		}
 		card = card->next;	/* next entry */
@@ -454,4 +479,4 @@ hysdn_procconf_release(void)
 	}
 
 	remove_proc_entry(PROC_SUBDIR_NAME, proc_net);
-}
+}				/* hysdn_procfs_release */

@@ -1,5 +1,5 @@
 /*
- * $Id: time.c,v 1.47.2.4 1999/08/27 04:20:32 cort Exp $
+ * $Id: time.c,v 1.57 1999/10/21 03:08:16 cort Exp $
  * Common time routines among all ppc machines.
  *
  * Written by Cort Dougan (cort@cs.nmt.edu) to merge
@@ -41,12 +41,10 @@
 #include <asm/processor.h>
 #include <asm/nvram.h>
 #include <asm/cache.h>
-#ifdef CONFIG_8xx
 #include <asm/8xx_immap.h>
-#endif
 #include <asm/machdep.h>
 
-#include <asm/time.h>
+#include "time.h"
 
 void smp_local_timer_interrupt(struct pt_regs *);
 
@@ -61,19 +59,20 @@ time_t last_rtc_update = 0;
 unsigned decrementer_count;	/* count value for 1e6/HZ microseconds */
 unsigned count_period_num;	/* 1 decrementer count equals */
 unsigned count_period_den;	/* count_period_num / count_period_den us */
+unsigned long last_tb;
 
 /*
  * timer_interrupt - gets called when the decrementer overflows,
  * with interrupts disabled.
  * We set it up to overflow again in 1/HZ seconds.
  */
-void timer_interrupt(struct pt_regs * regs)
+int timer_interrupt(struct pt_regs * regs)
 {
 	int dval, d;
 	unsigned long cpu = smp_processor_id();
-
+	
 	hardirq_enter(cpu);
-#ifdef __SMP__
+#ifdef CONFIG_SMP
 	{
 		unsigned int loops = 100000000;
 		while (test_bit(0, &global_irq_lock)) {
@@ -92,59 +91,57 @@ void timer_interrupt(struct pt_regs * regs)
 			}
 		}
 	}
-#endif /* __SMP__ */			
+#endif /* CONFIG_SMP */			
 	
-	while ((dval = get_dec()) < 0) {
-		/*
-		 * Wait for the decrementer to change, then jump
-		 * in and add decrementer_count to its value
-		 * (quickly, before it changes again!)
-		 */
-		while ((d = get_dec()) == dval)
-			;
-		set_dec(d + decrementer_count);
-		if ( !smp_processor_id() )
-		{
-			do_timer(regs);
-#if 0
-	/* -- BenH -- I'm removing this for now since it can cause various
-	 *            troubles with local-time RTCs. Now that we have a
-	 *            /dev/rtc that uses ppc_md.set_rtc_time() on mac, it
-	 *            should be possible to program the RTC from userland
-	 *            in all cases.
+	dval = get_dec();
+	/*
+	 * Wait for the decrementer to change, then jump
+	 * in and add decrementer_count to its value
+	 * (quickly, before it changes again!)
 	 */
-			/*
-			 * update the rtc when needed
-			 */
-			if ( (time_status & STA_UNSYNC) &&
-			     ((xtime.tv_sec > last_rtc_update + 60) ||
-			      (xtime.tv_sec < last_rtc_update)) )
-			{
-				if (ppc_md.set_rtc_time(xtime.tv_sec) == 0)
-					last_rtc_update = xtime.tv_sec;
-				else
-					/* do it again in 60 s */
-					last_rtc_update = xtime.tv_sec;
-			}
-#endif			
+	while ((d = get_dec()) == dval)
+		;
+	asm volatile("mftb 	%0" : "=r" (last_tb) );
+	
+	/*
+	 * Don't play catchup between the call to time_init()
+	 * and sti() in init/main.c.
+	 *
+	 * This also means if we're delayed for > HZ
+	 * we lose those ticks.  If we're delayed for > HZ
+	 * then we have something wrong anyway, though.
+	 *
+	 * -- Cort
+	 */
+	if ( d < (-1*decrementer_count) )
+		d = 0;
+	set_dec(d + decrementer_count);
+	if ( !smp_processor_id() )
+	{
+		do_timer(regs);
+		/*
+		 * update the rtc when needed
+		 */
+		if ( (time_status & STA_UNSYNC) &&
+		     ((xtime.tv_sec > last_rtc_update + 60) ||
+		      (xtime.tv_sec < last_rtc_update)) )
+		{
+			if (ppc_md.set_rtc_time(xtime.tv_sec) == 0)
+				last_rtc_update = xtime.tv_sec;
+			else
+				/* do it again in 60 s */
+				last_rtc_update = xtime.tv_sec;
 		}
 	}
-#ifdef __SMP__
+#ifdef CONFIG_SMP
 	smp_local_timer_interrupt(regs);
 #endif		
-
-#ifdef CONFIG_APUS
-	{
-		extern void apus_heartbeat (void);
-		apus_heartbeat ();
-	}
-#endif
-#if defined(CONFIG_ALL_PPC) || defined(CONFIG_CHRP)
-	if ( _machine == _MACH_chrp )
-		chrp_event_scan();
-#endif	
-
+	
+	if ( ppc_md.heartbeat && !ppc_md.heartbeat_count--)
+		ppc_md.heartbeat();
+	
 	hardirq_exit(cpu);
+	return 1; /* lets ret_from_int know we can do checks */
 }
 
 /*
@@ -152,20 +149,21 @@ void timer_interrupt(struct pt_regs * regs)
  */
 void do_gettimeofday(struct timeval *tv)
 {
-	unsigned long flags;
+	unsigned long flags, diff;
 
 	save_flags(flags);
 	cli();
 	*tv = xtime;
 	/* XXX we don't seem to have the decrementers synced properly yet */
-#ifndef __SMP__
-	tv->tv_usec += (decrementer_count - get_dec())
-	    * count_period_num / count_period_den;
-	if (tv->tv_usec >= 1000000) {
-		tv->tv_usec -= 1000000;
-		tv->tv_sec++;
-	}
+#ifndef CONFIG_SMP
+	asm volatile("mftb %0" : "=r" (diff) );
+	diff -= last_tb;
+	
+	tv->tv_usec += diff * count_period_num / count_period_den;
+	tv->tv_sec += tv->tv_usec / 1000000;
+	tv->tv_usec = tv->tv_usec % 1000000;
 #endif
+
 	restore_flags(flags);
 }
 
@@ -175,6 +173,7 @@ void do_settimeofday(struct timeval *tv)
 	int frac_tick;
 	
 	last_rtc_update = 0; /* so the rtc gets updated soon */
+	
 	frac_tick = tv->tv_usec % (1000000 / HZ);
 	save_flags(flags);
 	cli();
@@ -190,12 +189,12 @@ void do_settimeofday(struct timeval *tv)
 }
 
 
-__initfunc(void time_init(void))
+void __init time_init(void)
 {
-	long time_offset = 0;
-
         if (ppc_md.time_init != NULL)
-                time_offset = ppc_md.time_init();
+        {
+                ppc_md.time_init();
+        }
 
 	if ((_get_PVR() >> 16) == 1) {
 		/* 601 processor: dec counts down by 128 every 128ns */
@@ -208,15 +207,9 @@ __initfunc(void time_init(void))
 
         xtime.tv_sec = ppc_md.get_rtc_time();
         xtime.tv_usec = 0;
-        if (time_offset) {
-        	struct timezone tz;
-        	tz.tz_minuteswest = time_offset/60;
-        	tz.tz_dsttime = 0; /* Not handled correctly by the kernel anyway */
-        	do_sys_settimeofday(NULL, &tz);
-        }
 
 	set_dec(decrementer_count);
-	/* allow updates right away */
+	/* allow setting the time right away */
 	last_rtc_update = 0;
 }
 

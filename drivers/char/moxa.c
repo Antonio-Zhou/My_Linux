@@ -42,7 +42,6 @@
 #include <linux/interrupt.h>
 #include <linux/tty.h>
 #include <linux/tty_flip.h>
-#include <linux/config.h>
 #include <linux/major.h>
 #include <linux/string.h>
 #include <linux/fcntl.h>
@@ -161,8 +160,8 @@ struct moxa_str {
 	struct tty_struct *tty;
 	struct termios normal_termios;
 	struct termios callout_termios;
-	struct wait_queue *open_wait;
-	struct wait_queue *close_wait;
+	wait_queue_head_t open_wait;
+	wait_queue_head_t close_wait;
 	struct tq_struct tqueue;
 };
 
@@ -222,12 +221,12 @@ static struct termios *moxaTermios[MAX_PORTS + 1];
 static struct termios *moxaTermiosLocked[MAX_PORTS + 1];
 static struct moxa_str moxaChannels[MAX_PORTS];
 static int moxaRefcount;
-unsigned char *moxaXmitBuff;
+static unsigned char *moxaXmitBuff;
 static int moxaTimer_on;
-struct timer_list moxaTimer;
+static struct timer_list moxaTimer;
 static int moxaEmptyTimer_on[MAX_PORTS];
-struct timer_list moxaEmptyTimer[MAX_PORTS];
-struct semaphore moxaBuffSem = MUTEX;
+static struct timer_list moxaEmptyTimer[MAX_PORTS];
+static struct semaphore moxaBuffSem;
 
 int moxa_init(void);
 #ifdef MODULE
@@ -340,6 +339,7 @@ int moxa_init(void)
 
 	printk(KERN_INFO "MOXA Intellio family driver version %s\n", MOXA_VERSION);
 
+	init_MUTEX(&moxaBuffSem);
 	memset(&moxaDriver, 0, sizeof(struct tty_driver));
 	memset(&moxaCallout, 0, sizeof(struct tty_driver));
 	moxaDriver.magic = TTY_DRIVER_MAGIC;
@@ -395,8 +395,8 @@ int moxa_init(void)
 		ch->blocked_open = 0;
 		ch->callout_termios = moxaCallout.init_termios;
 		ch->normal_termios = moxaDriver.init_termios;
-		ch->open_wait = 0;
-		ch->close_wait = 0;
+		init_waitqueue_head(&ch->open_wait);
+		init_waitqueue_head(&ch->close_wait);
 	}
 
 	for (i = 0; i < MAX_BOARDS; i++) {
@@ -482,13 +482,15 @@ int moxa_init(void)
 #endif
 	/* Find PCI boards here */
 #ifdef CONFIG_PCI
-	if (pci_present()) {
+	{
 		struct pci_dev *p = NULL;
 		n = sizeof(moxa_pcibrds) / sizeof(moxa_pciinfo);
 		i = 0;
 		while (i < n) {
 			while((p = pci_find_device(moxa_pcibrds[i].vendor_id, moxa_pcibrds[i].device_id, p))!=NULL)
 			{
+				if (pci_enable_device(p))
+					continue;
 				if (numBoards >= MAX_BOARDS) {
 					if (verbose)
 						printk("More than %d MOXA Intellio family boards found. Board is ignored.", MAX_BOARDS);
@@ -511,9 +513,7 @@ int moxa_init(void)
 
 static int moxa_get_PCI_conf(struct pci_dev *p, int board_type, moxa_board_conf * board)
 {
-	unsigned int val;
-
-	board->baseAddr = p->base_address[2] & PCI_BASE_ADDRESS_MEM_MASK;
+	board->baseAddr = pci_resource_start (p, 2);
 	board->boardType = board_type;
 	switch (board_type) {
 	case MOXA_BOARD_C218_ISA:
@@ -697,32 +697,21 @@ static int moxa_write(struct tty_struct *tty, int from_user,
 	struct moxa_str *ch;
 	int len, port;
 	unsigned long flags;
+	unsigned char *temp;
 
 	ch = (struct moxa_str *) tty->driver_data;
 	if (ch == NULL)
 		return (0);
 	port = ch->port;
 	save_flags(flags);
+	cli();
 	if (from_user) {
-		if (count > PAGE_SIZE)
-			count = PAGE_SIZE;
-		down(&moxaBuffSem);
-		if (copy_from_user(moxaXmitBuff, buf, count)) {
-			len = -EFAULT;
-		} else {
-			cli();
-			len = MoxaPortWriteData(port, moxaXmitBuff, count);
-			restore_flags(flags);
-		}
-		up(&moxaBuffSem);
-		if (len < 0)
-			return len;
-	} else {
-		cli();
-		len = MoxaPortWriteData(port, (unsigned char *) buf, count);
-		restore_flags(flags);
-	}
-
+		copy_from_user(moxaXmitBuff, buf, count);
+		temp = moxaXmitBuff;
+	} else
+		temp = (unsigned char *) buf;
+	len = MoxaPortWriteData(port, temp, count);
+	restore_flags(flags);
 	/*********************************************
 	if ( !(ch->statusflags & LOWWAIT) &&
 	     ((len != count) || (MoxaPortTxFree(port) <= 100)) )
@@ -754,7 +743,6 @@ static void moxa_flush_buffer(struct tty_struct *tty)
 	    tty->ldisc.write_wakeup)
 		(tty->ldisc.write_wakeup) (tty);
 	wake_up_interruptible(&tty->write_wait);
-	wake_up_interruptible(&tty->poll_wait);
 }
 
 static int moxa_chars_in_buffer(struct tty_struct *tty)
@@ -1012,7 +1000,6 @@ static void moxa_poll(unsigned long ignored)
 						  tp->ldisc.write_wakeup)
 							(tp->ldisc.write_wakeup) (tp);
 						wake_up_interruptible(&tp->write_wait);
-						wake_up_interruptible(&tp->poll_wait);
 					}
 				}
 			}
@@ -1069,7 +1056,7 @@ static void set_tty_param(struct tty_struct *tty)
 static int block_till_ready(struct tty_struct *tty, struct file *filp,
 			    struct moxa_str *ch)
 {
-	struct wait_queue wait = {current, NULL};
+	DECLARE_WAITQUEUE(wait,current);
 	unsigned long flags;
 	int retval;
 	int do_clocal = C_CLOCAL(tty);
@@ -1203,7 +1190,6 @@ static void check_xmit_empty(unsigned long data)
 			    ch->tty->ldisc.write_wakeup)
 				(ch->tty->ldisc.write_wakeup) (ch->tty);
 			wake_up_interruptible(&ch->tty->write_wait);
-			wake_up_interruptible(&ch->tty->poll_wait);
 			return;
 		}
 		moxaEmptyTimer[ch->port].expires = jiffies + HZ;
@@ -2916,8 +2902,6 @@ static int moxaload320b(int cardno, unsigned char * tmp, int len)
 	unsigned long baseAddr;
 	int i;
 
-	if(len > sizeof(moxaBuff))
-		return -EINVAL;
 	if(copy_from_user(moxaBuff, tmp, len))
 		return -EFAULT;
 	baseAddr = moxaBaseAddr[cardno];

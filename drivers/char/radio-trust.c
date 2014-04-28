@@ -299,8 +299,12 @@ static struct video_device trust_radio=
 	NULL
 };
 
-__initfunc(int trust_init(struct video_init *v))
+static int __init trust_init(void)
 {
+	if(io == -1) {
+		printk(KERN_ERR "You must set an I/O address with io=0x???\n");
+		return -EINVAL;
+	}
 	if(check_region(io, 2)) {
 		printk(KERN_ERR "trust: port 0x%x already in use\n", io);
 		return -EBUSY;
@@ -329,8 +333,6 @@ __initfunc(int trust_init(struct video_init *v))
 	return 0;
 }
 
-#ifdef MODULE
-
 MODULE_AUTHOR("Eric Lammerts, Russell Kroll, Quay Lu, Donald Song, Jason Lewis, Scott McGrath, William McGrath");
 MODULE_DESCRIPTION("A driver for the Trust FM Radio card.");
 MODULE_PARM(io, "i");
@@ -338,19 +340,11 @@ MODULE_PARM_DESC(io, "I/O address of the Trust FM Radio card (0x350 or 0x358)");
 
 EXPORT_NO_SYMBOLS;
 
-int init_module(void)
-{
-	if(io == -1) {
-		printk(KERN_ERR "You must set an I/O address with io=0x???\n");
-		return -EINVAL;
-	}
-	return trust_init(NULL);
-}
-
-void cleanup_module(void)
+static void __exit cleanup_trust_module(void)
 {
 	video_unregister_device(&trust_radio);
 	release_region(io, 2);
 }
 
-#endif
+module_init(trust_init);
+module_exit(cleanup_trust_module);

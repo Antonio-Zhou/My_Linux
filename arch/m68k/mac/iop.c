@@ -51,6 +51,9 @@
  *   IOP hasn't died.
  * o Some of the IOP manager routines need better error checking and
  *   return codes. Nothing major, just prettying up.
+ *
+ * + share the stuff you were smoking when you wrote the iop_get_proc_info()
+ *   for case when CONFIG_PROC_FS is undefined.
  */
 
 /*
@@ -112,7 +115,6 @@
 #include <linux/init.h>
 #include <linux/proc_fs.h>
 
-#include <asm/adb.h> 
 #include <asm/bootinfo.h> 
 #include <asm/macintosh.h> 
 #include <asm/macints.h> 
@@ -126,21 +128,10 @@
 int iop_scc_present,iop_ism_present;
 
 #ifdef CONFIG_PROC_FS
-
-/*
- * sneaky reuse of the PROC_MAC_VIA inode. It's not needed by via.c
- * anymore so we'll use it to debut the IOPs.
- */
-
-int iop_get_proc_info(char *, char **, off_t, int, int);
-
-static struct proc_dir_entry proc_mac_iop = {
-	PROC_MAC_VIA, 7, "mac_iop",
-	S_IFREG | S_IRUGO, 1, 0, 0,
-	0, &proc_array_inode_operations,
-	&iop_get_proc_info
-};
-
+static int iop_get_proc_info(char *, char **, off_t, int);
+#else
+/* What the bloody hell is THAT ??? */
+static int iop_get_proc_info(char *, char **, off_t, int) {}
 #endif /* CONFIG_PROC_FS */
 
 /* structure for tracking channel listeners */
@@ -250,27 +241,22 @@ static void iop_free_msg(struct iop_msg *msg)
 }
 
 /*
- * Initialize the IOPs, if present.
+ * This is called by the startup code before anything else. Its purpose
+ * is to find and initalize the IOPs early in the boot sequence, so that
+ * the serial IOP can be placed into bypass mode _before_ we try to
+ * initialize the serial console.
  */
 
-__initfunc(void iop_init(void))
+void __init iop_preinit(void)
 {
-	int i;
-	long tmp = 0;
-	volatile long *iop_bogon = &tmp;
-
 	if (macintosh_config->scc_type == MAC_SCC_IOP) {
 		if (macintosh_config->ident == MAC_MODEL_IIFX) {
 			iop_base[IOP_NUM_SCC] = (struct mac_iop *) SCC_IOP_BASE_IIFX;
 		} else {
 			iop_base[IOP_NUM_SCC] = (struct mac_iop *) SCC_IOP_BASE_QUADRA;
 		}
-
+		iop_base[IOP_NUM_SCC]->status_ctrl = 0x87;
 		iop_scc_present = 1;
-
-		printk("IOP: detected SCC IOP at %p\n", iop_base[IOP_NUM_SCC]);
-		iop_base[IOP_NUM_SCC]->status_ctrl = 0;
-		iop_bypass(iop_base[IOP_NUM_SCC]);
 	} else {
 		iop_base[IOP_NUM_SCC] = NULL;
 		iop_scc_present = 0;
@@ -281,18 +267,29 @@ __initfunc(void iop_init(void))
 		} else {
 			iop_base[IOP_NUM_ISM] = (struct mac_iop *) ISM_IOP_BASE_QUADRA;
 		}
-		iop_ism_present = 1;
-
-		printk("IOP: detected ISM IOP at %p\n", iop_base[IOP_NUM_ISM]);
 		iop_base[IOP_NUM_SCC]->status_ctrl = 0;
-		for (i = 0 ; i < 16; i++) {
-			*iop_bogon = *iop_bogon;
-		}
-		iop_start(iop_base[IOP_NUM_ISM]);
-		iop_alive(iop_base[IOP_NUM_ISM]); /* clears the alive flag */
+		iop_ism_present = 1;
 	} else {
 		iop_base[IOP_NUM_ISM] = NULL;
 		iop_ism_present = 0;
+	}
+}
+
+/*
+ * Initialize the IOPs, if present.
+ */
+
+void __init iop_init(void)
+{
+	int i;
+
+	if (iop_scc_present) {
+		printk("IOP: detected SCC IOP at %p\n", iop_base[IOP_NUM_SCC]);
+	}
+	if (iop_ism_present) {
+		printk("IOP: detected ISM IOP at %p\n", iop_base[IOP_NUM_ISM]);
+		iop_start(iop_base[IOP_NUM_ISM]);
+		iop_alive(iop_base[IOP_NUM_ISM]); /* clears the alive flag */
 	}
 
 	/* Make the whole pool available and empty the queues */
@@ -310,9 +307,7 @@ __initfunc(void iop_init(void))
 		iop_listeners[IOP_NUM_ISM][i].handler = NULL;
 	}
 
-#ifdef CONFIG_PROC_FS
-	proc_register(&proc_root, &proc_mac_iop);
-#endif
+	create_proc_info_entry("mac_iop",0,0,iop_get_proc_info);
 }
 
 /*
@@ -320,7 +315,7 @@ __initfunc(void iop_init(void))
  * TODO: might be wrong for non-OSS machines. Anyone?
  */
 
-__initfunc(void iop_register_interrupts(void))
+void __init iop_register_interrupts(void)
 {
 	if (iop_ism_present) {
 		if (oss_present) {
@@ -679,7 +674,7 @@ int iop_dump_one_iop(char *buf, int iop_num, char *iop_name)
 	return len;
 }
  
-int iop_get_proc_info(char *buf, char **start, off_t pos, int count, int wr)
+static int iop_get_proc_info(char *buf, char **start, off_t pos, int count)
 {
 	int len, cnt;
 
@@ -717,4 +712,5 @@ int iop_get_proc_info(char *buf, char **start, off_t pos, int count, int wr)
 	}
 	return (count > cnt) ? cnt : count;
 }
+
 #endif /* CONFIG_PROC_FS */

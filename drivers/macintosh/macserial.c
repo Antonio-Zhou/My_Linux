@@ -32,6 +32,7 @@
 #endif
 #include <linux/slab.h>
 
+#include <asm/init.h>
 #include <asm/io.h>
 #include <asm/pgtable.h>
 #include <asm/irq.h>
@@ -40,8 +41,8 @@
 #include <asm/segment.h>
 #include <asm/bitops.h>
 #include <asm/feature.h>
-#include <asm/adb.h>
-#include <asm/pmu.h>
+#include <linux/adb.h>
+#include <linux/pmu.h>
 #ifdef CONFIG_KGDB
 #include <asm/kgdb.h>
 #endif
@@ -130,17 +131,17 @@ static int serial_refcount;
 #define _INLINE_ inline
 
 #ifdef SERIAL_DEBUG_OPEN
-#define OPNDBG(fmt, arg...)	printk(KERN_INFO fmt , ## arg)
+#define OPNDBG(fmt, arg...)	printk(KERN_DEBUG fmt , ## arg)
 #else
 #define OPNDBG(fmt, arg...)	do { } while (0)
 #endif
 #ifdef SERIAL_DEBUG_POWER
-#define PWRDBG(fmt, arg...)	printk(KERN_INFO fmt , ## arg)
+#define PWRDBG(fmt, arg...)	printk(KERN_DEBUG fmt , ## arg)
 #else
 #define PWRDBG(fmt, arg...)	do { } while (0)
 #endif
 #ifdef SERIAL_DEBUG_BAUDS
-#define BAUDBG(fmt, arg...)	printk(KERN_INFO fmt , ## arg)
+#define BAUDBG(fmt, arg...)	printk(fmt , ## arg)
 #else
 #define BAUDBG(fmt, arg...)	do { } while (0)
 #endif
@@ -176,13 +177,12 @@ static struct termios *serial_termios_locked[NUM_CHANNELS];
  * memory if large numbers of serial ports are open.
  */
 static unsigned char *tmp_buf;
-static struct semaphore tmp_buf_sem = MUTEX;
+static DECLARE_MUTEX(tmp_buf_sem);
 
-#ifndef MODULE
-__openfirmware
-#endif /* MODULE */
-static inline int serial_paranoia_check(struct mac_serial *info,
-                                       dev_t device, const char *routine)
+
+static inline int __pmac
+serial_paranoia_check(struct mac_serial *info,
+		      dev_t device, const char *routine)
 {
 #ifdef SERIAL_PARANOIA_CHECK
 	static const char *badmagic =
@@ -205,8 +205,8 @@ static inline int serial_paranoia_check(struct mac_serial *info,
 /* 
  * Reading and writing Z8530 registers.
  */
-static inline unsigned char read_zsreg(struct mac_zschannel *channel,
-                                      unsigned char reg)
+static inline unsigned char __pmac read_zsreg(struct mac_zschannel *channel,
+					      unsigned char reg)
 {
 	unsigned char retval;
 	unsigned long flags;
@@ -225,8 +225,8 @@ static inline unsigned char read_zsreg(struct mac_zschannel *channel,
 	return retval;
 }
 
-static inline void write_zsreg(struct mac_zschannel *channel,
-                              unsigned char reg, unsigned char value)
+static inline void __pmac write_zsreg(struct mac_zschannel *channel,
+				      unsigned char reg, unsigned char value)
 {
 	unsigned long flags;
 
@@ -241,7 +241,7 @@ static inline void write_zsreg(struct mac_zschannel *channel,
 	return;
 }
 
-static inline unsigned char read_zsdata(struct mac_zschannel *channel)
+static inline unsigned char __pmac read_zsdata(struct mac_zschannel *channel)
 {
 	unsigned char retval;
 
@@ -727,7 +727,6 @@ static void do_softint(void *private_)
 		    tty->ldisc.write_wakeup)
 			(tty->ldisc.write_wakeup)(tty);
 		wake_up_interruptible(&tty->write_wait);
-		wake_up_interruptible(&tty->poll_wait);
 	}
 }
 
@@ -953,67 +952,6 @@ static void dma_init(struct mac_serial * info)
 	info->dma_initted = 1;
 }
 
-/*
- * FixZeroBug....Works around a bug in the SCC receving channel.
- * Taken from Darwin code, 15 Sept. 2000  -DanM
- *
- * The following sequence prevents a problem that is seen with O'Hare ASICs
- * (most versions -- also with some Heathrow and Hydra ASICs) where a zero
- * at the input to the receiver becomes 'stuck' and locks up the receiver.
- * This problem can occur as a result of a zero bit at the receiver input
- * coincident with any of the following events:
- *
- *	The SCC is initialized (hardware or software).
- *	A framing error is detected.
- *	The clocking option changes from synchronous or X1 asynchronous
- *		clocking to X16, X32, or X64 asynchronous clocking.
- *	The decoding mode is changed among NRZ, NRZI, FM0, or FM1.
- *
- * This workaround attempts to recover from the lockup condition by placing
- * the SCC in synchronous loopback mode with a fast clock before programming
- * any of the asynchronous modes.
- */
-static void fix_zero_bug_scc(struct mac_serial * info)
-{
-	write_zsreg(info->zs_channel, 9,
-		    (info->zs_channel == info->zs_chan_a? CHRA: CHRB));
-	udelay(10);
-	write_zsreg(info->zs_channel, 9,
-		    ((info->zs_channel == info->zs_chan_a? CHRA: CHRB) | NV));
-
-	write_zsreg(info->zs_channel, 4, (X1CLK | EXTSYNC));
-
-	/* I think this is wrong....but, I just copying code....
-	*/
-	write_zsreg(info->zs_channel, 3, (8 & ~RxENABLE));
-
-	write_zsreg(info->zs_channel, 5, (8 & ~TxENAB));
-	write_zsreg(info->zs_channel, 9, NV);	/* Didn't we already do this? */
-	write_zsreg(info->zs_channel, 11, (RCBR | TCBR));
-	write_zsreg(info->zs_channel, 12, 0);
-	write_zsreg(info->zs_channel, 13, 0);
-	write_zsreg(info->zs_channel, 14, (LOOPBAK | SSBR));
-	write_zsreg(info->zs_channel, 14, (LOOPBAK | SSBR | BRENABL));
-	write_zsreg(info->zs_channel, 3, (8 | RxENABLE));
-	write_zsreg(info->zs_channel, 0, RES_EXT_INT);
-	write_zsreg(info->zs_channel, 0, RES_EXT_INT);	/* to kill some time */
-
-	/* The channel should be OK now, but it is probably receiving
-	 * loopback garbage.
-	 * Switch to asynchronous mode, disable the receiver,
-	 * and discard everything in the receive buffer.
-	 */
-	write_zsreg(info->zs_channel, 9, NV);
-	write_zsreg(info->zs_channel, 4, PAR_ENA);
-	write_zsreg(info->zs_channel, 3, (8 & ~RxENABLE));
-
-	while (read_zsreg(info->zs_channel, 0) & Rx_CH_AV) {
-		(void)read_zsreg(info->zs_channel, 8);
-		write_zsreg(info->zs_channel, 0, RES_EXT_INT);
-		write_zsreg(info->zs_channel, 0, ERR_RES);
-	}
-}
-
 static int setup_scc(struct mac_serial * info)
 {
 	unsigned long flags;
@@ -1021,9 +959,6 @@ static int setup_scc(struct mac_serial * info)
 	OPNDBG("setting up ttys%d SCC...\n", info->line);
 
 	save_flags(flags); cli(); /* Disable interrupts */
-
-	/* Nice buggy HW ... */
-	fix_zero_bug_scc(info);
 
 	/*
 	 * Reset the chip.
@@ -1145,7 +1080,7 @@ static void shutdown(struct mac_serial * info)
 
 	info->curregs[5] &= ~TxENAB;
 	if (!info->tty || C_HUPCL(info->tty))
-		info->curregs[5] &= ~DTR;
+		info->curregs[5] &= ~(DTR | RTS);
 	info->pendregs[5] = info->curregs[5];
 	write_zsreg(info->zs_channel, 5, info->curregs[5]);
 
@@ -1317,7 +1252,7 @@ static void irda_setup(struct mac_serial *info)
 
 	/* assert DTR, wait 30ms, talk to the chip */
 	write_zsreg(info->zs_channel, 5, Tx8 | TxENAB | RTS | DTR);
-	mdelay(30);
+	udelay(30000);
 	while (read_zsreg(info->zs_channel, 0) & Rx_CH_AV)
 		read_zsdata(info->zs_channel);
 
@@ -1394,7 +1329,7 @@ static void change_speed(struct mac_serial *info, struct termios *old_termios)
 	info->zs_baud = baud;
 	info->clk_divisor = 16;
 
-	BAUDBG("set speed to %d bds, ", baud);
+	BAUDBG(KERN_DEBUG "set speed to %d bds, ", baud);
 
 	switch (baud) {
 	case ZS_CLOCK/16:	/* 230400 */
@@ -1619,7 +1554,6 @@ static void rs_flush_buffer(struct tty_struct *tty)
 	info->xmit_cnt = info->xmit_head = info->xmit_tail = 0;
 	restore_flags(flags);
 	wake_up_interruptible(&tty->write_wait);
-	wake_up_interruptible(&tty->poll_wait);
 	if ((tty->flags & (1 << TTY_DO_WRITE_WAKEUP)) &&
 	    tty->ldisc.write_wakeup)
 		(tty->ldisc.write_wakeup)(tty);
@@ -1638,7 +1572,6 @@ static void rs_throttle(struct tty_struct * tty)
 	struct mac_serial *info = (struct mac_serial *)tty->driver_data;
 	unsigned long flags;
 #ifdef SERIAL_DEBUG_THROTTLE
-
 	printk("throttle %ld....\n",tty->ldisc.chars_in_buffer(tty));
 #endif
 
@@ -1656,35 +1589,17 @@ static void rs_throttle(struct tty_struct * tty)
 	if (C_CRTSCTS(tty)) {
 		/*
 		 * Here we want to turn off the RTS line.  On Macintoshes,
-		 * the external serial ports using a DIN-8 or DIN-9
-		 * connector only have the DTR line (which is usually
-		 * wired to both RTS and DTR on an external modem in
-		 * the cable).  RTS doesn't go out to the serial port
-		 * socket, it acts as an output enable for the transmit
-		 * data line.  So in this case we don't drop RTS.
-		 *
-		 * Macs with internal modems generally do have both RTS
-		 * and DTR wired to the modem, so in that case we do
-		 * drop RTS.
+		 * we only get the DTR line, which goes to both DTR and
+		 * RTS on the modem.  RTS doesn't go out to the serial
+		 * port socket.  So you should make sure your modem is
+		 * set to ignore DTR if you're using CRTSCTS.
 		 */
-		if (info->is_internal_modem) {
-			save_flags(flags); cli();
-			info->curregs[5] &= ~RTS;
-			info->pendregs[5] &= ~RTS;
-			write_zsreg(info->zs_channel, 5, info->curregs[5]);
-			restore_flags(flags);
-		}
-	}
-
-#ifdef CDTRCTS
-	if (tty->termios->c_cflag & CDTRCTS) {
 		save_flags(flags); cli();
-		info->curregs[5] &= ~DTR;
-		info->pendregs[5] &= ~DTR;
+		info->curregs[5] &= ~(DTR | RTS);
+		info->pendregs[5] &= ~(DTR | RTS);
 		write_zsreg(info->zs_channel, 5, info->curregs[5]);
 		restore_flags(flags);
 	}
-#endif /* CDTRCTS */
 }
 
 static void rs_unthrottle(struct tty_struct * tty)
@@ -1692,7 +1607,6 @@ static void rs_unthrottle(struct tty_struct * tty)
 	struct mac_serial *info = (struct mac_serial *)tty->driver_data;
 	unsigned long flags;
 #ifdef SERIAL_DEBUG_THROTTLE
-
 	printk("unthrottle %s: %d....\n",tty->ldisc.chars_in_buffer(tty));
 #endif
 
@@ -1711,25 +1625,14 @@ static void rs_unthrottle(struct tty_struct * tty)
 		restore_flags(flags);
 	}
 
-	if (C_CRTSCTS(tty) && info->is_internal_modem) {
-		/* Assert RTS line */
+	if (C_CRTSCTS(tty)) {
+		/* Assert RTS and DTR lines */
 		save_flags(flags); cli();
-		info->curregs[5] |= RTS;
-		info->pendregs[5] |= RTS;
+		info->curregs[5] |= DTR | RTS;
+		info->pendregs[5] |= DTR | RTS;
 		write_zsreg(info->zs_channel, 5, info->curregs[5]);
 		restore_flags(flags);
 	}
-
-#ifdef CDTRCTS
-	if (tty->termios->c_cflag & CDTRCTS) {
-		/* Assert DTR line */
-		save_flags(flags); cli();
-		info->curregs[5] |= DTR;
-		info->pendregs[5] |= DTR;
-		write_zsreg(info->zs_channel, 5, info->curregs[5]);
-		restore_flags(flags);
-	}
-#endif
 }
 
 /*
@@ -2147,7 +2050,7 @@ static void rs_hangup(struct tty_struct *tty)
 static int block_til_ready(struct tty_struct *tty, struct file * filp,
 			   struct mac_serial *info)
 {
-	struct wait_queue wait = { current, NULL };
+	DECLARE_WAITQUEUE(wait,current);
 	int		retval;
 	int		do_clocal = 0;
 
@@ -2227,7 +2130,7 @@ static int block_til_ready(struct tty_struct *tty, struct file * filp,
 		    !info->is_irda)
 			zs_rtsdtr(info, 1);
 		sti();
-		current->state = TASK_INTERRUPTIBLE;
+		set_current_state(TASK_INTERRUPTIBLE);
 		if (tty_hung_up_p(filp) ||
 		    !(info->flags & ZILOG_INITIALIZED)) {
 #ifdef SERIAL_DO_RESTART
@@ -2388,7 +2291,7 @@ chan_init(struct mac_serial *zss, struct mac_zschannel *zs_chan,
 	zss->irq = ch->intrs[0].line;
 	zss->has_dma = 0;
 #if !defined(CONFIG_KGDB) && defined(SUPPORT_SERIAL_DMA)
-	if (ch->n_addrs >= 3 && ch->n_intrs == 3)
+	if (ch->n_addrs == 3 && ch->n_intrs == 3)
 		zss->has_dma = 1;
 #endif
 	zss->dma_initted = 0;
@@ -2404,7 +2307,6 @@ chan_init(struct mac_serial *zss, struct mac_zschannel *zs_chan,
 	/* setup misc varariables */
 	zss->kgdb_channel = 0;
 	zss->is_cobalt_modem = device_is_compatible(ch, "cobalt");
-	zss->is_internal_modem = zss->is_cobalt_modem;
 
 	/* XXX tested only with wallstreet PowerBook,
 	   should do no harm anyway */
@@ -2412,12 +2314,8 @@ chan_init(struct mac_serial *zss, struct mac_zschannel *zs_chan,
 	zss->is_irda = conn && (strcmp(conn, "infrared") == 0);
 	/* 1999 Powerbook G3 has slot-names property instead */
 	slots = (struct slot_names_prop *)get_property(ch, "slot-names", &len);
-	if (slots && slots->count > 0) {
-		if (strcmp(slots->name, "IrDA") == 0)
-			zss->is_irda = 1;
-		else if (strcmp(slots->name, "Modem") == 0)
-			zss->is_internal_modem = 1;
-	}
+	if (slots && slots->count > 0 && strcmp(slots->name, "IrDA") == 0)
+		zss->is_irda = 1;
 
 	if (zss->has_dma) {
 		zss->dma_priv = NULL;
@@ -2550,7 +2448,11 @@ int macserial_init(void)
 
 	memset(&serial_driver, 0, sizeof(struct tty_driver));
 	serial_driver.magic = TTY_DRIVER_MAGIC;
+#ifdef CONFIG_DEVFS_FS
+	serial_driver.name = "tts/%d";
+#else
 	serial_driver.name = "ttyS";
+#endif /* CONFIG_DEVFS_FS */
 	serial_driver.major = TTY_MAJOR;
 	serial_driver.minor_start = 64;
 	serial_driver.num = zs_channels_found;
@@ -2588,7 +2490,11 @@ int macserial_init(void)
 	 * major number and the subtype code.
 	 */
 	callout_driver = serial_driver;
+#ifdef CONFIG_DEVFS_FS
+	callout_driver.name = "cua/%d";
+#else
 	callout_driver.name = "cua";
+#endif /* CONFIG_DEVFS_FS */
 	callout_driver.major = TTYAUX_MAJOR;
 	callout_driver.subtype = SERIAL_TYPE_CALLOUT;
 
@@ -2647,8 +2553,8 @@ int macserial_init(void)
 		info->tqueue.data = info;
 		info->callout_termios =callout_driver.init_termios;
 		info->normal_termios = serial_driver.init_termios;
-		info->open_wait = 0;
-		info->close_wait = 0;
+		init_waitqueue_head(&info->open_wait);
+		init_waitqueue_head(&info->close_wait);
 		info->timeout = HZ;
 		printk("tty%02d at 0x%08x (irq = %d)", info->line, 
 			info->port, info->irq);
@@ -2658,8 +2564,6 @@ int macserial_init(void)
 			printk(", port = %s", connector);
 		if (info->is_cobalt_modem)
 			printk(" (cobalt modem)");
-		else if (info->is_internal_modem)
-			printk(" (internal modem)");
 		if (info->is_irda)
 			printk(" (IrDA)");
 		printk("\n");
@@ -2739,7 +2643,9 @@ void unregister_serial(int line)
  * ------------------------------------------------------------
  */
 #ifdef CONFIG_SERIAL_CONSOLE
-
+#ifdef CONFIG_SERIAL
+#error Cannot build serial console with macserial and serial drivers
+#endif
 
 /*
  *	Print a string to the serial port trying not to disturb
@@ -2811,7 +2717,7 @@ static kdev_t serial_console_device(struct console *c)
  *	- initialize the serial port
  *	Return non-zero if we didn't find a serial port.
  */
-__initfunc(static int serial_console_setup(struct console *co, char *options))
+static int __init serial_console_setup(struct console *co, char *options)
 {
 	struct mac_serial *info = zs_soft + co->index;
 	int	baud = 38400;
@@ -2998,10 +2904,9 @@ static struct console sercons = {
 /*
  *	Register console.
  */
-__initfunc (long mac_scc_console_init(long kmem_start, long kmem_end))
+void __init serial_console_init(void)
 {
 	register_console(&sercons);
-	return kmem_start;
 }
 #endif /* ifdef CONFIG_SERIAL_CONSOLE */
 
@@ -3068,7 +2973,7 @@ static inline void kgdb_chaninit(struct mac_zschannel *ms, int intson, int bps)
  * boot command line flags.
  * XXX at the moment probably only channel A will work
  */
-__initfunc(void zs_kgdb_hook(int tty_num))
+void __init zs_kgdb_hook(int tty_num)
 {
 	/* Find out how many Z8530 SCCs we have */
 	if (zs_chain == 0)

@@ -15,7 +15,7 @@
 #include <asm/io.h>
 #include <asm/irq.h>
 #include <asm/dma.h>
-#include <asm/pgtable.h>
+#include <asm/pgalloc.h>
 #include <asm/proc-fns.h>
 #include <asm/processor.h>
 #include <asm/semaphore.h>
@@ -23,7 +23,6 @@
 #include <asm/uaccess.h>
 #include <asm/checksum.h>
 
-extern pid_t kernel_thread(int (*fn)(void *), void *arg, unsigned long flags);
 extern void dump_thread(struct pt_regs *, struct user *);
 extern int dump_fpu(struct pt_regs *, struct user_fp_struct *);
 extern void inswb(unsigned int port, void *to, int len);
@@ -31,10 +30,6 @@ extern void outswb(unsigned int port, const void *to, int len);
 
 extern unsigned int local_bh_count[NR_CPUS];
 extern unsigned int local_irq_count[NR_CPUS];
-
-extern unsigned long system_serial_low;
-extern unsigned long system_serial_high;
-extern unsigned int system_rev;
 
 /*
  * syscalls
@@ -98,24 +93,42 @@ EXPORT_SYMBOL(udelay);
 EXPORT_SYMBOL(xchg_str);
 EXPORT_SYMBOL(local_bh_count);
 EXPORT_SYMBOL(local_irq_count);
-#if defined(CONFIG_CPU_32) && !defined(CONFIG_ARCH_EBSA110)
+#ifdef CONFIG_CPU_32
 EXPORT_SYMBOL(__ioremap);
 EXPORT_SYMBOL(__iounmap);
 #endif
-EXPORT_SYMBOL(init_mm);
 EXPORT_SYMBOL(kernel_thread);
 EXPORT_SYMBOL(system_rev);
 EXPORT_SYMBOL(system_serial_low);
 EXPORT_SYMBOL(system_serial_high);
+EXPORT_SYMBOL(mem_fclk_21285);
+EXPORT_SYMBOL(__bug);
+EXPORT_SYMBOL(__readwrite_bug);
 EXPORT_SYMBOL(enable_irq);
 EXPORT_SYMBOL(disable_irq);
 
 	/* processor dependencies */
+#ifdef MULTI_CPU
 EXPORT_SYMBOL(processor);
+#else
+EXPORT_SYMBOL(cpu_flush_cache_all);
+EXPORT_SYMBOL(cpu_flush_cache_area);
+EXPORT_SYMBOL(cpu_flush_cache_entry);
+EXPORT_SYMBOL(cpu_clean_cache_area);
+EXPORT_SYMBOL(cpu_flush_ram_page);
+EXPORT_SYMBOL(cpu_flush_tlb_all);
+EXPORT_SYMBOL(cpu_flush_tlb_area);
+EXPORT_SYMBOL(cpu_set_pgd);
+EXPORT_SYMBOL(cpu_set_pmd);
+EXPORT_SYMBOL(cpu_set_pte);
+EXPORT_SYMBOL(cpu_flush_icache_area);
+EXPORT_SYMBOL(cpu_cache_wback_area);
+EXPORT_SYMBOL(cpu_cache_purge_area);
+#endif
 EXPORT_SYMBOL(__machine_arch_type);
 
 	/* networking */
-EXPORT_SYMBOL(csum_partial_copy);
+EXPORT_SYMBOL(csum_partial_copy_nocheck);
 EXPORT_SYMBOL(__csum_ipv6_magic);
 
 	/* io */
@@ -143,8 +156,8 @@ EXPORT_SYMBOL(__bus_to_virt);
 #ifndef CONFIG_NO_PGT_CACHE
 EXPORT_SYMBOL(quicklists);
 #endif
-EXPORT_SYMBOL(__bad_pmd);
-EXPORT_SYMBOL(__bad_pmd_kernel);
+EXPORT_SYMBOL(__handle_bad_pmd);
+EXPORT_SYMBOL(__handle_bad_pmd_kernel);
 
 	/* string / mem functions */
 EXPORT_SYMBOL_NOVERS(strcpy);
@@ -156,7 +169,6 @@ EXPORT_SYMBOL_NOVERS(strncmp);
 EXPORT_SYMBOL_NOVERS(strchr);
 EXPORT_SYMBOL_NOVERS(strlen);
 EXPORT_SYMBOL_NOVERS(strnlen);
-EXPORT_SYMBOL_NOVERS(strspn);
 EXPORT_SYMBOL_NOVERS(strpbrk);
 EXPORT_SYMBOL_NOVERS(strtok);
 EXPORT_SYMBOL_NOVERS(strrchr);
@@ -178,6 +190,12 @@ EXPORT_SYMBOL(__arch_strnlen_user);
 EXPORT_SYMBOL(uaccess_kernel);
 EXPORT_SYMBOL(uaccess_user);
 #endif
+
+	/* consistent area handling */
+EXPORT_SYMBOL(pci_alloc_consistent);
+EXPORT_SYMBOL(consistent_alloc);
+EXPORT_SYMBOL(consistent_free);
+EXPORT_SYMBOL(consistent_sync);
 
 	/* gcc lib functions */
 EXPORT_SYMBOL_NOVERS(__gcc_bcmp);
@@ -223,5 +241,10 @@ EXPORT_SYMBOL(sys_wait4);
 	/* semaphores */
 EXPORT_SYMBOL_NOVERS(__down_failed);
 EXPORT_SYMBOL_NOVERS(__down_interruptible_failed);
+EXPORT_SYMBOL_NOVERS(__down_trylock_failed);
 EXPORT_SYMBOL_NOVERS(__up_wakeup);
+EXPORT_SYMBOL_NOVERS(__down_read_failed);
+EXPORT_SYMBOL_NOVERS(__down_write_failed);
+EXPORT_SYMBOL_NOVERS(__rwsem_wake);
 
+EXPORT_SYMBOL(get_wchan);

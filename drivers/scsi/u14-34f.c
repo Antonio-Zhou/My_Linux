@@ -374,11 +374,6 @@ MODULE_AUTHOR("Dario Ballabio");
 #define SPIN_UNLOCK_RESTORE \
                   spin_unlock_irqrestore(&io_request_lock, spin_flags);
 
-struct proc_dir_entry proc_scsi_u14_34f = {
-    PROC_SCSI_U14_34F, 6, "u14_34f",
-    S_IFDIR | S_IRUGO | S_IXUGO, 2
-};
-
 /* Values for the PRODUCT_ID ports for the 14/34F */
 #define PRODUCT_ID1  0x56
 #define PRODUCT_ID2  0x40        /* NOTE: Only upper nibble is used */
@@ -696,10 +691,10 @@ static inline int port_detect \
    char *bus_type, dma_name[16];
 
    /* Allowed BIOS base addresses (NULL indicates reserved) */
-   void *bios_segment_table[8] = {
-      NULL,
-      (void *) 0xc4000, (void *) 0xc8000, (void *) 0xcc000, (void *) 0xd0000,
-      (void *) 0xd4000, (void *) 0xd8000, (void *) 0xdc000
+   unsigned long bios_segment_table[8] = {
+      0,
+      0xc4000, 0xc8000, 0xcc000, 0xd0000,
+      0xd4000, 0xd8000, 0xdc000
       };
 
    /* Allowed IRQs */
@@ -831,7 +826,7 @@ static inline int port_detect \
       }
    else {
       unsigned long flags;
-      sh[j]->wish_block = TRUE;
+      scsi_register_blocked_host(sh[j]);
       sh[j]->unchecked_isa_dma = TRUE;
       
       flags=claim_dma_lock();
@@ -948,14 +943,14 @@ static int option_setup(char *str) {
 
    ints[0] = i - 1;
    internal_setup(cur, ints);
-   return 0;
+   return 1;
 }
 
 int u14_34f_detect(Scsi_Host_Template *tpnt)
 {
    unsigned int j = 0, k;
 
-   tpnt->proc_dir = &proc_scsi_u14_34f;
+   tpnt->proc_name = "u14-34f";
 
    if(boot_options) option_setup(boot_options);
 
@@ -1952,6 +1947,10 @@ int u14_34f_release(struct Scsi_Host *shpnt) {
 
    if (sh[j] == NULL) panic("%s: release, invalid Scsi_Host pointer.\n",
                             driver_name);
+
+   if( sh[j]->unchecked_isa_dma ) {
+	   scsi_deregister_blocked_host(sh[j]);
+   }
 
    for (i = 0; i < sh[j]->can_queue; i++)
       if ((&HD(j)->cp[i])->sglist) kfree((&HD(j)->cp[i])->sglist);

@@ -8,7 +8,8 @@
  */
 #ifndef __ASM_SMP_H
 #define __ASM_SMP_H
-#ifdef __SMP__
+#include <linux/config.h>
+#ifdef CONFIG_SMP
 #ifndef __ASSEMBLY__
 
 #include <asm/lowcore.h>
@@ -30,9 +31,18 @@
  
 #define PROC_CHANGE_PENALTY	20		/* Schedule penalty */
 
-extern volatile int cpu_number_map[NR_CPUS]; // used by sched.h
 extern unsigned long ipi_count;
 extern void count_cpus(void);
+
+extern __inline__ int cpu_logical_map(int cpu)
+{
+        return cpu;
+}
+
+extern __inline__ int cpu_number_map(int cpu)
+{
+        return cpu;
+}
 
 extern __inline__ __u16 hard_smp_processor_id(void)
 {

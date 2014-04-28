@@ -34,7 +34,6 @@
 #include <linux/init.h>
 #include <linux/malloc.h>
 #include <linux/smp_lock.h>
-#include <linux/proc_fs.h>
 #include <linux/usb.h>
 
 #include <linux/blk.h>
@@ -154,9 +153,6 @@ static struct usb_driver storage_driver = {
 	probe:		storage_probe,
 	disconnect:	storage_disconnect,
 };
-
-struct proc_dir_entry proc_scsi_usb_scsi =
-{PROC_SCSI_USB_SCSI, 3, "usb", S_IFDIR | S_IRUGO | S_IXUGO, 2};
 
 /***********************************************************************
  * Data transfer routines
@@ -458,7 +454,7 @@ static unsigned int us_transfer_length(Scsi_Cmnd *srb, struct us_data *us)
 /* Invoke the transport and basic error-handling/recovery methods
  *
  * This is used by the protocol layers to actually send the message to
- * the device and receive the response.
+ * the device and recieve the response.
  */
 static void invoke_transport(Scsi_Cmnd *srb, struct us_data *us)
 {
@@ -611,7 +607,7 @@ static void CBI_irq(struct urb *urb)
 {
 	struct us_data *us = (struct us_data *)urb->context;
 
-	US_DEBUGP("USB IRQ received for device on host %d\n", us->host_no);
+	US_DEBUGP("USB IRQ recieved for device on host %d\n", us->host_no);
 	US_DEBUGP("-- IRQ data length is %d\n", urb->actual_length);
 	US_DEBUGP("-- IRQ state is %d\n", urb->status);
 
@@ -1270,13 +1266,13 @@ static int us_detect(struct SHT *sht)
 
 	/* set up the name of our subdirectory under /proc/scsi/ */
 	sprintf(local_name, "usb-storage-%d", us->host_number);
-	sht->name = kmalloc (strlen(local_name) + 1, GFP_KERNEL);
-	if (!sht->name)
+	sht->proc_name = kmalloc (strlen(local_name) + 1, GFP_KERNEL);
+	if (!sht->proc_name)
 		return 0;
-	strcpy((char *)sht->name, local_name);
+	strcpy(sht->proc_name, local_name);
 
 	/* we start with no /proc directory entry */
-	sht->proc_dir = &proc_scsi_usb_scsi;
+	sht->proc_dir = NULL;
 
 	/* register the host */
 	us->host = scsi_register(sht, sizeof(us));
@@ -1287,9 +1283,8 @@ static int us_detect(struct SHT *sht)
 	}
 
 	/* odd... didn't register properly.  Abort and free pointers */
-	kfree(sht->name);
-	sht->name = NULL;
-
+	kfree(sht->proc_name);
+	sht->proc_name = NULL;
 	return 0;
 }
 
@@ -1615,7 +1610,7 @@ static int usb_stor_control_thread(void * __us)
 
 		/* exit if we get a signal to exit */
 		if (action == US_ACT_EXIT) {
-			US_DEBUGP("-- US_ACT_EXIT command received\n");
+			US_DEBUGP("-- US_ACT_EXIT command recieved\n");
 			break;
 		}
 	} /* for (;;) */
@@ -1636,23 +1631,10 @@ static struct us_unusual_dev us_unusual_dev_list[] = {
 	  "Shuttle eUSCSI Bridge", US_SC_SCSI, US_PR_BULK, US_FL_ALT_LENGTH}, 
 	{ 0x04e6, 0x0006, 0x0100,
 	  "Shuttle eUSB MMC Adapter", US_SC_SCSI, US_PR_CB, US_FL_SINGLE_LUN}, 
-	{ 0x054c, 0x0010, 0x0210, "Sony DSC", US_SC_SCSI, US_PR_CB, 
-	  US_FL_SINGLE_LUN | US_FL_START_STOP | US_FL_MODE_XLATE | US_FL_ALT_LENGTH},
-	{ 0x054c, 0x0010, 0x0322,
-	  "Sony DSC-S75", US_SC_SCSI, US_PR_CB, 
-	  US_FL_SINGLE_LUN | US_FL_START_STOP | US_FL_MODE_XLATE | US_FL_ALT_LENGTH},
 	{ 0x057b, 0x0000, 0x0114,
 	  "Y-E Data Flashbuster-U", US_SC_UFI, US_PR_CB, US_FL_SINGLE_LUN},
 	{ 0x059b, 0x0030, 0x0100,
 	  "Iomega Zip 250", US_SC_SCSI, US_PR_BULK, US_FL_SINGLE_LUN},
-        { 0x059b, 0x0031, 0x0100,
-          "Iomega USB Zip 100", US_SC_SCSI, US_PR_BULK, US_FL_SINGLE_LUN},   
-        { 0x059b, 0x0032, 0x0100,
-          "Iomega USB Zip 250", US_SC_SCSI, US_PR_BULK, US_FL_SINGLE_LUN},
-        { 0x059b, 0x0034, 0x0100,
-          "Iomega Zip 100", US_SC_SCSI, US_PR_BULK, US_FL_SINGLE_LUN},
-	{ 0x0644, 0x1000, 0x0133,
-	  "TEAC CD-210PU", US_SC_8020, US_PR_BULK, US_FL_ALT_LENGTH},
 	{ 0x0693, 0x0002, 0x0100,
 	  "Hagiwara FlashGate SmartMedia", US_SC_SCSI, US_PR_BULK,
 	  US_FL_ALT_LENGTH},

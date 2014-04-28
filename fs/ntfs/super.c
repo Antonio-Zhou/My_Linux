@@ -125,7 +125,7 @@ ntfs_init_upcase(ntfs_inode *upcase)
 	io.param=(char*)upcase->vol->upcase;
 	io.size=2*UPCASE_LENGTH;
 	ntfs_read_attr(upcase,upcase->vol->at_data,0,0,&io);
-	upcase->vol->upcase_length = io.size / 2;
+	upcase->vol->upcase_length = io.size;
 }
 
 static int
@@ -221,6 +221,7 @@ ntfs_init_attrdef(ntfs_inode* attrdef)
 int ntfs_get_version(ntfs_inode* volume)
 {
 	ntfs_attribute *volinfo;
+	int i;
 
 	volinfo = ntfs_find_attr(volume, volume->vol->at_volume_information, 0);
 	if (!volinfo) 
@@ -304,10 +305,9 @@ int ntfs_release_volume(ntfs_volume *vol)
  * Writes the volume size into vol_size. Returns 0 if successful
  * or error.
  */
-int ntfs_get_volumesize(ntfs_volume *vol, long *vol_size )
+int ntfs_get_volumesize(ntfs_volume *vol, ntfs_u64 *vol_size )
 {
 	ntfs_io io;
-	ntfs_u64 size;
 	char *cluster0;
 
 	if( !vol_size )
@@ -323,11 +323,8 @@ int ntfs_get_volumesize(ntfs_volume *vol, long *vol_size )
 	io.do_read=1;
 	io.size=vol->clustersize;
 	ntfs_getput_clusters(vol,0,0,&io);
-	size=NTFS_GETU64(cluster0+0x28);
+	*vol_size = NTFS_GETU64(cluster0+0x28);
 	ntfs_free(cluster0);
-	/* FIXME: more than 2**32 cluster */
-	/* FIXME: gcc will emit udivdi3 if we don't truncate it */
-	*vol_size = ((unsigned long)size)/vol->clusterfactor;
 	return 0;
 }
 

@@ -78,8 +78,6 @@ struct nm256_info
     /* Non-zero if we have written initial values to the mixer. */
     u8 mixer_values_init;
 
-    u16 playRingsize;
-
     /* 
      * Status mask bit; (*mixer_status_loc & mixer_status_mask) == 0 means
      * it's ready.  

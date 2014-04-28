@@ -4,7 +4,7 @@
 #include <asm/uaccess.h>
 #include <linux/vmalloc.h>
 #include <linux/smp_lock.h>
-#include <asm/pgtable.h>
+#include <asm/pgalloc.h>
 #include <linux/init.h>
 
 /*
@@ -58,7 +58,7 @@ static void free_module(struct module *, int tag_freed);
  * Called at boot time
  */
 
-__initfunc(void init_modules(void))
+void __init init_modules(void)
 {
 	kernel_module.nsyms = __stop___ksymtab - __start___ksymtab;
 
@@ -76,10 +76,6 @@ get_mod_name(const char *user_name, char **buf)
 {
 	unsigned long page;
 	long retval;
-
-	if ((unsigned long)user_name >= TASK_SIZE
-	    && !segment_eq(get_fs (), KERNEL_DS))
-		return -EFAULT;
 
 	page = __get_free_page(GFP_KERNEL);
 	if (!page)
@@ -116,11 +112,9 @@ sys_create_module(const char *name_user, size_t size)
 	long namelen, error;
 	struct module *mod;
 
+	if (!capable(CAP_SYS_MODULE))
+		return -EPERM;
 	lock_kernel();
-	if (!capable(CAP_SYS_MODULE)) {
-		error = -EPERM;
-		goto err0;
-	}
 	if ((namelen = get_mod_name(name_user, &name)) < 0) {
 		error = namelen;
 		goto err0;
@@ -162,18 +156,18 @@ err0:
  * Initialize a module.
  */
 
-asmlinkage int
+asmlinkage long
 sys_init_module(const char *name_user, struct module *mod_user)
 {
 	struct module mod_tmp, *mod;
 	char *name, *n_name;
-	long namelen, n_namelen, i, error = -EPERM;
+	long namelen, n_namelen, i, error;
 	unsigned long mod_user_size;
 	struct module_ref *dep;
 
-	lock_kernel();
 	if (!capable(CAP_SYS_MODULE))
-		goto err0;
+		return -EPERM;
+	lock_kernel();
 	if ((namelen = get_mod_name(name_user, &name)) < 0) {
 		error = namelen;
 		goto err0;
@@ -371,18 +365,18 @@ int try_inc_mod_count(struct module *mod)
 	return res;
 }
 
-asmlinkage int
+asmlinkage long
 sys_delete_module(const char *name_user)
 {
 	struct module *mod, *next;
 	char *name;
-	long error = -EPERM;
+	long error;
 	int something_changed;
 
-	lock_kernel();
 	if (!capable(CAP_SYS_MODULE))
-		goto out;
+		return -EPERM;
 
+	lock_kernel();
 	if (name_user) {
 		if ((error = get_mod_name(name_user, &name)) < 0)
 			goto out;
@@ -398,7 +392,7 @@ sys_delete_module(const char *name_user)
 		}
 		put_mod_name(name);
 		error = -EBUSY;
-		if (mod->refs != NULL)
+ 		if (mod->refs != NULL)
 			goto out;
 
 		spin_lock(&unload_lock);
@@ -659,7 +653,7 @@ qm_info(struct module *mod, char *buf, size_t bufsize, size_t *ret)
 	return error;
 }
 
-asmlinkage int
+asmlinkage long
 sys_query_module(const char *name_user, int which, char *buf, size_t bufsize,
 		 size_t *ret)
 {
@@ -724,7 +718,7 @@ out:
  * which does not arbitrarily limit the length of symbols.
  */
 
-asmlinkage int
+asmlinkage long
 sys_get_kernel_syms(struct kernel_sym *table)
 {
 	struct module *mod;
@@ -937,11 +931,6 @@ get_ksyms_list(char *buf, char **start, off_t offset, int length)
 	int len     = 0;	/* code from  net/ipv4/proc.c */
 	off_t pos   = 0;
 	off_t begin = 0;
-	off_t end;
-
-	end = offset + length;	/* XXX: undefined on overflow per ISO C99 */
-	if (end < offset)
-		return -EINVAL;
 
 	for (mod = module_list; mod; mod = mod->next) {
 		unsigned i;
@@ -968,7 +957,7 @@ get_ksyms_list(char *buf, char **start, off_t offset, int length)
 				begin = pos;
 			}
 			pos = begin + len;
-			if (pos > end)
+			if (pos > offset+length)
 				goto leave_the_loop;
 		}
 	}
@@ -1019,19 +1008,19 @@ sys_create_module(const char *name_user, size_t size)
 	return -ENOSYS;
 }
 
-asmlinkage int
+asmlinkage long
 sys_init_module(const char *name_user, struct module *mod_user)
 {
 	return -ENOSYS;
 }
 
-asmlinkage int
+asmlinkage long
 sys_delete_module(const char *name_user)
 {
 	return -ENOSYS;
 }
 
-asmlinkage int
+asmlinkage long
 sys_query_module(const char *name_user, int which, char *buf, size_t bufsize,
 		 size_t *ret)
 {
@@ -1043,7 +1032,7 @@ sys_query_module(const char *name_user, int which, char *buf, size_t bufsize,
 	return -ENOSYS;
 }
 
-asmlinkage int
+asmlinkage long
 sys_get_kernel_syms(struct kernel_sym *table)
 {
 	return -ENOSYS;

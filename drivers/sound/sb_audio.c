@@ -21,10 +21,7 @@
  *                       the same.
  */
 
-#include <linux/config.h>
 #include "sound_config.h"
-
-#ifdef CONFIG_SBDSP
 
 #include "sb_mixer.h"
 #include "sb.h"
@@ -742,6 +739,14 @@ static void sb16_audio_output_block(int dev, unsigned long buf, int count,
 	restore_flags(flags);
 }
 
+
+/*
+ *	This fails on the Cyrix MediaGX. If you don't have the DMA enabled
+ *	before the first sample arrives it locks up. However even if you
+ *	do enable the DMA in time you just get DMA timeouts and missing
+ *	interrupts and stuff, so for now I've not bothered fixing this either.
+ */
+ 
 static void sb16_audio_start_input(int dev, unsigned long buf, int count, int intrflag)
 {
 	unsigned long   flags, cnt;
@@ -1118,5 +1123,3 @@ void sb_audio_init(sb_devc * devc, char *name)
 	audio_devs[devc->dev]->mixer_dev = devc->my_mixerdev;
 	audio_devs[devc->dev]->min_fragment = 5;
 }
-
-#endif

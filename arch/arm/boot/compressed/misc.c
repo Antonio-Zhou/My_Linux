@@ -31,7 +31,7 @@ unsigned int __machine_arch_type;
 /*
  * Optimised C version of memzero for the ARM.
  */
-void __memzero (__ptr_t s, __kernel_size_t n)
+void __memzero (__ptr_t s, size_t n)
 {
 	union { void *vp; unsigned long *ulp; unsigned char *ucp; } u;
 	int i;

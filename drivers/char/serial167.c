@@ -42,7 +42,8 @@
 #include <linux/timer.h>
 #include <linux/tty.h>
 #include <linux/interrupt.h>
-#include <linux/m68kserial.h>
+#include <linux/serial.h>
+#include <linux/serialP.h>
 #include <linux/string.h>
 #include <linux/fcntl.h>
 #include <linux/ptrace.h>
@@ -57,6 +58,8 @@
 #include <asm/segment.h>
 #include <asm/bitops.h>
 #include <asm/mvme16xhw.h>
+#include <asm/bootinfo.h>
+#include <asm/setup.h>
 
 #include <linux/types.h>
 #include <linux/kernel.h>
@@ -144,7 +147,7 @@ static struct termios *serial_termios_locked[NR_PORTS];
  * memory if large numbers of serial ports are open.
  */
 static unsigned char *tmp_buf = 0;
-static struct semaphore tmp_buf_sem = MUTEX;
+DECLARE_MUTEX(tmp_buf_sem);
 
 /*
  * This is used to look up the divisor speeds and the timeouts
@@ -775,7 +778,6 @@ do_softint(void *private_)
 	    (tty->ldisc.write_wakeup)(tty);
 	}
 	wake_up_interruptible(&tty->write_wait);
-	wake_up_interruptible(&tty->poll_wait);
     }
 } /* do_softint */
 
@@ -1333,7 +1335,6 @@ cy_flush_buffer(struct tty_struct *tty)
 	info->xmit_cnt = info->xmit_head = info->xmit_tail = 0;
     restore_flags(flags);
     wake_up_interruptible(&tty->write_wait);
-    wake_up_interruptible(&tty->poll_wait);
     if ((tty->flags & (1 << TTY_DO_WRITE_WAKEUP))
     && tty->ldisc.write_wakeup)
 	(tty->ldisc.write_wakeup)(tty);
@@ -1502,7 +1503,7 @@ get_modem_info(struct cyclades_port * info, unsigned int *value)
             | ((status  & CyDCD) ? TIOCM_CAR : 0)
             | ((status  & CyDSR) ? TIOCM_DSR : 0)
             | ((status  & CyCTS) ? TIOCM_CTS : 0);
-    cy_put_user(result,(unsigned long *) value);
+    cy_put_user(result,(unsigned int *) value);
     return 0;
 } /* get_modem_info */
 
@@ -2009,7 +2010,7 @@ static int
 block_til_ready(struct tty_struct *tty, struct file * filp,
                            struct cyclades_port *info)
 {
-  struct wait_queue wait = { current, NULL };
+  DECLARE_WAITQUEUE(wait, current);
   unsigned long flags;
   int channel;
   int retval;
@@ -2096,7 +2097,7 @@ block_til_ready(struct tty_struct *tty, struct file * filp,
 #endif
 	    }
 	restore_flags(flags);
-	current->state = TASK_INTERRUPTIBLE;
+	set_current_state(TASK_INTERRUPTIBLE);
 	if (tty_hung_up_p(filp)
 	|| !(info->flags & ASYNC_INITIALIZED) ){
 	    if (info->flags & ASYNC_HUP_NOTIFY) {
@@ -2503,8 +2504,8 @@ scrn[1] = '\0';
 		info->tqueue.data = info;
 		info->callout_termios =cy_callout_driver.init_termios;
 		info->normal_termios = cy_serial_driver.init_termios;
-		info->open_wait = 0;
-		info->close_wait = 0;
+		init_waitqueue_head(&info->open_wait);
+		init_waitqueue_head(&info->close_wait);
 		/* info->session */
 		/* info->pgrp */
 /*** !!!!!!!! this may expose new bugs !!!!!!!!! *********/
@@ -2728,9 +2729,11 @@ void console_setup(char *str, int *ints)
  *
  * Of course, once the console has been registered, we had better ensure
  * that serial167_init() doesn't leave the chip non-functional.
+ *
+ * The console_lock must be held when we get here.
  */
 
-void serial167_write(struct console *co, const char *str, unsigned count)
+void serial167_console_write(struct console *co, const char *str, unsigned count)
 {
 	volatile unsigned char *base_addr = (u_char *)BASE_ADDR;
 	unsigned long flags;
@@ -2795,7 +2798,7 @@ void serial167_write(struct console *co, const char *str, unsigned count)
  * designed to be driven in polled mode.
  */
 
-int serial167_wait_key(struct console *co)
+int serial167_console_wait_key(struct console *co)
 {
 	volatile unsigned char *base_addr = (u_char *)BASE_ADDR;
 	unsigned long flags;
@@ -2839,6 +2842,44 @@ int serial167_wait_key(struct console *co)
 	restore_flags(flags);
 
 	return keypress;
+}
+
+
+static kdev_t serial167_console_device(struct console *c)
+{
+	return MKDEV(TTY_MAJOR, 64 + c->index);
+}
+
+
+static int __init serial167_console_setup(struct console *co, char *options)
+{
+	return 0;
+}
+
+
+static struct console sercons = {
+	"ttyS",
+	serial167_console_write,
+	NULL,
+	serial167_console_device,
+	serial167_console_wait_key,
+	NULL,
+	serial167_console_setup,
+	CON_PRINTBUFFER,
+	-1,
+	0,
+	NULL
+};
+
+
+void __init serial167_console_init(void)
+{
+	if (vme_brdtype == VME_TYPE_MVME166 ||
+			vme_brdtype == VME_TYPE_MVME167 ||
+			vme_brdtype == VME_TYPE_MVME177) {
+		mvme167_serial_console_setup(0);
+		register_console(&sercons);
+	}
 }
 
 #ifdef CONFIG_REMOTE_DEBUG

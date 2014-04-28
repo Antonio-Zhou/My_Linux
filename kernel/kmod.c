@@ -8,8 +8,9 @@
 	Modified to avoid chroot and file sharing problems.
 	Mikael Pettersson
 
-	Back port check for modprobe loops from 2.3.
-	Keith Owens <kaos@ocs.com.au> May 2000
+	Limit the concurrent number of kmod modprobes to catch loops from
+	"modprobe needs a service that is in a module".
+	Keith Owens <kaos@ocs.com.au> December 1999
 */
 
 #define __KERNEL_SYSCALLS__
@@ -25,26 +26,44 @@
 */
 char modprobe_path[256] = "/sbin/modprobe";
 
+extern int max_threads;
+
 static inline void
 use_init_fs_context(void)
 {
-	struct fs_struct * fs;
+	struct fs_struct *our_fs, *init_fs;
 
 	/*
-	 * Don't use the user's fs context, use init's instead.
-	 * Note that we can use "init_task" (which is not actually
-	 * the same as the user-level "init" process) because we
-	 * started "init" with a CLONE_FS
+	 * Make modprobe's fs context be a copy of init's.
+	 *
+	 * We cannot use the user's fs context, because it
+	 * may have a different root than init.
+	 * Since init was created with CLONE_FS, we can grab
+	 * its fs context from "init_task".
+	 *
+	 * The fs context has to be a copy. If it is shared
+	 * with init, then any chdir() call in modprobe will
+	 * also affect init and the other threads sharing
+	 * init_task's fs context.
+	 *
+	 * We created the exec_modprobe thread without CLONE_FS,
+	 * so we can update the fields in our fs context freely.
 	 */
-
 	lock_kernel();
 
-	fs = current->fs;
-	dput(fs->root);
-	dput(fs->pwd);
-	fs->root = dget(init_task.fs->root);
-	fs->pwd = dget(init_task.fs->pwd);
-	fs->umask = 0022;
+	our_fs = current->fs;
+	init_fs = init_task.fs;
+	our_fs->umask = init_fs->umask;
+	set_fs_root(our_fs, init_fs->rootmnt, init_fs->root);
+	set_fs_pwd(our_fs, init_fs->pwdmnt, init_fs->pwd);
+	if (our_fs->altroot) {
+		struct vfsmount *mnt = our_fs->altrootmnt;
+		struct dentry *dentry = our_fs->altroot;
+		our_fs->altrootmnt = NULL;
+		our_fs->altroot = NULL;
+		dput(dentry);
+		mntput(mnt);
+	}
 
 	unlock_kernel();
 }
@@ -76,8 +95,9 @@ int exec_usermodehelper(char *program_path, char *argv[], char *envp[])
 	/* Drop the "current user" thing */
 	free_uid(current);
 
-	/* Give kmod all effective privileges.. */
+	/* Give kmod all privileges.. */
 	current->uid = current->euid = current->fsuid = 0;
+	cap_set_full(current->cap_inheritable);
 	cap_set_full(current->cap_effective);
 
 	/* Allow execve args to be in kernel space. */
@@ -136,7 +156,7 @@ int request_module(const char * module_name)
 	}
 
 	/* If modprobe needs a service that is in a module, we get a recursive
-	 * loop.  Limit the number of running kmod threads to NR_TASKS/2 or
+	 * loop.  Limit the number of running kmod threads to max_threads/2 or
 	 * MAX_KMOD_CONCURRENT, whichever is the smaller.  A cleaner method
 	 * would be to run the parents of this process, counting how many times
 	 * kmod was invoked.  That would mean accessing the internals of the
@@ -144,7 +164,7 @@ int request_module(const char * module_name)
 	 * and it is not worth changing the proc code just to handle this case. 
 	 * KAO.
 	 */
-	i = NR_TASKS/2;
+	i = max_threads/2;
 	if (i > MAX_KMOD_CONCURRENT)
 		i = MAX_KMOD_CONCURRENT;
 	atomic_inc(&kmod_concurrent);
@@ -156,17 +176,11 @@ int request_module(const char * module_name)
 		return -ENOMEM;
 	}
 
-	{
-	int old=current->dumpable;
-	current->dumpable=0;	/* block ptrace */
 	pid = kernel_thread(exec_modprobe, (void*) module_name, 0);
 	if (pid < 0) {
 		printk(KERN_ERR "request_module[%s]: fork failed, errno %d\n", module_name, -pid);
 		atomic_dec(&kmod_concurrent);
-		current->dumpable=old;
 		return pid;
-	}
-	current->dumpable=old;
 	}
 
 	/* Block everything but SIGKILL/SIGSTOP */
@@ -191,26 +205,3 @@ int request_module(const char * module_name)
 	}
 	return 0;
 }
-
-
-#ifdef CONFIG_HOTPLUG
-/*
-	hotplug path is set via /proc/sys
-	invoked by hotplug-aware bus drivers,
-	with exec_usermodehelper and some thread-spawner
-
-	argv [0] = hotplug_path;
-	argv [1] = "usb", "scsi", "pci", "network", etc;
-	... plus optional type-specific parameters
-	argv [n] = 0;
-
-	envp [*] = HOME, PATH; optional type-specific parameters
-
-	a hotplug bus should invoke this for device add/remove
-	events.  the command is expected to load drivers when
-	necessary, and may perform additional system setup.
-*/
-char hotplug_path[256] = "/sbin/hotplug";
-
-#endif
-

@@ -1,24 +1,40 @@
-/* $Id: hfcscard.c,v 1.1.2.1 2001/12/31 13:26:45 kai Exp $
+/* $Id: hfcscard.c,v 1.6 1999/12/19 13:09:42 keil Exp $
+
+ * hfcscard.c     low level stuff for hfcs based cards (Teles3c, ACER P10)
  *
- * low level stuff for hfcs based cards (Teles3c, ACER P10)
+ * Author     Karsten Keil (keil@isdn4linux.de)
  *
- * Author       Karsten Keil
- * Copyright    by Karsten Keil      <keil@isdn4linux.de>
- * 
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
+ *
+ * $Log: hfcscard.c,v $
+ * Revision 1.6  1999/12/19 13:09:42  keil
+ * changed TASK_INTERRUPTIBLE into TASK_UNINTERRUPTIBLE for
+ * signal proof delays
+ *
+ * Revision 1.5  1999/09/04 06:20:06  keil
+ * Changes from kernel set_current_state()
+ *
+ * Revision 1.4  1999/08/09 18:59:59  keil
+ * Fix S0 init - Thanks to Stefan Gybas
+ *
+ * Revision 1.3  1999/07/12 21:05:12  keil
+ * fix race in IRQ handling
+ * added watchdog for lost IRQs
+ *
+ * Revision 1.2  1999/07/01 08:16:03  keil
+ * teles3c ---> hfcscard
+ *
+ *
  *
  */
 
 #define __NO_VERSION__
-#include <linux/init.h>
 #include "hisax.h"
 #include "hfc_2bds0.h"
 #include "isdnl1.h"
 
 extern const char *CardType[];
 
-static const char *hfcs_revision = "$Revision: 1.1.2.1 $";
+static const char *hfcs_revision = "$Revision: 1.6 $";
 
 static void
 hfcs_interrupt(int intno, void *dev_id, struct pt_regs *regs)
@@ -139,8 +155,8 @@ hfcs_card_msg(struct IsdnCardState *cs, int mt, void *arg)
 	return(0);
 }
 
-int __init
-setup_hfcs(struct IsdnCard *card)
+__initfunc(int
+setup_hfcs(struct IsdnCard *card))
 {
 	struct IsdnCardState *cs = card->cs;
 	char tmp[64];

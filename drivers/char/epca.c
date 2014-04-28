@@ -28,95 +28,41 @@
 /* See README.epca for change history --DAT*/
 
 
-#ifdef MODVERSIONS
-#ifndef MODULE
-#define MODULE
-#endif
-#endif
-
-/* -----------------------------------------------------------------------
-   This way modules should work regardless if they defined MODULE or
-   MODVERSIONS.  (MODVERSIONS is for the newer kernels ...
--------------------------------------------------------------------------- */
-
-#ifdef MODULE
 #include <linux/config.h>
-#endif /* MODULE */
-
-#include <linux/version.h>
-
-#define NEW_MODULES
-
-#ifdef NEW_MODULES
-#ifdef MODVERSIONS
-#include <linux/modversions.h>
-#endif /* MODVERSIONS */
-#endif /* NEW_MODULES */
-
-#ifdef MODULE
 #include <linux/module.h>
-#endif /* MODULE */
-
-
-#include <linux/errno.h>
-#include <linux/major.h>
-#include <linux/delay.h>
-#include <linux/tty.h>
-#include <linux/serial.h>
-#include <linux/tty_driver.h>
 #include <linux/kernel.h>
-#include <linux/signal.h>
-#include <linux/malloc.h>
-#include <linux/mm.h>
+#include <linux/types.h>
+#include <linux/init.h>
+#include <linux/serial.h>
+#include <linux/delay.h>
 #include <linux/ctype.h>
-#include <asm/system.h>
-#include <asm/io.h>
-#include <asm/segment.h>
-
-
-#include <asm/bitops.h>
-
-#include <linux/sched.h>
-#include <linux/timer.h>
-#include <linux/interrupt.h>
+#include <linux/tty.h>
 #include <linux/tty_flip.h>
-#include <linux/string.h>
-#include <linux/fcntl.h>
-#include <linux/ptrace.h>
+#include <linux/slab.h>
 #include <linux/ioport.h>
-
-#ifdef MODULE
-#ifndef NEW_MODULES
-char kernel_version[]=UTS_RELEASE;
-#endif /* NEW_MODULE */ 
-#endif /* MODULE */
-
+#include <asm/uaccess.h>
+#include <asm/io.h>
 
 #ifdef CONFIG_PCI
 #define ENABLE_PCI
 #endif /* CONFIG_PCI */
 
-
-
-#include <asm/uaccess.h>
 #define putUser(arg1, arg2) put_user(arg1, (unsigned long *)arg2)
 #define getUser(arg1, arg2) get_user(arg1, (unsigned int *)arg2)
 
-
-
 #ifdef ENABLE_PCI
 #include <linux/pci.h>
-#include <linux/digiPCI.h>
+#include "digiPCI.h"
 #endif /* ENABLE_PCI */
 
-#include <linux/digi1.h>
-#include <linux/digiFep1.h>
-#include <linux/epca.h>
-#include <linux/epcaconfig.h>
+#include "digi1.h"
+#include "digiFep1.h"
+#include "epca.h"
+#include "epcaconfig.h"
 
 /* ---------------------- Begin defines ------------------------ */
 
-#define VERSION            "1.3.0-K"     
+#define VERSION            "1.3.0.1-LK"
 
 /* This major needs to be submitted to Linux to join the majors list */
 
@@ -126,6 +72,8 @@ char kernel_version[]=UTS_RELEASE;
 #define MIN(a,b)	((a) < (b) ? (a) : (b))
 #define MAXCARDS 7
 #define epcaassert(x, msg)  if (!(x)) epca_error(__LINE__, msg)
+
+#define PFX "epca: "
 
 /* ----------------- Begin global definitions ------------------- */
 
@@ -140,7 +88,7 @@ static int invalid_lilo_config = 0;
 	MAXBOARDS is typically 12, but ISA and EISA cards are restricted to 
 	7 below.
 --------------------------------------------------------------------------*/
-static struct board_info boards[7];
+static struct board_info boards[MAXBOARDS];
 
 
 /* ------------- Begin structures used for driver registeration ---------- */
@@ -284,11 +232,7 @@ static int pc_write(struct tty_struct *, int, const unsigned char *, int);
 int pc_init(void);
 
 #ifdef ENABLE_PCI
-static int init_PCI(int);
-static int get_PCI_configuration(unsigned char, unsigned char, 
-					     unsigned int *, unsigned int *,
-                                             unsigned int *, unsigned int *,
-                                             unsigned int *, unsigned int *);
+static int init_PCI(void);
 #endif /* ENABLE_PCI */
 
 
@@ -928,9 +872,6 @@ static int pc_write(struct tty_struct * tty, int from_user,
 
 		/* First we read the data in from the file system into a temp buffer */
 
-		memoff(ch);
-		restore_flags(flags);
-
 		if (bytesAvailable) 
 		{ /* Begin bytesAvailable */
 
@@ -956,7 +897,7 @@ static int pc_write(struct tty_struct * tty, int from_user,
 					Remember copy_from_user WILL generate a page fault if the
 					user memory being accessed has been swapped out.  This can
 					cause this routine to temporarily sleep while this page
-					fault is occurring.
+					fault is occuring.
 				
 				----------------------------------------------------------------- */
 
@@ -971,6 +912,8 @@ static int pc_write(struct tty_struct * tty, int from_user,
 			post_fep_init.
 		--------------------------------------------------------------------- */
 		buf = ch->tmp_buf;
+		memoff(ch);
+		restore_flags(flags);
 
 	} /* End from_user */
 
@@ -1226,7 +1169,6 @@ static void pc_flush_buffer(struct tty_struct *tty)
 	restore_flags(flags);
 
 	wake_up_interruptible(&tty->write_wait);
-	wake_up_interruptible(&tty->poll_wait);
 	if ((tty->flags & (1 << TTY_DO_WRITE_WAKEUP)) && tty->ldisc.write_wakeup)
 		(tty->ldisc.write_wakeup)(tty);
 
@@ -1270,7 +1212,7 @@ static int block_til_ready(struct tty_struct *tty,
                            struct file *filp, struct channel *ch)
 { /* Begin block_til_ready */
 
-	struct wait_queue wait = {current, NULL};
+	DECLARE_WAITQUEUE(wait,current);
 	int	retval, do_clocal = 0;
 	unsigned long flags;
 
@@ -1369,7 +1311,7 @@ static int block_til_ready(struct tty_struct *tty,
 	while(1) 
 	{ /* Begin forever while  */
 
-		current->state = TASK_INTERRUPTIBLE;
+		set_current_state(TASK_INTERRUPTIBLE);
 
 		if (tty_hung_up_p(filp) ||
 		    !(ch->asyncflags & ASYNC_INITIALIZED)) 
@@ -1590,7 +1532,7 @@ static int pc_open(struct tty_struct *tty, struct file * filp)
 
 #ifdef MODULE
 /* -------------------- Begin init_module ---------------------- */
-int init_module()
+int __init init_module()
 { /* Begin init_module */
 
 	unsigned long	flags;
@@ -1606,8 +1548,14 @@ int init_module()
 } /* End init_module */
 
 #endif
+
+#ifdef ENABLE_PCI
+static struct pci_driver epca_driver;
+#endif
+
 #ifdef MODULE
 /* -------------------- Begin cleanup_module  ---------------------- */
+
 void cleanup_module()
 { /* Begin cleanup_module */
 
@@ -1656,6 +1604,9 @@ void cleanup_module()
 		} /* End for each port */
 	} /* End for each card */
 
+#ifdef ENABLE_PCI
+	pci_unregister_driver (&epca_driver);
+#endif
 
 	restore_flags(flags);
 
@@ -1664,7 +1615,7 @@ void cleanup_module()
 
 /* ------------------ Begin pc_init  ---------------------- */
 
-int pc_init(void)
+int __init pc_init(void)
 { /* Begin pc_init */
 
 	/* ----------------------------------------------------------------
@@ -1682,7 +1633,7 @@ int pc_init(void)
 		memory.
 	------------------------------------------------------------------*/
 
-	ulong flags;
+	ulong flags, save_loops_per_sec; 
 	int crd;
 	struct board_info *bd;
 	unsigned char board_id = 0;
@@ -1750,7 +1701,7 @@ int pc_init(void)
 	if (pci_present())
 	{
 		if(num_cards < MAXBOARDS)
-			pci_boards_found += init_PCI(num_cards);
+			pci_boards_found += init_PCI();
 		num_cards += pci_boards_found;
 	}
 	else 
@@ -1826,10 +1777,9 @@ int pc_init(void)
 	/* --------------------------------------------------------------------- 
 	   loops_per_sec hasn't been set at this point :-(, so fake it out... 
 	   I set it, so that I can use the __delay() function.
-	   
-	   We don't use __delay(), so we don't need to fake it.
-	   
 	------------------------------------------------------------------------ */
+	save_loops_per_sec = loops_per_sec;
+	loops_per_sec = 13L * 500000L;
 
 	save_flags(flags);
 	cli();
@@ -1962,6 +1912,7 @@ int pc_init(void)
 	if (tty_register_driver(&pc_info))
 		panic("Couldn't register Digi PC/ info ");
 
+	loops_per_sec = save_loops_per_sec;  /* reset it to what it should be */
 
 	/* -------------------------------------------------------------------
 	   Start up the poller to check for events on all enabled boards
@@ -2041,10 +1992,7 @@ static void post_fep_init(unsigned int crd)
 
 	epcaassert(ch <= &digi_channels[nbdevs - 1], "ch out of range");
 
-	if (bd->membase < (unsigned char *)0x100000)
-		memaddr = (unchar *) bd->membase;
-	else /* Else get special mapped memory above RAM */
-		memaddr = (unchar *)bd->re_map_membase;
+	memaddr = (unchar *)bd->re_map_membase;
 
 	/* 
 	   The below command is necessary because newer kernels (2.1.x and
@@ -2238,8 +2186,8 @@ static void post_fep_init(unsigned int crd)
 		ch->blocked_open = 0;
 		ch->callout_termios = pc_callout.init_termios;
 		ch->normal_termios = pc_driver.init_termios;
-		ch->open_wait = 0;
-		ch->close_wait = 0;
+		init_waitqueue_head(&ch->open_wait);
+		init_waitqueue_head(&ch->close_wait);
 		ch->tmp_buf = kmalloc(ch->txbufsize,GFP_KERNEL);
 		if (!(ch->tmp_buf))
 		{
@@ -2358,12 +2306,7 @@ static void doevent(int crd)
 
 		assertgwinon(chan0);
 
-		if (bd->membase < (unsigned char *)0x100000)
-			eventbuf = (volatile unchar *)bus_to_virt((ulong)(bd->membase + tail + ISTART));
-		else
-		{
-			eventbuf = (volatile unchar *)bus_to_virt((ulong)(bd->re_map_membase + tail + ISTART));
-		}
+		eventbuf = (volatile unchar *)bus_to_virt((ulong)(bd->re_map_membase + tail + ISTART));
 
 		/* Get the channel the event occurred on */
 		channel = eventbuf[0];
@@ -2447,7 +2390,7 @@ static void doevent(int crd)
 						  tty->ldisc.write_wakeup)
 						(tty->ldisc.write_wakeup)(tty);
 					wake_up_interruptible(&tty->write_wait);
-					wake_up_interruptible(&tty->poll_wait);
+
 				} /* End if LOWWAIT */
 
 			} /* End LOWTX_IND */
@@ -2467,7 +2410,6 @@ static void doevent(int crd)
 						(tty->ldisc.write_wakeup)(tty);
 
 					wake_up_interruptible(&tty->write_wait);
-					wake_up_interruptible(&tty->poll_wait);
 
 				} /* End if EMPTYWAIT */
 
@@ -2525,10 +2467,7 @@ static void fepcmd(struct channel *ch, int cmd, int word_or_byte,
 
 	cmdMax = (cmdStart + 4 + (ch->mailbox->cmax));
 
-	if (ch->board->membase < (unsigned char *)0x100000)
-		memaddr = ch->board->membase;
-	else
-		memaddr = ch->board->re_map_membase;
+	memaddr = ch->board->re_map_membase;
 
 	/* 
 	   The below command is necessary because newer kernels (2.1.x and
@@ -3236,7 +3175,7 @@ static int pc_ioctl(struct tty_struct *tty, struct file * file,
 			if (error)
 				return error;
 
-			putUser(mflag, (unsigned long *) arg);
+			putUser(mflag, (unsigned int *) arg);
 
 			break;
 
@@ -3602,7 +3541,7 @@ static void pc_start(struct tty_struct *tty)
 /* ------------------------------------------------------------------
 	The below routines pc_throttle and pc_unthrottle are used 
 	to slow (And resume) the receipt of data into the kernels
-	receive buffers.  The exact occurrence of this depends on the
+	receive buffers.  The exact occurence of this depends on the
 	size of the kernels receive buffer and what the 'watermarks'
 	are set to for that buffer.  See the n_ttys.c file for more
 	details. 
@@ -3834,7 +3773,7 @@ void epca_setup(char *str, int *ints)
 
 			case 5:
 				board.port = (unsigned char *)ints[index];
-				if ((signed long)board.port <= 0)
+				if (board.port <= 0)
 				{
 					printk(KERN_ERR "<Error> - epca_setup: Invalid io port 0x%x\n", (unsigned int)board.port);
 					invalid_lilo_config = 1;
@@ -3846,7 +3785,7 @@ void epca_setup(char *str, int *ints)
 
 			case 6:
 				board.membase = (unsigned char *)ints[index];
-				if ((signed long)board.membase <= 0)
+				if (board.membase <= 0)
 				{
 					printk(KERN_ERR "<Error> - epca_setup: Invalid memory base 0x%x\n",(unsigned int)board.membase);
 					invalid_lilo_config = 1;
@@ -4039,261 +3978,129 @@ void epca_setup(char *str, int *ints)
 
 
 #ifdef ENABLE_PCI
-/* --------------------- Begin get_PCI_configuration  ---------------------- */
-
-int get_PCI_configuration(unsigned char bus, unsigned char device_fn,
-                          unsigned int *base_addr0, unsigned int *base_addr1,
-                          unsigned int *base_addr2, unsigned int *base_addr3,
-                          unsigned int *base_addr4, unsigned int *base_addr5)
-{ /* Begin get_PCI_configuration */
-
-	struct	pci_dev *dev = pci_find_slot(bus, device_fn);
-
-	if (!dev)
-		return(0);
-
-	*base_addr0 = dev->base_address[0];
-	*base_addr1 = dev->base_address[1];
-	*base_addr2 = dev->base_address[2];
-	*base_addr3 = dev->base_address[3];
-	*base_addr4 = dev->base_address[4];
-	*base_addr5 = dev->base_address[5];
-
-	/* ------------------------------------------------------------------------
-			 NOTE - The code below mask out either the 2 or 4 bits dependent on the
-				space being addressed. (base_addr value reflecting io space, have their
-				first 2 bits mask out, while base_addr value reflecting mem space, have
-				their first 4 bits mask out.)  These bits are flag bits and should always
-				be 0 when used as an address.
-	---------------------------------------------------------------------------- */
-
-	if ((*base_addr0) & PCI_BASE_ADDRESS_SPACE_IO) /* Is this an io address ? */
-		(*base_addr0) &= PCI_BASE_ADDRESS_IO_MASK;
-	else
-		(*base_addr0) &= PCI_BASE_ADDRESS_MEM_MASK;
-
-	if ((*base_addr1) & PCI_BASE_ADDRESS_SPACE_IO) /* Is this an io address ? */
-		(*base_addr1) &= PCI_BASE_ADDRESS_IO_MASK;
-	else
-		(*base_addr1) &= PCI_BASE_ADDRESS_MEM_MASK;
-
-	if ((*base_addr2) & PCI_BASE_ADDRESS_SPACE_IO) /* Is this an io address ? */
-		(*base_addr2) &= PCI_BASE_ADDRESS_IO_MASK;
-	else
-		(*base_addr2) &= PCI_BASE_ADDRESS_MEM_MASK;
-
-	if ((*base_addr3) & PCI_BASE_ADDRESS_SPACE_IO) /* Is this an io address ? */
-		(*base_addr3) &= PCI_BASE_ADDRESS_IO_MASK;
-	else
-		(*base_addr3) &= PCI_BASE_ADDRESS_MEM_MASK;
-
-	if ((*base_addr4) & PCI_BASE_ADDRESS_SPACE_IO) /* Is this an io address ? */
-		(*base_addr4) &= PCI_BASE_ADDRESS_IO_MASK;
-	else
-		(*base_addr4) &= PCI_BASE_ADDRESS_MEM_MASK;
-
-	if ((*base_addr5) & PCI_BASE_ADDRESS_SPACE_IO) /* Is this an io address ? */
-		(*base_addr5) &= PCI_BASE_ADDRESS_IO_MASK;
-	else
-		(*base_addr5) &= PCI_BASE_ADDRESS_MEM_MASK;
-
-	return(1);
-} /* End get_PCI_configuration */
-
 /* ------------------------ Begin init_PCI  --------------------------- */
 
-int init_PCI(int boards_found)
+enum epic_board_types {
+	brd_xr = 0,
+	brd_xem,
+	brd_cx,
+	brd_xrj,
+};
+
+
+/* indexed directly by epic_board_types enum */
+static struct {
+	unsigned char board_type;
+	unsigned bar_idx;		/* PCI base address region */
+} epca_info_tbl[] = {
+	{ PCIXR, 0, },
+	{ PCIXEM, 0, },
+	{ PCICX, 0, },
+	{ PCIXRJ, 2, },
+};
+
+
+static int __init epca_init_one (struct pci_dev *pdev,
+				 const struct pci_device_id *ent)
+{
+	static int board_num = -1;
+	int board_idx, info_idx = ent->driver_data;
+	unsigned long addr;
+
+	board_num++;
+	board_idx = board_num + num_cards;
+	if (board_idx >= MAXBOARDS)
+		goto err_out;
+	
+	addr = pci_resource_start (pdev, epca_info_tbl[info_idx].bar_idx);
+	if (!addr) {
+		printk (KERN_ERR PFX "PCI region #%d not available (size 0)\n",
+			epca_info_tbl[info_idx].bar_idx);
+		goto err_out;
+	}
+
+	boards[board_idx].status = ENABLED;
+	boards[board_idx].type = epca_info_tbl[info_idx].board_type;
+	boards[board_idx].numports = 0x0;
+	boards[board_idx].port =
+		(unsigned char *)((char *) addr + PCI_IO_OFFSET);
+	boards[board_idx].membase =
+		(unsigned char *)((char *) addr);
+
+	if (!request_mem_region (addr + PCI_IO_OFFSET, 0x200000, "epca")) {
+		printk (KERN_ERR PFX "resource 0x%x @ 0x%lx unavailable\n",
+			0x200000, addr + PCI_IO_OFFSET);
+		goto err_out;
+	}
+
+	boards[board_idx].re_map_port = ioremap(addr + PCI_IO_OFFSET, 0x200000);
+	if (!boards[board_idx].re_map_port) {
+		printk (KERN_ERR PFX "cannot map 0x%x @ 0x%lx\n",
+			0x200000, addr + PCI_IO_OFFSET);
+		goto err_out_free_pciio;
+	}
+
+	if (!request_mem_region (addr, 0x200000, "epca")) {
+		printk (KERN_ERR PFX "resource 0x%x @ 0x%lx unavailable\n",
+			0x200000, addr);
+		goto err_out_free_iounmap;
+	}
+
+	boards[board_idx].re_map_membase = ioremap(addr, 0x200000);
+	if (!boards[board_idx].re_map_membase) {
+		printk (KERN_ERR PFX "cannot map 0x%x @ 0x%lx\n",
+			0x200000, addr + PCI_IO_OFFSET);
+		goto err_out_free_memregion;
+	}
+
+	/* --------------------------------------------------------------
+		I don't know what the below does, but the hardware guys say
+		its required on everything except PLX (In this case XRJ).
+	---------------------------------------------------------------- */
+	if (info_idx != brd_xrj) {
+		pci_write_config_byte(pdev, 0x40, 0);  
+		pci_write_config_byte(pdev, 0x46, 0);
+	}
+	
+	return 0;
+
+err_out_free_memregion:
+	release_mem_region (addr, 0x200000);
+err_out_free_iounmap:
+	iounmap (boards[board_idx].re_map_port);
+err_out_free_pciio:
+	release_mem_region (addr + PCI_IO_OFFSET, 0x200000);
+err_out:
+	return -ENODEV;
+}
+
+
+static struct pci_device_id epca_pci_tbl[] __initdata = {
+	{ PCI_VENDOR_DIGI, PCI_DEVICE_XR, PCI_ANY_ID, PCI_ANY_ID, 0, 0, brd_xr },
+	{ PCI_VENDOR_DIGI, PCI_DEVICE_XEM, PCI_ANY_ID, PCI_ANY_ID, 0, 0, brd_xem },
+	{ PCI_VENDOR_DIGI, PCI_DEVICE_CX, PCI_ANY_ID, PCI_ANY_ID, 0, 0, brd_cx },
+	{ PCI_VENDOR_DIGI, PCI_DEVICE_XRJ, PCI_ANY_ID, PCI_ANY_ID, 0, 0, brd_xrj },
+	{ 0, }
+};
+
+MODULE_DEVICE_TABLE(pci, epca_pci_tbl);
+
+int __init init_PCI (void)
 { /* Begin init_PCI */
+	
+	int pci_count;
+	
+	memset (&epca_driver, 0, sizeof (epca_driver));
+	epca_driver.name = "epca";
+	epca_driver.id_table = epca_pci_tbl;
+	epca_driver.probe = epca_init_one;
 
-	unsigned char	bus, device_fn;
-	int i, pci_count = 0;
-	unsigned int base_addr0, base_addr1, base_addr2,
-                base_addr3, base_addr4, base_addr5;
-
-	base_addr0 = base_addr1 = base_addr2 = 0;
-	base_addr3 = base_addr4 = base_addr5 = 0;
-
-	for(i = 0; i < (MAXBOARDS - boards_found); i++) 
-	{ /* Begin for each POSSIBLE remaining board */
-
-		if (!pcibios_find_device(PCI_VENDOR_DIGI, PCI_DEVICE_XR,
-			i, &bus, &device_fn)) 
-		{ /* Begin found XR */
-			if (get_PCI_configuration(bus, device_fn, &base_addr0, &base_addr1,
-                                                   &base_addr2, &base_addr3,
-                                                   &base_addr4, &base_addr5))
-			{ /* Store a PCI/XR into the boards structure */
-
-
-				boards[boards_found + pci_count].status   = ENABLED;
-				boards[boards_found + pci_count].type     = PCIXR;
-
-				boards[boards_found + pci_count].numports = 0x0;
-
-				boards[boards_found + pci_count].port     = (unsigned char *)((char *)base_addr0 + PCI_IO_OFFSET);
-				/* Most cards use base_addr0, but some use base_addr2 */
-				boards[boards_found + pci_count].membase  = (unsigned char *)base_addr0;
-
-				if (base_addr0 >= 0x100000)
-				{
-					/* ------------------------------------------------------------
-						Standard physical addresses are valid to the kernel as long 
-						as they aren't above RAM. Higher addresses (Such as are 
-						typical of a PCI system) need to be mapped in with the 
-						ioremap command.  For boards using such high addresses the
-						driver will store both addresses.  One address (The physical)
-						will be held for the apps use (And mmap) and the other (The
-						ioremapped address) will be used in the kernel.
- 
-					---------------------------------------------------------------- */
-					boards[boards_found + pci_count].re_map_port     = ioremap((base_addr0 + PCI_IO_OFFSET),0x200000);
-					boards[boards_found + pci_count].re_map_membase  = ioremap(base_addr0, 0x200000);
-				}
-
-				pci_count++;
-
-				/* --------------------------------------------------------------
-					I don't know what the below does, but the hardware guys say
-					its required on everything except PLX (In this case XRJ).
-				---------------------------------------------------------------- */
-				pcibios_write_config_byte(bus, device_fn, 0x40, 0);  
-				pcibios_write_config_byte(bus, device_fn, 0x46, 0);  
-
-			} /* End store a PCI/XR into the board structure */
-				
-		} /* End found XR */
-
-		if (!pcibios_find_device(PCI_VENDOR_DIGI, PCI_DEVICE_XEM,
-			i, &bus, &device_fn)) 
-		{ /* Begin found XEM */
-
-			if (get_PCI_configuration(bus, device_fn, &base_addr0, &base_addr1,
-			                                          &base_addr2, &base_addr3,
-			                                          &base_addr4, &base_addr5))
-			{ /* Begin store a PCI/XEM into the boards structure */
-
-				boards[boards_found + pci_count].status   = ENABLED;
-				boards[boards_found + pci_count].type     = PCIXEM;
-
-				boards[boards_found + pci_count].numports = 0x0;
-				boards[boards_found + pci_count].port     = (char *)((char *)base_addr0 + PCI_IO_OFFSET);
-				/* Most cards use base_addr0, but some use base_addr2 */
-				boards[boards_found + pci_count].membase  = (unsigned char *)base_addr0;
-
-				if (base_addr0 >= 0x100000)
-				{
-					/* ------------------------------------------------------------
-						Standard physical addresses are valid to the kernel as long 
-						as they aren't above RAM. Higher addresses (Such as are 
-						typical of a PCI system) need to be mapped in with the 
-						ioremap command.  For boards using such high addresses the
-						driver will store both addresses.  One address (The physical)
-						will be held for the apps use (And mmap) and the other (The
-						vremapped address) will be used in the kernel.
- 
-					---------------------------------------------------------------- */
-					boards[boards_found + pci_count].re_map_port     = ioremap((base_addr0 + PCI_IO_OFFSET),0x200000);
-					boards[boards_found + pci_count].re_map_membase  = ioremap(base_addr0, 0x200000);
-				}
-
-				pci_count++;
-				/* --------------------------------------------------------------
-					I don't know what the below does, but the hardware guys say
-					its required on everything except PLX (In this case XRJ).
-				---------------------------------------------------------------- */
-				pcibios_write_config_byte(bus, device_fn, 0x40, 0);  
-				pcibios_write_config_byte(bus, device_fn, 0x46, 0);  
-
-			} /* End store a PCI/XEM into the boards structure */
-
-		} /* End found XEM */
-
-
-		if (!pcibios_find_device(PCI_VENDOR_DIGI, PCI_DEVICE_CX,
-		                         i, &bus, &device_fn)) 
-		{ /* Begin found CX */
-
-			if (get_PCI_configuration(bus, device_fn, &base_addr0, &base_addr1,
-			                                          &base_addr2, &base_addr3,
-			                                          &base_addr4, &base_addr5))
-			{ /* Begin store a PCI/CX into the boards structure */
-
-				boards[boards_found + pci_count].status   = ENABLED;
-				boards[boards_found + pci_count].type     = PCICX;
-
-				boards[boards_found + pci_count].numports = 0x0;
-				boards[boards_found + pci_count].port     = (char *)((char *)base_addr0 + PCI_IO_OFFSET);
-				/* Most cards use base_addr0, but some use base_addr2 */
-				boards[boards_found + pci_count].membase  = (unsigned char *)base_addr0;
-
-				if (base_addr0 >= 0x100000)
-				{
-					/* ------------------------------------------------------------
-						Standard physical addresses are valid to the kernel as long 
-						as they aren't above RAM. Higher addresses (Such as are 
-						typical of a PCI system) need to be mapped in with the 
-						ioremap command.  For boards using such high addresses the
-						driver will store both addresses.  One address (The physical)
-						will be held for the apps use (And mmap) and the other (The
-						vremapped address) will be used in the kernel.
- 
-					---------------------------------------------------------------- */
-					boards[boards_found + pci_count].re_map_port     = ioremap((base_addr0 + PCI_IO_OFFSET),0x200000);
-					boards[boards_found + pci_count].re_map_membase  = ioremap(base_addr0, 0x200000);
-				}
-
-				pci_count++;
-				/* --------------------------------------------------------------
-					I don't know what the below does, but the hardware guys say
-					its required on everything except PLX (In this case XRJ).
-				---------------------------------------------------------------- */
-				pcibios_write_config_byte(bus, device_fn, 0x40, 0);  
-				pcibios_write_config_byte(bus, device_fn, 0x46, 0);  
-
-			} /* End store a PCI/CX into the boards structure */
-
-		} /* End found CX */
-
-		if (!pcibios_find_device(PCI_VENDOR_DIGI, PCI_DEVICE_XRJ,
-		                         i, &bus, &device_fn)) 
-		{ /* Begin found XRJ */
-
-			if (get_PCI_configuration(bus, device_fn, &base_addr0, &base_addr1,
-			                                          &base_addr2, &base_addr3,
-			                                          &base_addr4, &base_addr5))
-			{ /* Begin store a PCI/XRJ into the boards structure */
-
-				boards[boards_found + pci_count].status   = ENABLED;
-				boards[boards_found + pci_count].type     = PCIXRJ;
-
-				boards[boards_found + pci_count].numports = 0x0;
-				boards[boards_found + pci_count].port     = (unsigned char *)(base_addr2 + PCI_IO_OFFSET);
-				/* Most cards use base_addr0, but some use base_addr2 */
-				boards[boards_found + pci_count].membase  = (unsigned char *)base_addr2;
-
-				if (base_addr2 >= 0x100000)
-				{
-					/* ------------------------------------------------------------
-						Standard physical addresses are valid to the kernel as long 
-						as they aren't above RAM. Higher addresses (Such as are 
-						typical of a PCI system) need to be mapped in with the 
-						ioremap command.  For boards using such high addresses the
-						driver will store both addresses.  One address (The physical)
-						will be held for the apps use (And mmap) and the other (The
-						vremapped address) will be used in the kernel.
- 
-					---------------------------------------------------------------- */
-					boards[boards_found + pci_count].re_map_port     = ioremap((base_addr2 + PCI_IO_OFFSET),0x200000);
-					boards[boards_found + pci_count].re_map_membase  = ioremap(base_addr2, 0x200000);
-				}
-
-				pci_count++;
-
-			} /* End store a PCI/XRJ into the boards structure */
-
-		} /* End found XRJ */
-
-	} /* End for each POSSIBLE remaining board */
+	pci_count = pci_register_driver (&epca_driver);
+	
+	if (pci_count <= 0) {
+		pci_unregister_driver (&epca_driver);
+		pci_count = 0;
+	}
 
 	return(pci_count);
 

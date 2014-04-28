@@ -1,4 +1,4 @@
-/* $Id: smplock.h,v 1.1 1998/08/25 09:22:02 ralf Exp $
+/* $Id: smplock.h,v 1.2 1999/10/09 00:01:43 ralf Exp $
  *
  * This file is subject to the terms and conditions of the GNU General Public
  * License.  See the file "COPYING" in the main directory of this archive
@@ -7,9 +7,11 @@
  * Default SMP lock implementation
  */
 #include <linux/interrupt.h>
-#include <asm/spinlock.h>
+#include <linux/spinlock.h>
 
 extern spinlock_t kernel_flag;
+
+#define kernel_locked()		spin_is_locked(&kernel_flag)
 
 /*
  * Release global kernel lock and global interrupt lock
@@ -18,6 +20,8 @@ extern spinlock_t kernel_flag;
 do { \
 	if (task->lock_depth >= 0) \
 		spin_unlock(&kernel_flag); \
+	release_irqlock(cpu); \
+	__sti(); \
 } while (0)
 
 /*

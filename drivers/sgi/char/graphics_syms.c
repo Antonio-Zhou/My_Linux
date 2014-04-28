@@ -8,7 +8,6 @@
  */
 
 #define __NO_VERSION__
-#include <linux/config.h>
 #include <linux/module.h>
 
 /* extern int rrm_command (unsigned int cmd, void *arg);
@@ -33,5 +32,4 @@ EXPORT_SYMBOL(disable_gconsole);
 EXPORT_SYMBOL(enable_gconsole);
 EXPORT_SYMBOL(remove_mapping);
 
-
-
+EXPORT_SYMBOL(npregs);

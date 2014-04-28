@@ -46,38 +46,38 @@ static int version_printed = 0;
 
 extern int console_loglevel;
 
-int ns8390_probe1(struct device *dev, int word16, char *name, int id,
+int ns8390_probe1(struct net_device *dev, int word16, char *name, int id,
 				  int prom, struct nubus_dev *ndev);
 
-static int ns8390_open(struct device *dev);
-static void ns8390_no_reset(struct device *dev);
-static int ns8390_close_card(struct device *dev);
+static int ns8390_open(struct net_device *dev);
+static void ns8390_no_reset(struct net_device *dev);
+static int ns8390_close_card(struct net_device *dev);
 
 /* Interlan */
-static void interlan_reset(struct device *dev);
+static void interlan_reset(struct net_device *dev);
 
 /* Dayna */
-static void dayna_get_8390_hdr(struct device *dev, struct e8390_pkt_hdr *hdr,
+static void dayna_get_8390_hdr(struct net_device *dev, struct e8390_pkt_hdr *hdr,
 						int ring_page);
-static void dayna_block_input(struct device *dev, int count,
+static void dayna_block_input(struct net_device *dev, int count,
 						  struct sk_buff *skb, int ring_offset);
-static void dayna_block_output(struct device *dev, int count,
+static void dayna_block_output(struct net_device *dev, int count,
 						   const unsigned char *buf, const int start_page);
 
 /* Sane (32-bit chunk memory read/write) */
-static void sane_get_8390_hdr(struct device *dev, struct e8390_pkt_hdr *hdr,
+static void sane_get_8390_hdr(struct net_device *dev, struct e8390_pkt_hdr *hdr,
 						int ring_page);
-static void sane_block_input(struct device *dev, int count,
+static void sane_block_input(struct net_device *dev, int count,
 						  struct sk_buff *skb, int ring_offset);
-static void sane_block_output(struct device *dev, int count,
+static void sane_block_output(struct net_device *dev, int count,
 						   const unsigned char *buf, const int start_page);
 
 /* Slow Sane (16-bit chunk memory read/write) */
-static void slow_sane_get_8390_hdr(struct device *dev, struct e8390_pkt_hdr *hdr,
+static void slow_sane_get_8390_hdr(struct net_device *dev, struct e8390_pkt_hdr *hdr,
 						int ring_page);
-static void slow_sane_block_input(struct device *dev, int count,
+static void slow_sane_block_input(struct net_device *dev, int count,
 						  struct sk_buff *skb, int ring_offset);
-static void slow_sane_block_output(struct device *dev, int count,
+static void slow_sane_block_output(struct net_device *dev, int count,
 						   const unsigned char *buf, const int start_page);
 
 
@@ -146,7 +146,7 @@ enum mac8390_type {
 	NS8390_CABLETRON
 };
 
-__initfunc(int ns8390_ident(struct nubus_dev* ndev))
+int __init ns8390_ident(struct nubus_dev* ndev)
 {
 	/* This really needs to be tested and tested hard.  */
 		
@@ -196,7 +196,7 @@ __initfunc(int ns8390_ident(struct nubus_dev* ndev))
  *	Memory probe for 8390 cards
  */
  
-__initfunc(int apple_8390_mem_probe(volatile unsigned short *p))
+int __init apple_8390_mem_probe(volatile unsigned short *p)
 {
 	int i, j;
 	/*
@@ -250,7 +250,7 @@ __initfunc(int apple_8390_mem_probe(volatile unsigned short *p))
  *    at the memory ring, dev->mem_end gives the end of it.
  */
 
-__initfunc(int mac8390_probe(struct device *dev))
+int __init mac8390_probe(struct net_device *dev)
 {
 	static int slots = 0;
 	volatile unsigned short *i;
@@ -447,7 +447,7 @@ __initfunc(int mac8390_probe(struct device *dev))
 	}
 
 	/* We should hopefully not get here */
-	printk(KERN_ERR "Probe unsuccessful.\n");
+	printk(KERN_ERR "Probe unsucessful.\n");
 	return -ENODEV;
 
  membad:
@@ -456,8 +456,8 @@ __initfunc(int mac8390_probe(struct device *dev))
 	return -ENODEV;
 }
 
-__initfunc(int mac8390_ethernet_addr(struct nubus_dev* ndev,
-									 unsigned char addr[6]))
+int __init mac8390_ethernet_addr(struct nubus_dev* ndev, 
+				 unsigned char addr[6])
 {
 	struct nubus_dir dir;
 	struct nubus_dirent ent;
@@ -472,8 +472,8 @@ __initfunc(int mac8390_ethernet_addr(struct nubus_dev* ndev,
 	return 0;
 }
 
-__initfunc(int ns8390_probe1(struct device *dev, int word16, char *model_name,
-							 int type, int promoff, struct nubus_dev *ndev))
+int __init ns8390_probe1(struct net_device *dev, int word16, char *model_name,
+			 int type, int promoff, struct nubus_dev *ndev)
 {
 	static u32 fwrd4_offsets[16]={
 		0,      4,      8,      12,
@@ -631,7 +631,7 @@ __initfunc(int ns8390_probe1(struct device *dev, int word16, char *model_name,
 	return 0;
 }
 
-static int ns8390_open(struct device *dev)
+static int ns8390_open(struct net_device *dev)
 {
 	ei_open(dev);
 
@@ -651,7 +651,7 @@ static int ns8390_open(struct device *dev)
 	return 0;
 }
 
-static void ns8390_no_reset(struct device *dev)
+static void ns8390_no_reset(struct net_device *dev)
 {
 	if (ei_debug > 1) 
 		printk("Need to reset the NS8390 t=%lu...", jiffies);
@@ -660,7 +660,7 @@ static void ns8390_no_reset(struct device *dev)
 	return;
 }
 
-static int ns8390_close_card(struct device *dev)
+static int ns8390_close_card(struct net_device *dev)
 {
 	if (ei_debug > 1)
 		printk("%s: Shutting down ethercard.\n", dev->name);
@@ -674,7 +674,7 @@ static int ns8390_close_card(struct device *dev)
  *    Interlan Specific Code Starts Here
  */
 
-static void interlan_reset(struct device *dev)
+static void interlan_reset(struct net_device *dev)
 {
 	unsigned char *target=nubus_slot_addr(IRQ2SLOT(dev->irq));
 	if (ei_debug > 1) 
@@ -701,7 +701,7 @@ static void interlan_reset(struct device *dev)
    The only complications are that the ring buffer wraps.
 */
 
-static void dayna_memcpy_fromcard(struct device *dev, void *to, int from, int count)
+static void dayna_memcpy_fromcard(struct net_device *dev, void *to, int from, int count)
 {
 	volatile unsigned short *ptr;
 	unsigned short *target=to;
@@ -731,7 +731,7 @@ static void dayna_memcpy_fromcard(struct device *dev, void *to, int from, int co
 	}
 }
 
-static void dayna_memcpy_tocard(struct device *dev, int to, const void *from, int count)
+static void dayna_memcpy_tocard(struct net_device *dev, int to, const void *from, int count)
 {
 	volatile unsigned short *ptr;
 	const unsigned short *src=from;
@@ -763,7 +763,7 @@ static void dayna_memcpy_tocard(struct device *dev, int to, const void *from, in
 	}
 }
 
-static void dayna_get_8390_hdr(struct device *dev, struct e8390_pkt_hdr *hdr, int ring_page)
+static void dayna_get_8390_hdr(struct net_device *dev, struct e8390_pkt_hdr *hdr, int ring_page)
 {
 	unsigned long hdr_start = (ring_page - WD_START_PG)<<8;
 	dayna_memcpy_fromcard(dev, (void *)hdr, hdr_start, 4);
@@ -771,7 +771,7 @@ static void dayna_get_8390_hdr(struct device *dev, struct e8390_pkt_hdr *hdr, in
 	hdr->count=(hdr->count&0xFF)<<8|(hdr->count>>8);
 }
 
-static void dayna_block_input(struct device *dev, int count, struct sk_buff *skb, int ring_offset)
+static void dayna_block_input(struct net_device *dev, int count, struct sk_buff *skb, int ring_offset)
 {
 	unsigned long xfer_base = ring_offset - (WD_START_PG<<8);
 	unsigned long xfer_start = xfer_base+dev->mem_start;
@@ -796,7 +796,7 @@ static void dayna_block_input(struct device *dev, int count, struct sk_buff *skb
 	}
 }
 
-static void dayna_block_output(struct device *dev, int count, const unsigned char *buf,
+static void dayna_block_output(struct net_device *dev, int count, const unsigned char *buf,
 				int start_page)
 {
 	long shmem = (start_page - WD_START_PG)<<8;
@@ -809,7 +809,7 @@ static void dayna_block_output(struct device *dev, int count, const unsigned cha
  */
 
 
-static void sane_get_8390_hdr(struct device *dev, struct e8390_pkt_hdr *hdr, int ring_page)
+static void sane_get_8390_hdr(struct net_device *dev, struct e8390_pkt_hdr *hdr, int ring_page)
 {
 	unsigned long hdr_start = (ring_page - WD_START_PG)<<8;
 	memcpy((void *)hdr, (char *)dev->mem_start+hdr_start, 4);
@@ -817,7 +817,7 @@ static void sane_get_8390_hdr(struct device *dev, struct e8390_pkt_hdr *hdr, int
 	hdr->count=(hdr->count&0xFF)<<8|(hdr->count>>8);
 }
 
-static void sane_block_input(struct device *dev, int count, struct sk_buff *skb, int ring_offset)
+static void sane_block_input(struct net_device *dev, int count, struct sk_buff *skb, int ring_offset)
 {
 	unsigned long xfer_base = ring_offset - (WD_START_PG<<8);
 	unsigned long xfer_start = xfer_base+dev->mem_start;
@@ -838,7 +838,7 @@ static void sane_block_input(struct device *dev, int count, struct sk_buff *skb,
 }
 
 
-static void sane_block_output(struct device *dev, int count, const unsigned char *buf,
+static void sane_block_output(struct net_device *dev, int count, const unsigned char *buf,
 				int start_page)
 {
 	long shmem = (start_page - WD_START_PG)<<8;
@@ -870,7 +870,7 @@ static void word_memcpy_fromcard(void *tp, const void *fp, int count)
 		*to++=*from++;
 }
 
-static void slow_sane_get_8390_hdr(struct device *dev, struct e8390_pkt_hdr *hdr, int ring_page)
+static void slow_sane_get_8390_hdr(struct net_device *dev, struct e8390_pkt_hdr *hdr, int ring_page)
 {
 	unsigned long hdr_start = (ring_page - WD_START_PG)<<8;
 	word_memcpy_fromcard((void *)hdr, (char *)dev->mem_start+hdr_start, 4);
@@ -878,7 +878,7 @@ static void slow_sane_get_8390_hdr(struct device *dev, struct e8390_pkt_hdr *hdr
 	hdr->count=(hdr->count&0xFF)<<8|(hdr->count>>8);
 }
 
-static void slow_sane_block_input(struct device *dev, int count, struct sk_buff *skb, int ring_offset)
+static void slow_sane_block_input(struct net_device *dev, int count, struct sk_buff *skb, int ring_offset)
 {
 	unsigned long xfer_base = ring_offset - (WD_START_PG<<8);
 	unsigned long xfer_start = xfer_base+dev->mem_start;
@@ -898,7 +898,7 @@ static void slow_sane_block_input(struct device *dev, int count, struct sk_buff 
 	}
 }
 
-static void slow_sane_block_output(struct device *dev, int count, const unsigned char *buf,
+static void slow_sane_block_output(struct net_device *dev, int count, const unsigned char *buf,
 				int start_page)
 {
 	long shmem = (start_page - WD_START_PG)<<8;

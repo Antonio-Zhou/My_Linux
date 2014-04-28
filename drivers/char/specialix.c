@@ -174,7 +174,8 @@
 
 DECLARE_TASK_QUEUE(tq_specialix);
 
-
+#undef RS_EVENT_WRITE_WAKEUP
+#define RS_EVENT_WRITE_WAKEUP	0
 
 #define SPECIALIX_TYPE_NORMAL	1
 #define SPECIALIX_TYPE_CALLOUT	2
@@ -185,7 +186,7 @@ static struct tty_struct * specialix_table[SX_NBOARD * SX_NPORT] = { NULL, };
 static struct termios * specialix_termios[SX_NBOARD * SX_NPORT] = { NULL, };
 static struct termios * specialix_termios_locked[SX_NBOARD * SX_NPORT] = { NULL, };
 static unsigned char * tmp_buf = NULL;
-static struct semaphore tmp_buf_sem = MUTEX;
+static DECLARE_MUTEX(tmp_buf_sem);
 
 static unsigned long baud_table[] =  {
 	0, 50, 75, 110, 134, 150, 200, 300, 600, 1200, 1800, 2400, 4800,
@@ -1077,8 +1078,8 @@ static void sx_change_speed(struct specialix_board *bp, struct specialix_port *p
 	tmp = port->custom_divisor ;
 	if ( tmp )
 		printk (KERN_INFO "sx%d: Using custom baud rate divisor %ld. \n"
-			        "This is an untested option, please be carefull.\n",
-			        port_No (port), tmp);
+		                  "This is an untested option, please be carefull.\n",
+		                  port_No (port), tmp);
 	else
 		tmp = (((SX_OSCFREQ + baud_table[baud]/2) / baud_table[baud] +
 		         CD186x_TPC/2) / CD186x_TPC);
@@ -1325,7 +1326,7 @@ static void sx_shutdown_port(struct specialix_board *bp, struct specialix_port *
 static int block_til_ready(struct tty_struct *tty, struct file * filp,
                            struct specialix_port *port)
 {
-	struct wait_queue wait = { current, NULL };
+	DECLARE_WAITQUEUE(wait,  current);
 	struct specialix_board *bp = port_Board(port);
 	int    retval;
 	int    do_clocal = 0;
@@ -1412,7 +1413,7 @@ static int block_til_ready(struct tty_struct *tty, struct file * filp,
 			} 
 		}
 		sti();
-		current->state = TASK_INTERRUPTIBLE;
+		set_current_state(TASK_INTERRUPTIBLE);
 		if (tty_hung_up_p(filp) ||
 		    !(port->flags & ASYNC_INITIALIZED)) {
 			if (port->flags & ASYNC_HUP_NOTIFY)
@@ -1611,56 +1612,33 @@ static int sx_write(struct tty_struct * tty, int from_user,
 	if (!tty || !port->xmit_buf || !tmp_buf)
 		return 0;
 
-	save_flags(flags);
-	if (from_user) {
+	if (from_user)
 		down(&tmp_buf_sem);
-		while (1) {
-			c = MIN(count, MIN(SERIAL_XMIT_SIZE - port->xmit_cnt - 1,
-					   SERIAL_XMIT_SIZE - port->xmit_head));
-			if (c <= 0)
-				break;
 
-			c -= copy_from_user(tmp_buf, buf, c);
-			if (!c) {
-				if (!total)
-					total = -EFAULT;
-				break;
-			}
+	save_flags(flags);
+	while (1) {
+		cli();		
+		c = MIN(count, MIN(SERIAL_XMIT_SIZE - port->xmit_cnt - 1,
+		                   SERIAL_XMIT_SIZE - port->xmit_head));
+		if (c <= 0)
+			break;
 
-			cli();
+		if (from_user) {
+			copy_from_user(tmp_buf, buf, c);
 			c = MIN(c, MIN(SERIAL_XMIT_SIZE - port->xmit_cnt - 1,
-				       SERIAL_XMIT_SIZE - port->xmit_head));
+			               SERIAL_XMIT_SIZE - port->xmit_head));
 			memcpy(port->xmit_buf + port->xmit_head, tmp_buf, c);
-			port->xmit_head = (port->xmit_head + c) & (SERIAL_XMIT_SIZE-1);
-			port->xmit_cnt += c;
-			restore_flags(flags);
-
-			buf += c;
-			count -= c;
-			total += c;
-		}
-		up(&tmp_buf_sem);
-	} else {
-		while (1) {
-			cli();
-			c = MIN(count, MIN(SERIAL_XMIT_SIZE - port->xmit_cnt - 1,
-					   SERIAL_XMIT_SIZE - port->xmit_head));
-			if (c <= 0) {
-				restore_flags(flags);
-				break;
-			}
+		} else
 			memcpy(port->xmit_buf + port->xmit_head, buf, c);
-			port->xmit_head = (port->xmit_head + c) & (SERIAL_XMIT_SIZE-1);
-			port->xmit_cnt += c;
-			restore_flags(flags);
-
-			buf += c;
-			count -= c;
-			total += c;
-		}
+		port->xmit_head = (port->xmit_head + c) & (SERIAL_XMIT_SIZE-1);
+		port->xmit_cnt += c;
+		restore_flags(flags);
+		buf += c;
+		count -= c;
+		total += c;
 	}
-
-	cli();
+	if (from_user)
+		up(&tmp_buf_sem);
 	if (port->xmit_cnt && !tty->stopped && !tty->hw_stopped &&
 	    !(port->IER & IER_TXRDY)) {
 		port->IER |= IER_TXRDY;
@@ -1756,7 +1734,6 @@ static void sx_flush_buffer(struct tty_struct *tty)
 	restore_flags(flags);
 	
 	wake_up_interruptible(&tty->write_wait);
-	wake_up_interruptible(&tty->poll_wait);
 	if ((tty->flags & (1 << TTY_DO_WRITE_WAKEUP)) &&
 	    tty->ldisc.write_wakeup)
 		(tty->ldisc.write_wakeup)(tty);
@@ -1793,7 +1770,7 @@ static int sx_get_modem_info(struct specialix_port * port, unsigned int *value)
 		          |/* ((status & MSVR_DSR) ? */ TIOCM_DSR /* : 0) */
 		          |   ((status & MSVR_CTS) ? TIOCM_CTS : 0);
 	}
-	put_user(result,(unsigned long *) value);
+	put_user(result,(unsigned int *) value);
 	return 0;
 }
 
@@ -2215,7 +2192,6 @@ static void do_softint(void *private_)
 		    tty->ldisc.write_wakeup)
 			(tty->ldisc.write_wakeup)(tty);
 		wake_up_interruptible(&tty->write_wait);
-		wake_up_interruptible(&tty->poll_wait);
 	}
 }
 
@@ -2293,6 +2269,8 @@ static int sx_init_drivers(void)
 		sx_port[i].tqueue_hangup.data = &sx_port[i];
 		sx_port[i].close_delay = 50 * HZ/100;
 		sx_port[i].closing_wait = 3000 * HZ/100;
+		init_waitqueue_head(&sx_port[i].open_wait);
+		init_waitqueue_head(&sx_port[i].close_wait);
 	}
 	
 	return 0;
@@ -2373,11 +2351,12 @@ int specialix_init(void)
 			                        pdev);
 			if (!pdev) break;
 
+			if (pci_enable_device(pdev))
+				continue;
+
 			sx_board[i].irq = pdev->irq;
 
-			pci_read_config_dword(pdev, PCI_BASE_ADDRESS_2, &tint);
-			/* Mask out the fact that it's IO-space */
-			sx_board[i].base = tint & PCI_BASE_ADDRESS_IO_MASK; 
+			sx_board[i].base = pci_resource_start (pdev, 2);
 
 			sx_board[i].flags |= SX_BOARD_IS_PCI;
 			if (!sx_probe(&sx_board[i]))

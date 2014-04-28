@@ -1,4 +1,4 @@
-/* $Id: ethtool.h,v 1.1.2.1 2000/01/31 05:02:42 davem Exp $
+/* $Id: ethtool.h,v 1.2 2000/01/31 04:59:17 davem Exp $
  * ethtool.h: Defines for SparcLinux ethtool.
  *
  * Copyright (C) 1998 David S. Miller (davem@redhat.com)

@@ -6,7 +6,7 @@
  * Status:        Stable
  * Author:        Dag Brattli <dagb@cs.uit.no>
  * Created at:    Sun Aug 31 20:14:31 1997
- * Modified at:   Sun Jan 30 14:30:32 2000
+ * Modified at:   Wed Jan  5 11:31:27 2000
  * Modified by:   Dag Brattli <dagb@cs.uit.no>
  * 
  *     Copyright (c) 1998-2000 Dag Brattli <dagb@cs.uit.no>, 
@@ -303,6 +303,10 @@ int irttp_data_request(struct tsap_cb *self, struct sk_buff *skb)
 {
 	__u8 *frame;
 
+	ASSERT(self != NULL, return -1;);
+	ASSERT(self->magic == TTP_TSAP_MAGIC, return -1;);
+	ASSERT(skb != NULL, return -1;);
+
 	/* Check that nothing bad happens */
 	if ((skb->len == 0) || (!self->connected)) {
 		WARNING(__FUNCTION__ "(), No data, or not connected\n");
@@ -407,7 +411,7 @@ static void irttp_run_tx_queue(struct tsap_cb *self)
 			/* Re-queue packet */
 			skb_queue_head(&self->tx_queue, skb);
 
-			/* Try later. Maybe IrLAP could notify us? */
+			/* Try later. Would be better if IrLAP could notify us */
 			irttp_start_todo_timer(self, MSECS_TO_JIFFIES(10));
 			
 			break;
@@ -454,7 +458,9 @@ static void irttp_run_tx_queue(struct tsap_cb *self)
 					FLOW_START);
 		}
 	}
-	self->tx_queue_lock = 0; /* Reset lock */
+	
+	/* Reset lock */
+	self->tx_queue_lock = 0;
 }
 
 /*
@@ -1497,7 +1503,7 @@ static void irttp_start_todo_timer(struct tsap_cb *self, int timeout)
  *
  *    Give some info to the /proc file system
  */
-int irttp_proc_read(char *buf, char **start, off_t offset, int len, int unused)
+int irttp_proc_read(char *buf, char **start, off_t offset, int len)
 {
 	struct tsap_cb *self;
 	unsigned long flags;
@@ -1528,9 +1534,9 @@ int irttp_proc_read(char *buf, char **start, off_t offset, int len, int unused)
 			       self->remote_credit);
 		len += sprintf(buf+len, "send credit: %d\n",
 			       self->send_credit);
-		len += sprintf(buf+len, "  tx packets: %ld, ",
+		len += sprintf(buf+len, "  tx packets: %d, ",
 			       self->stats.tx_packets);
-		len += sprintf(buf+len, "rx packets: %ld, ",
+		len += sprintf(buf+len, "rx packets: %d, ",
 			       self->stats.rx_packets);
 		len += sprintf(buf+len, "tx_queue len: %d ", 
 			       skb_queue_len(&self->tx_queue));

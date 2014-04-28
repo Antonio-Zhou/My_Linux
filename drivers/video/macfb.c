@@ -60,6 +60,12 @@
 /* Address for the built-in Civic framebuffer in Quadra AVs */
 #define CIVIC_BASE 0x50f30800	/* Only tested on 660AV! */
 
+/* GSC (Gray Scale Controller) base address */
+#define GSC_BASE 0x50F20000
+
+/* CSC (Color Screen Controller) base address */
+#define CSC_BASE 0x50F20000
+
 static int (*macfb_setpalette) (unsigned int regno, unsigned int red,
 				unsigned int green, unsigned int blue) = NULL;
 static int valkyrie_setpalette (unsigned int regno, unsigned int red,
@@ -73,6 +79,8 @@ static int mdc_setpalette (unsigned int regno, unsigned int red,
 static int toby_setpalette (unsigned int regno, unsigned int red,
 			    unsigned int green, unsigned int blue);
 static int civic_setpalette (unsigned int regno, unsigned int red,
+			     unsigned int green, unsigned int blue);
+static int csc_setpalette (unsigned int regno, unsigned int red,
 			     unsigned int green, unsigned int blue);
 
 static volatile struct {
@@ -112,6 +120,15 @@ static volatile struct {
 	unsigned long vbl_addr;	/* OFFSET: 0x28 */
 	unsigned int  status2;	/* OFFSET: 0x2C */
 } *civic_cmap_regs;
+
+static volatile struct {
+	char    pad1[0x40];
+        unsigned char	clut_waddr;	/* 0x40 */
+        char    pad2;
+        unsigned char	clut_data;	/* 0x42 */
+        char	pad3[0x3];
+        unsigned char	clut_raddr;	/* 0x46 */
+} *csc_cmap_regs;
 
 /* We will leave these the way they are for the time being */
 struct mdc_cmap_regs {
@@ -220,7 +237,7 @@ static int macfb_get_fix(struct fb_fix_screeninfo *fix, int con,
 	memset(fix, 0, sizeof(struct fb_fix_screeninfo));
 	strcpy(fix->id, "Mac Generic");
 
-	fix->smem_start=(char *) video_base;
+	fix->smem_start = video_base;
 	fix->smem_len = video_size;
 	fix->type = video_type;
 	fix->visual = video_visual;
@@ -665,6 +682,24 @@ static int civic_setpalette (unsigned int regno, unsigned int red,
 	lastreg = regno;
 	return 0;
 }
+
+/*
+ * The CSC is the framebuffer on the PowerBook 190 series
+ * (and the 5300 too, but that's a PowerMac). This function
+ * brought to you in part by the ECSC driver for MkLinux.
+ */
+
+static int csc_setpalette (unsigned int regno, unsigned int red,
+			     unsigned int green, unsigned int blue)
+{
+	mdelay(1);
+	csc_cmap_regs->clut_waddr = regno;
+	csc_cmap_regs->clut_data = red;
+	csc_cmap_regs->clut_data = green;
+	csc_cmap_regs->clut_data = blue;
+	return 0;
+}
+
 #endif /* FBCON_HAS_CFB8 || FBCON_HAS_CFB4 || FBCON_HAS_CFB2 */
 
 static int macfb_getcolreg(unsigned regno, unsigned *red, unsigned *green,
@@ -881,7 +916,7 @@ static void macfb_blank(int blank, struct fb_info *info)
 	/* Not supported */
 }
 
-__initfunc(void macfb_init(void))
+void __init macfb_init(void)
 {
 	struct nubus_dev* ndev = NULL;
 	int video_is_nubus = 0;
@@ -1056,14 +1091,13 @@ __initfunc(void macfb_init(void))
 			break;
 
 			/* DAFB Quadras */
-			/* Note: these first five have the v7 DAFB, which is
+			/* Note: these first four have the v7 DAFB, which is
 			   known to be rather unlike the ones used in the
 			   other models */
 		case MAC_MODEL_P475:
 		case MAC_MODEL_P475F:
 		case MAC_MODEL_P575:
 		case MAC_MODEL_Q605:
-		case MAC_MODEL_Q605_ACC:
 	
 		case MAC_MODEL_Q800:
 		case MAC_MODEL_Q650:
@@ -1133,6 +1167,7 @@ __initfunc(void macfb_init(void))
 			strcpy( fb_info.modename, "Civic built-in" );
 			civic_cmap_regs = ioremap(CIVIC_BASE, 0x1000);
 			break;
+
 		
 			/* Write a setpalette function for your machine, then
 			   you can add something similar here.  These are
@@ -1181,29 +1216,41 @@ __initfunc(void macfb_init(void))
 			   Also, many of them are grayscale, and we don't
 			   really support that. */
 
-			/* Internal is DBLite, External is ViSC */
+		case MAC_MODEL_PB140:
+		case MAC_MODEL_PB145:
+		case MAC_MODEL_PB170:
+			strcpy( fb_info.modename, "DDC built-in" );
+			break;
+
+			/* Internal is GSC, External (if present) is ViSC */
+		case MAC_MODEL_PB150:	/* no external video */
 		case MAC_MODEL_PB160:
-			strcpy( fb_info.modename, "DBLite built-in" );
+		case MAC_MODEL_PB165:
+		case MAC_MODEL_PB180:
+		case MAC_MODEL_PB210:
+		case MAC_MODEL_PB230:
+			strcpy( fb_info.modename, "GSC built-in" );
 			break;
 
 			/* Internal is TIM, External is ViSC */
-		case MAC_MODEL_PB170:
-		case MAC_MODEL_PB180:
+		case MAC_MODEL_PB165C:
 		case MAC_MODEL_PB180C:
 			strcpy( fb_info.modename, "TIM built-in" );
 			break;
 
-			/* Uses the CSC framebuffer */
+			/* Internal is CSC, External is Keystone+Ariel. */
+		case MAC_MODEL_PB190:	/* external video is optional */
 		case MAC_MODEL_PB520:
+		case MAC_MODEL_PB250:
+		case MAC_MODEL_PB270C:
+		case MAC_MODEL_PB280:
+		case MAC_MODEL_PB280C:
+			macfb_setpalette = csc_setpalette;
+			macfb_defined.activate = FB_ACTIVATE_NOW;
 			strcpy( fb_info.modename, "CSC built-in" );
+			csc_cmap_regs = ioremap(CSC_BASE, 0x1000);
 			break;
 		
-		case MAC_MODEL_PB165:
-		case MAC_MODEL_PB165C:
-		case MAC_MODEL_PB140:
-		case MAC_MODEL_PB145:
-		case MAC_MODEL_PB150:
-		case MAC_MODEL_PB190:		
 		default:
 			strcpy( fb_info.modename, "Unknown/Unsupported built-in" );
 			break;

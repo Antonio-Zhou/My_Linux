@@ -1,9 +1,9 @@
-/* $Id: string.h,v 1.14.2.1 2000/05/27 04:46:42 davem Exp $
+/* $Id: string.h,v 1.16 2000/05/02 01:47:01 davem Exp $
  * string.h: External definitions for optimized assembly string
  *           routines for the Linux Kernel.
  *
  * Copyright (C) 1995,1996 David S. Miller (davem@caip.rutgers.edu)
- * Copyright (C) 1996,1997 Jakub Jelinek (jj@sunsite.mff.cuni.cz)
+ * Copyright (C) 1996,1997,1999 Jakub Jelinek (jakub@redhat.com)
  */
 
 #ifndef __SPARC64_STRING_H__
@@ -21,7 +21,9 @@ extern __kernel_size_t __memcpy_short(void *,const void *,__kernel_size_t,long,l
 extern __kernel_size_t __memcpy_entry(void *,const void *,__kernel_size_t,long,long);
 extern __kernel_size_t __memcpy_16plus(void *,const void *,__kernel_size_t,long,long);
 extern __kernel_size_t __memcpy_384plus(void *,const void *,__kernel_size_t,long,long);
-extern __kernel_size_t __memset(void *,int,__kernel_size_t);
+extern void *__memset(void *,int,__kernel_size_t);
+extern void *__builtin_memcpy(void *,const void *,__kernel_size_t);
+extern void *__builtin_memset(void *,int,__kernel_size_t);
 
 #ifndef EXPORT_SYMTAB_STROPS
 
@@ -39,7 +41,7 @@ extern __kernel_size_t __memset(void *,int,__kernel_size_t);
 
 #define __HAVE_ARCH_MEMCPY
 
-extern inline void *__constant_memcpy(void *to, const void *from, __kernel_size_t n)
+static inline void *__constant_memcpy(void *to, const void *from, __kernel_size_t n)
 {
 	if(n) {
 		if(n <= 32) {
@@ -51,7 +53,7 @@ extern inline void *__constant_memcpy(void *to, const void *from, __kernel_size_
 	return to;
 }
 
-extern inline void *__nonconstant_memcpy(void *to, const void *from, __kernel_size_t n)
+static inline void *__nonconstant_memcpy(void *to, const void *from, __kernel_size_t n)
 {
 	__memcpy(to, from, n);
 	return to;
@@ -65,28 +67,24 @@ extern inline void *__nonconstant_memcpy(void *to, const void *from, __kernel_si
 
 #define __HAVE_ARCH_MEMSET
 
-extern inline void *__constant_memset(void *s, char c, __kernel_size_t count)
+static inline void *__constant_memset(void *s, int c, __kernel_size_t count)
 {
 	extern __kernel_size_t __bzero(void *, __kernel_size_t);
 
-	if(!c)
+	if(!c) {
 		__bzero(s, count);
-	else
-		__memset(s, c, count);
-	return s;
-}
-
-extern inline void *__nonconstant_memset(void *s, char c, __kernel_size_t count)
-{
-	__memset(s, c, count);
-	return s;
+		return s;
+	} else
+		return __memset(s, c, count);
 }
 
 #undef memset
 #define memset(s, c, count) \
-(__builtin_constant_p(c) ? \
- __constant_memset((s), (c), (count)) : \
- __nonconstant_memset((s), (c), (count)))
+((__builtin_constant_p(count) && (count) <= 32) ? \
+ __builtin_memset((s), (c), (count)) : \
+ (__builtin_constant_p(c) ? \
+  __constant_memset((s), (c), (count)) : \
+  __memset((s), (c), (count))))
 
 #define __HAVE_ARCH_MEMSCAN
 
@@ -113,7 +111,7 @@ extern inline void *__nonconstant_memset(void *s, char c, __kernel_size_t count)
 
 extern __kernel_size_t __strlen(const char *);
 
-#if (__GNUC__ > 2) || (__GNUC__ == 2 && __GNUC_MINOR__ >= 91)
+#if __GNUC__ > 2 || __GNUC_MINOR__ >= 91
 extern __kernel_size_t strlen(const char *);
 #else /* !EGCS */
 /* Ugly but it works around a bug in our original sparc64-linux-gcc.  */
@@ -129,7 +127,7 @@ extern __kernel_size_t strlen(const char *);
 
 extern int __strncmp(const char *, const char *, __kernel_size_t);
 
-extern inline int __constant_strncmp(const char *src, const char *dest, __kernel_size_t count)
+static inline int __constant_strncmp(const char *src, const char *dest, __kernel_size_t count)
 {
 	register int retval;
 	switch(count) {

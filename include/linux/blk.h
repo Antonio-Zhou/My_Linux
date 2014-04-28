@@ -4,8 +4,7 @@
 #include <linux/blkdev.h>
 #include <linux/locks.h>
 #include <linux/config.h>
-
-#include <asm/spinlock.h>
+#include <linux/spinlock.h>
 
 /*
  * Spinlock for protecting the request queue which
@@ -19,17 +18,7 @@ extern spinlock_t io_request_lock;
  * NOTE that writes may use only the low 2/3 of these: reads
  * take precedence.
  */
-#define NR_REQUEST	128
-
-/*
- * This is used in the elevator algorithm.  We don't prioritise reads
- * over writes any more --- although reads are more time-critical than
- * writes, by treating them equally we increase filesystem throughput.
- * This turns out to give better overall performance.  -- sct
- */
-#define IN_ORDER(s1,s2) \
-((s1)->rq_dev < (s2)->rq_dev || (((s1)->rq_dev == (s2)->rq_dev && \
-(s1)->sector < (s2)->sector)))
+#define NR_REQUEST	256
 
 /*
  * Initialization functions.
@@ -57,17 +46,18 @@ extern int ap_init(void);
 extern int ddv_init(void);
 extern int z2_init(void);
 extern int swim3_init(void);
+extern int swimiop_init(void);
 extern int amiga_floppy_init(void);
 extern int atari_floppy_init(void);
 extern int nbd_init(void);
 extern int ez_init(void);
 extern int bpcd_init(void);
 extern int ps2esdi_init(void);
+extern int jsfd_init(void);
 
-#ifdef CONFIG_ARCH_S390
+#if defined(CONFIG_ARCH_S390)
 extern int mdisk_init(void);
 extern int dasd_init(void);
-extern int xpram_init(void);
 #endif /* CONFIG_ARCH_S390 */
 
 extern void set_device_ro(kdev_t dev,int flag);
@@ -91,12 +81,6 @@ void initrd_init(void);
 
 #endif
 
-#define RO_IOCTLS(dev,where) \
-  case BLKROSET: { int __val;  if (!capable(CAP_SYS_ADMIN)) return -EACCES; \
-		   if (get_user(__val, (int *)(where))) return -EFAULT; \
-		   set_device_ro((dev),__val); return 0; } \
-  case BLKROGET: { int __val = (is_read_only(dev) != 0) ; \
-		    return put_user(__val,(int *) (where)); }
 		 
 /*
  * end_request() and friends. Must be called with the request queue spinlock
@@ -107,6 +91,18 @@ void initrd_init(void);
  * for parts of the original function. This prevents
  * code duplication in drivers.
  */
+
+extern inline void blkdev_dequeue_request(struct request * req)
+{
+	if (req->q)
+	{
+		if (req->cmd == READ)
+			req->q->elevator.read_pendings--;
+		req->q->elevator.nr_segments -= req->nr_segments;
+		req->q = NULL;
+	}
+	list_del(&req->queue);
+}
 
 int end_that_request_first(struct request *req, int uptodate, char *name);
 void end_that_request_last(struct request *req);
@@ -169,9 +165,7 @@ static void floppy_off(unsigned int nr);
 #elif (SCSI_DISK_MAJOR(MAJOR_NR))
 
 #define DEVICE_NAME "scsidisk"
-#define DEVICE_INTR do_sd  
 #define TIMEOUT_VALUE (2*HZ)
-#define DEVICE_REQUEST do_sd_request
 #define DEVICE_NR(device) (((MAJOR(device) & SD_MAJOR_MASK) << (8 - 4)) + (MINOR(device) >> 4))
 #define DEVICE_ON(device)
 #define DEVICE_OFF(device)
@@ -193,19 +187,9 @@ static void floppy_off(unsigned int nr);
 #define DEVICE_ON(device)
 #define DEVICE_OFF(device)
 
-#elif (MAJOR_NR == OSST_MAJOR)
-
-#define DEVICE_NAME "onstream" 
-#define DEVICE_INTR do_osst
-#define DEVICE_NR(device) (MINOR(device) & 0x7f) 
-#define DEVICE_ON(device) 
-#define DEVICE_OFF(device) 
-
 #elif (MAJOR_NR == SCSI_CDROM_MAJOR)
 
 #define DEVICE_NAME "CD-ROM"
-#define DEVICE_INTR do_sr
-#define DEVICE_REQUEST do_sr_request
 #define DEVICE_NR(device) (MINOR(device))
 #define DEVICE_ON(device)
 #define DEVICE_OFF(device)
@@ -366,15 +350,6 @@ static void floppy_off(unsigned int nr);
 #define DEVICE_ON(device)
 #define DEVICE_OFF(device)
 
-#elif (MAJOR_NR == MFM_ACORN_MAJOR)
-
-#define DEVICE_NAME "mfm disk"
-#define DEVICE_INTR do_mfm
-#define DEVICE_REQUEST do_mfm_request
-#define DEVICE_NR(device) (MINOR(device) >> 6)
-#define DEVICE_ON(device)
-#define DEVICE_OFF(device)
-
 #elif (MAJOR_NR == NBD_MAJOR)
 
 #define DEVICE_NAME "nbd"
@@ -394,10 +369,17 @@ static void floppy_off(unsigned int nr);
 
 #elif (MAJOR_NR == DASD_MAJOR)
 
-#define LOCAL_END_REQUEST
 #define DEVICE_NAME "dasd"
 #define DEVICE_REQUEST do_dasd_request
-#define DEVICE_NR(device) (MINOR(device) >> DASD_PARTN_BITS)
+#define DEVICE_NR(device) (MINOR(device) >> PARTN_BITS)
+#define DEVICE_ON(device) 
+#define DEVICE_OFF(device)
+
+#elif (MAJOR_NR == I2O_MAJOR)
+
+#define DEVICE_NAME "I2O block"
+#define DEVICE_REQUEST do_i2ob_request
+#define DEVICE_NR(device) (MINOR(device)>>4)
 #define DEVICE_ON(device) 
 #define DEVICE_OFF(device)
 
@@ -410,21 +392,16 @@ static void floppy_off(unsigned int nr);
 #define DEVICE_ON(device)
 #define DEVICE_OFF(device)
 
-#elif (MAJOR_NR == I2O_MAJOR)
-
-#define DEVICE_NAME "I2O block"
-#define DEVICE_REQUEST do_i2ob_request
-#define DEVICE_NR(device) (MINOR(device)>>4)
-#define DEVICE_ON(device) 
-#define DEVICE_OFF(device)
-
 #endif /* MAJOR_NR == whatever */
 
-#if (MAJOR_NR != SCSI_TAPE_MAJOR) && (MAJOR_NR != OSST_MAJOR)
+#if (MAJOR_NR != SCSI_TAPE_MAJOR)
 #if !defined(IDE_DRIVER)
 
 #ifndef CURRENT
-#define CURRENT (blk_dev[MAJOR_NR].current_request)
+#define CURRENT blkdev_entry_next_request(&blk_dev[MAJOR_NR].request_queue.queue_head)
+#endif
+#ifndef QUEUE_EMPTY
+#define QUEUE_EMPTY list_empty(&blk_dev[MAJOR_NR].request_queue.queue_head)
 #endif
 
 #ifndef DEVICE_NAME
@@ -458,7 +435,9 @@ else \
 
 #endif /* DEVICE_TIMEOUT */
 
-static void (DEVICE_REQUEST)(void);
+#ifdef DEVICE_REQUEST
+static void (DEVICE_REQUEST)(request_queue_t *);
+#endif 
   
 #ifdef DEVICE_INTR
 #define CLEAR_INTR SET_INTR(NULL)
@@ -467,7 +446,7 @@ static void (DEVICE_REQUEST)(void);
 #endif
 
 #define INIT_REQUEST \
-	if (!CURRENT) {\
+	if (QUEUE_EMPTY) {\
 		CLEAR_INTR; \
 		return; \
 	} \
@@ -479,6 +458,7 @@ static void (DEVICE_REQUEST)(void);
 	}
 
 #endif /* !defined(IDE_DRIVER) */
+
 
 #ifndef LOCAL_END_REQUEST	/* If we have our own end_request, we do not want to include this mess */
 
@@ -494,7 +474,7 @@ static void end_request(int uptodate) {
 	add_blkdev_randomness(MAJOR(req->rq_dev));
 #endif
 	DEVICE_OFF(req->rq_dev);
-	CURRENT = req->next;
+	blkdev_dequeue_request(req);
 	end_that_request_last(req);
 }
 

@@ -232,7 +232,7 @@ struct zoran {
 
 	u32 *overlay_mask;
 
-	struct wait_queue *v4l_capq;	/* wait here for grab to finish */
+	wait_queue_head_t v4l_capq;	/* wait here for grab to finish */
 
 	int v4l_overlay_active;	/* Overlay grab is activated */
 	int v4l_memgrab_active;	/* Memory grab is activated */
@@ -263,7 +263,7 @@ struct zoran {
 	enum zoran_codec_mode codec_mode;		/* status of codec */
 	struct zoran_params params;	/* structure with a lot of things to play with */
 
-	struct wait_queue *jpg_capq;	/* wait here for grab to finish */
+	wait_queue_head_t  jpg_capq;	/* wait here for grab to finish */
 
 	/* grab queue counts/indices, mask with BUZ_MASK_STAT_COM before using as index */
 	/* (dma_head - dma_tail) is number active in DMA, must be <= BUZ_NUM_STAT_COM */

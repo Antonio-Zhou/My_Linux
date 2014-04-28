@@ -53,6 +53,7 @@ static int max_interrupt_work = 10;
 #include <linux/module.h>
 
 #include <linux/mca.h>
+#include <linux/isapnp.h>
 #include <linux/sched.h>
 #include <linux/string.h>
 #include <linux/interrupt.h>
@@ -64,9 +65,8 @@ static int max_interrupt_work = 10;
 #include <linux/etherdevice.h>
 #include <linux/skbuff.h>
 #include <linux/delay.h>	/* for udelay() */
-#include <linux/init.h>
+#include <linux/spinlock.h>
 
-#include <asm/spinlock.h>
 #include <asm/bitops.h>
 #include <asm/io.h>
 #include <asm/irq.h>
@@ -130,7 +130,7 @@ enum RxFilter {
 
 struct el3_private {
 	struct enet_statistics stats;
-	struct device *next_dev;
+	struct net_device *next_dev;
 	spinlock_t lock;
 	/* skb send-queue */
 	int head, size;
@@ -138,18 +138,19 @@ struct el3_private {
 	char mca_slot;
 };
 static int id_port = 0x110;		/* Start with 0x110 to avoid new sound cards.*/
-static struct device *el3_root_dev = NULL;
+static struct net_device *el3_root_dev = NULL;
 
 static ushort id_read_eeprom(int index);
 static ushort read_eeprom(int ioaddr, int index);
-static int el3_open(struct device *dev);
-static int el3_start_xmit(struct sk_buff *skb, struct device *dev);
+static int el3_open(struct net_device *dev);
+static int el3_start_xmit(struct sk_buff *skb, struct net_device *dev);
 static void el3_interrupt(int irq, void *dev_id, struct pt_regs *regs);
-static void update_stats(struct device *dev);
-static struct enet_statistics *el3_get_stats(struct device *dev);
-static int el3_rx(struct device *dev);
-static int el3_close(struct device *dev);
-static void set_multicast_list(struct device *dev);
+static void update_stats(struct net_device *dev);
+static struct enet_statistics *el3_get_stats(struct net_device *dev);
+static int el3_rx(struct net_device *dev);
+static int el3_close(struct net_device *dev);
+static void set_multicast_list(struct net_device *dev);
+static void el3_tx_timeout (struct net_device *dev);
 
 #ifdef CONFIG_MCA
 struct el3_mca_adapters_struct {
@@ -157,7 +158,7 @@ struct el3_mca_adapters_struct {
 	int id;
 };
 
-static struct el3_mca_adapters_struct el3_mca_adapters[] __initdata = {
+struct el3_mca_adapters_struct el3_mca_adapters[] = {
 	{ "3Com 3c529 EtherLink III (10base2)", 0x627c },
 	{ "3Com 3c529 EtherLink III (10baseT)", 0x627d },
 	{ "3Com 3c529 EtherLink III (test mode)", 0x62db },
@@ -167,33 +168,51 @@ static struct el3_mca_adapters_struct el3_mca_adapters[] __initdata = {
 };
 #endif
 
-int __init el3_probe(struct device *dev)
+#ifdef __ISAPNP__
+struct el3_isapnp_adapters_struct {
+	unsigned short vendor, function;
+	char *name;
+};
+struct el3_isapnp_adapters_struct el3_isapnp_adapters[] = {
+	{ISAPNP_VENDOR('T', 'C', 'M'), ISAPNP_FUNCTION(0x5090), "3Com Etherlink III (TP)"},
+	{ISAPNP_VENDOR('T', 'C', 'M'), ISAPNP_FUNCTION(0x5091), "3Com Etherlink III"},
+	{ISAPNP_VENDOR('T', 'C', 'M'), ISAPNP_FUNCTION(0x5094), "3Com Etherlink III (combo)"},
+	{ISAPNP_VENDOR('T', 'C', 'M'), ISAPNP_FUNCTION(0x5095), "3Com Etherlink III (TPO)"},
+	{ISAPNP_VENDOR('T', 'C', 'M'), ISAPNP_FUNCTION(0x5098), "3Com Etherlink III (TPC)"},
+	{ISAPNP_VENDOR('P', 'N', 'P'), ISAPNP_FUNCTION(0x80f8), "3Com Etherlink III compatible"},
+	{0, }
+};
+u16 el3_isapnp_phys_addr[8][3] = {
+	{0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0},
+	{0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}
+};
+#endif /* CONFIG_ISAPNP */
+#if defined(__ISAPNP__) || defined(MODULE)
+static int nopnp = 0;
+#endif
+
+int el3_probe(struct net_device *dev)
 {
 	short lrs_state = 0xff, i;
 	int ioaddr, irq, if_port;
 	u16 phys_addr[3];
 	static int current_tag = 0;
 	int mca_slot = -1;
+#ifdef __ISAPNP__
+	static int pnp_cards = 0;
+#endif
 
 	/* First check all slots of the EISA bus.  The next slot address to
 	   probe is kept in 'eisa_addr' to support multiple probe() calls. */
 	if (EISA_bus) {
 		static int eisa_addr = 0x1000;
 		while (eisa_addr < 0x9000) {
-			int device_id;
-
 			ioaddr = eisa_addr;
 			eisa_addr += 0x1000;
 
 			/* Check the standard EISA ID register for an encoded '3Com'. */
 			if (inw(ioaddr + 0xC80) != 0x6d50)
 				continue;
-
-			/* Avoid conflict with 3c590, 3c592, 3c597, etc */
-			device_id = (inb(ioaddr + 0xC82)<<8) + inb(ioaddr + 0xC83);
-			if ((device_id & 0xFF00) == 0x5900) {
-				continue;
-			}
 
 			/* Change the register set to the configuration window 0. */
 			outw(SelectWindow | 0, ioaddr + 0xC80 + EL3_CMD);
@@ -274,9 +293,45 @@ int __init el3_probe(struct device *dev)
 		return -ENODEV;
 	}
 #endif
-	/* Reset the ISA PnP mechanism on 3c509b. */
-	outb(0x02, 0x279);           /* Select PnP config control register. */
-	outb(0x02, 0xA79);           /* Return to WaitForKey state. */
+
+#ifdef __ISAPNP__
+	if (nopnp == 1)
+		goto no_pnp;
+
+	for (i=0; el3_isapnp_adapters[i].vendor != 0; i++) {
+		struct pci_dev *idev = NULL;
+		int j;
+		while ((idev = isapnp_find_dev(NULL,
+						el3_isapnp_adapters[i].vendor,
+						el3_isapnp_adapters[i].function,
+						idev))) {
+			idev->prepare(idev);
+			/* Deactivation is needed if the driver was called
+			   with "nopnp=1" before, does not harm if not. */
+			idev->deactivate(idev);
+			idev->activate(idev);
+			if (!idev->resource[0].start || check_region(idev->resource[0].start, EL3_IO_EXTENT))
+				continue;
+			ioaddr = idev->resource[0].start;
+			if (!request_region(ioaddr, EL3_IO_EXTENT, "3c509 PnP"))
+				return -EBUSY;
+			irq = idev->irq_resource[0].start;
+			if (el3_debug > 3)
+				printk ("ISAPnP reports %s at i/o 0x%x, irq %d\n",
+					el3_isapnp_adapters[i].name, ioaddr, irq);
+			EL3WINDOW(0);
+			for (j = 0; j < 3; j++)
+				el3_isapnp_phys_addr[pnp_cards][j] =
+					phys_addr[j] =
+						htons(read_eeprom(ioaddr, j));
+			if_port = read_eeprom(ioaddr, 8) >> 14;
+			pnp_cards++;
+			goto found;
+		}
+	}
+no_pnp:
+#endif
+
 	/* Select an open I/O location at 0x1*0 to do contention select. */
 	for ( ; id_port < 0x200; id_port += 0x10) {
 		if (check_region(id_port, 1))
@@ -321,6 +376,28 @@ int __init el3_probe(struct device *dev)
 		phys_addr[i] = htons(id_read_eeprom(i));
 	}
 
+#ifdef __ISAPNP__
+	if (nopnp == 0) {
+		/* The ISA PnP 3c509 cards respond to the ID sequence.
+		   This check is needed in order not to register them twice. */
+		for (i = 0; i < pnp_cards; i++) {
+			if (phys_addr[0] == el3_isapnp_phys_addr[i][0] &&
+			    phys_addr[1] == el3_isapnp_phys_addr[i][1] &&
+			    phys_addr[2] == el3_isapnp_phys_addr[i][2])
+			{
+				if (el3_debug > 3)
+					printk("3c509 with address %02x %02x %02x %02x %02x %02x was found by ISAPnP\n",
+						phys_addr[0] & 0xff, phys_addr[0] >> 8,
+						phys_addr[1] & 0xff, phys_addr[1] >> 8,
+						phys_addr[2] & 0xff, phys_addr[2] >> 8);
+				/* Set the adaptor tag so that the next card can be found. */
+				outb(0xd0 + ++current_tag, id_port);
+				goto no_pnp;
+			}
+		}
+	}
+#endif
+
 	{
 		unsigned int iobase = id_read_eeprom(8);
 		if_port = iobase >> 14;
@@ -341,6 +418,9 @@ int __init el3_probe(struct device *dev)
 		}
 	}
 
+	if (!request_region(ioaddr, EL3_IO_EXTENT, "3c509"))
+		return -EBUSY;
+
 	/* Set the adaptor tag so that the next card can be found. */
 	outb(0xd0 + ++current_tag, id_port);
 
@@ -348,26 +428,30 @@ int __init el3_probe(struct device *dev)
 	outb((ioaddr >> 4) | 0xe0, id_port);
 
 	EL3WINDOW(0);
-	if (inw(ioaddr) != 0x6d50)
+	if (inw(ioaddr) != 0x6d50) {
+		release_region(ioaddr, EL3_IO_EXTENT);
 		return -ENODEV;
+	}
 
 	/* Free the interrupt so that some other card can use it. */
 	outw(0x0f00, ioaddr + WN0_IRQ);
  found:
 	if (dev == NULL) {
 		dev = init_etherdev(dev, sizeof(struct el3_private));
+		if (dev == NULL) {
+			release_region(ioaddr, EL3_IO_EXTENT);
+			return -ENOMEM;
+		}
 	}
 	memcpy(dev->dev_addr, phys_addr, sizeof(phys_addr));
 	dev->base_addr = ioaddr;
 	dev->irq = irq;
 	dev->if_port = (dev->mem_start & 0x1f) ? dev->mem_start & 3 : if_port;
 
-	request_region(dev->base_addr, EL3_IO_EXTENT, "3c509");
-
 	{
 		const char *if_names[] = {"10baseT", "AUI", "undefined", "BNC"};
-		printk("%s: 3c509 at %#3.3lx tag %d, %s port, address ",
-			   dev->name, dev->base_addr, current_tag, if_names[dev->if_port]);
+		printk("%s: 3c509 at %#3.3lx, %s port, address ",
+			   dev->name, dev->base_addr, if_names[dev->if_port]);
 	}
 
 	/* Read in the station address. */
@@ -396,6 +480,8 @@ int __init el3_probe(struct device *dev)
 	dev->stop = &el3_close;
 	dev->get_stats = &el3_get_stats;
 	dev->set_multicast_list = &set_multicast_list;
+	dev->tx_timeout = el3_tx_timeout;
+	dev->watchdog_timeo = TX_TIMEOUT;
 
 	/* Fill in the generic fields of the device structure. */
 	ether_setup(dev);
@@ -405,7 +491,7 @@ int __init el3_probe(struct device *dev)
 /* Read a word from the EEPROM using the regular EEPROM access register.
    Assume that we are in register window zero.
  */
-static ushort __init read_eeprom(int ioaddr, int index)
+static ushort read_eeprom(int ioaddr, int index)
 {
 	outw(EEPROM_READ + index, ioaddr + 10);
 	/* Pause for at least 162 us. for the read to take place. */
@@ -414,7 +500,7 @@ static ushort __init read_eeprom(int ioaddr, int index)
 }
 
 /* Read a word from the EEPROM when in the ISA ID probe state. */
-static ushort __init id_read_eeprom(int index)
+static ushort id_read_eeprom(int index)
 {
 	int bit, word = 0;
 
@@ -436,7 +522,7 @@ static ushort __init id_read_eeprom(int index)
 
 
 static int
-el3_open(struct device *dev)
+el3_open(struct net_device *dev)
 {
 	int ioaddr = dev->base_addr;
 	int i;
@@ -490,9 +576,7 @@ el3_open(struct device *dev)
 	outw(SetRxFilter | RxStation | RxBroadcast, ioaddr + EL3_CMD);
 	outw(StatsEnable, ioaddr + EL3_CMD); /* Turn on statistics. */
 
-	dev->interrupt = 0;
-	dev->tbusy = 0;
-	dev->start = 1;
+	netif_start_queue(dev);
 
 	outw(RxEnable, ioaddr + EL3_CMD); /* Enable the receiver. */
 	outw(TxEnable, ioaddr + EL3_CMD); /* Enable transmitter. */
@@ -512,28 +596,34 @@ el3_open(struct device *dev)
 	return 0;					/* Always succeed */
 }
 
-static int
-el3_start_xmit(struct sk_buff *skb, struct device *dev)
+static void
+el3_tx_timeout (struct net_device *dev)
 {
 	struct el3_private *lp = (struct el3_private *)dev->priv;
 	int ioaddr = dev->base_addr;
 
 	/* Transmitter timeout, serious problems. */
-	if (dev->tbusy) {
-		int tickssofar = jiffies - dev->trans_start;
-		if (tickssofar < TX_TIMEOUT)
-			return 1;
-		printk("%s: transmit timed out, Tx_status %2.2x status %4.4x "
-			   "Tx FIFO room %d.\n",
-			   dev->name, inb(ioaddr + TX_STATUS), inw(ioaddr + EL3_STATUS),
-			   inw(ioaddr + TX_FREE));
-		lp->stats.tx_errors++;
-		dev->trans_start = jiffies;
-		/* Issue TX_RESET and TX_START commands. */
-		outw(TxReset, ioaddr + EL3_CMD);
-		outw(TxEnable, ioaddr + EL3_CMD);
-		dev->tbusy = 0;
-	}
+	printk("%s: transmit timed out, Tx_status %2.2x status %4.4x "
+		   "Tx FIFO room %d.\n",
+		   dev->name, inb(ioaddr + TX_STATUS), inw(ioaddr + EL3_STATUS),
+		   inw(ioaddr + TX_FREE));
+	lp->stats.tx_errors++;
+	dev->trans_start = jiffies;
+	/* Issue TX_RESET and TX_START commands. */
+	outw(TxReset, ioaddr + EL3_CMD);
+	outw(TxEnable, ioaddr + EL3_CMD);
+	netif_wake_queue(dev);
+}
+
+
+static int
+el3_start_xmit(struct sk_buff *skb, struct net_device *dev)
+{
+	struct el3_private *lp = (struct el3_private *)dev->priv;
+	int ioaddr = dev->base_addr;
+	unsigned long flags;
+
+	netif_stop_queue (dev);
 
 	lp->stats.tx_bytes += skb->len;
 	
@@ -560,47 +650,37 @@ el3_start_xmit(struct sk_buff *skb, struct device *dev)
 	}
 #endif
 #endif
-	/* Avoid timer-based retransmission conflicts. */
-	if (test_and_set_bit(0, (void*)&dev->tbusy) != 0)
-		printk("%s: Transmitter access conflict.\n", dev->name);
-	else {
-		/*
-		 *	We lock the driver against other processors. Note
-		 *	we don't need to lock versus the IRQ as we suspended
-		 *	that. This means that we lose the ability to take
-		 *	an RX during a TX upload. That sucks a bit with SMP
-		 *	on an original 3c509 (2K buffer)
-		 *
-		 *	Using disable_irq stops us crapping on other
-		 *	time sensitive devices.
-		 */
+	/*
+	 *	We lock the driver against other processors. Note
+	 *	we don't need to lock versus the IRQ as we suspended
+	 *	that. This means that we lose the ability to take
+	 *	an RX during a TX upload. That sucks a bit with SMP
+	 *	on an original 3c509 (2K buffer)
+	 *
+	 *	Using disable_irq stops us crapping on other
+	 *	time sensitive devices.
+	 */
 
-#ifdef __SMP__
-		disable_irq_nosync(dev->irq);
-	    	spin_lock(&lp->lock);
-#endif	    	
+    	spin_lock_irqsave(&lp->lock, flags);
 	    
-		/* Put out the doubleword header... */
-		outw(skb->len, ioaddr + TX_FIFO);
-		outw(0x00, ioaddr + TX_FIFO);
-		/* ... and the packet rounded to a doubleword. */
+	/* Put out the doubleword header... */
+	outw(skb->len, ioaddr + TX_FIFO);
+	outw(0x00, ioaddr + TX_FIFO);
+	/* ... and the packet rounded to a doubleword. */
 #ifdef  __powerpc__
-		outsl_ns(ioaddr + TX_FIFO, skb->data, (skb->len + 3) >> 2);
+	outsl_unswapped(ioaddr + TX_FIFO, skb->data, (skb->len + 3) >> 2);
 #else
-		outsl(ioaddr + TX_FIFO, skb->data, (skb->len + 3) >> 2);
+	outsl(ioaddr + TX_FIFO, skb->data, (skb->len + 3) >> 2);
 #endif
 
-		dev->trans_start = jiffies;
-		if (inw(ioaddr + TX_FREE) > 1536) {
-			dev->tbusy = 0;
-		} else
-			/* Interrupt us when the FIFO has room for max-sized packet. */
-			outw(SetTxThreshold + 1536, ioaddr + EL3_CMD);
-#ifdef __SMP__
-		spin_unlock(&lp->lock);
-		enable_irq(dev->irq);
-#endif		
-	}
+	dev->trans_start = jiffies;
+	if (inw(ioaddr + TX_FREE) > 1536)
+		netif_start_queue(dev);
+	else
+		/* Interrupt us when the FIFO has room for max-sized packet. */
+		outw(SetTxThreshold + 1536, ioaddr + EL3_CMD);
+
+	spin_unlock_irqrestore(&lp->lock, flags);
 
 	dev_kfree_skb (skb);
 
@@ -623,7 +703,7 @@ el3_start_xmit(struct sk_buff *skb, struct device *dev)
 static void
 el3_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 {
-	struct device *dev = (struct device *)dev_id;
+	struct net_device *dev = (struct net_device *)dev_id;
 	struct el3_private *lp;
 	int ioaddr, status;
 	int i = max_interrupt_work;
@@ -635,10 +715,6 @@ el3_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 
 	lp = (struct el3_private *)dev->priv;
 	spin_lock(&lp->lock);
-
-	if (dev->interrupt)
-		printk("%s: Re-entering the interrupt handler.\n", dev->name);
-	dev->interrupt = 1;
 
 	ioaddr = dev->base_addr;
 
@@ -658,8 +734,7 @@ el3_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 				printk("	TX room bit was handled.\n");
 			/* There's room in the FIFO for a full-sized packet. */
 			outw(AckIntr | TxAvailable, ioaddr + EL3_CMD);
-			dev->tbusy = 0;
-			mark_bh(NET_BH);
+			netif_wake_queue (dev);
 		}
 		if (status & (AdapterFailure | RxEarly | StatsFull | TxComplete)) {
 			/* Handle all uncommon interrupts. */
@@ -710,13 +785,12 @@ el3_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 			   inw(ioaddr + EL3_STATUS));
 	}
 	spin_unlock(&lp->lock);
-	dev->interrupt = 0;
 	return;
 }
 
 
 static struct enet_statistics *
-el3_get_stats(struct device *dev)
+el3_get_stats(struct net_device *dev)
 {
 	struct el3_private *lp = (struct el3_private *)dev->priv;
 	unsigned long flags;
@@ -737,7 +811,7 @@ el3_get_stats(struct device *dev)
 	operation, and it's simpler for the rest of the driver to assume that
 	window 1 is always valid rather than use a special window-state variable.
 	*/
-static void update_stats(struct device *dev)
+static void update_stats(struct net_device *dev)
 {
 	struct el3_private *lp = (struct el3_private *)dev->priv;
 	int ioaddr = dev->base_addr;
@@ -767,7 +841,7 @@ static void update_stats(struct device *dev)
 }
 
 static int
-el3_rx(struct device *dev)
+el3_rx(struct net_device *dev)
 {
 	struct el3_private *lp = (struct el3_private *)dev->priv;
 	int ioaddr = dev->base_addr;
@@ -805,7 +879,7 @@ el3_rx(struct device *dev)
 
 				/* 'skb->data' points to the start of sk_buff data area. */
 #ifdef  __powerpc__
-				insl_ns(ioaddr+RX_FIFO, skb_put(skb,pkt_len),
+				insl_unswapped(ioaddr+RX_FIFO, skb_put(skb,pkt_len),
 							   (pkt_len + 3) >> 2);
 #else
 				insl(ioaddr + RX_FIFO, skb_put(skb,pkt_len),
@@ -837,7 +911,7 @@ el3_rx(struct device *dev)
  *     Set or clear the multicast filter for this adaptor.
  */
 static void
-set_multicast_list(struct device *dev)
+set_multicast_list(struct net_device *dev)
 {
 	unsigned long flags;
 	struct el3_private *lp = (struct el3_private *)dev->priv;
@@ -864,15 +938,14 @@ set_multicast_list(struct device *dev)
 }
 
 static int
-el3_close(struct device *dev)
+el3_close(struct net_device *dev)
 {
 	int ioaddr = dev->base_addr;
 
 	if (el3_debug > 2)
 		printk("%s: Shutting down ethercard.\n", dev->name);
 
-	dev->tbusy = 1;
-	dev->start = 0;
+	netif_stop_queue(dev);
 
 	/* Turn off statistics ASAP.  We update lp->stats below. */
 	outw(StatsDisable, ioaddr + EL3_CMD);
@@ -910,6 +983,8 @@ static int xcvr[] = {-1, -1, -1, -1, -1, -1, -1, -1};
 MODULE_PARM(debug,"i");
 MODULE_PARM(irq,"1-8i");
 MODULE_PARM(xcvr,"1-8i");
+MODULE_PARM(max_interrupt_work, "i");
+MODULE_PARM(nopnp, "i");
 
 int
 init_module(void)
@@ -934,7 +1009,7 @@ init_module(void)
 void
 cleanup_module(void)
 {
-	struct device *next_dev;
+	struct net_device *next_dev;
 
 	/* No need to check MOD_IN_USE, as sys_delete_module() checks. */
 	while (el3_root_dev) {

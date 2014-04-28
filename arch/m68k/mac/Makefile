@@ -8,8 +8,8 @@
 # Note 2! The CFLAGS definitions are now in the main makefile...
 
 O_TARGET := mac.o
-O_OBJS	 := config.o bootparse.o macints.o iop.o via.o oss.o psc.o \
-		mackeyb.o adb-bus.o macboing.o debug.o adb-misc.o
 OX_OBJS  := mac_ksyms.o
+O_OBJS	 := config.o bootparse.o macints.o iop.o via.o oss.o psc.o \
+		baboon.o macboing.o debug.o misc.o
 
 include $(TOPDIR)/Rules.make

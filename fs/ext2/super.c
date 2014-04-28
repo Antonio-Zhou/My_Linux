@@ -16,24 +16,16 @@
  *        David S. Miller (davem@caip.rutgers.edu), 1995
  */
 
+#include <linux/config.h>
 #include <linux/module.h>
-
-#include <stdarg.h>
-
-#include <asm/bitops.h>
-#include <asm/uaccess.h>
-#include <asm/system.h>
-
-#include <linux/errno.h>
-#include <linux/fs.h>
-#include <linux/ext2_fs.h>
-#include <linux/malloc.h>
-#include <linux/sched.h>
-#include <linux/stat.h>
 #include <linux/string.h>
-#include <linux/locks.h>
-#include <linux/blkdev.h>
+#include <linux/fs.h>
+#include <linux/slab.h>
 #include <linux/init.h>
+#include <linux/locks.h>
+#include <asm/uaccess.h>
+
+
 
 static char error_buf[1024];
 
@@ -125,20 +117,18 @@ void ext2_put_super (struct super_block * sb)
 			brelse (sb->u.ext2_sb.s_block_bitmap[i]);
 	brelse (sb->u.ext2_sb.s_sbh);
 
-	MOD_DEC_USE_COUNT;
 	return;
 }
 
 static struct super_operations ext2_sops = {
-	ext2_read_inode,
-	ext2_write_inode,
-	ext2_put_inode,
-	ext2_delete_inode,
-	ext2_notify_change,
-	ext2_put_super,
-	ext2_write_super,
-	ext2_statfs,
-	ext2_remount
+	read_inode:	ext2_read_inode,
+	write_inode:	ext2_write_inode,
+	put_inode:	ext2_put_inode,
+	delete_inode:	ext2_delete_inode,
+	put_super:	ext2_put_super,
+	write_super:	ext2_write_super,
+	statfs:		ext2_statfs,
+	remount_fs:	ext2_remount,
 };
 
 /*
@@ -160,31 +150,25 @@ static int parse_options (char * options, unsigned long * sb_block,
 			*value++ = 0;
 		if (!strcmp (this_char, "bsddf"))
 			clear_opt (*mount_options, MINIX_DF);
+		else if (!strcmp (this_char, "nouid32")) {
+			set_opt (*mount_options, NO_UID32);
+		}
 		else if (!strcmp (this_char, "check")) {
-			if (!value || !*value)
-				set_opt (*mount_options, CHECK_NORMAL);
-			else if (!strcmp (value, "none")) {
-				clear_opt (*mount_options, CHECK_NORMAL);
-				clear_opt (*mount_options, CHECK_STRICT);
-			}
-			else if (!strcmp (value, "normal"))
-				set_opt (*mount_options, CHECK_NORMAL);
-			else if (!strcmp (value, "strict")) {
-				set_opt (*mount_options, CHECK_NORMAL);
-				set_opt (*mount_options, CHECK_STRICT);
-			}
-			else {
-				printk ("EXT2-fs: Invalid check option: %s\n",
-					value);
-				return 0;
-			}
+			if (!value || !*value || !strcmp (value, "none"))
+				clear_opt (*mount_options, CHECK);
+			else
+#ifdef CONFIG_EXT2_CHECK
+				set_opt (*mount_options, CHECK);
+#else
+				printk("EXT2 Check option not supported\n");
+#endif
 		}
 		else if (!strcmp (this_char, "debug"))
 			set_opt (*mount_options, DEBUG);
 		else if (!strcmp (this_char, "errors")) {
 			if (!value || !*value) {
 				printk ("EXT2-fs: the errors option requires "
-					"an argument\n");
+					"an argument");
 				return 0;
 			}
 			if (!strcmp (value, "continue")) {
@@ -213,10 +197,8 @@ static int parse_options (char * options, unsigned long * sb_block,
 			set_opt (*mount_options, GRPID);
 		else if (!strcmp (this_char, "minixdf"))
 			set_opt (*mount_options, MINIX_DF);
-		else if (!strcmp (this_char, "nocheck")) {
-			clear_opt (*mount_options, CHECK_NORMAL);
-			clear_opt (*mount_options, CHECK_STRICT);
-		}
+		else if (!strcmp (this_char, "nocheck"))
+			clear_opt (*mount_options, CHECK);
 		else if (!strcmp (this_char, "nogrpid") ||
 			 !strcmp (this_char, "sysvgroups"))
 			clear_opt (*mount_options, GRPID);
@@ -313,18 +295,13 @@ static void ext2_setup_super (struct super_block * sb,
 				EXT2_BLOCKS_PER_GROUP(sb),
 				EXT2_INODES_PER_GROUP(sb),
 				sb->u.ext2_sb.s_mount_opt);
+#ifdef CONFIG_EXT2_CHECK
 		if (test_opt (sb, CHECK)) {
 			ext2_check_blocks_bitmap (sb);
 			ext2_check_inodes_bitmap (sb);
 		}
-	}
-#if 0 /* ibasket's still have unresolved bugs... -DaveM */
-
-	/* [T. Schoebel-Theuer] This limit should be maintained on disk.
-	 * This is just provisionary.
-	 */
-	sb->s_ibasket_max = 100;
 #endif
+	}
 }
 
 static int ext2_check_descriptors (struct super_block * sb)
@@ -406,15 +383,11 @@ struct super_block * ext2_read_super (struct super_block * sb, void * data,
 	  }
 
 	sb->u.ext2_sb.s_mount_opt = 0;
-	set_opt (sb->u.ext2_sb.s_mount_opt, CHECK_NORMAL);
 	if (!parse_options ((char *) data, &sb_block, &resuid, &resgid,
 	    &sb->u.ext2_sb.s_mount_opt)) {
-		sb->s_dev = 0;
 		return NULL;
 	}
 
-	MOD_INC_USE_COUNT;
-	lock_super (sb);
 	set_blocksize (dev, blocksize);
 
 	/*
@@ -428,10 +401,7 @@ struct super_block * ext2_read_super (struct super_block * sb, void * data,
 	}
 
 	if (!(bh = bread (dev, logic_sb_block, blocksize))) {
-		sb->s_dev = 0;
-		unlock_super (sb);
 		printk ("EXT2-fs: unable to read superblock\n");
-		MOD_DEC_USE_COUNT;
 		return NULL;
 	}
 	/*
@@ -446,11 +416,8 @@ struct super_block * ext2_read_super (struct super_block * sb, void * data,
 			printk ("VFS: Can't find an ext2 filesystem on dev "
 				"%s.\n", bdevname(dev));
 	failed_mount:
-		sb->s_dev = 0;
-		unlock_super (sb);
 		if (bh)
 			brelse(bh);
-		MOD_DEC_USE_COUNT;
 		return NULL;
 	}
 	if (le32_to_cpu(es->s_rev_level) > EXT2_GOOD_OLD_REV) {
@@ -623,15 +590,13 @@ struct super_block * ext2_read_super (struct super_block * sb, void * data,
 	sb->u.ext2_sb.s_loaded_inode_bitmaps = 0;
 	sb->u.ext2_sb.s_loaded_block_bitmaps = 0;
 	sb->u.ext2_sb.s_db_per_group = db_count;
-	unlock_super (sb);
 	/*
 	 * set up enough so that it can read an inode
 	 */
 	sb->s_dev = dev;
 	sb->s_op = &ext2_sops;
-	sb->s_root = d_alloc_root(iget(sb, EXT2_ROOT_INO), NULL);
+	sb->s_root = d_alloc_root(iget(sb, EXT2_ROOT_INO));
 	if (!sb->s_root) {
-		sb->s_dev = 0;
 		for (i = 0; i < db_count; i++)
 			if (sb->u.ext2_sb.s_group_desc[i])
 				brelse (sb->u.ext2_sb.s_group_desc[i]);
@@ -639,7 +604,6 @@ struct super_block * ext2_read_super (struct super_block * sb, void * data,
 			 db_count * sizeof (struct buffer_head *));
 		brelse (bh);
 		printk ("EXT2-fs: get root inode failed\n");
-		MOD_DEC_USE_COUNT;
 		return NULL;
 	}
 	ext2_setup_super (sb, es);
@@ -694,7 +658,6 @@ int ext2_remount (struct super_block * sb, int * flags, char * data)
 	/*
 	 * Allow the "check" option to be passed as a remount option.
 	 */
-	new_mount_opt = EXT2_MOUNT_CHECK_NORMAL;
 	if (!parse_options (data, &tmp, &resuid, &resgid,
 			    &new_mount_opt))
 		return -EINVAL;
@@ -732,37 +695,9 @@ int ext2_remount (struct super_block * sb, int * flags, char * data)
 	return 0;
 }
 
-static struct file_system_type ext2_fs_type = {
-	"ext2", 
-	FS_REQUIRES_DEV /* | FS_IBASKET */,	/* ibaskets have unresolved bugs */
-        ext2_read_super, 
-	NULL
-};
-
-__initfunc(int init_ext2_fs(void))
-{
-        return register_filesystem(&ext2_fs_type);
-}
-
-#ifdef MODULE
-EXPORT_NO_SYMBOLS;
-
-int init_module(void)
-{
-	return init_ext2_fs();
-}
-
-void cleanup_module(void)
-{
-        unregister_filesystem(&ext2_fs_type);
-}
-
-#endif
-
-int ext2_statfs (struct super_block * sb, struct statfs * buf, int bufsiz)
+int ext2_statfs (struct super_block * sb, struct statfs * buf)
 {
 	unsigned long overhead;
-	struct statfs tmp;
 	int	ngroups, i;
 
 	if (test_opt (sb, MINIX_DF))
@@ -802,15 +737,32 @@ int ext2_statfs (struct super_block * sb, struct statfs * buf, int bufsiz)
 			     (2 + sb->u.ext2_sb.s_itb_per_group));
 	}
 
-	tmp.f_type = EXT2_SUPER_MAGIC;
-	tmp.f_bsize = sb->s_blocksize;
-	tmp.f_blocks = le32_to_cpu(sb->u.ext2_sb.s_es->s_blocks_count) - overhead;
-	tmp.f_bfree = ext2_count_free_blocks (sb);
-	tmp.f_bavail = tmp.f_bfree - le32_to_cpu(sb->u.ext2_sb.s_es->s_r_blocks_count);
-	if (tmp.f_bfree < le32_to_cpu(sb->u.ext2_sb.s_es->s_r_blocks_count))
-		tmp.f_bavail = 0;
-	tmp.f_files = le32_to_cpu(sb->u.ext2_sb.s_es->s_inodes_count);
-	tmp.f_ffree = ext2_count_free_inodes (sb);
-	tmp.f_namelen = EXT2_NAME_LEN;
-	return copy_to_user(buf, &tmp, bufsiz) ? -EFAULT : 0;
+	buf->f_type = EXT2_SUPER_MAGIC;
+	buf->f_bsize = sb->s_blocksize;
+	buf->f_blocks = le32_to_cpu(sb->u.ext2_sb.s_es->s_blocks_count) - overhead;
+	buf->f_bfree = ext2_count_free_blocks (sb);
+	buf->f_bavail = buf->f_bfree - le32_to_cpu(sb->u.ext2_sb.s_es->s_r_blocks_count);
+	if (buf->f_bfree < le32_to_cpu(sb->u.ext2_sb.s_es->s_r_blocks_count))
+		buf->f_bavail = 0;
+	buf->f_files = le32_to_cpu(sb->u.ext2_sb.s_es->s_inodes_count);
+	buf->f_ffree = ext2_count_free_inodes (sb);
+	buf->f_namelen = EXT2_NAME_LEN;
+	return 0;
 }
+
+static DECLARE_FSTYPE_DEV(ext2_fs_type, "ext2", ext2_read_super);
+
+static int __init init_ext2_fs(void)
+{
+        return register_filesystem(&ext2_fs_type);
+}
+
+static void __exit exit_ext2_fs(void)
+{
+	unregister_filesystem(&ext2_fs_type);
+}
+
+EXPORT_NO_SYMBOLS;
+
+module_init(init_ext2_fs)
+module_exit(exit_ext2_fs)

@@ -5,12 +5,7 @@
  *
  * Authors:	Olaf Kirch (okir@monad.swb.de)
  *
- * Copyright (C) 1995-1999 Olaf Kirch <okir@monad.swb.de>
- *
- * Apr 24, 2001: Added semaphores around nfsd_cache calls
- * 		 to protect it since it can yeild the processor
- * 		 in its kmalloc call.
- * 		 Craig I. Hagan <hagan@cih.com>
+ * Copyright (C) 1995, 1996, 1997 Olaf Kirch <okir@monad.swb.de>
  */
 
 #define __NO_VERSION__
@@ -47,9 +42,15 @@
 extern struct svc_program	nfsd_program;
 static void			nfsd(struct svc_rqst *rqstp);
 struct timeval			nfssvc_boot = { 0, 0 };
-static atomic_t			nfsd_active = ATOMIC_INIT(0);
+static struct svc_serv 		*nfsd_serv = NULL;
+static int			nfsd_busy = 0;
+static unsigned long		nfsd_last_call;
 
-static struct semaphore nfsd_cache_sem = MUTEX;
+struct nfsd_list {
+	struct list_head 	list;
+	struct task_struct	*task;
+};
+struct list_head nfsd_list = LIST_HEAD_INIT(nfsd_list);
 
 /*
  * Maximum number of nfsd processes
@@ -59,49 +60,79 @@ static struct semaphore nfsd_cache_sem = MUTEX;
 int
 nfsd_svc(unsigned short port, int nrservs)
 {
-	struct svc_serv *	serv;
-	int			error;
+	int	error;
+	int	none_left;	
+	struct list_head *victim;
 
+	dprintk("nfsd: creating service\n");
 	error = -EINVAL;
-	if (atomic_read(&nfsd_active))
-		goto out;	/* already running */
 	if (nrservs <= 0)
-		goto out;
+		nrservs = 0;
 	if (nrservs > NFSD_MAXSERVS)
 		nrservs = NFSD_MAXSERVS;
-
-	dprintk("nfsd: creating service (%d)\n", nrservs);
-	nfsd_nservers = nrservs;
-	nfssvc_boot = xtime;
-
-	error = -ENOMEM;
-	serv = svc_create(&nfsd_program, NFSD_BUFSIZE, NFSSVC_XDRSIZE);
-	if (serv == NULL)
+	
+	/* Readahead param cache - will no-op if it already exists */
+	error =	nfsd_racache_init(2*nrservs);
+	if (error<0)
 		goto out;
+	if (!nfsd_serv) {
+		nfsd_serv = svc_create(&nfsd_program, NFSD_BUFSIZE, NFSSVC_XDRSIZE);
+		if (nfsd_serv == NULL)
+			goto out;
+		error = svc_makesock(nfsd_serv, IPPROTO_UDP, port);
+		if (error < 0)
+			goto failure;
 
-	error = svc_makesock(serv, IPPROTO_UDP, port);
-	if (error < 0)
-		goto failure;
-
-#ifdef CONFIG_NFSD_TCP
-	error = svc_makesock(serv, IPPROTO_TCP, port);
-	if (error < 0)
-		goto failure;
+#if 0	/* Don't even pretend that TCP works. It doesn't. */
+		error = svc_makesock(nfsd_serv, IPPROTO_TCP, port);
+		if (error < 0)
+			goto failure;
 #endif
-	down(&nfsd_cache_sem);
-	nfsd_racache_init();	/* Readahead param cache */
-	up(&nfsd_cache_sem);
-
-	while (nrservs--) {
-		error = svc_create_thread(nfsd, serv);
+		get_fast_time(&nfssvc_boot);		/* record boot time */
+	} else
+		nfsd_serv->sv_nrthreads++;
+	nrservs -= (nfsd_serv->sv_nrthreads-1);
+	while (nrservs > 0) {
+		nrservs--;
+		error = svc_create_thread(nfsd, nfsd_serv);
 		if (error < 0)
 			break;
 	}
-
-failure:
-	svc_destroy(serv);		/* Release server */
-out:
+	victim = nfsd_list.next;
+	while (nrservs < 0 && victim != &nfsd_list) {
+		struct nfsd_list *nl =
+			list_entry(victim,struct nfsd_list, list);
+		victim = victim->next;
+		send_sig(SIGKILL, nl->task, 1);
+		nrservs++;
+	}
+ failure:
+	none_left = (nfsd_serv->sv_nrthreads == 1);
+	svc_destroy(nfsd_serv);		/* Release server */
+	if (none_left) {
+		nfsd_serv = NULL;
+		nfsd_racache_shutdown();
+	}
+ out:
 	return error;
+}
+
+static void inline
+update_thread_usage(int busy_threads)
+{
+	unsigned long prev_call;
+	unsigned long diff;
+	int decile;
+
+	prev_call = nfsd_last_call;
+	nfsd_last_call = jiffies;
+	decile = busy_threads*10/nfsdstats.th_cnt;
+	if (decile>0 && decile <= 10) {
+		diff = nfsd_last_call - prev_call;
+		nfsdstats.th_usage[decile-1] += diff;
+		if (decile == 10)
+			nfsdstats.th_fullcnt++;
+	}
 }
 
 /*
@@ -112,26 +143,25 @@ nfsd(struct svc_rqst *rqstp)
 {
 	struct svc_serv	*serv = rqstp->rq_server;
 	int		err;
+	struct nfsd_list me;
 
-	/* Lock module */
+	/* Lock module and set up kernel thread */
 	MOD_INC_USE_COUNT;
-
-	/* Set up kernel thread */
 	lock_kernel();
 	exit_mm(current);
-	sprintf(current->comm, "nfsd");
 	current->session = 1;
 	current->pgrp = 1;
+	sprintf(current->comm, "nfsd");
 	current->fs->umask = 0;
 
-	/* Count active threads */
-	atomic_inc(&nfsd_active);
-
-	/* Start lockd */
-	lockd_up();
-
+	nfsdstats.th_cnt++;
 	/* Let svc_process check client's authentication. */
 	rqstp->rq_auth = 1;
+
+	lockd_up();				/* start lockd */
+
+	me.task = current;
+	list_add(&me.list, &nfsd_list);
 
 	/*
 	 * The main request loop
@@ -150,9 +180,10 @@ nfsd(struct svc_rqst *rqstp)
 		while ((err = svc_recv(serv, rqstp,
 				       MAX_SCHEDULE_TIMEOUT)) == -EAGAIN)
 		    ;
-
-                if (err < 0)
-                        break;
+		if (err < 0)
+			break;
+		update_thread_usage(nfsd_busy);
+		nfsd_busy++;
 
 		/* Lock the export hash tables for reading. */
 		exp_readlock();
@@ -167,11 +198,12 @@ nfsd(struct svc_rqst *rqstp)
 		recalc_sigpending(current);
 		spin_unlock_irq(&current->sigmask_lock);
 
-
 		svc_process(serv, rqstp);
 
 		/* Unlock export hash tables */
 		exp_unlock();
+		update_thread_usage(nfsd_busy);
+		nfsd_busy--;
 	}
 
 	if (err != -EINTR) {
@@ -186,18 +218,18 @@ nfsd(struct svc_rqst *rqstp)
 		printk(KERN_WARNING "nfsd: terminating on signal %d\n", signo);
 	}
 
-	/* Count active threads */
-	if (atomic_dec_and_test(&nfsd_active)) {
-		down(&nfsd_cache_sem);
-		nfsd_export_shutdown();		/* revoke all exports */
-	        nfsd_racache_shutdown();	/* release read-ahead cache */
-		up(&nfsd_cache_sem);
-	}
-
 	/* Release lockd */
 	lockd_down();
 
-	/* Destroy the thread's resources */
+	/* Check if this is last thread */
+	if (serv->sv_nrthreads==1) {
+		nfsd_serv = NULL;
+	        nfsd_racache_shutdown();	/* release read-ahead cache */
+	}
+	list_del(&me.list);
+	nfsdstats.th_cnt --;
+
+	/* Release the thread */
 	svc_exit_thread(rqstp);
 
 	/* Release module */
@@ -210,19 +242,13 @@ nfsd_dispatch(struct svc_rqst *rqstp, u32 *statp)
 	struct svc_procedure	*proc;
 	kxdrproc_t		xdr;
 	u32			nfserr;
-	int			res_lookup;
 
 	dprintk("nfsd_dispatch: vers %d proc %d\n",
 				rqstp->rq_vers, rqstp->rq_proc);
 	proc = rqstp->rq_procinfo;
 
 	/* Check whether we have this call in the cache. */
-
-	down(&nfsd_cache_sem);
-	res_lookup = nfsd_cache_lookup(rqstp, proc->pc_cachetype);
-	up(&nfsd_cache_sem);
-
-	switch (res_lookup) {
+	switch (nfsd_cache_lookup(rqstp, proc->pc_cachetype)) {
 	case RC_INTR:
 	case RC_DROPIT:
 		return 0;
@@ -236,9 +262,7 @@ nfsd_dispatch(struct svc_rqst *rqstp, u32 *statp)
 	xdr = proc->pc_decode;
 	if (xdr && !xdr(rqstp, rqstp->rq_argbuf.buf, rqstp->rq_argp)) {
 		dprintk("nfsd: failed to decode arguments!\n");
-		down(&nfsd_cache_sem);
 		nfsd_cache_update(rqstp, RC_NOCACHE, NULL);
-		up(&nfsd_cache_sem);
 		*statp = rpc_garbage_args;
 		return 1;
 	}
@@ -257,9 +281,7 @@ nfsd_dispatch(struct svc_rqst *rqstp, u32 *statp)
 		if (xdr && !xdr(rqstp, rqstp->rq_resbuf.buf, rqstp->rq_resp)) {
 			/* Failed to encode result. Release cache entry */
 			dprintk("nfsd: failed to encode result!\n");
-			down(&nfsd_cache_sem);
 			nfsd_cache_update(rqstp, RC_NOCACHE, NULL);
-			up(&nfsd_cache_sem);
 			*statp = rpc_system_err;
 			return 1;
 		}
@@ -270,18 +292,14 @@ nfsd_dispatch(struct svc_rqst *rqstp, u32 *statp)
 	 && !xdr(rqstp, rqstp->rq_resbuf.buf, rqstp->rq_resp)) {
 		/* Failed to encode result. Release cache entry */
 		dprintk("nfsd: failed to encode result!\n");
-		down(&nfsd_cache_sem);
 		nfsd_cache_update(rqstp, RC_NOCACHE, NULL);
-		up(&nfsd_cache_sem);
 		*statp = rpc_system_err;
 		return 1;
 	}
 #endif /* CONFIG_NFSD_V3 */
 
 	/* Store reply in cache. */
-	down(&nfsd_cache_sem);
 	nfsd_cache_update(rqstp, proc->pc_cachetype, statp + 1);
-	up(&nfsd_cache_sem);
 	return 1;
 }
 

@@ -40,7 +40,7 @@
 #include <linux/pagemap.h>
 #include <linux/miscdevice.h>
 #include <linux/agp_backend.h>
-#include "agpgart.h"
+#include <linux/agpgart.h>
 #include <asm/system.h>
 #include <asm/uaccess.h>
 #include <asm/io.h>
@@ -300,7 +300,7 @@ static agp_memory *agp_allocate_memory_wrap(size_t pg_count, u32 type)
 	agp_memory *memory;
 
 	memory = agp_allocate_memory(pg_count, type);
-   	printk(KERN_DEBUG "agp_allocate_memory: %p\n", memory);
+   	printk(KERN_DEBUG "memory : %p\n", memory);
 	if (memory == NULL) {
 		return NULL;
 	}
@@ -619,7 +619,7 @@ static int agp_mmap(struct file *file, struct vm_area_struct *vma)
 	size = vma->vm_end - vma->vm_start;
 	current_size = kerninfo.aper_size;
 	current_size = current_size * 0x100000;
-	offset = vma->vm_offset;
+	offset = vma->vm_pgoff << PAGE_SHIFT;
 
 	if (test_bit(AGP_FF_IS_CLIENT, &priv->access_flags)) {
 		if ((size + offset) > current_size) {
@@ -697,18 +697,19 @@ static int agp_open(struct inode *inode, struct file *file)
 	int minor = MINOR(inode->i_rdev);
 	agp_file_private *priv;
 	agp_client *client;
-	int rc = -ENXIO;
 
 	AGP_LOCK();
-	MOD_INC_USE_COUNT;
 
-	if (minor != AGPGART_MINOR)
-		goto err_out;
-
+	if (minor != AGPGART_MINOR) {
+		AGP_UNLOCK();
+		return -ENXIO;
+	}
 	priv = kmalloc(sizeof(agp_file_private), GFP_KERNEL);
-	if (priv == NULL)
-		goto err_out_nomem;
 
+	if (priv == NULL) {
+		AGP_UNLOCK();
+		return -ENOMEM;
+	}
 	memset(priv, 0, sizeof(agp_file_private));
 	set_bit(AGP_FF_ALLOW_CLIENT, &priv->access_flags);
 	priv->my_pid = current->pid;
@@ -725,15 +726,9 @@ static int agp_open(struct inode *inode, struct file *file)
 	}
 	file->private_data = (void *) priv;
 	agp_insert_file_private(priv);
+	MOD_INC_USE_COUNT;
 	AGP_UNLOCK();
 	return 0;
-
-err_out_nomem:
-	rc = -ENOMEM;
-err_out:
-	MOD_DEC_USE_COUNT;
-	AGP_UNLOCK();
-	return rc;
 }
 
 
@@ -840,9 +835,6 @@ static int agpioc_reserve_wrap(agp_file_private * priv, unsigned long arg)
 	if (copy_from_user(&reserve, (void *) arg, sizeof(agp_region))) {
 		return -EFAULT;
 	}
-	if ((unsigned) reserve.seg_count >= ~0U/sizeof(agp_segment))
-		return -EFAULT;
-
 	client = agp_find_client_by_pid(reserve.pid);
 
 	if (reserve.seg_count == 0) {
@@ -863,9 +855,6 @@ static int agpioc_reserve_wrap(agp_file_private * priv, unsigned long arg)
 	} else {
 		agp_segment *segment;
 
-		if (reserve.seg_count >= 16384)
-			return -EINVAL;
-			
 		segment = kmalloc((sizeof(agp_segment) * reserve.seg_count),
 				  GFP_KERNEL);
 
@@ -873,7 +862,7 @@ static int agpioc_reserve_wrap(agp_file_private * priv, unsigned long arg)
 			return -ENOMEM;
 		}
 		if (copy_from_user(segment, (void *) reserve.seg_list,
-				   sizeof(agp_segment) * reserve.seg_count)) {
+				   GFP_KERNEL)) {
 			kfree(segment);
 			return -EFAULT;
 		}
@@ -1098,7 +1087,7 @@ int __init agp_frontend_initialize(void)
 	return 0;
 }
 
-void agp_frontend_cleanup(void)
+void __exit agp_frontend_cleanup(void)
 {
 	misc_deregister(&agp_miscdev);
 }

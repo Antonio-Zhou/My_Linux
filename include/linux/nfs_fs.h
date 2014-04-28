@@ -9,16 +9,13 @@
 #ifndef _LINUX_NFS_FS_H
 #define _LINUX_NFS_FS_H
 
-#ifdef __KERNEL__
-#include <linux/signal.h>
-#include <linux/sched.h>
-#include <linux/kernel.h>
+#include <linux/config.h>
 #include <linux/in.h>
 #include <linux/mm.h>
 #include <linux/pagemap.h>
 
-#include <linux/sunrpc/sched.h>
-#endif /* __KERNEL__ */
+#include <linux/sunrpc/debug.h>
+#include <linux/sunrpc/auth.h>
 
 #include <linux/nfs.h>
 #include <linux/nfs2.h>
@@ -33,28 +30,41 @@
 # define NFS_DEBUG
 #endif
 
+/*
+ * NFS_MAX_DIRCACHE controls the number of simultaneously cached
+ * directory chunks. Each chunk holds the list of nfs_entry's returned
+ * in a single readdir call in a memory region of size PAGE_SIZE.
+ *
+ * Note that at most server->rsize bytes of the cache memory are used.
+ */
+#define NFS_MAX_DIRCACHE		16
+
 #define NFS_MAX_FILE_IO_BUFFER_SIZE	32768
 #define NFS_DEF_FILE_IO_BUFFER_SIZE	4096
 
 /*
  * The upper limit on timeouts for the exponential backoff algorithm.
  */
+#define NFS_MAX_RPC_TIMEOUT		(6*HZ)
 #define NFS_READ_DELAY			(2*HZ)
 #define NFS_WRITEBACK_DELAY		(5*HZ)
 #define NFS_WRITEBACK_LOCKDELAY		(60*HZ)
 #define NFS_COMMIT_DELAY		(5*HZ)
 
 /*
+ * Size of the lookup cache in units of number of entries cached.
+ * It is better not to make this too large although the optimum
+ * depends on a usage and environment.
+ */
+#define NFS_LOOKUP_CACHE_SIZE		64
+
+/*
  * superblock magic number for NFS
  */
 #define NFS_SUPER_MAGIC			0x6969
-#define NFS_FILE_MAGIC			0xA4F0
 
-#ifdef __KERNEL__
-/*
- * Convenience macros
- */
-#define NFS_FH(inode)			(&(inode)->u.nfs_i.fh)
+#define NFS_FH(dentry)			((struct nfs_fh *) ((dentry)->d_fsdata))
+#define NFS_DSERVER(dentry)		(&(dentry)->d_sb->u.nfs_sb.s_server)
 #define NFS_SERVER(inode)		(&(inode)->i_sb->u.nfs_sb.s_server)
 #define NFS_CLIENT(inode)		(NFS_SERVER(inode)->client)
 #define NFS_PROTO(inode)		(NFS_SERVER(inode)->rpc_ops)
@@ -83,10 +93,9 @@ do { \
 
 #define NFS_FLAGS(inode)		((inode)->u.nfs_i.flags)
 #define NFS_REVALIDATING(inode)		(NFS_FLAGS(inode) & NFS_INO_REVALIDATING)
-#define NFS_STALE(inode)		(NFS_FLAGS(inode) & NFS_INO_STALE)
 
-#define NFS_FILEID(inode)	((inode)->u.nfs_i.fileid)
-#define NFS_FSID(inode)		((inode)->u.nfs_i.fsid)
+#define NFS_FILEID(inode)		((inode)->u.nfs_i.fileid)
+#define NFS_FSID(inode)			((inode)->u.nfs_i.fsid)
 
 /* Inode Flags */
 #define NFS_USE_READDIRPLUS(inode)	((NFS_FLAGS(inode) & NFS_INO_ADVISE_RDPLUS) ? 1 : 0)
@@ -111,51 +120,58 @@ do { \
 #define FLUSH_WAIT		2	/* wait for completion */
 #define FLUSH_STABLE		4	/* commit to stable storage */
 
-
 static inline
-unsigned long nfs_page_offset(struct page *page)
+loff_t page_offset(struct page *page)
 {
-        return page->offset;
+	return ((loff_t)page->index) << PAGE_CACHE_SHIFT;
 }
 
 static inline
 unsigned long page_index(struct page *page)
 {
-	return page->offset >> PAGE_CACHE_SHIFT;
+	return page->index;
 }
 
+#ifdef __KERNEL__
 /*
  * linux/fs/nfs/inode.c
  */
-extern int nfs_inode_is_stale(struct inode *, struct nfs_fh *,
-			       struct nfs_fattr *);
-extern struct inode *nfs_fhget(struct dentry *, struct nfs_fh *,
-			       struct nfs_fattr *);
 extern struct super_block *nfs_read_super(struct super_block *, void *, int);
-extern int	init_nfs_fs(void);
-extern void	nfs_zap_caches(struct inode *);
-extern int	nfs_revalidate(struct dentry *);
-extern int	nfs_open(struct inode *, struct file *);
-extern int	nfs_release(struct inode *, struct file *);
-extern int	__nfs_revalidate_inode(struct nfs_server *, struct inode *);
-extern int	nfs_refresh_inode(struct inode *, struct nfs_fattr *);
-extern int	nfs_wait_on_inode(struct inode *, int flag);
-extern void	nfs_unlock_inode(struct inode *);
+extern int init_nfs_fs(void);
+extern void nfs_zap_caches(struct inode *);
+extern struct inode *nfs_fhget(struct dentry *, struct nfs_fh *,
+				struct nfs_fattr *);
+extern int nfs_refresh_inode(struct inode *, struct nfs_fattr *);
+extern int nfs_revalidate(struct dentry *);
+extern int nfs_open(struct inode *, struct file *);
+extern int nfs_release(struct inode *, struct file *);
+extern int __nfs_revalidate_inode(struct nfs_server *, struct dentry *);
+extern int nfs_notify_change(struct dentry *, struct iattr *);
 
 /*
  * linux/fs/nfs/file.c
  */
 extern struct inode_operations nfs_file_inode_operations;
-extern int	nfs_permission(struct inode *i, int msk);
+extern struct file_operations nfs_file_operations;
+extern struct address_space_operations nfs_file_aops;
+
+static __inline__ struct rpc_cred *
+nfs_file_cred(struct file *file)
+{
+	struct rpc_cred *cred = (struct rpc_cred *)(file->private_data);
+#ifdef RPC_DEBUG
+	if (cred && cred->cr_magic != RPCAUTH_CRED_MAGIC)
+		BUG();
+#endif
+	return cred;
+}
 
 /*
  * linux/fs/nfs/dir.c
  */
 extern struct inode_operations nfs_dir_inode_operations;
+extern struct file_operations nfs_dir_operations;
 extern struct dentry_operations nfs_dentry_operations;
-extern struct nfs_fh *nfs_fh_alloc(void);
-extern void nfs_fh_free(struct nfs_fh *);
-
 
 /*
  * linux/fs/nfs/symlink.c
@@ -168,27 +184,22 @@ extern struct inode_operations nfs_symlink_inode_operations;
 extern int nfs_lock(struct file *, int, struct file_lock *);
 
 /*
- * linux/fs/nfs/unlink.c
- */
-extern int  nfs_async_unlink(struct dentry *);
-extern void nfs_complete_unlink(struct dentry *);
-
-/*
  * linux/fs/nfs/write.c
  */
-extern int  nfs_writepage(struct file *, struct page *);
-extern int  nfs_flush_incompatible(struct file *, struct page *);
-extern int  nfs_updatepage(struct file *, struct page *,
-                        unsigned long, unsigned int, int);
+extern int  nfs_writepage(struct file *file, struct page *);
+extern int  nfs_flush_incompatible(struct file *file, struct page *page);
+extern int  nfs_updatepage(struct file *, struct page *, unsigned int, unsigned int);
 /*
  * Try to write back everything synchronously (but check the
  * return value!)
  */
 extern int  nfs_sync_file(struct inode *, struct file *, unsigned long, unsigned int, int);
 extern int  nfs_flush_file(struct inode *, struct file *, unsigned long, unsigned int, int);
-extern int  nfs_commit_file(struct inode *, struct file *, unsigned long, unsigned int, int);
 extern int  nfs_flush_timeout(struct inode *, int);
+#ifdef CONFIG_NFS_V3
+extern int  nfs_commit_file(struct inode *, struct file *, unsigned long, unsigned int, int);
 extern int  nfs_commit_timeout(struct inode *, int);
+#endif
 
 static inline int
 nfs_have_read(struct inode *inode)
@@ -230,22 +241,6 @@ nfs_wb_file(struct inode *inode, struct file *file)
 }
 
 /*
- * Lock the page of an asynchronous request
- */
-static __inline__ int
-nfs_lock_page(struct page *page)
-{
-	return !test_and_set_bit(PG_locked, &page->flags);
-}
-
-static __inline__ void
-nfs_unlock_page(struct page *page)
-{
-        clear_bit(PG_locked, &page->flags);
-        wake_up(&page->wait);
-}
-
-/*
  * linux/fs/nfs/read.c
  */
 extern int  nfs_readpage(struct file *, struct page *);
@@ -253,45 +248,39 @@ extern int  nfs_pagein_inode(struct inode *, unsigned long, unsigned int);
 extern int  nfs_pagein_timeout(struct inode *);
 
 /*
- * linux/fs/nfs2xdr.c
- */
-extern u32 *nfs_decode_dirent(u32 *, struct nfs_entry *, int);
-
-/*
- * linux/fs/nfs2xdr.c
- */
-extern u32 *nfs3_decode_dirent(u32 *, struct nfs_entry *, int);
-
-/*
  * linux/fs/mount_clnt.c
  * (Used only by nfsroot module)
  */
-extern int  nfs_mount(struct sockaddr_in *, char *, struct nfs3_fh *);
-extern int  nfs3_mount(struct sockaddr_in *, char *, struct nfs3_fh *);
+extern int  nfs_mount(struct sockaddr_in *, char *, struct nfs_fh *);
+extern int  nfs3_mount(struct sockaddr_in *, char *, struct nfs_fh *);
 
 /*
  * inline functions
  */
 static inline int
-nfs_revalidate_inode(struct nfs_server *server, struct inode *inode)
+nfs_revalidate_inode(struct nfs_server *server, struct dentry *dentry)
 {
-	if (time_before(jiffies,NFS_READTIME(inode)+NFS_ATTRTIMEO(inode)))
+	struct inode *inode = dentry->d_inode;
+	if (time_before(jiffies, NFS_READTIME(inode)+NFS_ATTRTIMEO(inode)))
 		return 0;
-	return __nfs_revalidate_inode(server, inode);
+	return __nfs_revalidate_inode(server, dentry);
 }
 
-static inline off_t
-nfs_size_to_off_t(__u64 size)
+static inline loff_t
+nfs_size_to_loff_t(__u64 size)
 {
-	return (size > (__u64)LONG_MAX) ? (off_t)LONG_MAX : (off_t) size;
+	loff_t maxsz = (((loff_t) ULONG_MAX) << PAGE_CACHE_SHIFT) + PAGE_CACHE_SIZE - 1;
+	if (size > maxsz)
+		return maxsz;
+	return (loff_t) size;
 }
 
 static inline ino_t
 nfs_fileid_to_ino_t(u64 fileid)
 {
-	ino_t ino = (unsigned long) fileid;
-	if (sizeof(unsigned long) < sizeof(u64))
-		ino ^= fileid >> (sizeof(u64)-sizeof(unsigned long)) * 8;
+	ino_t ino = (ino_t) fileid;
+	if (sizeof(ino_t) < sizeof(u64))
+		ino ^= fileid >> (sizeof(u64)-sizeof(ino_t)) * 8;
 	return ino;
 }
 
@@ -301,15 +290,9 @@ nfs_time_to_secs(__u64 time)
 	return (time_t)(time >> 32);
 }
 
-static __inline__ struct rpc_cred *
-nfs_file_cred(struct file *file)
-{
-	return (struct rpc_cred *)(file->private_data);
-}
-
 /* NFS root */
 
-extern int nfs_root_mount(struct super_block *sb);
+extern void * nfs_root_data(void);
 
 #define nfs_wait_event(clnt, wq, condition)				\
 ({									\
@@ -337,7 +320,6 @@ extern int nfs_root_mount(struct super_block *sb);
 #define NFSDBG_XDR		0x0020
 #define NFSDBG_FILE		0x0040
 #define NFSDBG_ROOT		0x0080
-#define NFSDBG_PARANOID		0x0100
 #define NFSDBG_ALL		0xFFFF
 
 #ifdef __KERNEL__
@@ -346,11 +328,6 @@ extern int nfs_root_mount(struct super_block *sb);
 #  define ifdebug(fac)		if (nfs_debug & NFSDBG_##fac)
 # else
 #  define ifdebug(fac)		if (0)
-# endif
-# ifdef NFS_PARANOIA
-#  define nfsparanoid(args...)	dfprintk(PARANOID, ##args)
-# else
-#  define nfsparanoid(args...)	do { } while (0)
 # endif
 #endif /* __KERNEL */
 

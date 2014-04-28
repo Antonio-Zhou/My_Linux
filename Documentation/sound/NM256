@@ -2,7 +2,7 @@
 Documentation for the NeoMagic 256AV/256ZX sound driver
 =======================================================
 
-You're looking at version 1.11 of the driver.  (Woohoo!) It has been
+You're looking at version 1.1 of the driver.  (Woohoo!) It has been
 successfully tested against the following laptop models:
 
 	Sony Z505S/Z505SX/Z505DX/Z505RX
@@ -19,9 +19,10 @@ give it to your best friends, even claim that you wrote it (but why?!)
 but don't go whining to me, NeoMagic, Sony, Dell, or anyone else
 when it blows up your computer.
 
-Version 1.11 fixes a bug uncovered by Timidity--the sound would start clicking
-after the first MIDI file was finished playing.  There are no other changes
-over 1.1.
+Version 1.1 contains a change to try and detect non-AC97 versions of
+the hardware, and not install itself appropriately.  It should also
+reinitialize the hardware on an APM resume event, assuming that APM
+was configured into your kernel.
 
 ============
 Installation
@@ -274,11 +275,6 @@ mixer module.
 
 Version 0.75 renamed all the functions and files with slightly more
 generic names.
-
-Version 1.1 contains a change to try and detect non-AC97 versions of
-the hardware, and not install itself appropriately.  It should also
-reinitialize the hardware on an APM resume event, assuming that APM
-was configured into your kernel.
 
 Note that previous versions of this document claimed that recording was
 8-bit only; it actually has been working for 16-bits all along.

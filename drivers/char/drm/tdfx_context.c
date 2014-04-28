@@ -2,7 +2,6 @@
  * Created: Thu Oct  7 10:50:22 1999 by faith@precisioninsight.com
  *
  * Copyright 1999 Precision Insight, Inc., Cedar Park, Texas.
- * Copyright 2000 VA Linux Systems, Inc., Sunnyvale, California.
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -25,10 +24,11 @@
  * DEALINGS IN THE SOFTWARE.
  * 
  * Authors:
- *    Rickard E. (Rik) Faith <faith@valinux.com>
- *    Daryll Strauss <daryll@valinux.com>
- * 
+ *    Rickard E. (Rik) Faith <faith@precisioninsight.com>
+ *
  */
+
+#include <linux/sched.h>
 
 #define __NO_VERSION__
 #include "drmP.h"
@@ -38,7 +38,9 @@ extern drm_ctx_t tdfx_res_ctx;
 
 static int tdfx_alloc_queue(drm_device_t *dev)
 {
-	return drm_ctxbitmap_next(dev);
+	static int context = 0;
+
+	return ++context;	/* Should this reuse contexts in the future? */
 }
 
 int tdfx_context_switch(drm_device_t *dev, int old, int new)
@@ -135,12 +137,6 @@ int tdfx_addctx(struct inode *inode, struct file *filp, unsigned int cmd,
 		ctx.handle = tdfx_alloc_queue(dev);
 	}
 	DRM_DEBUG("%d\n", ctx.handle);
-	if (ctx.handle == -1) {
-		DRM_DEBUG("Not enough free contexts.\n");
-				/* Should this return -EBUSY instead? */
-		return -ENOMEM;
-	}
-   
 	copy_to_user_ret((drm_ctx_t *)arg, &ctx, sizeof(ctx), -EFAULT);
 	return 0;
 }
@@ -197,13 +193,13 @@ int tdfx_newctx(struct inode *inode, struct file *filp, unsigned int cmd,
 int tdfx_rmctx(struct inode *inode, struct file *filp, unsigned int cmd,
 	       unsigned long arg)
 {
-	drm_file_t      *priv   = filp->private_data;
-	drm_device_t    *dev    = priv->dev;
 	drm_ctx_t	ctx;
 
 	copy_from_user_ret(&ctx, (drm_ctx_t *)arg, sizeof(ctx), -EFAULT);
 	DRM_DEBUG("%d\n", ctx.handle);
-	drm_ctxbitmap_free(dev, ctx.handle);
-
+				/* This is currently a noop because we
+				   don't reuse context values.  Perhaps we
+				   should? */
+	
 	return 0;
 }

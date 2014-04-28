@@ -146,7 +146,7 @@ MODPROBE:
 =========
 
 If loading via modprobe, these common files are automatically loaded 
-when requested by modprobe.  For example, my /etc/conf.modules contains:
+when requested by modprobe.  For example, my /etc/modules.conf contains:
 
 alias sound sb 
 options sb io=0x240 irq=9 dma=3 dma16=5 mpu_io=0x300
@@ -160,8 +160,6 @@ Sound Status:
 =============
 
 The status of sound may be read/checked by:
-	cat /proc/sound
-	cat /dev/sndstat
         cat (anyfile).au >/dev/audio
 
 The status of the modules and which modules depend on 
@@ -206,7 +204,7 @@ http://www.opensound.com.  Before loading the commercial sound
 driver, you should do the following:
 
 1.  remove sound modules (detailed above)
-2.  remove the sound modules from /etc/conf.modules
+2.  remove the sound modules from /etc/modules.conf
 3.  move the sound modules from /lib/modules/<kernel>/misc
     (for example, I make a /lib/modules/<kernel>/misc/tmp
     directory and copy the sound module files to that 
@@ -240,9 +238,9 @@ twice, you need to do the following:
 
 1.  Copy the sound modules to a new name.  For example
     sb.o could be copied (or symlinked) to sb1.o for the
-    second SoundBlaster.
+    second SoundBlasster.
 
-2.  Make a second entry in /etc/conf.modules, for example,
+2.  Make a second entry in /etc/modules.conf, for example,
     sound1 or sb1.  This second entry should refer to the
     new module names for example sb1, and should include
     the I/O, etc. for the second sound card.
@@ -322,7 +320,7 @@ in the Sound-HOWTO).
 
 7)  Turn on debug in drivers/sound/sound_config.h (DEB, DDB, MDB).
 
-8)  If the system reports insufficient DMA memory then you may want to
+8)  If the system reports insuffcient DMA memory then you may want to
     load sound with the "dmabufs=1" option. Or in /etc/conf.modules add
 	
 	preinstall sound dmabufs=1
@@ -340,7 +338,7 @@ There are several ways of configuring your sound:
 2)  On the command line when using insmod or in a bash script
     using command line calls to load sound.
 
-3)  In /etc/conf.modules when using modprobe.
+3)  In /etc/modules.conf when using modprobe.
 
 4)  Via Red Hat's GPL'd /usr/sbin/sndconfig program (text based).
 
@@ -356,7 +354,7 @@ Module Loading:
 
 When a sound card is first referenced and sound is modular the sound system
 will ask for the sound devices to be loaded. Initially it requests that
-the driver for the sound system is loaded. It then will ask for 
+the driver for the sound system is loaded. It then wwill ask for 
 sound-slot-0, where 0 is the first sound card. (sound-slot-1 the second and
 so on). Thus you can do
 

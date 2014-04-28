@@ -7,15 +7,16 @@
 #
 # Note 2! The CFLAGS definitions are now in the main makefile...
 
-.S.s:
-	$(CPP) -traditional $< -o $*.s
-
 O_TARGET := kernel.o
 O_OBJS    = sched.o dma.o fork.o exec_domain.o panic.o printk.o sys.o \
 	    module.o exit.o itimer.o info.o time.o softirq.o resource.o \
-	    sysctl.o acct.o capability.o
+	    sysctl.o acct.o capability.o ptrace.o timer.o
 
-OX_OBJS  += context.o signal.o
+OX_OBJS  += signal.o
+
+ifeq ($(CONFIG_UID16),y)
+O_OBJS += uid16.o
+endif
 
 ifeq ($(CONFIG_KMOD),y)
 O_OBJS += kmod.o
@@ -23,6 +24,10 @@ endif
 
 ifeq ($(CONFIG_MODULES),y)
 OX_OBJS  += ksyms.o
+endif
+
+ifeq ($(CONFIG_PM),y)
+OX_OBJS += pm.o
 endif
 
 CFLAGS_sched.o := $(PROFILING) -fno-omit-frame-pointer

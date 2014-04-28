@@ -6,10 +6,10 @@
  * Status:        Experimental.
  * Author:        Thomas Davis, <ratbert@radiks.net>
  * Created at:    Sat Feb 21 21:33:24 1998
- * Modified at:   Wed Jan  5 22:45:14 2000
+ * Modified at:   Sun Nov 14 08:54:54 1999
  * Modified by:   Dag Brattli <dagb@cs.uit.no>
  *
- *     Copyright (c) 1998-2000, Dag Brattli <dagb@cs.uit.no>
+ *     Copyright (c) 1998-1999, Dag Brattli <dagb@cs.uit.no>
  *     Copyright (c) 1998, Thomas Davis, <ratbert@radiks.net>, 
  *     All Rights Reserved.
  *      
@@ -23,31 +23,25 @@
  *     
  ********************************************************************/
 
-#define __NO_VERSION__    /* irmod.c defines module_kernel_version */
-#include <linux/module.h>
-
 #include <linux/miscdevice.h>
 #include <linux/proc_fs.h>
+#define __NO_VERSION__
+#include <linux/module.h>
 
 #include <net/irda/irda.h>
 #include <net/irda/irmod.h>
 #include <net/irda/irlap.h>
 #include <net/irda/irlmp.h>
 
-extern int irlap_proc_read(char *buf, char **start, off_t offset, int len, 
-			   int unused);
-extern int irlmp_proc_read(char *buf, char **start, off_t offset, int len, 
-			   int unused);
-extern int irttp_proc_read(char *buf, char **start, off_t offset, int len, 
-			   int unused);
-extern int irias_proc_read(char *buf, char **start, off_t offset, int len,
-			   int unused);
-extern int discovery_proc_read(char *buf, char **start, off_t offset, int len, 
-			       int unused);
+extern int irlap_proc_read(char *buf, char **start, off_t offset, int len);
+extern int irlmp_proc_read(char *buf, char **start, off_t offset, int len);
+extern int irttp_proc_read(char *buf, char **start, off_t offset, int len);
+extern int irias_proc_read(char *buf, char **start, off_t offset, int len);
+extern int discovery_proc_read(char *buf, char **start, off_t offset, int len);
 
 struct irda_entry {
 	char *name;
-	int (*fn)(char*, char**, off_t, int, int);
+	int (*fn)(char*, char**, off_t, int);
 };
 
 struct proc_dir_entry *proc_irda;
@@ -72,13 +66,11 @@ void irda_proc_register(void)
 {
 	int i;
 
-	proc_irda = create_proc_entry("net/irda", S_IFDIR, NULL);
-#ifdef MODULE
-	proc_irda->fill_inode = &irda_proc_modcount;
-#endif /* MODULE */
+	proc_irda = proc_mkdir("net/irda", NULL);
+	proc_irda->owner = THIS_MODULE;
 
 	for (i=0;i<IRDA_ENTRIES_NUM;i++)
-		create_proc_entry(dir[i].name,0,proc_irda)->get_info=dir[i].fn;
+		create_proc_info_entry(dir[i].name,0,proc_irda,dir[i].fn);
 }
 
 /*

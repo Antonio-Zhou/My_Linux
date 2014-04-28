@@ -19,12 +19,12 @@ COMPILE_ARCH = $(shell uname -m)
 # override top level makefile
 AS += -m68020
 LD += -m m68kelf
-ifneq ($(COMPILE_ARCH),$(ARCH))
-	# prefix for cross-compiling binaries
-	CROSS_COMPILE = m68k-linux-
-endif
 
+ifndef CONFIG_SUN3
 LINKFLAGS = -T $(TOPDIR)/arch/m68k/vmlinux.lds
+else
+LINKFLAGS = -T $(TOPDIR)/arch/m68k/vmlinux-sun3.lds -N
+endif
 
 # without -fno-strength-reduce the 53c7xx.c driver fails ;-(
 CFLAGS += -pipe -fno-strength-reduce -ffixed-a2
@@ -50,7 +50,11 @@ ifdef CONFIG_KGDB
 CFLAGS := $(subst -fomit-frame-pointer,,$(CFLAGS)) -g
 endif
 
+ifndef CONFIG_SUN3
 HEAD := arch/m68k/kernel/head.o
+else
+HEAD := arch/m68k/kernel/sun3-head.o
+endif 
 
 SUBDIRS += arch/m68k/kernel arch/m68k/mm arch/m68k/lib
 CORE_FILES := arch/m68k/kernel/kernel.o arch/m68k/mm/mm.o $(CORE_FILES)
@@ -106,6 +110,11 @@ CORE_FILES := $(CORE_FILES) arch/m68k/sun3x/sun3x.o
 SUBDIRS := $(SUBDIRS) arch/m68k/sun3x
 endif
 
+ifdef CONFIG_SUN3
+CORE_FILES := $(CORE_FILES) arch/m68k/sun3/sun3.o arch/m68k/sun3/prom/promlib.a
+SUBDIRS := $(SUBDIRS) arch/m68k/sun3 arch/m68k/sun3/prom
+endif
+
 ifdef CONFIG_M68040
 CORE_FILES := $(CORE_FILES) arch/m68k/fpsp040/fpsp.o
 SUBDIRS := $(SUBDIRS) arch/m68k/fpsp040
@@ -116,7 +125,7 @@ CORE_FILES := $(CORE_FILES) arch/m68k/ifpsp060/ifpsp.o
 SUBDIRS := $(SUBDIRS) arch/m68k/ifpsp060
 endif
 
-ifdef CONFIG_FPU_EMU
+ifdef CONFIG_M68KFPU_EMU
 CORE_FILES := $(CORE_FILES) arch/m68k/math-emu/mathemu.o
 SUBDIRS := $(SUBDIRS) arch/m68k/math-emu
 endif
@@ -155,7 +164,7 @@ else
 endif
 
 archclean:
-	rm -f vmlinux.gz
+	rm -f vmlinux.gz vmlinux.bz2
 	rm -f arch/m68k/kernel/m68k_defs.h arch/m68k/kernel/m68k_defs.d
 
 archmrproper:

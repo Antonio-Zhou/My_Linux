@@ -1,7 +1,7 @@
 Documentation for the OPL3-SA2, SA3, and SAx driver (opl3sa2.o)
 ---------------------------------------------------------------
 
-Scott Murray, scott@spiteful.org
+Scott Murray, scottm@interlog.com
 January 5, 1999
 
 NOTE: All trade-marked terms mentioned below are properties of their
@@ -125,7 +125,7 @@ and I'll try my best to help.
 
 Lastly, if you're using modules and want to set up automatic module
 loading with kmod, the kernel module loader, here is the section I
-currently use in my conf.modules file:
+currently use in my modules.conf file:
 
 # Sound
 alias char-major-14 opl3sa2

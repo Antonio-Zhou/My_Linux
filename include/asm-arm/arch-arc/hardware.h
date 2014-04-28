@@ -43,10 +43,8 @@
  * Screen mapping information
  */
 #define SCREEN_START		0x02000000
-#define SCREEN2_END		0x02078000
-#define SCREEN2_BASE		0x02000000
-#define SCREEN1_END		0x02000000
-#define SCREEN1_BASE		0x01f88000
+#define SCREEN_END		0x02078000
+#define SCREEN_BASE		0x02000000
 
 
 #ifndef __ASSEMBLY__
@@ -101,5 +99,17 @@
 #define PCIO_BASE		0x03010000
 
 #endif
+
+#ifdef HAS_EXPMASK
+#ifndef __ASSEMBLY__
+#define __EXPMASK(offset)	(((volatile unsigned char *)EXPMASK_BASE)[offset])
+#else
+#define __EXPMASK(offset)	offset
 #endif
 
+#define	EXPMASK_STATUS	__EXPMASK(0x00)
+#define EXPMASK_ENABLE	__EXPMASK(0x04)
+
+#endif
+
+#endif

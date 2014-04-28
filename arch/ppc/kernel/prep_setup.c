@@ -33,14 +33,14 @@
 #include <linux/timex.h>
 #include <linux/pci.h>
 #include <linux/openpic.h>
-#include <linux/delay.h>
+#include <linux/ide.h>
 
+#include <asm/init.h>
 #include <asm/mmu.h>
 #include <asm/processor.h>
 #include <asm/residual.h>
 #include <asm/io.h>
 #include <asm/pgtable.h>
-#include <asm/ide.h>
 #include <asm/cache.h>
 #include <asm/dma.h>
 #include <asm/machdep.h>
@@ -48,9 +48,8 @@
 #include <asm/prep_nvram.h>
 #include <asm/raven.h>
 #include <asm/keyboard.h>
-#include <asm/time.h>
-#include <asm/vga.h>
 
+#include "time.h"
 #include "local_irq.h"
 #include "i8259.h"
 #include "open_pic.h"
@@ -102,21 +101,24 @@ unsigned long empty_zero_page[1024];
 extern PTE *Hash, *Hash_end;
 extern unsigned long Hash_size, Hash_mask;
 extern int probingmem;
+extern unsigned long loops_per_sec;
 
 #ifdef CONFIG_BLK_DEV_RAM
 extern int rd_doload;		/* 1 = load ramdisk, 0 = don't load */
 extern int rd_prompt;		/* 1 = prompt for ramdisk, 0 = don't prompt */
 extern int rd_image_start;	/* starting block # of image */
 #endif
+#ifdef CONFIG_VGA_CONSOLE
+unsigned long vgacon_remap_base;
+#endif
 
-__prep
-int
+int __prep
 prep_get_cpuinfo(char *buffer)
 {
 	extern char *Motherboard_map_name;
 	int len, i;
   
-#ifdef __SMP__
+#ifdef CONFIG_SMP
 #define CD(X)		(cpu_data[n].X)  
 #else
 #define CD(X) (X)
@@ -207,8 +209,8 @@ no_l2:
 	return len;
 }
 
-__initfunc(void
-prep_setup_arch(unsigned long * memory_start_p, unsigned long * memory_end_p))
+void __init
+prep_setup_arch(void)
 {
 	extern char cmd_line[];
 	unsigned char reg;
@@ -216,7 +218,7 @@ prep_setup_arch(unsigned long * memory_start_p, unsigned long * memory_end_p))
 	unsigned char ucEquipPres1;
 
 	/* init to some ~sane value until calibrate_delay() runs */
-	loops_per_jiffy = 50000000/HZ;
+	loops_per_sec = 50000000;
 	
 	/* Set up floppy in PS/2 mode */
 	outb(0x09, SIO_CONFIG_RA);
@@ -243,10 +245,10 @@ prep_setup_arch(unsigned long * memory_start_p, unsigned long * memory_end_p))
 	case _PREP_Motorola:
 		/* Enable L2.  Assume we don't need to flush -- Cort*/
 		*(unsigned char *)(0x8000081c) |= 3;
-		ROOT_DEV = to_kdev_t(0x0801); /* sda1 */
+		ROOT_DEV = to_kdev_t(0x0802); /* sda2 */
 		break;
 	case _PREP_Radstone:
-		ROOT_DEV = to_kdev_t(0x0802); /* sda2 */
+		ROOT_DEV = to_kdev_t(0x0801); /* sda1 */
 
 		/*
 		 * Determine system type
@@ -307,7 +309,7 @@ prep_setup_arch(unsigned long * memory_start_p, unsigned long * memory_end_p))
 	 * it's the only way to support both addrs from one binary.
 	 * -- Cort
 	 */
-	if ( is_prep )
+	if ( _machine == _MACH_prep )
 	{
 		extern struct card_info snd_installed_cards[];
 		struct card_info  *snd_ptr;
@@ -361,7 +363,7 @@ prep_setup_arch(unsigned long * memory_start_p, unsigned long * memory_end_p))
  * This allows for a faster boot as we do not need to calibrate the
  * decrementer against another clock. This is important for embedded systems.
  */
-__initfunc(void prep_res_calibrate_decr(void))
+void __init prep_res_calibrate_decr(void)
 {
 	int freq, divisor;
 
@@ -382,10 +384,10 @@ __initfunc(void prep_res_calibrate_decr(void))
 int calibrate_done = 0;
 volatile int *done_ptr = &calibrate_done;
 
-__initfunc(void
+void __init
 prep_calibrate_decr_handler(int            irq,
 			    void           *dev,
-			    struct pt_regs *regs))
+			    struct pt_regs *regs)
 {
 	unsigned long freq, divisor;
 	static unsigned long t1 = 0, t2 = 0;
@@ -408,7 +410,7 @@ prep_calibrate_decr_handler(int            irq,
 	}
 }
 
-__initfunc(void prep_calibrate_decr(void))
+void __init prep_calibrate_decr(void)
 {
 	unsigned long flags;
 
@@ -433,7 +435,7 @@ __initfunc(void prep_calibrate_decr(void))
 
 
 /* We use the NVRAM RTC to time a second to calibrate the decrementer. */
-__initfunc(void mk48t59_calibrate_decr(void))
+void __init mk48t59_calibrate_decr(void)
 {
 	unsigned long freq, divisor;
 	unsigned long t1, t2;
@@ -481,13 +483,13 @@ __initfunc(void mk48t59_calibrate_decr(void))
 	count_period_den = freq / 1000000;
 }
 
-void
+void __prep
 prep_restart(char *cmd)
 {
         unsigned long i = 10000;
 
 
-        _disable_interrupts();
+	__cli();
 
         /* set exception prefix high - to the prom */
         _nmask_and_or_msr(0, MSR_IP);
@@ -504,7 +506,7 @@ prep_restart(char *cmd)
 /*
  * This function will restart a board regardless of port 92 functionality
  */
-void
+void __prep
 prep_direct_restart(char *cmd)
 {
 	u32 jumpaddr=0xfff00100;
@@ -514,7 +516,7 @@ prep_direct_restart(char *cmd)
 	 * This will ALWAYS work regardless of port 92
 	 * functionality
 	 */
-	_disable_interrupts();
+	__cli();
 
 	__asm__ __volatile__("\n\
 	mtspr   26, %1  /* SRR0 */
@@ -527,11 +529,11 @@ prep_direct_restart(char *cmd)
 	 */
 }
 
-void
+void __prep
 prep_halt(void)
 {
         unsigned long flags;
-	_disable_interrupts();
+	__cli();
 	/* set exception prefix high - to the prom */
 	save_flags( flags );
 	restore_flags( flags|MSR_IP );
@@ -547,13 +549,14 @@ prep_halt(void)
 	 */
 }
 
-void
+void __prep
 prep_power_off(void)
 {
 	prep_halt();
 }
 
-int prep_setup_residual(char *buffer)
+int __prep
+prep_setup_residual(char *buffer)
 {
         int len = 0;
 
@@ -571,7 +574,7 @@ int prep_setup_residual(char *buffer)
 	return len;
 }
 
-u_int
+u_int __prep
 prep_irq_cannonicalize(u_int irq)
 {
 	if (irq == 2)
@@ -584,7 +587,8 @@ prep_irq_cannonicalize(u_int irq)
 	}
 }
 
-void                           
+#if 0
+void __prep
 prep_do_IRQ(struct pt_regs *regs, int cpu, int isfake)
 {
         int irq;
@@ -597,76 +601,65 @@ prep_do_IRQ(struct pt_regs *regs, int cpu, int isfake)
 		return;
 	}
         ppc_irq_dispatch_handler( regs, irq );
+}
+#endif
+
+int __prep
+prep_get_irq(struct pt_regs *regs)
+{
+	return i8259_irq(smp_processor_id());
 }		
 
-__initfunc(void
-prep_init_IRQ(void))
+void __init
+prep_init_IRQ(void)
 {
 	int i;
 
 	if (OpenPIC != NULL) {
-		open_pic.irq_offset = 16;
 		for ( i = 16 ; i < 36 ; i++ )
-			irq_desc[i].ctl = &open_pic;
+			irq_desc[i].handler = &open_pic;
 		openpic_init(1);
 	}
 	
         for ( i = 0 ; i < 16  ; i++ )
-                irq_desc[i].ctl = &i8259_pic;
+                irq_desc[i].handler = &i8259_pic;
         i8259_init();
-#ifdef __SMP__
-	request_irq(OPENPIC_VEC_IPI, openpic_ipi_action,
+#ifdef CONFIG_SMP
+	request_irq(openpic_to_irq(OPENPIC_VEC_SPURIOUS), openpic_ipi_action,
 		    0, "IPI0", 0);
-	request_irq(OPENPIC_VEC_IPI+1, openpic_ipi_action,
-		    0, "IPI1 (invalidate TLB)", 0);
-	request_irq(OPENPIC_VEC_IPI+2, openpic_ipi_action,
-		    0, "IPI2 (stop CPU)", 0);
-	request_irq(OPENPIC_VEC_IPI+3, openpic_ipi_action,
-		    0, "IPI3 (reschedule)", 0);
-#endif /* __SMP__ */
+#endif /* CONFIG_SMP */
 }
 
 #if defined(CONFIG_BLK_DEV_IDE) || defined(CONFIG_BLK_DEV_IDE_MODULE)
 /*
  * IDE stuff.
  */
-void
+void __prep
 prep_ide_insw(ide_ioreg_t port, void *buf, int ns)
 {
-	ide_insw(((port)+(_IO_BASE)), buf, ns);
+	_insw((unsigned short *)((port)+_IO_BASE), buf, ns);
 }
 
-void
+void __prep
 prep_ide_outsw(ide_ioreg_t port, void *buf, int ns)
 {
-	ide_outsw(((port)+_IO_BASE), buf, ns);
+	_outsw((unsigned short *)((port)+_IO_BASE), buf, ns);
 }
 
-int
+int __prep
 prep_ide_default_irq(ide_ioreg_t base)
 {
-	if ( _prep_type == _PREP_IBM ) {
-		switch (base) {
-			case 0x1f0: return 13;
-			case 0x170: return 13;
-			case 0x1e8: return 11;
-			case 0x168: return 10;
-			default:
-				return 0;
-		}
-	} else {
-		switch (base) {
-			case 0x1f0: return 14;
-			case 0x170: return 14;
-			case 0x1e8: return 15;
-			case 0x168: return 15;
-			default:
-				return 0;
-		}
+	switch (base) {
+		case 0x1f0: return 13;
+		case 0x170: return 13;
+		case 0x1e8: return 11;
+		case 0x168: return 10;
+		default:
+                        return 0;
 	}
 }
 
-ide_ioreg_t
+ide_ioreg_t __prep
 prep_ide_default_io_base(int index)
 {
 	switch (index) {
@@ -679,13 +672,13 @@ prep_ide_default_io_base(int index)
 	}
 }
 
-int
+int __prep
 prep_ide_check_region(ide_ioreg_t from, unsigned int extent)
 {
         return check_region(from, extent);
 }
 
-void
+void __prep
 prep_ide_request_region(ide_ioreg_t from,
 			unsigned int extent,
 			const char *name)
@@ -693,54 +686,47 @@ prep_ide_request_region(ide_ioreg_t from,
         request_region(from, extent, name);
 }
 
-void
+void __prep
 prep_ide_release_region(ide_ioreg_t from,
 			unsigned int extent)
 {
         release_region(from, extent);
 }
 
-void
+void __prep
 prep_ide_fix_driveid(struct hd_driveid *id)
 {
-	ppc_generic_ide_fix_driveid(id);
 }
 
-__initfunc(void
-prep_ide_init_hwif_ports (ide_ioreg_t *p, ide_ioreg_t base, int *irq))
+void __init
+prep_ide_init_hwif_ports (hw_regs_t *hw, ide_ioreg_t data_port, ide_ioreg_t ctrl_port, int *irq)
 {
-	ide_ioreg_t port = base;
-	int i = 8;
+	ide_ioreg_t reg = data_port;
+	int i;
 
-	while (i--)
-		*p++ = port++;
-	*p++ = base + 0x206;
+	for (i = IDE_DATA_OFFSET; i <= IDE_STATUS_OFFSET; i++) {
+		hw->io_ports[i] = reg;
+		reg += 1;
+	}
+	if (ctrl_port) {
+		hw->io_ports[IDE_CONTROL_OFFSET] = ctrl_port;
+	} else {
+		hw->io_ports[IDE_CONTROL_OFFSET] =  hw->io_ports[IDE_DATA_OFFSET] + 0x206;
+	}
 	if (irq != NULL)
 		*irq = 0;
 }
 #endif
 
-unsigned long *MotSave_SmpIar;
-unsigned char *MotSave_CpusState[2];
-
-__initfunc(void
+void __init
 prep_init(unsigned long r3, unsigned long r4, unsigned long r5,
-	  unsigned long r6, unsigned long r7))
+	  unsigned long r6, unsigned long r7)
 {
-	RESIDUAL *old_res = (RESIDUAL *)(r3 + KERNELBASE);
-
 	/* make a copy of residual data */
 	if ( r3 )
 	{
 		memcpy((void *)res,(void *)(r3+KERNELBASE),
 		       sizeof(RESIDUAL));
-
-		/* These need to be saved for the Motorola Prep 
-		 * MVME4600 and Dual MTX boards.
-		 */
-		MotSave_SmpIar = &old_res->VitalProductData.SmpIar;
-		MotSave_CpusState[0] = &old_res->Cpus[0].CpuState;
-		MotSave_CpusState[1] = &old_res->Cpus[1].CpuState;
 	}
 
 	isa_io_base = PREP_ISA_IO_BASE;
@@ -774,29 +760,13 @@ prep_init(unsigned long r3, unsigned long r4, unsigned long r5,
 
 	prep_setup_pci_ptrs();
 
-#ifdef CONFIG_BLK_DEV_INITRD
-	/* take care of initrd if we have one */
-	if ( r4 )
-	{
-		initrd_start = r4 + KERNELBASE;
-		initrd_end = r5 + KERNELBASE;
-	}
-#endif /* CONFIG_BLK_DEV_INITRD */
-
-	/* take care of cmd line */
-	if ( r6  && (((char *) r6) != '\0'))
-	{
-		*(char *)(r7+KERNELBASE) = 0;
-		strcpy(cmd_line, (char *)(r6+KERNELBASE));
-	}
-
 	ppc_md.setup_arch     = prep_setup_arch;
 	ppc_md.setup_residual = prep_setup_residual;
 	ppc_md.get_cpuinfo    = prep_get_cpuinfo;
 	ppc_md.irq_cannonicalize = prep_irq_cannonicalize;
 	ppc_md.init_IRQ       = prep_init_IRQ;
 	/* this gets changed later on if we have an OpenPIC -- Cort */
-	ppc_md.do_IRQ         = prep_do_IRQ;
+	ppc_md.get_irq        = prep_get_irq;
 	ppc_md.init           = NULL;
 
 	ppc_md.restart        = prep_restart;
@@ -845,9 +815,9 @@ prep_init(unsigned long r3, unsigned long r4, unsigned long r5,
         ppc_ide_md.outsw = prep_ide_outsw;
         ppc_ide_md.default_irq = prep_ide_default_irq;
         ppc_ide_md.default_io_base = prep_ide_default_io_base;
-        ppc_ide_md.check_region = prep_ide_check_region;
-        ppc_ide_md.request_region = prep_ide_request_region;
-        ppc_ide_md.release_region = prep_ide_release_region;
+        ppc_ide_md.ide_check_region = prep_ide_check_region;
+        ppc_ide_md.ide_request_region = prep_ide_request_region;
+        ppc_ide_md.ide_release_region = prep_ide_release_region;
         ppc_ide_md.fix_driveid = prep_ide_fix_driveid;
         ppc_ide_md.ide_init_hwif = prep_ide_init_hwif_ports;
 #endif		
@@ -861,8 +831,8 @@ prep_init(unsigned long r3, unsigned long r4, unsigned long r5,
 	ppc_md.kbd_leds          = pckbd_leds;
 	ppc_md.kbd_init_hw       = pckbd_init_hw;
 #ifdef CONFIG_MAGIC_SYSRQ
-	ppc_md.sysrq_xlate	 = pckbd_sysrq_xlate;
-	SYSRQ_KEY		 = 0x54;
+	ppc_md.ppc_kbd_sysrq_xlate	 = pckbd_sysrq_xlate;
+	SYSRQ_KEY = 0x54;
 #endif
 #endif
 }

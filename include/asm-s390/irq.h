@@ -1,7 +1,15 @@
+/*
+ *  arch/s390/kernel/s390io.h
+ *
+ *  S390 version
+ *    Copyright (C) 1999,2000 IBM Deutschland Entwicklung GmbH, IBM Corporation
+ *    Author(s): Ingo Adlung (adlung@de.ibm.com)
+ */
+
 #ifndef __irq_h
 #define __irq_h
 
-#ifdef __KERNEL__
+#include <linux/config.h>
 #include <asm/hardirq.h>
 
 /*
@@ -9,8 +17,6 @@
  */
 #define __MAX_SUBCHANNELS 65536
 #define NR_IRQS           __MAX_SUBCHANNELS
-
-#define LPM_ANYPATH 0xff /* doesn't really belong here, Ingo? */
 
 #define INVALID_STORAGE_AREA ((void *)(-1 - 0x3FFF ))
 
@@ -71,7 +77,6 @@ typedef struct {
                           /*  ... in an operand exception.       */
    } __attribute__ ((packed)) pmcw_t;
 
-#endif /* __KERNEL__ */
 /*
  * subchannel status word
  */
@@ -134,7 +139,6 @@ typedef struct {
 #define SCHN_STAT_INTF_CTRL_CHK  0x02
 #define SCHN_STAT_CHAIN_CHECK    0x01
 
-#ifdef __KERNEL__
 /*
  * subchannel information block
  */
@@ -143,14 +147,13 @@ typedef struct {
       scsw_t scsw;             /* subchannel status word */
       __u8 mda[12];            /* model dependent area */
    } __attribute__ ((packed,aligned(4))) schib_t;
-#endif /* __KERNEL__ */
 
 typedef struct {
       __u8  cmd_code;/* command code */
-      __u8  flags;   /* flags, like IDA addressing, etc. */
+      __u8  flags;   /* flags, like IDA adressing, etc. */
       __u16 count;   /* byte count */
       __u32 cda;     /* data address */
-   } __attribute__ ((packed,aligned(8))) ccw1_t;
+   } ccw1_t __attribute__ ((packed,aligned(8)));
 
 #define CCW_FLAG_DC             0x80
 #define CCW_FLAG_CC             0x40
@@ -165,12 +168,10 @@ typedef struct {
 #define CCW_CMD_BASIC_SENSE     0x04
 #define CCW_CMD_TIC             0x08
 #define CCW_CMD_SENSE_PGID      0x34
-#define CCW_CMD_SUSPEND_RECONN  0x5B
 #define CCW_CMD_RDC             0x64
 #define CCW_CMD_SET_PGID        0xAF
 #define CCW_CMD_SENSE_ID        0xE4
 
-#ifdef __KERNEL__
 #define SENSE_MAX_COUNT         0x20
 
 /*
@@ -183,33 +184,6 @@ typedef struct {
 #define SNS0_EQUIPMENT_CHECK    0x10
 #define SNS0_DATA_CHECK         0x08
 #define SNS0_OVERRUN            0x04
-/*                              0x02 reserved */
-#define SNS0_INCOMPL_DOMAIN     0x01
-
-/*
- * architectured values for second sense byte
- */
-#define SNS1_PERM_ERR           0x80
-#define SNS1_INV_TRACK_FORMAT   0x40
-#define SNS1_EOC                0x20
-#define SNS1_MESSAGE_TO_OPER    0x10
-#define SNS1_NO_REC_FOUND       0x08
-#define SNS1_FILE_PROTECTED     0x04
-#define SNS1_WRITE_INHIBITED    0x02
-#define SNS1_INPRECISE_END      0x01
-
-/*
- * architectured values for third sense byte
- */
-#define SNS2_REQ_INH_WRITE      0x80
-#define SNS2_CORRECTABLE        0x40
-#define SNS2_FIRST_LOG_ERR      0x20
-#define SNS2_ENV_DATA_PRESENT   0x10
-/*                              0x08 reserved */
-#define SNS2_INPRECISE_END      0x04
-/*                              0x02 reserved */
-/*                              0x01 reserved */
-
 
 /*
  * operation request block
@@ -231,7 +205,6 @@ typedef struct {
       __u32 cpa;      /* channel program address */
    }  __attribute__ ((packed,aligned(4))) orb_t;
 
-#endif /* __KERNEL__ */
 typedef struct {
       __u32 res0  : 4;  /* reserved */
       __u32 pvrf  : 1;  /* path-verification-required flag */
@@ -276,7 +249,7 @@ typedef struct {
 typedef struct {
       __u8  zero0;    /* reserved zeros */
       __u8  lpum;     /* last path used mask */
-      __u16 zero16;   /* reserved zeros */
+      __u8  zero16;   /* reserved zeros */
       erw_t erw;      /* extended report word */
       __u32 zeros[3]; /* 2 fullwords of zeros */
    } __attribute__ ((packed)) esw1_t;
@@ -318,7 +291,6 @@ typedef struct {
       esw_t  esw;              /* extended status word */
       __u8   ecw[32];          /* extended control word */
    } irb_t __attribute__ ((packed,aligned(4)));
-#ifdef __KERNEL__
 
 /*
  * TPI info structure
@@ -330,6 +302,18 @@ typedef struct {
    } __attribute__ ((packed)) tpi_info_t;
 
 
+/*
+ * This is the "IRQ descriptor", which contains various information
+ * about the irq, including what kind of hardware handling it has,
+ * whether it is disabled etc etc.
+ *
+ * Pad this out to 32 bytes for cache and indexing reasons.
+ */
+typedef struct {
+      __u32                     status;    /* IRQ status - IRQ_INPROGRESS, IRQ_DISABLED */
+      struct hw_interrupt_type *handler;   /* handle/enable/disable functions */
+      struct irqaction         *action;    /* IRQ action list */
+   } irq_desc_t;
 
 //
 // command information word  (CIW) layout
@@ -346,7 +330,6 @@ typedef struct _ciw {
 #define CIW_TYPE_SII    0x1    // set interface identifier
 #define CIW_TYPE_RNI    0x2    // read node identifier
 
-#define MAX_CIWS 8
 //
 // sense-id response buffer layout
 //
@@ -359,10 +342,9 @@ typedef struct {
       __u8           dev_model;    /* device model */
       __u8           unused;       /* padding byte */
   /* extended part */
-      ciw_t    ciw[MAX_CIWS];      /* variable # of CIWs */
+      ciw_t    ciw[62];            /* variable # of CIWs */
    }  __attribute__ ((packed,aligned(4))) senseid_t;
 
-#endif /* __KERNEL__ */
 /*
  * sense data
  */
@@ -380,8 +362,8 @@ typedef struct {
  *         effective devstat size calculation will fail !
  */
 typedef struct {
-     unsigned int  devno;    /* device number, aka. "cuu" from irb */
-     unsigned long intparm;  /* interrupt parameter */
+     __u16         devno;    /* device number, aka. "cuu" from irb */
+     unsigned int  intparm;  /* interrupt parameter */
      __u8          cstat;    /* channel status - accumulated */
      __u8          dstat;    /* device status - accumulated */
      __u8          lpum;     /* last path used mask from irb */
@@ -405,44 +387,9 @@ typedef struct {
 #define DEVSTAT_DEVICE_GONE        0x00000040
 #define DEVSTAT_DEVICE_OWNED       0x00000080
 #define DEVSTAT_CLEAR_FUNCTION     0x00000100
-#define DEVSTAT_PCI                0x00000200
-#define DEVSTAT_SUSPENDED          0x00000400
-#define DEVSTAT_UNKNOWN_DEV        0x00000800
 #define DEVSTAT_FINAL_STATUS       0x80000000
 
 #define INTPARM_STATUS_PENDING     0xFFFFFFFF
-
-#ifdef __KERNEL__
-
-typedef  void (* io_handler_func1_t) ( int             irq,
-                                       devstat_t      *devstat,
-                                       struct pt_regs *rgs);
-
-typedef  void (* io_handler_func_t) ( int             irq,
-                                      void           *devstat,
-                                      struct pt_regs *rgs);
-
-typedef  void ( * not_oper_handler_func_t)( int irq,
-                                            int status );
-struct s390_irqaction {
-	io_handler_func_t  handler;
-	unsigned long      flags;
-	const char        *name;
-	devstat_t         *dev_id;
-};
-
-/*
- * This is the "IRQ descriptor", which contains various information
- * about the irq, including what kind of hardware handling it has,
- * whether it is disabled etc etc.
- *
- * Pad this out to 32 bytes for cache and indexing reasons.
- */
-typedef struct {
-      unsigned int              status;    /* IRQ status - IRQ_INPROGRESS, IRQ_DISABLED */
-      struct hw_interrupt_type *handler;   /* handle/enable/disable functions */
-      struct s390_irqaction    *action;    /* IRQ action list */
-   } irq_desc_t;
 
 typedef struct {
 	__u8  state1    :  2;   /* path state value 1 */
@@ -462,39 +409,36 @@ typedef struct {
 	__u32 tod_high;         /* high word TOD clock */
 	} __attribute__ ((packed)) pgid_t;
 
-#define SPID_FUNC_SINGLE_PATH      0x00
 #define SPID_FUNC_MULTI_PATH       0x80
 #define SPID_FUNC_ESTABLISH        0x00
 #define SPID_FUNC_RESIGN           0x40
 #define SPID_FUNC_DISBAND          0x20
 
-#define SNID_STATE1_RESET          0
-#define SNID_STATE1_UNGROUPED      2
-#define SNID_STATE1_GROUPED        3
+#define SNID_STATE1_RESET          0x0
+#define SNID_STATE1_UNGROUPED      0x8
+#define SNID_STATE1_GROUPED        0xC
 
-#define SNID_STATE2_NOT_RESVD      0
-#define SNID_STATE2_RESVD_ELSE     2
-#define SNID_STATE2_RESVD_SELF     3
+#define SNID_STATE2_NOT_RESVD      0x0
+#define SNID_STATE2_RESVD_ELSE     0x8
+#define SNID_STATE2_RESVD_SELF     0xC
 
 #define SNID_STATE3_MULTI_PATH     1
-#define SNID_STATE3_SINGLE_PATH    0
 
 /*
  * Flags used as input parameters for do_IO()
  */
-#define DOIO_EARLY_NOTIFICATION  0x0001 /* allow for I/O completion ... */
+#define DOIO_EARLY_NOTIFICATION 0x01    /* allow for I/O completion ... */
                                         /* ... notification after ... */
                                         /* ... primary interrupt status */
-#define DOIO_RETURN_CHAN_END     DOIO_EARLY_NOTIFICATION
-#define DOIO_VALID_LPM           0x0002 /* LPM input parameter is valid */
-#define DOIO_WAIT_FOR_INTERRUPT  0x0004 /* wait synchronously for interrupt */
-#define DOIO_REPORT_ALL          0x0008 /* report all interrupt conditions */
-#define DOIO_ALLOW_SUSPEND       0x0010 /* allow for channel prog. suspend */
-#define DOIO_DENY_PREFETCH       0x0020 /* don't allow for CCW prefetch */
-#define DOIO_SUPPRESS_INTER      0x0040 /* suppress intermediate inter. */
+#define DOIO_RETURN_CHAN_END       DOIO_EARLY_NOTIFICATION
+#define DOIO_VALID_LPM          0x02    /* LPM input parameter is valid */
+#define DOIO_WAIT_FOR_INTERRUPT 0x04    /* wait synchronously for interrupt */
+#define DOIO_REPORT_ALL         0x08    /* report all interrupt conditions */
+#define DOIO_ALLOW_SUSPEND      0x10    /* allow for channel prog. suspend */
+#define DOIO_DENY_PREFETCH      0x20    /* don't allow for CCW prefetch */
+#define DOIO_SUPPRESS_INTER     0x40    /* suppress intermediate inter. */
                                         /* ... for suspended CCWs */
-#define DOIO_TIMEOUT             0x0080 /* 3 secs. timeout for sync. I/O */
-#define DOIO_DONT_CALL_INTHDLR   0x0100 /* don't call interrupt handler */
+#define DOIO_TIMEOUT            0x80    /* 3 secs. timeout for sync. I/O */
 
 /*
  * do_IO()
@@ -520,7 +464,7 @@ int do_IO( int            irq,          /* IRQ aka. subchannel number */
 
 int start_IO( int           irq,       /* IRQ aka. subchannel number */
               ccw1_t       *cpa,       /* logical channel program address */
-              unsigned long  intparm,   /* interruption parameter */
+              unsigned int  intparm,   /* interruption parameter */
               __u8          lpm,       /* logical path mask */
               unsigned int  flag);     /* flags : see above */
 
@@ -546,7 +490,7 @@ int disable_cpu_sync_isc( int irq );
 
 typedef struct {
      int          irq;                  /* irq, aka. subchannel */
-     unsigned int devno;                /* device number */
+     __u16        devno;                /* device number */
      unsigned int status;               /* device status */
      senseid_t    sid_data;             /* senseID data */
      } dev_info_t;
@@ -554,25 +498,16 @@ typedef struct {
 int get_dev_info( int irq, dev_info_t *);   /* to be eliminated - don't use */
 
 int get_dev_info_by_irq  ( int irq, dev_info_t *pdi);
-int get_dev_info_by_devno( unsigned int devno, dev_info_t *pdi);
+int get_dev_info_by_devno( __u16 devno, dev_info_t *pdi);
 
-int          get_irq_by_devno( unsigned int devno );
+int          get_irq_by_devno( __u16 devno );
 unsigned int get_devno_by_irq( int irq );
 
 int get_irq_first( void );
 int get_irq_next ( int irq );
 
 int read_dev_chars( int irq, void **buffer, int length );
-int read_conf_data( int irq, void **buffer, int *length, __u8 lpm );
-
-int  s390_DevicePathVerification( int irq, __u8 domask );
-
-int s390_request_irq_special( int                      irq,
-                              io_handler_func_t        io_handler,
-                              not_oper_handler_func_t  not_oper_handler,
-                              unsigned long            irqflags,
-                              const char              *devname,
-                              devstat_t               *dev_id);
+int read_conf_data( int irq, void **buffer, int *length );
 
 extern int handle_IRQ_event( unsigned int irq, int cpu, struct pt_regs *);
 
@@ -734,20 +669,6 @@ extern __inline__ int iac( void)
         return ccode;
 }
 
-extern __inline__ int rchp(int chpid)
-{
-        int ccode;
-
-        __asm__ __volatile__(
-                "LR 1,%1\n\t"
-                "RCHP\n\t"
-                "IPM %0\n\t"
-                "SRL %0,28\n\t"
-                : "=d" (ccode) : "r" (chpid)
-                : "cc", "1" );
-        return ccode;
-}
-
 typedef struct {
      __u16 vrdcdvno : 16;   /* device number (input) */
      __u16 vrdclen  : 16;   /* data block length (input) */
@@ -761,7 +682,7 @@ typedef struct {
      __u32 vrdccrft : 8;    /* real device feature (output) */
      } __attribute__ ((packed,aligned(4))) diag210_t;
 
-void VM_virtual_device_info( unsigned int devno, /* device number */
+void VM_virtual_device_info( __u16      devno,   /* device number */
                              senseid_t *ps );    /* ptr to senseID data */
 
 extern __inline__ int diag210( diag210_t * addr)
@@ -813,8 +734,8 @@ static inline void irq_exit(int cpu, unsigned int irq)
 
 #else
 
-#define irq_enter(cpu, irq)     (++local_irq_count(cpu))
-#define irq_exit(cpu, irq)      (--local_irq_count(cpu))
+#define irq_enter(cpu, irq)     (++local_irq_count[cpu])
+#define irq_exit(cpu, irq)      (--local_irq_count[cpu])
 
 #endif
 
@@ -833,11 +754,10 @@ static inline void irq_exit(int cpu, unsigned int irq)
  * x86 profiling function, SMP safe. We might want to do this in
  * assembly totally?
  */
-extern char _stext;
 static inline void s390_do_profile (unsigned long addr)
 {
+#if 0
         if (prof_buffer && current->pid) {
-                addr &= 0x7fffffff;
                 addr -= (unsigned long) &_stext;
                 addr >>= prof_shift;
                 /*
@@ -849,6 +769,7 @@ static inline void s390_do_profile (unsigned long addr)
                         addr = prof_len-1;
                 atomic_inc((atomic_t *)&prof_buffer[addr]);
         }
+#endif
 }
 
 #include <asm/s390io.h>
@@ -861,10 +782,7 @@ static inline void s390_do_profile (unsigned long addr)
 
 #define s390irq_spin_lock_irqsave(irq,flags) \
         spin_lock_irqsave(&(ioinfo[irq]->irq_lock), flags)
-
 #define s390irq_spin_unlock_irqrestore(irq,flags) \
         spin_unlock_irqrestore(&(ioinfo[irq]->irq_lock), flags)
-#endif /* __KERNEL__ */
-
 #endif
 

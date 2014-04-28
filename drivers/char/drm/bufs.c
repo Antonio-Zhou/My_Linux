@@ -2,7 +2,6 @@
  * Created: Tue Feb  2 08:37:54 1999 by faith@precisioninsight.com
  *
  * Copyright 1999, 2000 Precision Insight, Inc., Cedar Park, Texas.
- * Copyright 2000 VA Linux Systems, Inc., Sunnyvale, California.
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -25,7 +24,7 @@
  * DEALINGS IN THE SOFTWARE.
  * 
  * Authors:
- *    Rickard E. (Rik) Faith <faith@valinux.com>
+ *    Rickard E. (Rik) Faith <faith@precisioninsight.com>
  *
  */
 
@@ -72,14 +71,12 @@ int drm_addmap(struct inode *inode, struct file *filp, unsigned int cmd,
 
 	switch (map->type) {
 	case _DRM_REGISTERS:
-	case _DRM_FRAME_BUFFER:
-#if !defined(__sparc__) && !defined(__alpha__)
+	case _DRM_FRAME_BUFFER:	
 		if (map->offset + map->size < map->offset
 		    || map->offset < virt_to_phys(high_memory)) {
 			drm_free(map, sizeof(*map), DRM_MEM_MAPS);
 			return -EINVAL;
 		}
-#endif
 #ifdef CONFIG_MTRR
 		if (map->type == _DRM_FRAME_BUFFER
 		    || (map->flags & _DRM_WRITE_COMBINING)) {
@@ -106,11 +103,6 @@ int drm_addmap(struct inode *inode, struct file *filp, unsigned int cmd,
 			dev->lock.hw_lock = map->handle; /* Pointer to lock */
 		}
 		break;
-#if defined(CONFIG_AGP) || defined(CONFIG_AGP_MODULE)
-	case _DRM_AGP:
-		map->offset = map->offset + dev->agp->base;
-		break;
-#endif
 	default:
 		drm_free(map, sizeof(*map), DRM_MEM_MAPS);
 		return -EINVAL;
@@ -181,7 +173,7 @@ int drm_addbufs(struct inode *inode, struct file *filp, unsigned int cmd,
 	if (order < DRM_MIN_ORDER || order > DRM_MAX_ORDER) return -EINVAL;
 	if (dev->queue_count) return -EBUSY; /* Not while in use */
 
-	alignment  = (request.flags & _DRM_PAGE_ALIGN) ? PAGE_ALIGN(size):size;
+	alignment  = (request.flags & DRM_PAGE_ALIGN) ? PAGE_ALIGN(size) :size;
 	page_order = order - PAGE_SHIFT > 0 ? order - PAGE_SHIFT : 0;
 	total	   = PAGE_SIZE << page_order;
 
@@ -199,12 +191,6 @@ int drm_addbufs(struct inode *inode, struct file *filp, unsigned int cmd,
 		up(&dev->struct_sem);
 		atomic_dec(&dev->buf_alloc);
 		return -ENOMEM;	/* May only call once for each order */
-	}
-	
-	if(count < 0 || count > 4096)
-	{
-		up(&dev->struct_sem);
-		return -EINVAL;
 	}
 	
 	entry->buflist = drm_alloc(count * sizeof(*entry->buflist),
@@ -492,10 +478,8 @@ int drm_mapbufs(struct inode *inode, struct file *filp, unsigned int cmd,
 			   -EFAULT);
 
 	if (request.count >= dma->buf_count) {
-		down(&current->mm->mmap_sem);
 		virtual = do_mmap(filp, 0, dma->byte_count,
 				  PROT_READ|PROT_WRITE, MAP_SHARED, 0);
-		up(&current->mm->mmap_sem);
 		if (virtual > -1024UL) {
 				/* Real error */
 			retcode = (signed long)virtual;

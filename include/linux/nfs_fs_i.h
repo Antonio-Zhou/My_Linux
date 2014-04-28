@@ -1,31 +1,18 @@
-#ifndef _NFS_FS_i
+#ifndef _NFS_FS_I
 #define _NFS_FS_I
 
+#include <asm/types.h>
 #include <linux/list.h>
-#include <linux/nfs.h>
-#include <linux/pipe_fs_i.h>
 
 /*
  * nfs fs inode data in memory
  */
 struct nfs_inode_info {
 	/*
-	 * This is a place holder so named pipes on NFS filesystems
-	 * work (more or less correctly). This must be first in the
-	 * struct because the data is really accessed via inode->u.pipe_i.
-	 */
-	struct pipe_inode_info	pipeinfo;
-
-	/*
-	 * The 64bit fileid
+	 * The 64bit 'inode number'
 	 */
 	__u64 fsid;
 	__u64 fileid;
-
-	/*
-	 * NFS file handle
-	 */
-	struct nfs_fh		fh;
 
 	/*
 	 * Various flags
@@ -64,7 +51,7 @@ struct nfs_inode_info {
 	__u32			cookieverf[2];
 
 	/*
-	 * This is the list of dirty pages.
+	 * This is the list of dirty unwritten pages.
 	 */
 	struct list_head	read;
 	struct list_head	dirty;
@@ -85,31 +72,10 @@ struct nfs_inode_info {
 /*
  * Legal inode flag values
  */
-#define NFS_INO_STALE		0x0001		/* We suspect inode is stale */
 #define NFS_INO_ADVISE_RDPLUS   0x0002          /* advise readdirplus */
-#define NFS_INO_REVALIDATING    0x0004          /* in nfs_revalidate() */
+#define NFS_INO_REVALIDATING	0x0004		/* revalidating attrs */
 #define NFS_IS_SNAPSHOT		0x0010		/* a snapshot file */
-#define NFS_INO_FLUSH		0x0040		/* inode is due for flushing */
-
-/*
- * NFS ACL info.
- * This information will be used by nfs_permission() in the obvious fashion,
- * but also helps the RPC engine to select whether to try the operation first
- * with the effective or real uid/gid first.
- *
- * For NFSv2, this info is obtained by just trying the operation in
- * question and updating the ACL info according to the result.
- * For NFSv3, the access() call is used to fill in the permission bits.
- *
- * Not yet used.
- */
-struct nfs_acl_info {
-	struct nfs_acl_info *	acl_next;
-	unsigned long		acl_read_time;
-	uid_t			acl_uid;
-	gid_t			acl_gid;
-	unsigned int		acl_bits;
-};
+#define NFS_INO_FLUSH		0x0020		/* inode is due for flushing */
 
 /*
  * NFS lock info

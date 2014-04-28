@@ -1,7 +1,6 @@
 #ifndef __ALPHA_IRONGATE__H__
 #define __ALPHA_IRONGATE__H__
 
-#include <linux/config.h>
 #include <linux/types.h>
 #include <asm/compiler.h>
 
@@ -13,7 +12,8 @@
  * This file is based on:
  *
  * IronGate management library, (c) 1999 Alpha Processor, Inc.
- * Copyright (C) 1999 Alpha Processor, Inc., (David Daniel, Stig Telfer, Soohoon Lee)
+ * Copyright (C) 1999 Alpha Processor, Inc.,
+ *	(David Daniel, Stig Telfer, Soohoon Lee)
  */
 
 /*
@@ -22,20 +22,7 @@
  * and I/O address space. Memory address space resides in the lower
  * half of the physical address space (PA[43]=0) and I/O address space
  * resides in the upper half of the physical address space (PA[43]=1).
- *
  */
-
-
-#define IRONGATE_DMA_WIN_BASE_DEFAULT	 (0U)
-#define IRONGATE_DMA_WIN_SIZE_DEFAULT	 (0U)
-
-#if defined(CONFIG_ALPHA_GENERIC) || defined(CONFIG_ALPHA_SRM_SETUP)
-#define IRONGATE_DMA_WIN_BASE		alpha_mv.dma_win_base
-#define IRONGATE_DMA_WIN_SIZE		alpha_mv.dma_win_size
-#else
-#define IRONGATE_DMA_WIN_BASE		IRONGATE_DMA_WIN_BASE_DEFAULT
-#define IRONGATE_DMA_WIN_SIZE		IRONGATE_DMA_WIN_SIZE_DEFAULT
-#endif
 
 /*
  * Irongate CSR map.  Some of the CSRs are 8 or 16 bits, but all access
@@ -94,10 +81,8 @@ typedef struct {
 	igcsr32 agpcmd;			/* 0xA8 - AGP control register */
 	igcsr32 agpva;			/* 0xAC - AGP Virtual Address Space */
 	igcsr32 agpmode;		/* 0xB0 - AGP/GART mode control */
-
 } Irongate0;
 
-/*----------------------------------------------------------------------*/
 /* Bitfield and mask register definitions */
 
 /* Device, vendor IDs - offset 0x00 */
@@ -114,7 +99,6 @@ typedef union {
 /* Status, command registers - offset 0x04 */
 
 typedef union {
-
 	igcsr32 i;
 	struct {
 		unsigned command;
@@ -154,7 +138,6 @@ typedef union {
 /* Revision ID, Programming interface, subclass, baseclass - offset 0x08 */
 
 typedef union {
-
 	igcsr32 i;
 	struct {
 		/* revision ID */
@@ -170,7 +153,6 @@ typedef union {
 /* Latency Timer, PCI Header type - offset 0x0C */
 
 typedef union {
-
 	igcsr32 i;
 	struct {
 		unsigned zero1:8;		/* reserved */
@@ -184,7 +166,6 @@ typedef union {
 /* Base Address Register 0 - offset 0x10 */
 
 typedef union {
-
 	igcsr32 i;
 	struct {
 		unsigned mem : 1;		/* Reg pts to memory (always 0) */
@@ -200,7 +181,6 @@ typedef union {
 /* Base Address Register 1 - offset 0x14 */
 
 typedef union {
-
 	igcsr32 i;
 	struct {
 		unsigned mem : 1;		/* BAR0 maps to memory -> 0 */
@@ -215,7 +195,6 @@ typedef union {
 /* Base Address Register 2 - offset 0x18 */
 
 typedef union {
-
 	igcsr32 i;
 	struct {
 		unsigned io  : 1;		/* BAR2 maps to I/O space -> 1 */
@@ -229,7 +208,6 @@ typedef union {
 /* Capabilities Pointer - offset 0x34 */
 
 typedef union {
-
 	igcsr32 i;
 	struct {
 		unsigned cap : 8;		/* =0xA0, offset of AGP ctrl regs */
@@ -262,7 +240,6 @@ typedef union {
 /* SDRAM Address Mapping Control Register - offset 0x50 */
 
 typedef union {
-
 	igcsr32 i;
 	struct {
 		unsigned z1 : 1;		/* reserved */
@@ -303,7 +280,6 @@ typedef union {
 /* DRAM timing and driver strength register - offset 0x54 */
 
 typedef union {
-
 	igcsr32 i;
 	struct {
 		/* DRAM timing parameters */
@@ -330,7 +306,6 @@ typedef union {
 /* DRAM Mode / Status and ECC Register - offset 0x58 */
 
 typedef union {
-
 	igcsr32 i;
 	struct {
 		unsigned chipsel : 6;		/* failing ECC chip select */
@@ -350,8 +325,6 @@ typedef union {
 	} r;
 } ig_dramms_t;
 
-/*----------------------------------------------------------------------*/
-
 
 /*
  * Memory spaces:
@@ -370,8 +343,7 @@ typedef union {
 #define IRONGATE_IO		(IDENT_ADDR | IRONGATE_BIAS | 0x1FC000000UL)
 #define IRONGATE_CONF		(IDENT_ADDR | IRONGATE_BIAS | 0x1FE000000UL)
 
-
-#define IRONGATE0	( (Irongate0 *) IRONGATE_CONF )
+#define IRONGATE0		((Irongate0 *) IRONGATE_CONF)
 
 /*
  * Data structure for handling IRONGATE machine checks:
@@ -384,30 +356,29 @@ typedef union {
 #define SCB_Q_PROCMCHK	0x670
 
 struct el_IRONGATE_sysdata_mcheck {
-  __u32 FrameSize;                 /* Bytes, including this field */
-  __u32 FrameFlags;                /* <31> = Retry, <30> = Second Error */
-  __u32 CpuOffset;                 /* Offset to CPU-specific into */
-  __u32 SystemOffset;              /* Offset to system-specific info */
-  __u32 MCHK_Code;
-  __u32 MCHK_Frame_Rev;
-  __u64 I_STAT;
-  __u64 DC_STAT;
-  __u64 C_ADDR;
-  __u64 DC1_SYNDROME;
-  __u64 DC0_SYNDROME;
-  __u64 C_STAT;
-  __u64 C_STS;
-  __u64 RESERVED0;
-  __u64 EXC_ADDR;
-  __u64 IER_CM;
-  __u64 ISUM;
-  __u64 MM_STAT;
-  __u64 PAL_BASE;
-  __u64 I_CTL;
-  __u64 PCTX;
+	__u32 FrameSize;                 /* Bytes, including this field */
+	__u32 FrameFlags;                /* <31> = Retry, <30> = Second Error */
+	__u32 CpuOffset;                 /* Offset to CPU-specific into */
+	__u32 SystemOffset;              /* Offset to system-specific info */
+	__u32 MCHK_Code;
+	__u32 MCHK_Frame_Rev;
+	__u64 I_STAT;
+	__u64 DC_STAT;
+	__u64 C_ADDR;
+	__u64 DC1_SYNDROME;
+	__u64 DC0_SYNDROME;
+	__u64 C_STAT;
+	__u64 C_STS;
+	__u64 RESERVED0;
+	__u64 EXC_ADDR;
+	__u64 IER_CM;
+	__u64 ISUM;
+	__u64 MM_STAT;
+	__u64 PAL_BASE;
+	__u64 I_CTL;
+	__u64 PCTX;
 };
 
-/*----------------------------------------------------------------------*/
 
 #ifdef __KERNEL__
 
@@ -417,25 +388,10 @@ struct el_IRONGATE_sysdata_mcheck {
 #endif
 
 /*
- * Translate physical memory address as seen on (PCI) bus into
- * a kernel virtual address and vv.
- */
-
-__EXTERN_INLINE unsigned long irongate_virt_to_bus(void * address)
-{
-	return virt_to_phys(address) + IRONGATE_DMA_WIN_BASE;
-}
-
-__EXTERN_INLINE void * irongate_bus_to_virt(unsigned long address)
-{
-	return phys_to_virt(address - IRONGATE_DMA_WIN_BASE);
-}
-
-/*
  * I/O functions:
  *
  * IRONGATE (AMD-751) PCI/memory support chip for the EV6 (21264) and
- * K7 can only use linear accesses to get at PCI memory and I/O spaces
+ * K7 can only use linear accesses to get at PCI memory and I/O spaces.
  */
 
 #define vucp	volatile unsigned char *
@@ -443,94 +399,91 @@ __EXTERN_INLINE void * irongate_bus_to_virt(unsigned long address)
 #define vuip	volatile unsigned int *
 #define vulp	volatile unsigned long *
 
-#define XADDR	((addr) & 0xffffffffUL)
-
 __EXTERN_INLINE unsigned int irongate_inb(unsigned long addr)
 {
-	return __kernel_ldbu(*(vucp)(XADDR + IRONGATE_IO));
+	return __kernel_ldbu(*(vucp)(addr + IRONGATE_IO));
 }
 
 __EXTERN_INLINE void irongate_outb(unsigned char b, unsigned long addr)
 {
-        __kernel_stb(b, *(vucp)(XADDR + IRONGATE_IO));
+        __kernel_stb(b, *(vucp)(addr + IRONGATE_IO));
 	mb();
 }
 
 __EXTERN_INLINE unsigned int irongate_inw(unsigned long addr)
 {
-	return __kernel_ldwu(*(vusp)(XADDR + IRONGATE_IO));
+	return __kernel_ldwu(*(vusp)(addr + IRONGATE_IO));
 }
 
 __EXTERN_INLINE void irongate_outw(unsigned short b, unsigned long addr)
 {
-        __kernel_stw(b, *(vusp)(XADDR + IRONGATE_IO));
+        __kernel_stw(b, *(vusp)(addr + IRONGATE_IO));
 	mb();
 }
 
 __EXTERN_INLINE unsigned int irongate_inl(unsigned long addr)
 {
-	return *(vuip)(XADDR + IRONGATE_IO);
+	return *(vuip)(addr + IRONGATE_IO);
 }
 
 __EXTERN_INLINE void irongate_outl(unsigned int b, unsigned long addr)
 {
-        *(vuip)(XADDR + IRONGATE_IO) = b;
+        *(vuip)(addr + IRONGATE_IO) = b;
 	mb();
 }
 
 /*
- * Memory functions.  all accesses are done through linear space.
+ * Memory functions.  All accesses are done through linear space.
  */
 
 __EXTERN_INLINE unsigned long irongate_readb(unsigned long addr)
 {
-	return __kernel_ldbu(*(vucp)(XADDR + IRONGATE_MEM));
+	return __kernel_ldbu(*(vucp)addr);
 }
 
 __EXTERN_INLINE unsigned long irongate_readw(unsigned long addr)
 {
-	return __kernel_ldwu(*(vusp)(XADDR + IRONGATE_MEM));
+	return __kernel_ldwu(*(vusp)addr);
 }
 
 __EXTERN_INLINE unsigned long irongate_readl(unsigned long addr)
 {
-	return *(vuip)(XADDR + IRONGATE_MEM);
+	return *(vuip)addr;
 }
 
 __EXTERN_INLINE unsigned long irongate_readq(unsigned long addr)
 {
-	return *(vulp)(XADDR + IRONGATE_MEM);
+	return *(vulp)addr;
 }
 
 __EXTERN_INLINE void irongate_writeb(unsigned char b, unsigned long addr)
 {
-	__kernel_stb(b, *(vucp)(XADDR + IRONGATE_MEM));
-	mb();
+	__kernel_stb(b, *(vucp)addr);
 }
 
 __EXTERN_INLINE void irongate_writew(unsigned short b, unsigned long addr)
 {
-	__kernel_stw(b, *(vusp)(XADDR + IRONGATE_MEM));
-	mb();
+	__kernel_stw(b, *(vusp)addr);
 }
 
 __EXTERN_INLINE void irongate_writel(unsigned int b, unsigned long addr)
 {
-	*(vuip)(XADDR + IRONGATE_MEM) = b;
-	mb();
+	*(vuip)addr = b;
 }
 
 __EXTERN_INLINE void irongate_writeq(unsigned long b, unsigned long addr)
 {
-	*(vulp)(XADDR + IRONGATE_MEM) = b;
-	mb();
+	*(vulp)addr = b;
 }
 
-/* Find the DENSE memory area for a given bus address.	*/
-
-__EXTERN_INLINE unsigned long irongate_dense_mem(unsigned long addr)
+__EXTERN_INLINE unsigned long irongate_ioremap(unsigned long addr)
 {
-	return IRONGATE_MEM;
+	return addr + IRONGATE_MEM;
+}
+
+__EXTERN_INLINE int irongate_is_ioaddr(unsigned long addr)
+{
+	return addr >= IRONGATE_MEM;
 }
 
 #undef vucp
@@ -538,46 +491,39 @@ __EXTERN_INLINE unsigned long irongate_dense_mem(unsigned long addr)
 #undef vuip
 #undef vulp
 
-#undef XADDR
-
 #ifdef __WANT_IO_DEF
 
-#define virt_to_bus	irongate_virt_to_bus
-#define bus_to_virt	irongate_bus_to_virt
+#define __inb(p)		irongate_inb((unsigned long)(p))
+#define __inw(p)		irongate_inw((unsigned long)(p))
+#define __inl(p)		irongate_inl((unsigned long)(p))
+#define __outb(x,p)		irongate_outb((x),(unsigned long)(p))
+#define __outw(x,p)		irongate_outw((x),(unsigned long)(p))
+#define __outl(x,p)		irongate_outl((x),(unsigned long)(p))
+#define __readb(a)		irongate_readb((unsigned long)(a))
+#define __readw(a)		irongate_readw((unsigned long)(a))
+#define __readl(a)		irongate_readl((unsigned long)(a))
+#define __readq(a)		irongate_readq((unsigned long)(a))
+#define __writeb(x,a)		irongate_writeb((x),(unsigned long)(a))
+#define __writew(x,a)		irongate_writew((x),(unsigned long)(a))
+#define __writel(x,a)		irongate_writel((x),(unsigned long)(a))
+#define __writeq(x,a)		irongate_writeq((x),(unsigned long)(a))
+#define __ioremap(a)		irongate_ioremap((unsigned long)(a))
+#define __is_ioaddr(a)		irongate_is_ioaddr((unsigned long)(a))
 
-#define __inb		irongate_inb
-#define __inw		irongate_inw
-#define __inl		irongate_inl
-#define __outb		irongate_outb
-#define __outw		irongate_outw
-#define __outl		irongate_outl
-#define __readb		irongate_readb
-#define __readw		irongate_readw
-#define __writeb	irongate_writeb
-#define __writew	irongate_writew
-#define __readl		irongate_readl
-#define __readq		irongate_readq
-#define __writel	irongate_writel
-#define __writeq	irongate_writeq
-#define dense_mem	irongate_dense_mem
-
-#define inb(port) __inb((port))
-#define inw(port) __inw((port))
-#define inl(port) __inl((port))
-
-#define outb(v, port) __outb((v),(port))
-#define outw(v, port) __outw((v),(port))
-#define outl(v, port) __outl((v),(port))
-
-#define readb(a)	__readb((unsigned long)(a))
-#define readw(a)	__readw((unsigned long)(a))
-#define readl(a)	__readl((unsigned long)(a))
-#define readq(a)	__readq((unsigned long)(a))
-
-#define writeb(v,a)	__writeb((v),(unsigned long)(a))
-#define writew(v,a)	__writew((v),(unsigned long)(a))
-#define writel(v,a)	__writel((v),(unsigned long)(a))
-#define writeq(v,a)	__writeq((v),(unsigned long)(a))
+#define inb(p)			__inb(p)
+#define inw(p)			__inw(p)
+#define inl(p)			__inl(p)
+#define outb(x,p)		__outb((x),(p))
+#define outw(x,p)		__outw((x),(p))
+#define outl(x,p)		__outl((x),(p))
+#define __raw_readb(a)		__readb(a)
+#define __raw_readw(a)		__readw(a)
+#define __raw_readl(a)		__readl(a)
+#define __raw_readq(a)		__readq(a)
+#define __raw_writeb(v,a)	__writeb((v),(a))
+#define __raw_writew(v,a)	__writew((v),(a))
+#define __raw_writel(v,a)	__writel((v),(a))
+#define __raw_writeq(v,a)	__writeq((v),(a))
 
 #endif /* __WANT_IO_DEF */
 
@@ -589,4 +535,3 @@ __EXTERN_INLINE unsigned long irongate_dense_mem(unsigned long addr)
 #endif /* __KERNEL__ */
 
 #endif /* __ALPHA_IRONGATE__H__ */
-

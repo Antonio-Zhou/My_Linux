@@ -42,12 +42,14 @@
 #include <linux/init.h>
 #include <linux/smp.h>
 
-#include <asm/processor.h>
-#include <asm/uaccess.h>
 #include <asm/io.h>
+#include <asm/smp.h>
 #include <asm/irq.h>
-#include <asm/delay.h>
 #include <asm/msr.h>
+#include <asm/delay.h>
+#include <asm/mpspec.h>
+#include <asm/uaccess.h>
+#include <asm/processor.h>
 
 #include <linux/mc146818rtc.h>
 #include <linux/timex.h>
@@ -59,10 +61,10 @@
 /*
  * for x86_do_profile()
  */
-#include "irq.h"
+#include <linux/irq.h>
 
 
-unsigned long cpu_khz;	/* Detected as we calibrate the TSC */
+unsigned long cpu_hz;	/* Detected as we calibrate the TSC */
 
 /* Number of usecs that the last interrupt was delayed */
 static int delay_at_last_interrupt;
@@ -83,8 +85,7 @@ spinlock_t rtc_lock = SPIN_LOCK_UNLOCKED;
 
 static inline unsigned long do_fast_gettimeoffset(void)
 {
-	register unsigned long eax asm("ax");
-	register unsigned long edx asm("dx");
+	register unsigned long eax, edx;
 
 	/* Read the Time Stamp Counter */
 
@@ -176,14 +177,6 @@ static unsigned long do_slow_gettimeoffset(void)
 
 	count |= inb_p(0x40) << 8;
 
-	/* VIA686a test code... reset the latch if count > max */
- 	if (count > LATCH-1) {
-		outb_p(0x34, 0x43);
-		outb_p(LATCH & 0xff, 0x40);
-		outb(LATCH >> 8, 0x40);
-		count = LATCH - 1;
-	}	
-	
 	/*
 	 * avoiding timer inconsistencies (they are rare, but they happen)...
 	 * there are two kinds of problems that must be avoided here:
@@ -388,7 +381,7 @@ static inline void do_timer_interrupt(int irq, void *dev_id, struct pt_regs *reg
  * profiling, except when we simulate SMP mode on a uniprocessor
  * system, in that case we have to call the local interrupt handler.
  */
-#ifndef __SMP__
+#ifndef CONFIG_X86_LOCAL_APIC
 	if (!user_mode(regs))
 		x86_do_profile(regs->eip);
 #else
@@ -476,22 +469,6 @@ static void timer_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 
 		count = inb_p(0x40);    /* read the latched count */
 		count |= inb(0x40) << 8;
-
-		/* VIA686a test code... reset the latch if count > max */
-		if (count > LATCH-1) {
-			static int last_whine;
-			outb_p(0x34, 0x43);
-			outb_p(LATCH & 0xff, 0x40);
-			outb(LATCH >> 8, 0x40);
-			count = LATCH - 1;
-			if(time_after(jiffies, last_whine))
-			{
-				printk(KERN_WARNING "probable hardware bug: clock timer configuration lost - probably a VIA686a.\n");
-				printk(KERN_WARNING "probable hardware bug: restoring chip configuration.\n");
-				last_whine = jiffies + HZ;
-			}			
-		}	
-
 #if 0
 		spin_unlock(&i8253_lock);
 #endif
@@ -591,7 +568,7 @@ static struct irqaction irq0  = { timer_interrupt, SA_INTERRUPT, 0, "timer", NUL
 #define CALIBRATE_LATCH	(5 * LATCH)
 #define CALIBRATE_TIME	(5 * 1000020/HZ)
 
-__initfunc(static unsigned long calibrate_tsc(void))
+static unsigned long __init calibrate_tsc(void)
 {
        /* Set the Gate high, disable speaker */
 	outb((inb(0x61) & ~0x02) | 0x01, 0x61);
@@ -656,10 +633,10 @@ bad_ctc:
 	return 0;
 }
 
-extern int x86_udelay_tsc;
-
-__initfunc(void time_init(void))
+void __init time_init(void)
 {
+	extern int x86_udelay_tsc;
+	
 	xtime.tv_sec = get_cmos_time();
 	xtime.tv_usec = 0;
 
@@ -696,8 +673,8 @@ __initfunc(void time_init(void))
 			fast_gettimeoffset_quotient = tsc_quotient;
 			use_tsc = 1;
 			/*
-			 *	We should be more selective here I suspect
-			 *	and just enable this for the new intel chips ?
+			 *	We could be more selective here I suspect
+			 *	and just enable this for the next intel chips ?
 			 */
 			x86_udelay_tsc = 1;
 #ifndef do_gettimeoffset
@@ -709,12 +686,12 @@ __initfunc(void time_init(void))
 			 * The formula is (10^6 * 2^32) / (2^32 * 1 / (clocks/us)) =
 			 * clock/second. Our precision is about 100 ppm.
 			 */
-			{	unsigned long eax=0, edx=1000;
+			{	unsigned long eax=0, edx=1000000;
 				__asm__("divl %2"
-		       		:"=a" (cpu_khz), "=d" (edx)
+		       		:"=a" (cpu_hz), "=d" (edx)
         	       		:"r" (tsc_quotient),
 	                	"0" (eax), "1" (edx));
-				printk("Detected %ld kHz processor.\n", cpu_khz);
+				printk("Detected %ld Hz processor.\n", cpu_hz);
 			}
 		}
 	}
@@ -732,8 +709,8 @@ __initfunc(void time_init(void))
 	co_cpu_write(CO_CPU_CTRL, co_cpu_read(CO_CPU_CTRL) & ~CO_CTRL_TIMEMASK);
 
 	/* Wire cpu IDT entry to s/w handler (and Cobalt APIC to IDT) */
-	setup_x86_irq(CO_IRQ_TIMER, &irq0);
+	setup_irq(CO_IRQ_TIMER, &irq0);
 #else
-	setup_x86_irq(0, &irq0);
+	setup_irq(0, &irq0);
 #endif
 }

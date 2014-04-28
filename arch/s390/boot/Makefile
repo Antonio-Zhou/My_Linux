@@ -15,7 +15,7 @@ O_OBJS	 :=
 include $(TOPDIR)/Rules.make
 
 .S.o:
-	$(CC) -D__ASSEMBLY__ $(AFLAGS) -traditional -c $< -o $*.o
+	$(CC) $(AFLAGS) -traditional -c $< -o $*.o
 
 %.lnk: %.o
 	$(LD) -Ttext 0x0 -o $@ $<
@@ -24,21 +24,9 @@ include $(TOPDIR)/Rules.make
 	$(OBJCOPY) -O binary $< $@
 
 image: $(CONFIGURE) $(TOPDIR)/vmlinux \
-	iplfba.boot ipleckd.boot dumptape.boot dumpeckd.boot
+	iplfba.boot ipleckd.boot ipldump.boot
 	$(OBJCOPY) -O binary $(TOPDIR)/vmlinux image
 	$(NM) $(TOPDIR)/vmlinux | grep -v '\(compiled\)\|\( [aU] \)\|\(\.\)\|\(LASH[RL]DI\)' | sort > $(TOPDIR)/System.map
-
-dumptape.lnk: dumptape.o
-	$(LD) -Ttext 0x2000 -o $@ $<
-
-dumpeckd.boot: dumpeckd.lnk
-	$(OBJCOPY) -O binary $< dumpeckd.boot2
-	dd if=dumpeckd.boot2 > dumpeckd.boot
-	dd if=dumpeckd.boot2 >> dumpeckd.boot
-	rm dumpeckd.boot2
-	
-dumpeckd.lnk: dumpeckd.o
-	$(LD) -Ttext 0x2000 -o $@ $<
 
 listing: ../../../vmlinux
 	$(OBJDUMP) --disassemble --disassemble-all --disassemble-zeroes --reloc $(TOPDIR)/vmlinux > listing
@@ -46,5 +34,5 @@ listing: ../../../vmlinux
 dep:
 
 clean:
-	rm -f image listing iplfba.boot ipleckd.boot dumptape.boot dumpeckd.boot *.lnk *.o
+	rm -f image listing iplfba.boot ipleckd.boot ipldump.boot
 

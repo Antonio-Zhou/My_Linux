@@ -34,7 +34,7 @@ void oss_irq(int, void *, struct pt_regs *);
 void oss_nubus_irq(int, void *, struct pt_regs *);
 
 extern void via1_irq(int, void *, struct pt_regs *);
-extern void mac_SCC_handler(int, void *, struct pt_regs *);
+extern void mac_scc_dispatch(int, void *, struct pt_regs *);
 extern int console_loglevel;
 
 /*
@@ -44,7 +44,7 @@ extern int console_loglevel;
  * before us. Thus we can count on oss_present being valid on entry.
  */
 
-__initfunc(void oss_init(void))
+void __init oss_init(void)
 {
 	int i;
 
@@ -66,42 +66,26 @@ __initfunc(void oss_init(void))
  * Register the OSS and NuBus interrupt dispatchers.
  */
 
-__initfunc(void oss_register_interrupts(void))
+void __init oss_register_interrupts(void)
 {
 	sys_request_irq(OSS_IRQLEV_SCSI, oss_irq, IRQ_FLG_LOCK,
-			"OSS SCSI Dispatch", (void *) oss);
-	sys_request_irq(OSS_IRQLEV_IOPSCC, mac_SCC_handler, IRQ_FLG_LOCK,
-			"SCC Dispatch", mac_SCC_handler);
+			"scsi", (void *) oss);
+	sys_request_irq(OSS_IRQLEV_IOPSCC, mac_scc_dispatch, IRQ_FLG_LOCK,
+			"scc", mac_scc_dispatch);
 	sys_request_irq(OSS_IRQLEV_NUBUS, oss_nubus_irq, IRQ_FLG_LOCK,
-			"Nubus Dispatch", (void *) oss);
+			"nubus", (void *) oss);
 	sys_request_irq(OSS_IRQLEV_SOUND, oss_irq, IRQ_FLG_LOCK,
-			"OSS Sound Dispatch", (void *) oss);
+			"sound", (void *) oss);
 	sys_request_irq(OSS_IRQLEV_VIA1, via1_irq, IRQ_FLG_LOCK,
-			"VIA1 Dispatch", (void *) via1);
+			"via1", (void *) via1);
 }
 
 /*
  * Initialize OSS for Nubus access
  */
 
-__initfunc(void oss_nubus_init(void))
+void __init oss_nubus_init(void)
 {
-}
-
-/*
- * Turn off the power via the ROM control register
- *
- * FIXME: not sure how this is supposed to work exactly...
- */
-
-void oss_poweroff(void)
-{
-	oss->rom_ctrl = OSS_POWEROFF;
-
-	/* We should never make it this far... */
-
-	printk ("It is now safe to switch off your machine.\n");
-	while(1);
 }
 
 /*
@@ -125,12 +109,12 @@ void oss_irq(int irq, void *dev_id, struct pt_regs *regs)
 	/* FIXME: how do you clear a pending IRQ?    */
 
 	if (events & OSS_IP_SOUND) {
-		oss->irq_pending &= ~OSS_IP_SOUND;
 		/* FIXME: call sound handler */
+		oss->irq_pending &= ~OSS_IP_SOUND;
 	} else if (events & OSS_IP_SCSI) {
 		oss->irq_level[OSS_SCSI] = OSS_IRQLEV_DISABLED;
-		oss->irq_pending &= ~OSS_IP_SCSI;
 		mac_do_irq_list(IRQ_MAC_SCSI, regs);
+		oss->irq_pending &= ~OSS_IP_SCSI;
 		oss->irq_level[OSS_SCSI] = OSS_IRQLEV_SCSI;
 	} else {
 		/* FIXME: error check here? */
@@ -160,8 +144,8 @@ void oss_nubus_irq(int irq, void *dev_id, struct pt_regs *regs)
 	for (i = 0, irq_bit = 1 ; i < 6 ; i++, irq_bit <<= 1) {
 		if (events & irq_bit) {
 			oss->irq_level[i] = OSS_IRQLEV_DISABLED;
-			oss->irq_pending &= ~irq_bit;
 			mac_do_irq_list(NUBUS_SOURCE_BASE + i, regs);
+			oss->irq_pending &= ~irq_bit;
 			oss->irq_level[i] = OSS_IRQLEV_NUBUS;
 		}
 	}

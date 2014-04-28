@@ -6,6 +6,7 @@
  *  1997-11-02  Modified for POSIX.1b signals by Richard Henderson
  */
 
+#include <linux/config.h>
 #include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/unistd.h>
@@ -39,13 +40,13 @@ void __init signals_init(void)
 				  sizeof(struct signal_queue),
 				  __alignof__(struct signal_queue),
 				  SIG_SLAB_DEBUG, NULL, NULL);
+	if (!signal_queue_cachep)
+		panic("signals_init(): cannot create signal_queue SLAB cache");
 }
 
 
 /*
  * Flush all pending signals for a task.
- * Callers must hold the sigmask_lock so that we do not race
- * with dequeue_signal or send_sig_info.
  */
 
 void
@@ -89,7 +90,7 @@ flush_signal_handlers(struct task_struct *t)
  * Dequeue a signal and return the element to the caller, which is 
  * expected to free it.
  *
- * All callers of must be holding current->sigmask_lock.
+ * All callers must be holding current->sigmask_lock.
  */
 
 int
@@ -133,59 +134,46 @@ printk("SIG dequeue (%s:%d): %d ", current->comm, current->pid,
 		int reset = 1;
 
 		/* Collect the siginfo appropriate to this signal.  */
-		if (sig < SIGRTMIN) {
-			/* XXX: As an extension, support queueing exactly
-			   one non-rt signal if SA_SIGINFO is set, so that
-			   we can get more detailed information about the
-			   cause of the signal.  */
-			/* Deciding not to init these couple of fields is
-			   more expensive that just initializing them.  */
+		struct signal_queue *q, **pp;
+		pp = &current->sigqueue;
+		q = current->sigqueue;
+
+		/* Find the one we're interested in ... */
+		for ( ; q ; pp = &q->next, q = q->next)
+			if (q->info.si_signo == sig)
+				break;
+		if (q) {
+			if ((*pp = q->next) == NULL)
+				current->sigqueue_tail = pp;
+			*info = q->info;
+			kmem_cache_free(signal_queue_cachep,q);
+			atomic_dec(&nr_queued_signals);
+
+			/* Then see if this signal is still pending.
+			   (Non rt signals may not be queued twice.)
+			 */
+			if (sig >= SIGRTMIN)
+				for (q = *pp; q; q = q->next)
+					if (q->info.si_signo == sig) {
+						reset = 0;
+						break;
+					}
+					
+		} else {
+			/* Ok, it wasn't in the queue.  We must have
+			   been out of queue space.  So zero out the
+			   info.  */
 			info->si_signo = sig;
 			info->si_errno = 0;
 			info->si_code = 0;
 			info->si_pid = 0;
 			info->si_uid = 0;
-		} else {
-			struct signal_queue *q, **pp;
-			pp = &current->sigqueue;
-			q = current->sigqueue;
-
-			/* Find the one we're interested in ... */
-			for ( ; q ; pp = &q->next, q = q->next)
-				if (q->info.si_signo == sig)
-					break;
-			if (q) {
-				if ((*pp = q->next) == NULL)
-					current->sigqueue_tail = pp;
-				*info = q->info;
-				kmem_cache_free(signal_queue_cachep,q);
-				atomic_dec(&nr_queued_signals);
-				
-				/* then see if this signal is still pending. */
-				q = *pp;
-				while (q) {
-					if (q->info.si_signo == sig) {
-						reset = 0;
-						break;
-					}
-					q = q->next;
-				}
-			} else {
-				/* Ok, it wasn't in the queue.  It must have
-				   been sent either by a non-rt mechanism and
-				   we ran out of queue space.  So zero out the
-				   info.  */
-				info->si_signo = sig;
-				info->si_errno = 0;
-				info->si_code = 0;
-				info->si_pid = 0;
-				info->si_uid = 0;
-			}
 		}
 
-		if (reset)
+		if (reset) {
 			sigdelset(&current->signal, sig);
-		recalc_sigpending(current);
+			recalc_sigpending(current);
+		}
 
 		/* XXX: Once POSIX.1b timers are in, if si_code == SI_TIMER,
 		   we need to xchg out the timer overrun values.  */
@@ -209,6 +197,43 @@ printk(" %d -> %d\n", signal_pending(current), sig);
 }
 
 /*
+ * Remove signal sig from queue and from t->signal.
+ * Returns 1 if sig was found in t->signal.
+ *
+ * All callers must be holding t->sigmask_lock.
+ */
+static int rm_sig_from_queue(int sig, struct task_struct *t)
+{
+	struct signal_queue *q, **pp;
+
+	if (sig >= SIGRTMIN) {
+		printk(KERN_CRIT "SIG: rm_sig_from_queue() doesn't support rt signals\n");
+		return 0;
+	}
+
+	if (!sigismember(&t->signal, sig))
+		return 0;
+
+	sigdelset(&t->signal, sig);
+
+	pp = &t->sigqueue;
+	q = t->sigqueue;
+
+	/* Find the one we're interested in ...
+	   It may appear only once. */
+	for ( ; q ; pp = &q->next, q = q->next)
+		if (q->info.si_signo == sig)
+			break;
+	if (q) {
+		if ((*pp = q->next) == NULL)
+			t->sigqueue_tail = pp;
+		kmem_cache_free(signal_queue_cachep,q);
+		atomic_dec(&nr_queued_signals);
+	}
+	return 1;
+}
+
+/*
  * Determine whether a signal should be posted or not.
  *
  * Signals with SIG_IGN can be ignored, except for the
@@ -222,7 +247,7 @@ static int ignored_signal(int sig, struct task_struct *t)
 	struct k_sigaction *ka;
 
 	/* Don't ignore traced or blocked signals */
-	if ((t->ptrace & PT_PTRACED) || sigismember(&t->blocked, sig))
+	if ((t->flags & PF_PTRACED) || sigismember(&t->blocked, sig))
 		return 0;
 	
 	signals = t->sig;
@@ -254,6 +279,8 @@ send_sig_info(int sig, struct siginfo *info, struct task_struct *t)
 {
 	unsigned long flags;
 	int ret;
+	struct signal_queue *q = 0;
+
 
 #if DEBUG_SIG
 printk("SIG queue (%s:%d): %d ", t->comm, t->pid, sig);
@@ -272,34 +299,28 @@ printk("SIG queue (%s:%d): %d ", t->comm, t->pid, sig);
 		goto out_nolock;
 
 	/* The null signal is a permissions and process existance probe.
-	   No signal is actually delivered.  Same goes for zombies.
-	   We have to grab the spinlock now so that we do not race
-	   with flush_signals. */
+	   No signal is actually delivered.  Same goes for zombies. */
 	ret = 0;
-	spin_lock_irqsave(&t->sigmask_lock, flags);
-	if (!sig || !t->sig) {
-		spin_unlock_irqrestore(&t->sigmask_lock, flags);
+	if (!sig || !t->sig)
 		goto out_nolock;
-	}
 
+	spin_lock_irqsave(&t->sigmask_lock, flags);
 	switch (sig) {
 	case SIGKILL: case SIGCONT:
 		/* Wake up the process if stopped.  */
 		if (t->state == TASK_STOPPED)
 			wake_up_process(t);
 		t->exit_code = 0;
-		sigdelsetmask(&t->signal, (sigmask(SIGSTOP)|sigmask(SIGTSTP)|
-					   sigmask(SIGTTOU)|sigmask(SIGTTIN)));
-		/* Inflict this corner case with recalculations, not mainline */
-		recalc_sigpending(t);
+		if (rm_sig_from_queue(SIGSTOP, t) || rm_sig_from_queue(SIGTSTP, t) ||
+		    rm_sig_from_queue(SIGTTOU, t) || rm_sig_from_queue(SIGTTIN, t))
+			recalc_sigpending(t);
 		break;
 
 	case SIGSTOP: case SIGTSTP:
 	case SIGTTIN: case SIGTTOU:
 		/* If we're stopping again, cancel SIGCONT */
-		sigdelset(&t->signal, SIGCONT);
-		/* Inflict this corner case with recalculations, not mainline */
-		recalc_sigpending(t);
+		if (rm_sig_from_queue(SIGCONT, t))
+			recalc_sigpending(t);
 		break;
 	}
 
@@ -310,36 +331,31 @@ printk("SIG queue (%s:%d): %d ", t->comm, t->pid, sig);
 	if (ignored_signal(sig, t))
 		goto out;
 
-	if (sig < SIGRTMIN) {
-		/* Non-real-time signals are not queued.  */
-		/* XXX: As an extension, support queueing exactly one
-		   non-rt signal if SA_SIGINFO is set, so that we can
-		   get more detailed information about the cause of
-		   the signal.  */
-		if (sigismember(&t->signal, sig))
-			goto out;
-	} else {
-		/* Real-time signals must be queued if sent by sigqueue, or
-		   some other real-time mechanism.  It is implementation
-		   defined whether kill() does so.  We attempt to do so, on
-		   the principle of least surprise, but since kill is not
-		   allowed to fail with EAGAIN when low on memory we just
-		   make sure at least one signal gets delivered and don't
-		   pass on the info struct.  */
+	/* Support queueing exactly one non-rt signal, so that we
+	   can get more detailed information about the cause of
+	   the signal. */
+	if (sig < SIGRTMIN && sigismember(&t->signal, sig))
+		goto out;
 
-		struct signal_queue *q = 0;
+	/* Real-time signals must be queued if sent by sigqueue, or
+	   some other real-time mechanism.  It is implementation
+	   defined whether kill() does so.  We attempt to do so, on
+	   the principle of least surprise, but since kill is not
+	   allowed to fail with EAGAIN when low on memory we just
+	   make sure at least one signal gets delivered and don't
+	   pass on the info struct.  */
 
-		if (atomic_read(&nr_queued_signals) < max_queued_signals) {
-			q = (struct signal_queue *)
-			    kmem_cache_alloc(signal_queue_cachep, GFP_ATOMIC);
-		}
-		
-		if (q) {
-			atomic_inc(&nr_queued_signals);
-			q->next = NULL;
-			*t->sigqueue_tail = q;
-			t->sigqueue_tail = &q->next;
-			switch ((unsigned long) info) {
+	if (atomic_read(&nr_queued_signals) < max_queued_signals) {
+		q = (struct signal_queue *)
+			kmem_cache_alloc(signal_queue_cachep, GFP_ATOMIC);
+	}
+
+	if (q) {
+		atomic_inc(&nr_queued_signals);
+		q->next = NULL;
+		*t->sigqueue_tail = q;
+		t->sigqueue_tail = &q->next;
+		switch ((unsigned long) info) {
 			case 0:
 				q->info.si_signo = sig;
 				q->info.si_errno = 0;
@@ -357,22 +373,21 @@ printk("SIG queue (%s:%d): %d ", t->comm, t->pid, sig);
 			default:
 				q->info = *info;
 				break;
-			}
-		} else {
-			/* If this was sent by a rt mechanism, try again.  */
-			if (info->si_code < 0) {
-				ret = -EAGAIN;
-				goto out;
-			}
-			/* Otherwise, mention that the signal is pending,
-			   but don't queue the info.  */
 		}
+	} else if (sig >= SIGRTMIN && info && (unsigned long)info != 1
+		   && info->si_code < 0) {
+		/*
+		 * Queue overflow, abort.  We may abort if the signal was rt
+		 * and sent by user using something other than kill().
+		 */
+		ret = -EAGAIN;
+		goto out;
 	}
 
 	sigaddset(&t->signal, sig);
 	if (!sigismember(&t->blocked, sig)) {
 		t->sigpending = 1;
-#ifdef __SMP__
+#ifdef CONFIG_SMP
 		/*
 		 * If the task is running on a different CPU 
 		 * force a reschedule on the other CPU - note that
@@ -389,12 +404,12 @@ printk("SIG queue (%s:%d): %d ", t->comm, t->pid, sig);
 		if (t->has_cpu && t->processor != smp_processor_id())
 			smp_send_reschedule(t->processor);
 		spin_unlock(&runqueue_lock);
-#endif /* __SMP__ */
+#endif /* CONFIG_SMP */
 	}
 
 out:
 	spin_unlock_irqrestore(&t->sigmask_lock, flags);
-        if (t->state == TASK_INTERRUPTIBLE && signal_pending(t))
+        if ((t->state & TASK_INTERRUPTIBLE) && signal_pending(t))
                 wake_up_process(t);
 
 out_nolock:
@@ -431,7 +446,7 @@ force_sig_info(int sig, struct siginfo *info, struct task_struct *t)
 }
 
 /*
- * kill_pg() sends a signal to a process group: this is what the tty
+ * kill_pg_info() sends a signal to a process group: this is what the tty
  * control characters do (^C, ^Z etc)
  */
 
@@ -462,7 +477,7 @@ kill_pg_info(int sig, struct siginfo *info, pid_t pgrp)
 }
 
 /*
- * kill_sl() sends a signal to the session leader: this is used
+ * kill_sl_info() sends a signal to the session leader: this is used
  * to send SIGHUP to the controlling process of a terminal when
  * the connection is lost.
  */
@@ -509,7 +524,7 @@ kill_proc_info(int sig, struct siginfo *info, pid_t pid)
 }
 
 /*
- * kill_something() interprets pid in interesting ways just like kill(2).
+ * kill_something_info() interprets pid in interesting ways just like kill(2).
  *
  * POSIX specifies that kill(-1,sig) is unspecified, but what we have
  * is probably wrong.  Should make it like BSD or SYSV.
@@ -646,7 +661,7 @@ EXPORT_SYMBOL(send_sig_info);
  * used by various programs)
  */
 
-asmlinkage int
+asmlinkage long
 sys_rt_sigprocmask(int how, sigset_t *set, sigset_t *oset, size_t sigsetsize)
 {
 	int error = -EINVAL;
@@ -680,8 +695,7 @@ sys_rt_sigprocmask(int how, sigset_t *set, sigset_t *oset, size_t sigsetsize)
 			break;
 		}
 
-		if (!error)
-		    current->blocked = new_set;
+		current->blocked = new_set;
 		recalc_sigpending(current);
 		spin_unlock_irq(&current->sigmask_lock);
 		if (error)
@@ -703,7 +717,7 @@ out:
 	return error;
 }
 
-asmlinkage int
+asmlinkage long
 sys_rt_sigpending(sigset_t *set, size_t sigsetsize)
 {
 	int error = -EINVAL;
@@ -724,7 +738,7 @@ out:
 	return error;
 }
 
-asmlinkage int
+asmlinkage long
 sys_rt_sigtimedwait(const sigset_t *uthese, siginfo_t *uinfo,
 		    const struct timespec *uts, size_t sigsetsize)
 {
@@ -740,10 +754,12 @@ sys_rt_sigtimedwait(const sigset_t *uthese, siginfo_t *uinfo,
 
 	if (copy_from_user(&these, uthese, sizeof(these)))
 		return -EFAULT;
-	/* Invert the set of allowed signals to get those we
-	   want to block.  */
-
-	sigdelsetmask (&these, sigmask(SIGKILL)|sigmask(SIGSTOP));
+		
+	/*
+	 * Invert the set of allowed signals to get those we
+	 * want to block.
+	 */
+	sigdelsetmask(&these, sigmask(SIGKILL)|sigmask(SIGSTOP));
 	signotset(&these);
 
 	if (uts) {
@@ -794,7 +810,7 @@ sys_rt_sigtimedwait(const sigset_t *uthese, siginfo_t *uinfo,
 	return ret;
 }
 
-asmlinkage int
+asmlinkage long
 sys_kill(int pid, int sig)
 {
 	struct siginfo info;
@@ -810,7 +826,7 @@ sys_kill(int pid, int sig)
 	return kill_something_info(sig, &info, pid);
 }
 
-asmlinkage int
+asmlinkage long
 sys_rt_sigqueueinfo(int pid, int sig, siginfo_t *uinfo)
 {
 	siginfo_t info;
@@ -820,7 +836,7 @@ sys_rt_sigqueueinfo(int pid, int sig, siginfo_t *uinfo)
 
 	/* Not even root can pretend to send signals from the kernel.
 	   Nor can they impersonate a kill(), which adds source info.  */
-	if (SI_FROMKERNEL(&info))
+	if (info.si_code >= 0)
 		return -EPERM;
 	info.si_signo = sig;
 
@@ -927,10 +943,18 @@ do_sigaltstack (const stack_t *uss, stack_t *uoss, unsigned long sp)
 			goto out;
 
 		error = -EINVAL;
-		if (ss_flags & ~SS_DISABLE)
+		/*
+		 *
+		 * Note - this code used to test ss_flags incorrectly
+		 *  	  old code may have been written using ss_flags==0
+		 *	  to mean ss_flags==SS_ONSTACK (as this was the only
+		 *	  way that worked) - this fix preserves that older
+		 *	  mechanism
+		 */
+		if (ss_flags != SS_DISABLE && ss_flags != SS_ONSTACK && ss_flags != 0)
 			goto out;
 
-		if (ss_flags & SS_DISABLE) {
+		if (ss_flags == SS_DISABLE) {
 			ss_size = 0;
 			ss_sp = NULL;
 		} else {
@@ -957,7 +981,7 @@ out:
 #if !defined(__alpha__)
 /* Alpha has its own versions with special arguments.  */
 
-asmlinkage int
+asmlinkage long
 sys_sigprocmask(int how, old_sigset_t *set, old_sigset_t *oset)
 {
 	int error;
@@ -1006,7 +1030,7 @@ out:
 	return error;
 }
 
-asmlinkage int
+asmlinkage long
 sys_sigpending(old_sigset_t *set)
 {
 	int error;
@@ -1023,7 +1047,7 @@ sys_sigpending(old_sigset_t *set)
 }
 
 #ifndef __sparc__
-asmlinkage int
+asmlinkage long
 sys_rt_sigaction(int sig, const struct sigaction *act, struct sigaction *oact,
 		 size_t sigsetsize)
 {
@@ -1051,18 +1075,18 @@ out:
 #endif /* __sparc__ */
 #endif
 
-#if !defined(__alpha__)
+#if !defined(__alpha__) && !defined(__ia64__)
 /*
  * For backwards compatibility.  Functionality superseded by sigprocmask.
  */
-asmlinkage int
+asmlinkage long
 sys_sgetmask(void)
 {
 	/* SMP safe */
 	return current->blocked.sig[0];
 }
 
-asmlinkage int
+asmlinkage long
 sys_ssetmask(int newmask)
 {
 	int old;
@@ -1096,4 +1120,4 @@ sys_signal(int sig, __sighandler_t handler)
 
 	return ret ? ret : (unsigned long)old_sa.sa.sa_handler;
 }
-#endif /* !defined(__alpha__) && !defined(__mips__) */
+#endif /* !alpha && !__ia64__ && !defined(__mips__) */

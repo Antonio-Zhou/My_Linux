@@ -34,10 +34,10 @@ struct nfscache_head {
 	struct svc_cacherep *	prev;
 };
 
-static struct nfscache_head	hash_list[HASHSIZE];
+static struct nfscache_head *	hash_list;
 static struct svc_cacherep *	lru_head;
 static struct svc_cacherep *	lru_tail;
-static struct svc_cacherep	nfscache[CACHESIZE];
+static struct svc_cacherep *	nfscache;
 static int			cache_initialized = 0;
 static int			cache_disabled = 1;
 
@@ -48,10 +48,31 @@ nfsd_cache_init(void)
 {
 	struct svc_cacherep	*rp;
 	struct nfscache_head	*rh;
-	int			i;
+	size_t			i;
+	unsigned long		order;
 
 	if (cache_initialized)
 		return;
+
+	i = CACHESIZE * sizeof (struct svc_cacherep);
+	for (order = 0; (PAGE_SIZE << order) < i; order++)
+		;
+	nfscache = (struct svc_cacherep *)
+		__get_free_pages(GFP_KERNEL, order);
+	if (!nfscache) {
+		printk (KERN_ERR "nfsd: cannot allocate %d bytes for reply cache\n", i);
+		return;
+	}
+	memset(nfscache, 0, i);
+
+	i = HASHSIZE * sizeof (struct nfscache_head);
+	hash_list = kmalloc (i, GFP_KERNEL);
+	if (!hash_list) {
+		kfree (nfscache);
+		nfscache = NULL;
+		printk (KERN_ERR "nfsd: cannot allocate %d bytes for hash list\n", i);
+		return;
+	}
 
 	for (i = 0, rh = hash_list; i < HASHSIZE; i++, rh++)
 		rh->next = rh->prev = (struct svc_cacherep *) rh;
@@ -88,6 +109,11 @@ nfsd_cache_shutdown(void)
 
 	cache_initialized = 0;
 	cache_disabled = 1;
+
+	kfree (nfscache);
+	nfscache = NULL;
+	kfree (hash_list);
+	hash_list = NULL;
 }
 
 /*
@@ -143,9 +169,8 @@ int
 nfsd_cache_lookup(struct svc_rqst *rqstp, int type)
 {
 	struct svc_cacherep	*rh, *rp;
+	struct svc_client	*clp = rqstp->rq_client;
 	u32			xid = rqstp->rq_xid,
-				proto = rqstp->rq_prot,
-				vers = rqstp->rq_vers,
 				proc = rqstp->rq_proc;
 	unsigned long		age;
 
@@ -159,9 +184,7 @@ nfsd_cache_lookup(struct svc_rqst *rqstp, int type)
 	while ((rp = rp->c_hash_next) != rh) {
 		if (rp->c_state != RC_UNUSED &&
 		    xid == rp->c_xid && proc == rp->c_proc &&
-		    proto == rp->c_prot && vers == rp->c_vers &&
-		    time_before(jiffies, rp->c_timestamp + 120*HZ) &&
-		    memcmp((char*)&rqstp->rq_addr, (char*)&rp->c_addr, sizeof(rp->c_addr))==0) {
+		    exp_checkaddr(clp, rp->c_client)) {
 			nfsdstats.rchits++;
 			goto found_entry;
 		}
@@ -198,11 +221,7 @@ nfsd_cache_lookup(struct svc_rqst *rqstp, int type)
 	rp->c_state = RC_INPROG;
 	rp->c_xid = xid;
 	rp->c_proc = proc;
-	memcpy(&rp->c_addr, &rqstp->rq_addr, sizeof(rp->c_addr));
-	rp->c_prot = proto;
-	rp->c_vers = vers;
-	rp->c_timestamp = jiffies;
-
+	rp->c_client = rqstp->rq_addr.sin_addr;
 	hash_refile(rp);
 
 	/* release any buffer */

@@ -1,53 +1,33 @@
-#ifndef _I2O_H
-#define _I2O_H
-/* I2O kernel space accessible structures/APIs
- *
+/*
+ * I2O kernel space accessible structures/APIs
+ * 
  * (c) Copyright 1999, 2000 Red Hat Software
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
- *
+ * This program is free software; you can redistribute it and/or 
+ * modify it under the terms of the GNU General Public License 
+ * as published by the Free Software Foundation; either version 
+ * 2 of the License, or (at your option) any later version.  
+ * 
  *************************************************************************
  *
- * This header file defined the I2O APIs/structures for use by
+ * This header file defined the I2O APIs/structures for use by 
  * the I2O kernel modules.
  *
  */
 
-#ifdef __KERNEL__       /* This file to be included by kernel only */
+#ifndef _I2O_H
+#define _I2O_H
+#ifdef __KERNEL__	/* This file to be included by kernel only */
 
 #include <linux/i2o-dev.h>
-
-#include <asm/semaphore.h> /* Needed for MUTEX init macros */
-#include <linux/config.h>
-#include <linux/notifier.h>
-#include <asm/atomic.h>
-
-
-/*
- *	Tunable parameters first
- */
 
 /* How many different OSM's are we allowing */ 
 #define MAX_I2O_MODULES		64
 
-#define I2O_EVT_CAPABILITY_OTHER		0x01
-#define I2O_EVT_CAPABILITY_CHANGED		0x02
-
-#define I2O_EVT_SENSOR_STATE_CHANGED		0x01
-
-//#ifdef __KERNEL__   /* ioctl stuff only thing exported to users */
-
+/* How many OSMs can register themselves for device status updates? */
 #define I2O_MAX_MANAGERS	4
 
 #include <asm/semaphore.h> /* Needed for MUTEX init macros */
-
-/*
- *	I2O Interface Objects
- */
-
 #include <linux/config.h>
 #include <linux/notifier.h>
 #include <asm/atomic.h>
@@ -55,7 +35,6 @@
 /*
  * message structures
  */
-
 struct i2o_message
 {
 	u8	version_offset;
@@ -70,12 +49,11 @@ struct i2o_message
 
 /*
  *	Each I2O device entity has one or more of these. There is one
- *	per device. *FIXME* how to handle multiple types on one unit.
+ *	per device.
  */
- 
 struct i2o_device
 {
-	i2o_lct_entry lct_data;/* Device LCT information */
+	i2o_lct_entry lct_data; /* Device LCT information */
 	u32 flags;		
 	int i2oversion;		/* I2O version supported. Actually there
 				 * should be high and low version */
@@ -91,7 +69,6 @@ struct i2o_device
 
 	struct i2o_controller *controller;	/* Controlling IOP */
 	struct i2o_device *next;	/* Chain */
-	struct i2o_device *prev;
 	char dev_name[8];		/* linux /dev name if available */
 };
 
@@ -107,11 +84,15 @@ struct i2o_pci
 #endif
 };
 
+/*
+ * Transport types supported by I2O stack
+ */
+#define I2O_TYPE_PCI		0x01		/* PCI I2O controller */	
+
 
 /*
- *	Each I2O controller has one of these objects
+ * Each I2O controller has one of these objects
  */
- 
 struct i2o_controller
 {
 	char name[16];
@@ -119,33 +100,26 @@ struct i2o_controller
 	int type;
 	int enabled;
 
-#define I2O_TYPE_PCI		0x01		/* PCI I2O controller */	
-
 	struct notifier_block *event_notifer;	/* Events */
 	atomic_t users;
 	struct i2o_device *devices;		/* I2O device chain */
 	struct i2o_controller *next;		/* Controller chain */
-	volatile u32 *post_port;		/* Messaging ports */
-	volatile u32 *reply_port;
-	volatile u32 *irq_mask;			/* Interrupt port */
+	volatile u32 *post_port;		/* Inbout port */
+	volatile u32 *reply_port;		/* Outbound port */
+	volatile u32 *irq_mask;			/* Interrupt register */
 
-        /* Dynamic LCT related data */
-        struct semaphore lct_sem;
-        int lct_pid;
-        int lct_running;
+	/* Dynamic LCT related data */
+	struct semaphore lct_sem;
+	int lct_pid;
+	int lct_running;
 
 	i2o_status_block *status_block;		/* IOP status block */
 	i2o_lct *lct;				/* Logical Config Table */
 	i2o_lct *dlct;				/* Temp LCT */
-	i2o_hrt *hrt;
+	i2o_hrt *hrt;				/* HW Resource Table */
 
 	u32 mem_offset;				/* MFA offset */
 	u32 mem_phys;				/* MFA physical */
-
-	u32 priv_mem;
-	u32 priv_mem_size;
-	u32 priv_io;
-	u32 priv_io_size;
 
 	struct proc_dir_entry* proc_entry;	/* /proc dir */
 
@@ -153,38 +127,49 @@ struct i2o_controller
 	{					/* Bus information */
 		struct i2o_pci pci;
 	} bus;
+
 	/* Bus specific destructor */
 	void (*destructor)(struct i2o_controller *);		
+
 	/* Bus specific attach/detach */
 	int (*bind)(struct i2o_controller *, struct i2o_device *);	
+
 	/* Bus specific initiator */
 	int (*unbind)(struct i2o_controller *, struct i2o_device *);
+
 	/* Bus specific enable/disable */
 	void (*bus_enable)(struct i2o_controller *c);
 	void (*bus_disable)(struct i2o_controller *c);
 
 	void *page_frame;		/* Message buffers */
-	int inbound_size;		/* Inbound queue size */
 };
 
+/*
+ * OSM resgistration block
+ *
+ * Each OSM creates at least one of these and registers it with the
+ * I2O core through i2o_register_handler.  An OSM may want to
+ * register more than one if it wants a fast path to a reply
+ * handler by having a separate initiator context for each 
+ * class function.
+ */
 struct i2o_handler
 {
-        /* Message reply handler */
-
+	/* Message reply handler */
 	void (*reply)(struct i2o_handler *, struct i2o_controller *, struct i2o_message *);
 
-        /* New device notification handler */
-        void (*new_dev_notify)(struct i2o_controller *, struct i2o_device *);
+	/* New device notification handler */
+	void (*new_dev_notify)(struct i2o_controller *, struct i2o_device *);
 
-        /* Device deltion handler */
-        void (*dev_del_notify)(struct i2o_controller *, struct i2o_device *);
+	/* Device deltion handler */
+	void (*dev_del_notify)(struct i2o_controller *, struct i2o_device *);
 
-        /* Reboot notification handler */
-        void (*reboot_notify)(void);
+	/* Reboot notification handler */
+	void (*reboot_notify)(void);
 
-	char *name;
-	int context;		/* Low 8 bits of the transaction info */
-	u32 class;			/* I2O classes that this driver handles */
+	char *name;		/* OSM name */
+	int context;	/* Low 8 bits of the transaction info */
+	u32 class;		/* I2O classes that this driver handles */
 	/* User data follows */
 };
 
@@ -208,10 +193,14 @@ struct i2o_core_func_table
 	void	(*run_queue)(struct i2o_controller *c);
 	int	(*delete)(struct i2o_controller *);
 };
-#endif
+#endif // MODULE
 
 /*
  * I2O System table entry
+ *
+ * The system table contains information about all the IOPs in the
+ * system.  It is sent to all IOPs so that they can create peer2peer
+ * connections between them.
  */
 struct i2o_sys_tbl_entry
 {
@@ -290,12 +279,11 @@ extern inline void i2o_flush_reply(struct i2o_controller *c, u32 m)
 	I2O_REPLY_WRITE32(c,m);
 }
 
-extern int i2o_install_controller(struct i2o_controller *);
-extern int i2o_delete_controller(struct i2o_controller *);
-extern void i2o_unlock_controller(struct i2o_controller *);
 extern struct i2o_controller *i2o_find_controller(int);
-extern int i2o_status_get(struct i2o_controller *);
+extern void i2o_unlock_controller(struct i2o_controller *);
+extern struct i2o_controller *i2o_controller_chain;
 extern int i2o_num_controllers;
+extern int i2o_status_get(struct i2o_controller *);
 
 extern int i2o_install_handler(struct i2o_handler *);
 extern int i2o_remove_handler(struct i2o_handler *);
@@ -307,116 +295,37 @@ extern int i2o_device_notify_off(struct i2o_device *, struct i2o_handler *);
 
 extern int i2o_post_this(struct i2o_controller *, u32 *, int);
 extern int i2o_post_wait(struct i2o_controller *, u32 *, int, int);
-extern int i2o_issue_params(int, struct i2o_controller *, int, void *,
-			    int, void *, int); 
 
 extern int i2o_query_scalar(struct i2o_controller *, int, int, int, void *, int);
 extern int i2o_set_scalar(struct i2o_controller *, int, int, int, void *, int);
-
 extern int i2o_query_table(int, struct i2o_controller *, int, int, int, void *,
 			   int, void *, int);
 extern int i2o_clear_table(struct i2o_controller *, int, int); 
 extern int i2o_row_add_table(struct i2o_controller *, int, int, int, void *,
 			     int);
-extern int i2o_row_delete_table(struct i2o_controller *, int, int, int, void *,			int);
+extern int i2o_issue_params(int, struct i2o_controller *, int, void *,
+			    int, void *, int); 
 
-extern int i2o_event_register(struct i2o_controller *, u32, u32,u32, u32); 
-extern int i2o_event_ack(struct i2o_controller *,  u32 *);
+extern int i2o_event_register(struct i2o_controller *, u32, u32, u32, u32); 
+extern int i2o_event_ack(struct i2o_controller *, u32 *);
 
-extern void i2o_run_queue(struct i2o_controller *);
 extern void i2o_report_status(const char *, const char *, u32 *);
 extern void i2o_dump_message(u32 *);
-
 extern const char *i2o_get_class_name(int);
 
+extern int i2o_install_controller(struct i2o_controller *);
+extern int i2o_activate_controller(struct i2o_controller *);
+extern void i2o_run_queue(struct i2o_controller *);
+extern int i2o_delete_controller(struct i2o_controller *);
+
 
 /*
- *	I2O classes / subclasses
+ * I2O Function codes
  */
-
-/*  Class ID and Code Assignments
- *  (LCT.ClassID.Version field)
- */
-#define    I2O_CLASS_VERSION_10                        0x00
-#define    I2O_CLASS_VERSION_11                        0x01
-
-/*  Class code names
- *  (from v1.5 Table 6-1 Class Code Assignments.)
- */
- 
-#define    I2O_CLASS_EXECUTIVE                         0x000
-#define    I2O_CLASS_DDM                               0x001
-#define    I2O_CLASS_RANDOM_BLOCK_STORAGE              0x010
-#define    I2O_CLASS_SEQUENTIAL_STORAGE                0x011
-#define    I2O_CLASS_LAN                               0x020
-#define    I2O_CLASS_WAN                               0x030
-#define    I2O_CLASS_FIBRE_CHANNEL_PORT                0x040
-#define    I2O_CLASS_FIBRE_CHANNEL_PERIPHERAL          0x041
-#define    I2O_CLASS_SCSI_PERIPHERAL                   0x051
-#define    I2O_CLASS_ATE_PORT                          0x060
-#define    I2O_CLASS_ATE_PERIPHERAL                    0x061
-#define    I2O_CLASS_FLOPPY_CONTROLLER                 0x070
-#define    I2O_CLASS_FLOPPY_DEVICE                     0x071
-#define    I2O_CLASS_BUS_ADAPTER_PORT                  0x080
-#define    I2O_CLASS_PEER_TRANSPORT_AGENT              0x090
-#define    I2O_CLASS_PEER_TRANSPORT                    0x091
-
-/*  Rest of 0x092 - 0x09f reserved for peer-to-peer classes
- */
- 
-#define    I2O_CLASS_MATCH_ANYCLASS                    0xffffffff
-
-/*  Subclasses
- */
-
-#define    I2O_SUBCLASS_i960                           0x001
-#define    I2O_SUBCLASS_HDM                            0x020
-#define    I2O_SUBCLASS_ISM                            0x021
- 
-/* Operation functions */
-
-#define I2O_PARAMS_FIELD_GET	0x0001
-#define I2O_PARAMS_LIST_GET	0x0002
-#define I2O_PARAMS_MORE_GET	0x0003
-#define I2O_PARAMS_SIZE_GET	0x0004
-#define I2O_PARAMS_TABLE_GET	0x0005
-#define I2O_PARAMS_FIELD_SET	0x0006
-#define I2O_PARAMS_LIST_SET	0x0007
-#define I2O_PARAMS_ROW_ADD	0x0008
-#define I2O_PARAMS_ROW_DELETE	0x0009
-#define I2O_PARAMS_TABLE_CLEAR	0x000A
 
 /*
- *	I2O serial number conventions / formats
- *	(circa v1.5)
- */
-
-#define    I2O_SNFORMAT_UNKNOWN                        0
-#define    I2O_SNFORMAT_BINARY                         1
-#define    I2O_SNFORMAT_ASCII                          2
-#define    I2O_SNFORMAT_UNICODE                        3
-#define    I2O_SNFORMAT_LAN48_MAC                      4
-#define    I2O_SNFORMAT_WAN                            5
-
-/* Plus new in v2.0 (Yellowstone pdf doc)
- */
-
-#define    I2O_SNFORMAT_LAN64_MAC                      6
-#define    I2O_SNFORMAT_DDM                            7
-#define    I2O_SNFORMAT_IEEE_REG64                     8
-#define    I2O_SNFORMAT_IEEE_REG128                    9
-#define    I2O_SNFORMAT_UNKNOWN2                       0xff
-
-/* Transaction Reply Lists (TRL) Control Word structure */
-
-#define TRL_SINGLE_FIXED_LENGTH		0x00
-#define TRL_SINGLE_VARIABLE_LENGTH	0x40
-#define TRL_MULTIPLE_FIXED_LENGTH	0x80
-
-/*
- *	Messaging API values
- */
- 
+ * Executive Class
+ */ 
 #define	I2O_CMD_ADAPTER_ASSIGN		0xB3
 #define	I2O_CMD_ADAPTER_READ		0xB2
 #define	I2O_CMD_ADAPTER_RELEASE		0xB5
@@ -451,6 +360,9 @@ extern const char *i2o_get_class_name(int);
 #define	I2O_CMD_SYS_QUIESCE		0xC3
 #define	I2O_CMD_SYS_TAB_SET		0xA3
 
+/*
+ * Utility Class
+ */
 #define I2O_CMD_UTIL_NOP		0x00
 #define I2O_CMD_UTIL_ABORT		0x01
 #define I2O_CMD_UTIL_CLAIM		0x09
@@ -466,10 +378,16 @@ extern const char *i2o_get_class_name(int);
 #define I2O_CMD_UTIL_LOCK_RELEASE	0x19
 #define I2O_CMD_UTIL_REPLY_FAULT_NOTIFY	0x15
 
+/*
+ * SCSI Host Bus Adapter Class
+ */
 #define I2O_CMD_SCSI_EXEC		0x81
 #define I2O_CMD_SCSI_ABORT		0x83
 #define I2O_CMD_SCSI_BUSRESET		0x27
 
+/*
+ * Random Block Storage Class
+ */
 #define I2O_CMD_BLOCK_READ		0x30
 #define I2O_CMD_BLOCK_WRITE		0x31
 #define I2O_CMD_BLOCK_CFLUSH		0x37
@@ -480,27 +398,13 @@ extern const char *i2o_get_class_name(int);
 
 #define I2O_PRIVATE_MSG			0xFF
 
-/*
- *	Init Outbound Q status 
- */
- 
-#define I2O_CMD_OUTBOUND_INIT_IN_PROGRESS	0x01
-#define I2O_CMD_OUTBOUND_INIT_REJECTED		0x02
-#define I2O_CMD_OUTBOUND_INIT_FAILED		0x03
-#define I2O_CMD_OUTBOUND_INIT_COMPLETE		0x04
+/* Command status values  */
 
-/*
- *	I2O Get Status State values 
- */
+#define I2O_CMD_IN_PROGRESS	0x01
+#define I2O_CMD_REJECTED	0x02
+#define I2O_CMD_FAILED		0x03
+#define I2O_CMD_COMPLETED	0x04
 
-#define	ADAPTER_STATE_INITIALIZING		0x01
-#define	ADAPTER_STATE_RESET			0x02
-#define	ADAPTER_STATE_HOLD			0x04
-#define ADAPTER_STATE_READY			0x05
-#define	ADAPTER_STATE_OPERATIONAL		0x08
-#define	ADAPTER_STATE_FAILED			0x10
-#define	ADAPTER_STATE_FAULTED			0x11
-	
 /* I2O API function return values */
 
 #define I2O_RTN_NO_ERROR			0
@@ -582,6 +486,25 @@ extern const char *i2o_get_class_name(int);
 #define I2O_DSC_DEVICE_BUSY                    0x001B
 #define I2O_DSC_DEVICE_NOT_AVAILABLE           0x001C
 
+/* FailureStatusCodes, Table 3-3 Message Failure Codes */
+
+#define I2O_FSC_TRANSPORT_SERVICE_SUSPENDED             0x81
+#define I2O_FSC_TRANSPORT_SERVICE_TERMINATED            0x82
+#define I2O_FSC_TRANSPORT_CONGESTION                    0x83
+#define I2O_FSC_TRANSPORT_FAILURE                       0x84
+#define I2O_FSC_TRANSPORT_STATE_ERROR                   0x85
+#define I2O_FSC_TRANSPORT_TIME_OUT                      0x86
+#define I2O_FSC_TRANSPORT_ROUTING_FAILURE               0x87
+#define I2O_FSC_TRANSPORT_INVALID_VERSION               0x88
+#define I2O_FSC_TRANSPORT_INVALID_OFFSET                0x89
+#define I2O_FSC_TRANSPORT_INVALID_MSG_FLAGS             0x8A
+#define I2O_FSC_TRANSPORT_FRAME_TOO_SMALL               0x8B
+#define I2O_FSC_TRANSPORT_FRAME_TOO_LARGE               0x8C
+#define I2O_FSC_TRANSPORT_INVALID_TARGET_ID             0x8D
+#define I2O_FSC_TRANSPORT_INVALID_INITIATOR_ID          0x8E
+#define I2O_FSC_TRANSPORT_INVALID_INITIATOR_CONTEXT     0x8F
+#define I2O_FSC_TRANSPORT_UNKNOWN_FAILURE               0xFF
+
 /* Device Claim Types */
 #define	I2O_CLAIM_PRIMARY					0x01000000
 #define	I2O_CLAIM_MANAGEMENT					0x02000000
@@ -591,8 +514,10 @@ extern const char *i2o_get_class_name(int);
 /* Message header defines for VersionOffset */
 #define I2OVER15	0x0001
 #define I2OVER20	0x0002
+
 /* Default is 1.5, FIXME: Need support for both 1.5 and 2.0 */
 #define I2OVERSION	I2OVER15
+
 #define SGL_OFFSET_0    I2OVERSION
 #define SGL_OFFSET_4    (0x0040 | I2OVERSION)
 #define SGL_OFFSET_5    (0x0050 | I2OVERSION)
@@ -605,12 +530,18 @@ extern const char *i2o_get_class_name(int);
 #define TRL_OFFSET_5    (0x0050 | I2OVERSION)
 #define TRL_OFFSET_6    (0x0060 | I2OVERSION)
 
+/* Transaction Reply Lists (TRL) Control Word structure */
+#define TRL_SINGLE_FIXED_LENGTH		0x00
+#define TRL_SINGLE_VARIABLE_LENGTH	0x40
+#define TRL_MULTIPLE_FIXED_LENGTH	0x80
+
+
  /* msg header defines for MsgFlags */
 #define MSG_STATIC	0x0100
 #define MSG_64BIT_CNTXT	0x0200
 #define MSG_MULTI_TRANS	0x1000
 #define MSG_FAIL	0x2000
-#define MSG_LAST	0x4000
+#define MSG_FINAL	0x4000
 #define MSG_REPLY	0x8000
 
  /* minimum size msg */
@@ -639,5 +570,4 @@ extern const char *i2o_get_class_name(int);
 #define I2O_POST_WAIT_TIMEOUT	-ETIMEDOUT
 
 #endif /* __KERNEL__ */
-
 #endif /* _I2O_H */

@@ -1,25 +1,45 @@
-/* $Id: boardergo.c,v 1.1.2.1 2001/12/31 13:26:46 kai Exp $
- *
+/* $Id: boardergo.c,v 1.1 2000/02/10 19:45:18 werner Exp $
+
  * Linux driver for HYSDN cards, specific routines for ergo type boards.
- *
- * Author    Werner Cornelius (werner@titro.de) for Hypercope GmbH
- * Copyright 1999 by Werner Cornelius (werner@titro.de)
- *
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
  *
  * As all Linux supported cards Champ2, Ergo and Metro2/4 use the same
  * DPRAM interface and layout with only minor differences all related
  * stuff is done here, not in separate modules.
  *
+ * written by Werner Cornelius (werner@titro.de) for Hypercope GmbH
+ *
+ * Copyright 1999  by Werner Cornelius (werner@titro.de)
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2, or (at your option)
+ * any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ *
+ * $Log: boardergo.c,v $
+ * Revision 1.1  2000/02/10 19:45:18  werner
+ *
+ * Initial release
+ *
+ *
  */
 
-#include <linux/config.h>
+#define __NO_VERSION__
+#include <linux/module.h>
+#include <linux/version.h>
+#include <asm/io.h>
 #include <linux/signal.h>
 #include <linux/kernel.h>
 #include <linux/ioport.h>
-#include <linux/vmalloc.h>
-#include <asm/io.h>
+#include <linux/interrupt.h>
 
 #include "hysdn_defs.h"
 #include "boardergo.h"
@@ -133,9 +153,6 @@ ergo_stopcard(hysdn_card * card)
 	uchar val;
 
 	hysdn_net_release(card);	/* first release the net device if existing */
-#ifdef CONFIG_HYSDN_CAPI
-	hycapi_capi_stop(card);
-#endif /* CONFIG_HYSDN_CAPI */
 	save_flags(flags);
 	cli();
 	val = bytein(card->iobase + PCI9050_INTR_REG);	/* get actual value */
@@ -221,7 +238,7 @@ ergo_writebootimg(struct HYSDN_CARD *card, uchar * buf, ulong offs)
 	uchar *dst;
 	tErgDpram *dpram;
 	int cnt = (BOOT_IMG_SIZE >> 2);		/* number of words to move and swap (byte order!) */
-	
+
 	if (card->debug_flags & LOG_POF_CARD)
 		hysdn_addlog(card, "ERGO: write bootldr offs=0x%lx ", offs);
 
@@ -255,7 +272,7 @@ ergo_writebootimg(struct HYSDN_CARD *card, uchar * buf, ulong offs)
 			return (-ERR_BOOTIMG_FAIL);
 		}
 	}			/* start_boot_img */
-	return (0);		/* successful */
+	return (0);		/* successfull */
 }				/* ergo_writebootimg */
 
 /********************************************************************************/
@@ -317,12 +334,13 @@ ergo_writebootseq(struct HYSDN_CARD *card, uchar * buf, int len)
 		}		/* while (nr_write) */
 
 	}			/* while (len) */
+
 	return (0);
 }				/* ergo_writebootseq */
 
 /***********************************************************************************/
 /* ergo_waitpofready waits for a maximum of 10 seconds for the completition of the */
-/* boot process. If the process has been successful 0 is returned otherwise a     */
+/* boot process. If the process has been successfull 0 is returned otherwise a     */
 /* negative error code is returned.                                                */
 /***********************************************************************************/
 static int
@@ -336,6 +354,7 @@ ergo_waitpofready(struct HYSDN_CARD *card)
 
 	if (card->debug_flags & LOG_POF_CARD)
 		hysdn_addlog(card, "ERGO: waiting for pof ready");
+
 	while (timecnt--) {
 		/* wait until timeout  */
 
@@ -346,7 +365,7 @@ ergo_waitpofready(struct HYSDN_CARD *card)
 			    (dpr->ToPcSize < MIN_RDY_MSG_SIZE) ||
 			    (dpr->ToPcSize > MAX_RDY_MSG_SIZE) ||
 			    ((*(ulong *) dpr->ToPcBuf) != RDY_MAGIC))
-				break;	/* an error occurred */
+				break;	/* an error occured */
 
 			/* Check for additional data delivered during SysReady */
 			msg_size = dpr->ToPcSize - RDY_MAGIC_SIZE;
@@ -356,6 +375,7 @@ ergo_waitpofready(struct HYSDN_CARD *card)
 
 			if (card->debug_flags & LOG_POF_RECORD)
 				hysdn_addlog(card, "ERGO: pof boot success");
+
 			save_flags(flags);
 			cli();
 
@@ -371,18 +391,11 @@ ergo_waitpofready(struct HYSDN_CARD *card)
 			dpr->ToPcInt = 1;	/* interrupt to E1 for all cards */
 
 			restore_flags(flags);
-			if ((hynet_enable & (1 << card->myid)) 
-			    && (i = hysdn_net_create(card))) 
-			{
+			if ((i = hysdn_net_create(card))) {
 				ergo_stopcard(card);
 				card->state = CARD_STATE_BOOTERR;
 				return (i);
 			}
-#ifdef CONFIG_HYSDN_CAPI
-			if((i = hycapi_capi_create(card))) {
-				printk(KERN_WARNING "HYSDN: failed to create capi-interface.\n");
-			}
-#endif /* CONFIG_HYSDN_CAPI */
 			return (0);	/* success */
 		}		/* data has arrived */
 		sti();
@@ -434,7 +447,7 @@ ergo_inithardware(hysdn_card * card)
 	request_region(card->iobase + PCI9050_USER_IO, 1, "HYSDN");
 	ergo_stopcard(card);	/* disable interrupts */
 	if (request_irq(card->irq, ergo_interrupt, SA_SHIRQ, "HYSDN", card)) {
-		ergo_releasehardware(card); /* return the acquired hardware */
+		ergo_releasehardware(card);	/* return the aquired hardware */
 		return (-1);
 	}
 	/* success, now setup the function pointers */
@@ -445,6 +458,7 @@ ergo_inithardware(hysdn_card * card)
 	card->writebootseq = ergo_writebootseq;
 	card->waitpofready = ergo_waitpofready;
 	card->set_errlog_state = ergo_set_errlog_state;
+	card->irq_queue.next = 0;
 	card->irq_queue.sync = 0;
 	card->irq_queue.data = card;	/* init task queue for interrupt */
 	card->irq_queue.routine = (void *) (void *) ergo_irq_bh;

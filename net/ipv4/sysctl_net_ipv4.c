@@ -1,7 +1,7 @@
 /*
  * sysctl_net_ipv4.c: sysctl interface to net IPV4 subsystem.
  *
- * $Id: sysctl_net_ipv4.c,v 1.38.2.5 2001/02/09 08:43:58 davem Exp $
+ * $Id: sysctl_net_ipv4.c,v 1.43 2000/01/16 05:11:27 davem Exp $
  *
  * Begun April 1, 1996, Mike Shaver.
  * Added /proc/sys/net/ipv4 directory entry (empty =) ). [MS]
@@ -14,6 +14,19 @@
 #include <net/ip.h>
 #include <net/route.h>
 #include <net/tcp.h>
+
+/*
+ *	TCP configuration parameters
+ */
+
+#define TCP_PMTU_DISC	0x00000001	/* perform PMTU discovery	  */
+#define TCP_CONG_AVOID	0x00000002	/* congestion avoidance algorithm */
+#define TCP_DELAY_ACKS	0x00000003	/* delayed ack stategy		  */
+
+#if 0
+static int boolean_min = 0;
+static int boolean_max = 1;
+#endif
 
 /* From icmp.c */
 extern int sysctl_icmp_echo_ignore_all;
@@ -28,30 +41,6 @@ extern int sysctl_ipfrag_time;
 /* From ip_output.c */
 extern int sysctl_ip_dynaddr;
 
-/* From ip_input.c */
-extern int sysctl_ip_always_defrag;
-
-/* From ip_masq.c */
-extern int sysctl_ip_masq_debug;
-extern int sysctl_ip_masq_udp_dloose;
-
-extern int sysctl_tcp_timestamps;
-extern int sysctl_tcp_window_scaling;
-extern int sysctl_tcp_sack;
-extern int sysctl_tcp_retrans_collapse;
-extern int sysctl_tcp_keepalive_time;
-extern int sysctl_tcp_keepalive_probes;
-extern int sysctl_tcp_max_ka_probes;
-extern int sysctl_tcp_retries1;
-extern int sysctl_tcp_retries2;
-extern int sysctl_tcp_fin_timeout;
-extern int sysctl_tcp_syncookies;
-extern int sysctl_tcp_syn_retries;
-extern int sysctl_tcp_stdurg;
-extern int sysctl_tcp_rfc1337;
-extern int sysctl_tcp_syn_taildrop; 
-extern int sysctl_max_syn_backlog; 
-
 /* From icmp.c */
 extern int sysctl_icmp_destunreach_time;
 extern int sysctl_icmp_timeexceed_time;
@@ -61,10 +50,14 @@ extern int sysctl_icmp_echoreply_time;
 /* From igmp.c */
 extern int sysctl_igmp_max_memberships;
 
-static int tcp_retr1_max = 255; 
+/* From inetpeer.c */
+extern int inet_peer_threshold;
+extern int inet_peer_minttl;
+extern int inet_peer_maxttl;
+extern int inet_peer_gc_mintime;
+extern int inet_peer_gc_maxtime;
 
-static int ip_local_port_range_min[] = { 1, 1 };
-static int ip_local_port_range_max[] = { 65535, 65535 };
+int tcp_retr1_max = 255; 
 
 struct ipv4_config ipv4_config;
 
@@ -87,7 +80,7 @@ int ipv4_sysctl_forward(ctl_table *ctl, int write, struct file * filp,
 	return ret;
 }
 
-static int ipv4_sysctl_forward_strategy(ctl_table *table, int *name, unsigned nlen,
+static int ipv4_sysctl_forward_strategy(ctl_table *table, int *name, int nlen,
 			 void *oldval, size_t *oldlenp,
 			 void *newval, size_t newlen, 
 			 void **context)
@@ -119,7 +112,7 @@ ctl_table ipv4_table[] = {
          &ipv4_devconf.forwarding, sizeof(int), 0644, NULL,
          &ipv4_sysctl_forward,&ipv4_sysctl_forward_strategy},
         {NET_IPV4_DEFAULT_TTL, "ip_default_ttl",
-         &ip_statistics.IpDefaultTTL, sizeof(int), 0644, NULL,
+         &sysctl_ip_default_ttl, sizeof(int), 0644, NULL,
          &proc_dointvec},
         {NET_IPV4_AUTOCONFIG, "ip_autoconfig",
          &ipv4_config.autoconfig, sizeof(int), 0644, NULL,
@@ -129,31 +122,30 @@ ctl_table ipv4_table[] = {
          &proc_dointvec},
 	{NET_IPV4_TCP_SYN_RETRIES, "tcp_syn_retries",
 	 &sysctl_tcp_syn_retries, sizeof(int), 0644, NULL, &proc_dointvec},
+	{NET_TCP_SYNACK_RETRIES, "tcp_synack_retries",
+	 &sysctl_tcp_synack_retries, sizeof(int), 0644, NULL, &proc_dointvec},
+	{NET_TCP_MAX_ORPHANS, "tcp_max_orphans",
+	 &sysctl_tcp_max_orphans, sizeof(int), 0644, NULL, &proc_dointvec},
+	{NET_TCP_MAX_TW_BUCKETS, "tcp_max_tw_buckets",
+	 &sysctl_tcp_max_tw_buckets, sizeof(int), 0644, NULL, &proc_dointvec},
 	{NET_IPV4_IPFRAG_HIGH_THRESH, "ipfrag_high_thresh",
 	 &sysctl_ipfrag_high_thresh, sizeof(int), 0644, NULL, &proc_dointvec},
 	{NET_IPV4_IPFRAG_LOW_THRESH, "ipfrag_low_thresh",
 	 &sysctl_ipfrag_low_thresh, sizeof(int), 0644, NULL, &proc_dointvec},
 	{NET_IPV4_DYNADDR, "ip_dynaddr",
 	 &sysctl_ip_dynaddr, sizeof(int), 0644, NULL, &proc_dointvec},
-        {NET_IPV4_ALWAYS_DEFRAG, "ip_always_defrag",
-         &sysctl_ip_always_defrag, sizeof(int), 0644, NULL, &proc_dointvec},
-#ifdef CONFIG_IP_MASQUERADE
-	{NET_IPV4_IP_MASQ_DEBUG, "ip_masq_debug",
-	 &sysctl_ip_masq_debug, sizeof(int), 0644, NULL, &proc_dointvec},
-	{NET_IPV4_IP_MASQ_UDP_DLOOSE, "ip_masq_udp_dloose",
-	 &sysctl_ip_masq_udp_dloose, sizeof(int), 0644, NULL, &proc_dointvec},
-#endif
 	{NET_IPV4_IPFRAG_TIME, "ipfrag_time",
 	 &sysctl_ipfrag_time, sizeof(int), 0644, NULL, &proc_dointvec_jiffies, 
 	 &sysctl_jiffies},
-	{NET_IPV4_TCP_MAX_KA_PROBES, "tcp_max_ka_probes",
-	 &sysctl_tcp_max_ka_probes, sizeof(int), 0644, NULL, &proc_dointvec},
 	{NET_IPV4_TCP_KEEPALIVE_TIME, "tcp_keepalive_time",
 	 &sysctl_tcp_keepalive_time, sizeof(int), 0644, NULL, 
 	 &proc_dointvec_jiffies, &sysctl_jiffies},
 	{NET_IPV4_TCP_KEEPALIVE_PROBES, "tcp_keepalive_probes",
 	 &sysctl_tcp_keepalive_probes, sizeof(int), 0644, NULL, 
 	 &proc_dointvec},
+	{NET_IPV4_TCP_KEEPALIVE_INTVL, "tcp_keepalive_intvl",
+	 &sysctl_tcp_keepalive_intvl, sizeof(int), 0644, NULL,
+	 &proc_dointvec_jiffies, &sysctl_jiffies},
 	{NET_IPV4_TCP_RETRIES1, "tcp_retries1",
 	 &sysctl_tcp_retries1, sizeof(int), 0644, NULL, &proc_dointvec_minmax, 
 	 &sysctl_intvec, NULL, NULL, &tcp_retr1_max},
@@ -166,6 +158,10 @@ ctl_table ipv4_table[] = {
 	{NET_TCP_SYNCOOKIES, "tcp_syncookies",
 	 &sysctl_tcp_syncookies, sizeof(int), 0644, NULL, &proc_dointvec},
 #endif
+	{NET_TCP_TW_RECYCLE, "tcp_tw_recycle",
+	 &sysctl_tcp_tw_recycle, sizeof(int), 0644, NULL, &proc_dointvec},
+	{NET_TCP_ABORT_ON_OVERFLOW, "tcp_abort_on_overflow",
+	 &sysctl_tcp_abort_on_overflow, sizeof(int), 0644, NULL, &proc_dointvec},
 	{NET_TCP_STDURG, "tcp_stdurg", &sysctl_tcp_stdurg,
 	 sizeof(int), 0644, NULL, &proc_dointvec},
 	{NET_TCP_RFC1337, "tcp_rfc1337", &sysctl_tcp_rfc1337,
@@ -174,8 +170,7 @@ ctl_table ipv4_table[] = {
 	 sizeof(int), 0644, NULL, &proc_dointvec},
 	{NET_IPV4_LOCAL_PORT_RANGE, "ip_local_port_range",
 	 &sysctl_local_port_range, sizeof(sysctl_local_port_range), 0644, 
-	 NULL, &proc_dointvec_minmax, &sysctl_intvec, NULL,
-	 ip_local_port_range_min, ip_local_port_range_max },
+	 NULL, &proc_dointvec},
 	{NET_IPV4_ICMP_ECHO_IGNORE_ALL, "icmp_echo_ignore_all",
 	 &sysctl_icmp_echo_ignore_all, sizeof(int), 0644, NULL,
 	 &proc_dointvec},
@@ -198,6 +193,22 @@ ctl_table ipv4_table[] = {
 	{NET_IPV4_IGMP_MAX_MEMBERSHIPS, "igmp_max_memberships",
 	 &sysctl_igmp_max_memberships, sizeof(int), 0644, NULL, &proc_dointvec},
 #endif
+	{NET_IPV4_INET_PEER_THRESHOLD, "inet_peer_threshold",
+	 &inet_peer_threshold, sizeof(int), 0644, NULL, &proc_dointvec},
+	{NET_IPV4_INET_PEER_MINTTL, "inet_peer_minttl",
+	 &inet_peer_minttl, sizeof(int), 0644, NULL,
+	 &proc_dointvec_jiffies, &sysctl_jiffies},
+	{NET_IPV4_INET_PEER_MAXTTL, "inet_peer_maxttl",
+	 &inet_peer_maxttl, sizeof(int), 0644, NULL,
+	 &proc_dointvec_jiffies, &sysctl_jiffies},
+	{NET_IPV4_INET_PEER_GC_MINTIME, "inet_peer_gc_mintime",
+	 &inet_peer_gc_mintime, sizeof(int), 0644, NULL,
+	 &proc_dointvec_jiffies, &sysctl_jiffies},
+	{NET_IPV4_INET_PEER_GC_MAXTIME, "inet_peer_gc_maxtime",
+	 &inet_peer_gc_maxtime, sizeof(int), 0644, NULL,
+	 &proc_dointvec_jiffies, &sysctl_jiffies},
+	{NET_TCP_ORPHAN_RETRIES, "tcp_orphan_retries",
+	 &sysctl_tcp_orphan_retries, sizeof(int), 0644, NULL, &proc_dointvec},
 	{0}
 };
 

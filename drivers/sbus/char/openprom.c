@@ -57,7 +57,7 @@ typedef struct openprom_private_data
 } DATA;
 
 /* ID of the PROM node containing all of the EEPROM options. */
-static int options_node;
+static int options_node = 0;
 
 /*
  * Copy an openpromio structure into kernel space from user space.
@@ -68,15 +68,21 @@ static int options_node;
  */
 static int copyin(struct openpromio *info, struct openpromio **opp_p)
 {
-	unsigned int bufsize;
+	int bufsize;
 
 	if (!info || !opp_p)
 		return -EFAULT;
 
 	get_user_ret(bufsize, &info->oprom_size, -EFAULT);
 
-	if (bufsize == 0 || bufsize > OPROMMAXPARAM)
+	if (bufsize == 0)
 		return -EINVAL;
+
+	/* If the bufsize is too large, just limit it.
+	 * Fix from Jason Rappleye.
+	 */
+	if (bufsize > OPROMMAXPARAM)
+		bufsize = OPROMMAXPARAM;
 
 	if (!(*opp_p = kmalloc(sizeof(int) + bufsize + 1, GFP_KERNEL)))
 		return -ENOMEM;
@@ -198,11 +204,6 @@ static int openprom_sunos_ioctl(struct inode * inode, struct file * file,
 	case OPROMSETOPT2:
 		buf = opp->oprom_array + strlen(opp->oprom_array) + 1;
 		len = opp->oprom_array + bufsize - buf;
-
-		if (cnt++ < 10)
-			printk(KERN_DEBUG "OPROMSETOPT%s %s='%s'\n",
-			       (cmd == OPROMSETOPT) ? "" : "2",
-			       opp->oprom_array, buf);
 
 		save_and_cli(flags);
 		error = prom_setprop(options_node, opp->oprom_array,
@@ -331,8 +332,6 @@ static int copyin_string(char *user, size_t len, char **ptr)
 {
 	char *tmp;
 
-	if (len + 1 < len)
-		return -EINVAL;
 	tmp = kmalloc(len + 1, GFP_KERNEL);
 	if (!tmp)
 		return -ENOMEM;
@@ -609,16 +608,10 @@ static int openprom_release(struct inode * inode, struct file * file)
 }
 
 static struct file_operations openprom_fops = {
-	openprom_lseek,
-	NULL,			/* openprom_read */
-	NULL,			/* openprom_write */
-	NULL,			/* openprom_readdir */
-	NULL,			/* openprom_poll */
-	openprom_ioctl,
-	NULL,			/* openprom_mmap */
-	openprom_open,
-	NULL,			/* flush */
-	openprom_release
+	llseek:		openprom_lseek,
+	ioctl:		openprom_ioctl,
+	open:		openprom_open,
+	release:	openprom_release,
 };
 
 static struct miscdevice openprom_dev = {
@@ -630,7 +623,7 @@ EXPORT_NO_SYMBOLS;
 #ifdef MODULE
 int init_module(void)
 #else
-__initfunc(int openprom_init(void))
+int __init openprom_init(void)
 #endif
 {
 	unsigned long flags;

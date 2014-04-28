@@ -197,7 +197,7 @@ int cond ;
 	struct s_srf_evc	*evc ;
 	int			cond_asserted = 0 ;
 	int			cond_deasserted = 0 ;
-	int			event_occurred = 0 ;
+	int			event_occured = 0 ;
 	int			tsr ;
 	int			T_Limit = 2*TICKS_PER_SECOND ;
 
@@ -246,7 +246,7 @@ int cond ;
 				*evc->evc_multiple  = FALSE ;
 			}
 			smc->srf.any_report = TRUE ;
-			event_occurred = TRUE ;
+			event_occured = TRUE ;
 		}
 #ifdef	FDDI_MIB
 		snmp_srf_event(smc,evc) ;
@@ -268,7 +268,7 @@ int cond ;
 			break ;
 		}
 		/* SR01c */
-		if (event_occurred && tsr < T_Limit) {
+		if (event_occured && tsr < T_Limit) {
 			smc->srf.sr_state = SR1_HOLDOFF ;
 			break ;
 		}
@@ -286,7 +286,7 @@ int cond ;
 			break ;
 		}
 		/* SR00d */
-		if (event_occurred && tsr >= T_Limit) {
+		if (event_occured && tsr >= T_Limit) {
 			smc->srf.TSR = smt_get_time() ;
 			smt_send_srf(smc) ;
 			break ;
@@ -391,7 +391,7 @@ struct s_smc *smc ;
 	int			i ;
 
 	static const struct fddi_addr SMT_SRF_DA = {
-		{ 0x80, 0x01, 0x43, 0x00, 0x80, 0x08 }
+		0x80, 0x01, 0x43, 0x00, 0x80, 0x08
 	} ;
 
 	/*

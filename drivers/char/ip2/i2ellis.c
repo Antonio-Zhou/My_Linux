@@ -56,7 +56,7 @@ static int ii2Safe = 0;         // Safe I/O address for delay routine
 static int iiDelayed = 0;	// Set when the iiResetDelay function is
 							// called. Cleared when ANY board is reset.
 static struct timer_list * pDelayTimer;   // Used by iiDelayTimer
-static struct wait_queue * pDelayWait;    // Used by iiDelayTimer
+static wait_queue_head_t pDelayWait;    // Used by iiDelayTimer
 static spinlock_t Dl_spinlock;
 
 //********
@@ -87,7 +87,7 @@ static void
 iiEllisInit(void)
 {
 	pDelayTimer = kmalloc ( sizeof (struct timer_list), GFP_KERNEL );
-	pDelayWait  = NULL;
+	init_waitqueue_head(&pDelayWait);
 	LOCK_INIT(&Dl_spinlock);
 }
 
@@ -552,9 +552,6 @@ iiInitialize(i2eBordStrPtr pB)
 
 	pB->i2eStartMail = iiGetMail(pB);
 
-	// Throw it away and clear the mailbox structure element
-	pB->i2eStartMail = NO_MAIL_HERE;
-
 	// Everything is ok now, return with good status/
 
 	pB->i2eValid = I2E_MAGIC;
@@ -595,27 +592,14 @@ ii2DelayWakeup(unsigned long id)
 static void
 ii2DelayTimer(unsigned int mseconds)
 {
-	wait_queue_t wait;
-
-	init_waitqueue_entry(&wait, current);
-
 	init_timer ( pDelayTimer );
-
-	add_wait_queue(&pDelayWait, &wait);
-
-	set_current_state( TASK_INTERRUPTIBLE );
 
 	pDelayTimer->expires  = jiffies + ( mseconds + 9 ) / 10;
 	pDelayTimer->function = ii2DelayWakeup;
 	pDelayTimer->data     = 0;
 
 	add_timer ( pDelayTimer );
-
-	schedule();
-
-	set_current_state( TASK_RUNNING );
-	remove_wait_queue(&pDelayWait, &wait);
-
+	interruptible_sleep_on ( &pDelayWait );
 	del_timer ( pDelayTimer );
 }
 

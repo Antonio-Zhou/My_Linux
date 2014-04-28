@@ -6,10 +6,10 @@
  * Status:        Experimental.
  * Author:        Dag Brattli <dagb@cs.uit.no>
  * Created at:    Sun Jun  6 23:24:22 1999
- * Modified at:   Sun Dec 12 15:57:38 1999
+ * Modified at:   Fri Jan 28 13:16:57 2000
  * Modified by:   Dag Brattli <dagb@cs.uit.no>
  * 
- *     Copyright (c) 1999 Dag Brattli, All Rights Reserved.
+ *     Copyright (c) 1999-2000 Dag Brattli, All Rights Reserved.
  *     
  *     This program is free software; you can redistribute it and/or 
  *     modify it under the terms of the GNU General Public License as 
@@ -86,8 +86,8 @@ struct ircomm_tty_cb {
 	struct termios	  normal_termios;
 	struct termios	  callout_termios;
 
-	struct wait_queue *open_wait;
-	struct wait_queue *close_wait;
+	wait_queue_head_t open_wait;
+	wait_queue_head_t close_wait;
 	struct timer_list watchdog_timer;
 	struct tq_struct  tqueue;
 

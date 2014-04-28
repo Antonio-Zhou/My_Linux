@@ -43,31 +43,28 @@
 #include <linux/sound.h>
 #include <linux/major.h>
 #include <linux/kmod.h>
- 
- 
+#include <linux/devfs_fs_kernel.h>
+
+#define SOUND_STEP 16
+
+
 struct sound_unit
 {
 	int unit_minor;
 	struct file_operations *unit_fops;
 	struct sound_unit *next;
+	devfs_handle_t de;
 };
 
-extern int init_cmpci(void);
-extern int init_sonicvibes(void);
-extern int init_maestro(void);
-extern int init_trident(void);
-extern int i810_probe(void);
-extern int init_es1370(void);
-extern int init_es1371(void);
+#ifdef CONFIG_SOUND_MSNDCLAS
 extern int msnd_classic_init(void);
+#endif
+#ifdef CONFIG_SOUND_MSNDPIN
 extern int msnd_pinnacle_init(void);
-extern int init_solo1(void);
-extern int init_ymf7xxsb_module(void);
-extern int cs_probe(void);
-extern int cs4281_probe(void);
-extern void init_vwsnd(void);
-extern int ymf_probe(void);
-
+#endif
+#ifdef CONFIG_SOUND_CMPCI
+extern init_cmpci(void);
+#endif
 
 /*
  *	Low level list operator. Scan the ordered list, find a hole and
@@ -89,7 +86,7 @@ static int __sound_insert_unit(struct sound_unit * s, struct sound_unit **list, 
 			if(*list==NULL || (*list)->unit_minor>n)
 				break;
 			list=&((*list)->next);
-			n+=16;
+			n+=SOUND_STEP;
 		}
 
 		if(n>=top)
@@ -136,6 +133,7 @@ static void __sound_remove_unit(struct sound_unit **list, int unit)
 		if(p->unit_minor==unit)
 		{
 			*list=p->next;
+			devfs_unregister (p->de);
 			kfree(p);
 			MOD_DEC_USE_COUNT;
 			return;
@@ -155,11 +153,15 @@ spinlock_t sound_loader_lock = SPIN_LOCK_UNLOCKED;
  *	Allocate the controlling structure and add it to the sound driver
  *	list. Acquires locks as needed
  */
+
+static devfs_handle_t devfs_handle = NULL;
  
-static int sound_insert_unit(struct sound_unit **list, struct file_operations *fops, int index, int low, int top)
+static int sound_insert_unit(struct sound_unit **list, struct file_operations *fops, int index, int low, int top, const char *name, umode_t mode)
 {
 	int r;
 	struct sound_unit *s=(struct sound_unit *)kmalloc(sizeof(struct sound_unit), GFP_KERNEL);
+	char name_buf[16];
+
 	if(s==NULL)
 		return -ENOMEM;
 		
@@ -169,6 +171,13 @@ static int sound_insert_unit(struct sound_unit **list, struct file_operations *f
 	
 	if(r<0)
 		kfree(s);
+	if (r == low)
+		sprintf (name_buf, "%s", name);
+	else
+		sprintf (name_buf, "%s%d", name, (r - low) / SOUND_STEP);
+	s->de = devfs_register (devfs_handle, name_buf, 0,
+				DEVFS_FL_NONE, SOUND_MAJOR, s->unit_minor,
+				S_IFCHR | mode, 0, 0, fops, NULL);
 	return r;
 }
 
@@ -208,23 +217,108 @@ static void sound_remove_unit(struct sound_unit **list, int unit)
 
 static struct sound_unit *chains[16];
 
+/**
+ *	register_sound_special - register a special sound node
+ *	@fops: File operations for the driver
+ *	@unit: Unit number to allocate
+ *
+ *	Allocate a special sound device by minor number from the sound
+ *	subsystem. The allocated number is returned on succes. On failure
+ *	a negative error code is returned.
+ */
+ 
 int register_sound_special(struct file_operations *fops, int unit)
 {
-	return sound_insert_unit(&chains[unit&15], fops, -1, unit, unit+1);
+	char *name;
+
+	switch (unit) {
+	    case 0:
+		name = "mixer";
+		break;
+	    case 1:
+		name = "sequencer";
+		break;
+	    case 2:
+		name = "midi00";
+		break;
+	    case 3:
+		name = "dsp";
+		break;
+	    case 4:
+		name = "audio";
+		break;
+	    case 5:
+		name = "unknown5";
+		break;
+	    case 6:		/* Was once sndstat */
+		name = "unknown6";
+		break;
+	    case 7:
+		name = "unknown7";
+		break;
+	    case 8:
+		name = "sequencer2";
+		break;
+	    case 9:
+		name = "dmmidi";
+		break;
+	    case 10:
+		name = "dmfm";
+		break;
+	    case 11:
+		name = "unknown11";
+		break;
+	    case 12:
+		name = "adsp";
+		break;
+	    case 13:
+		name = "amidi";
+		break;
+	    case 14:
+		name = "admmidi";
+		break;
+	    default:
+		name = "unknown";
+		break;
+	}
+	return sound_insert_unit(&chains[unit&15], fops, -1, unit, unit+1,
+				 name, S_IRUSR | S_IWUSR);
 }
  
 EXPORT_SYMBOL(register_sound_special);
 
+/**
+ *	register_sound_mixer - register a mixer device
+ *	@fops: File operations for the driver
+ *	@dev: Unit number to allocate
+ *
+ *	Allocate a mixer device. Unit is the number of the mixer requested.
+ *	Pass -1 to request the next free mixer unit. On success the allocated
+ *	number is returned, on failure a negative error code is returned.
+ */
+
 int register_sound_mixer(struct file_operations *fops, int dev)
 {
-	return sound_insert_unit(&chains[0], fops, dev, 0, 128);
+	return sound_insert_unit(&chains[0], fops, dev, 0, 128,
+				 "mixer", S_IRUSR | S_IWUSR);
 }
 
 EXPORT_SYMBOL(register_sound_mixer);
 
+/**
+ *	register_sound_midi - register a midi device
+ *	@fops: File operations for the driver
+ *	@dev: Unit number to allocate
+ *
+ *	Allocate a midi device. Unit is the number of the midi device requested.
+ *	Pass -1 to request the next free midi unit. On success the allocated
+ *	number is returned, on failure a negative error code is returned.
+ */
+
 int register_sound_midi(struct file_operations *fops, int dev)
 {
-	return sound_insert_unit(&chains[2], fops, dev, 2, 130);
+	return sound_insert_unit(&chains[2], fops, dev, 2, 130,
+				 "midi", S_IRUSR | S_IWUSR);
 }
 
 EXPORT_SYMBOL(register_sound_midi);
@@ -234,19 +328,55 @@ EXPORT_SYMBOL(register_sound_midi);
  *	in open - see below.
  */
  
+/**
+ *	register_sound_dsp - register a DSP device
+ *	@fops: File operations for the driver
+ *	@dev: Unit number to allocate
+ *
+ *	Allocate a DSP device. Unit is the number of the DSP requested.
+ *	Pass -1 to request the next free DSP unit. On success the allocated
+ *	number is returned, on failure a negative error code is returned.
+ *
+ *	This function allocates both the audio and dsp device entries together
+ *	and will always allocate them as a matching pair - eg dsp3/audio3
+ */
+
 int register_sound_dsp(struct file_operations *fops, int dev)
 {
-	return sound_insert_unit(&chains[3], fops, dev, 3, 131);
+	return sound_insert_unit(&chains[3], fops, dev, 3, 131,
+				 "dsp", S_IWUSR | S_IRUSR);
 }
 
 EXPORT_SYMBOL(register_sound_dsp);
 
+/**
+ *	register_sound_synth - register a synth device
+ *	@fops: File operations for the driver
+ *	@dev: Unit number to allocate
+ *
+ *	Allocate a synth device. Unit is the number of the synth device requested.
+ *	Pass -1 to request the next free synth unit. On success the allocated
+ *	number is returned, on failure a negative error code is returned.
+ */
+
+
 int register_sound_synth(struct file_operations *fops, int dev)
 {
-	return sound_insert_unit(&chains[9], fops, dev, 9, 137);
+	return sound_insert_unit(&chains[9], fops, dev, 9, 137,
+				 "synth", S_IRUSR | S_IWUSR);
 }
 
 EXPORT_SYMBOL(register_sound_synth);
+
+/**
+ *	unregister_sound_special - unregister a special sound device
+ *	@unit: unit number to allocate
+ *
+ *	Release a sound device that was allocated with
+ *	register_sound_special(). The unit passed is the return value from
+ *	the register function.
+ */
+
 
 void unregister_sound_special(int unit)
 {
@@ -255,12 +385,28 @@ void unregister_sound_special(int unit)
  
 EXPORT_SYMBOL(unregister_sound_special);
 
+/**
+ *	unregister_sound_mixer - unregister a mixer
+ *	@unit: unit number to allocate
+ *
+ *	Release a sound device that was allocated with register_sound_mixer().
+ *	The unit passed is the return value from the register function.
+ */
+
 void unregister_sound_mixer(int unit)
 {
 	sound_remove_unit(&chains[0], unit);
 }
 
 EXPORT_SYMBOL(unregister_sound_mixer);
+
+/**
+ *	unregister_sound_midi - unregister a midi device
+ *	@unit: unit number to allocate
+ *
+ *	Release a sound device that was allocated with register_sound_midi().
+ *	The unit passed is the return value from the register function.
+ */
 
 void unregister_sound_midi(int unit)
 {
@@ -269,12 +415,31 @@ void unregister_sound_midi(int unit)
 
 EXPORT_SYMBOL(unregister_sound_midi);
 
+/**
+ *	unregister_sound_dsp - unregister a DSP device
+ *	@unit: unit number to allocate
+ *
+ *	Release a sound device that was allocated with register_sound_dsp().
+ *	The unit passed is the return value from the register function.
+ *
+ *	Both of the allocated units are released together automatically.
+ */
+
 void unregister_sound_dsp(int unit)
 {
 	return sound_remove_unit(&chains[3], unit);
 }
 
+
 EXPORT_SYMBOL(unregister_sound_dsp);
+
+/**
+ *	unregister_sound_synth - unregister a synth device
+ *	@unit: unit number to allocate
+ *
+ *	Release a sound device that was allocated with register_sound_synth().
+ *	The unit passed is the return value from the register function.
+ */
 
 void unregister_sound_synth(int unit)
 {
@@ -291,21 +456,7 @@ static int soundcore_open(struct inode *, struct file *);
 
 static struct file_operations soundcore_fops=
 {
-	NULL,
-	NULL,
-	NULL,
-	NULL,
-	NULL,
-	NULL,
-	NULL,
-	soundcore_open,
-	NULL,
-	NULL,
-	NULL,
-	NULL,
-	NULL,
-	NULL,
-	NULL
+	open:	soundcore_open,
 };
 
 static struct sound_unit *__look_for_unit(int chain, int unit)
@@ -380,7 +531,8 @@ void cleanup_module(void)
 {
 	/* We have nothing to really do here - we know the lists must be
 	   empty */
-	unregister_chrdev(SOUND_MAJOR, "sound");
+	devfs_unregister_chrdev(SOUND_MAJOR, "sound");
+	devfs_unregister (devfs_handle);
 }
 
 int init_module(void)
@@ -388,37 +540,17 @@ int init_module(void)
 int soundcore_init(void)
 #endif
 {
-	if(register_chrdev(SOUND_MAJOR, "sound", &soundcore_fops)==-1)
+	if(devfs_register_chrdev(SOUND_MAJOR, "sound", &soundcore_fops)==-1)
 	{
 		printk(KERN_ERR "soundcore: sound device already in use.\n");
 		return -EBUSY;
 	}
+	devfs_handle = devfs_mk_dir (NULL, "sound", 0, NULL);
 	/*
 	 *	Now init non OSS drivers
 	 */
 #ifdef CONFIG_SOUND_CMPCI
-        init_cmpci();
-#endif
-#ifdef CONFIG_SOUND_VWSND
-	init_vwsnd();
-#endif
-#ifdef CONFIG_SOUND_SONICVIBES
-	init_sonicvibes();
-#endif
-#ifdef CONFIG_SOUND_ES1370
-	init_es1370();
-#endif
-#ifdef CONFIG_SOUND_ES1371
-	init_es1371();
-#endif
-#ifdef CONFIG_SOUND_MAESTRO
-	init_maestro();
-#endif
-#ifdef CONFIG_SOUND_MAESTRO3
-    init_maestro3();
-#endif
-#ifdef CONFIG_SOUND_TRIDENT
-	init_trident();
+	init_cmpci();
 #endif
 #ifdef CONFIG_SOUND_MSNDCLAS
 	msnd_classic_init();
@@ -426,23 +558,8 @@ int soundcore_init(void)
 #ifdef CONFIG_SOUND_MSNDPIN
 	msnd_pinnacle_init();
 #endif
-#ifdef CONFIG_SOUND_ESSSOLO1
-	init_solo1();
-#endif
-#ifdef CONFIG_SOUND_ICH
-	i810_probe();
-#endif
-#ifdef CONFIG_SOUND_YMPCI
-	init_ymf7xxsb_module();
-#endif
-#ifdef CONFIG_SOUND_FUSION
-	cs_probe();
-#endif
-#ifdef CONFIG_SOUND_CS4281
-	cs4281_probe();
-#endif
-#ifdef CONFIG_SOUND_YMFPCI
-	ymf_probe();
+#ifdef CONFIG_SOUND_VWSND
+	init_vwsnd();
 #endif
 	return 0;
 }

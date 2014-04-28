@@ -89,8 +89,8 @@ typedef struct siginfo {
 #define SI_ASYNCIO	-4	/* sent by AIO completion */
 #define SI_SIGIO	-5	/* sent by queued SIGIO */
 
-#define SI_FROMUSER(siptr)	((siptr)->si_code <= 0 && (siptr)->si_code != SI_SIGIO)
-#define SI_FROMKERNEL(siptr)	((siptr)->si_code > 0 || (siptr)->si_code == SI_SIGIO)
+#define SI_FROMUSER(siptr)	((siptr)->si_code <= 0)
+#define SI_FROMKERNEL(siptr)	((siptr)->si_code > 0)
 
 /*
  * SIGILL si_codes
@@ -122,7 +122,7 @@ typedef struct siginfo {
  * SIGSEGV si_codes
  */
 #define SEGV_MAPERR	1	/* address not mapped to object */
-#define SRGV_ACCERR	2	/* invalid permissions for mapped object */
+#define SEGV_ACCERR	2	/* invalid permissions for mapped object */
 #define NSIGSEGV	2
 
 /*
@@ -149,7 +149,7 @@ typedef struct siginfo {
 #define CLD_TRAPPED	4	/* traced child has trapped */
 #define CLD_STOPPED	5	/* child has stopped */
 #define CLD_CONTINUED	6	/* stopped child has continued */
-#define NSIGCHLD
+#define NSIGCHLD	6
 
 /*
  * SIGPOLL si_codes

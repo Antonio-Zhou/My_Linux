@@ -19,6 +19,67 @@
  * Lookup/Create a block at offset 'block' into 'inode'.  We currently do
  * not support creation of new blocks, so we return -EIO for this case.
  */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,3,0)
+int
+adfs_get_block(struct inode *inode, long block, struct buffer_head *bh, int create)
+{
+	if (block < 0)
+		goto abort_negative;
+
+	if (!create) {
+		if (block >= inode->i_blocks)
+			goto abort_toobig;
+
+		block = __adfs_block_map(inode->i_sb, inode->i_ino, block);
+		if (block) {
+			bh->b_dev = inode->i_dev;
+			bh->b_blocknr = block;
+			bh->b_state |= (1UL << BH_Mapped);
+		}
+		return 0;
+	}
+	/* don't support allocation of blocks yet */
+	return -EIO;
+
+abort_negative:
+	adfs_error(inode->i_sb, "block %d < 0", block);
+	return -EIO;
+
+abort_toobig:
+	return 0;
+}
+
+static int adfs_writepage(struct file *file, struct page *page)
+{
+	return block_write_full_page(page, adfs_get_block);
+}
+
+static int adfs_readpage(struct file *file, struct page *page)
+{
+	return block_read_full_page(page, adfs_get_block);
+}
+
+static int adfs_prepare_write(struct file *file, struct page *page, unsigned int from, unsigned int to)
+{
+	return cont_prepare_write(page, from, to, adfs_get_block,
+		&((struct inode *)page->mapping->host)->u.adfs_i.mmu_private);
+}
+
+static int _adfs_bmap(struct address_space *mapping, long block)
+{
+	return generic_block_bmap(mapping, block, adfs_get_block);
+}
+
+static struct address_space_operations adfs_aops = {
+	readpage:	adfs_readpage,
+	writepage:	adfs_writepage,
+	sync_page:	block_sync_page,
+	prepare_write:	adfs_prepare_write,
+	commit_write:	generic_commit_write,
+	bmap:		_adfs_bmap
+};
+
+#else
 int adfs_bmap(struct inode *inode, int block)
 {
 	if (block >= inode->i_blocks)
@@ -26,6 +87,7 @@ int adfs_bmap(struct inode *inode, int block)
 
 	return __adfs_block_map(inode->i_sb, inode->i_ino, block);
 }
+#endif
 
 static inline unsigned int
 adfs_filetype(struct inode *inode)
@@ -193,7 +255,7 @@ adfs_iget(struct super_block *sb, struct object_info *obj)
 	if (!inode)
 		goto out;
 
-	inode->i_version = ++global_event;
+	inode->i_version = ++event;
 	inode->i_sb	 = sb;
 	inode->i_dev	 = sb->s_dev;
 	inode->i_uid	 = sb->u.adfs_sb.s_uid;
@@ -224,25 +286,18 @@ adfs_iget(struct super_block *sb, struct object_info *obj)
 
 	if (S_ISDIR(inode->i_mode)) {
 		inode->i_op	= &adfs_dir_inode_operations;
+		inode->i_fop	= &adfs_dir_operations;
 	} else if (S_ISREG(inode->i_mode)) {
 		inode->i_op	= &adfs_file_inode_operations;
+		inode->i_fop	= &adfs_file_operations;
+		inode->i_mapping->a_ops = &adfs_aops;
+		inode->u.adfs_i.mmu_private = inode->i_size;
 	}
 
 	insert_inode_hash(inode);
 
 out:
 	return inode;
-}
-
-/*
- * This is no longer a valid way to obtain the metadata associated with the
- * inode number on this filesystem.  This means that this filesystem cannot
- * be shared via NFS.
- */
-void adfs_read_inode(struct inode *inode)
-{
-	adfs_error(inode->i_sb, "unsupported method of reading inode");
-	make_bad_inode(inode);
 }
 
 /*
@@ -272,7 +327,7 @@ adfs_notify_change(struct dentry *dentry, struct iattr *attr)
 		goto out;
 
 	if (ia_valid & ATTR_SIZE)
-		inode->i_size = attr->ia_size;
+		vmtruncate(inode, attr->ia_size);
 	if (ia_valid & ATTR_MTIME) {
 		inode->i_mtime = attr->ia_mtime;
 		adfs_unix2adfs_time(inode, attr->ia_mtime);

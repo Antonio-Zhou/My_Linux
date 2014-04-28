@@ -33,9 +33,11 @@
 #include <linux/sys.h>
 #include <linux/ipc.h>
 #include <linux/utsname.h>
+#include <linux/file.h>
 
 #include <asm/uaccess.h>
 #include <asm/ipc.h>
+#include <asm/semaphore.h>
 
 void
 check_bugs(void)
@@ -199,18 +201,20 @@ asmlinkage unsigned long sys_mmap(unsigned long addr, size_t len,
 	struct file * file = NULL;
 	int ret = -EBADF;
 
-	down(&current->mm->mmap_sem);
 	lock_kernel();
 	if (!(flags & MAP_ANONYMOUS)) {
-		if (fd >= NR_OPEN || !(file = current->files->fd[fd]))
+		if (!(file = fget(fd)))
 			goto out;
 	}
 	
 	flags &= ~(MAP_EXECUTABLE | MAP_DENYWRITE);
+	down(&current->mm->mmap_sem);
 	ret = do_mmap(file, addr, len, prot, flags, offset);
+	up(&current->mm->mmap_sem);
+	if (file)
+		fput(file);
 out:
 	unlock_kernel();
-	up(&current->mm->mmap_sem);
 	return ret;
 }
 
@@ -248,14 +252,13 @@ asmlinkage int sys_pause(void)
 
 asmlinkage int sys_uname(struct old_utsname * name)
 {
-	int err;
-	
-	if (!name)
-		return -EFAULT;
-	down(&uts_sem);
-	err = copy_to_user(name, &system_utsname, sizeof (*name));
-	up(&uts_sem);
-	return err ? -EFAULT : 0;
+	int err = -EFAULT;
+
+	down_read(&uts_sem);
+	if (name && !copy_to_user(name, &system_utsname, sizeof (*name)))
+		err = 0;
+	up_read(&uts_sem);
+	return err;
 }
 
 asmlinkage int sys_olduname(struct oldold_utsname * name)
@@ -267,7 +270,7 @@ asmlinkage int sys_olduname(struct oldold_utsname * name)
 	if (!access_ok(VERIFY_WRITE,name,sizeof(struct oldold_utsname)))
 		return -EFAULT;
   
-  	down(&uts_sem);
+	down_read(&uts_sem);
 	error = __copy_to_user(&name->sysname,&system_utsname.sysname,__OLD_UTS_LEN);
 	error -= __put_user(0,name->sysname+__OLD_UTS_LEN);
 	error -= __copy_to_user(&name->nodename,&system_utsname.nodename,__OLD_UTS_LEN);
@@ -278,19 +281,8 @@ asmlinkage int sys_olduname(struct oldold_utsname * name)
 	error -= __put_user(0,name->version+__OLD_UTS_LEN);
 	error -= __copy_to_user(&name->machine,&system_utsname.machine,__OLD_UTS_LEN);
 	error = __put_user(0,name->machine+__OLD_UTS_LEN);
-	error = error ? -EFAULT : 0;
-	up(&uts_sem);
+	up_read(&uts_sem);
 
+	error = error ? -EFAULT : 0;
 	return error;
 }
-
-#ifndef CONFIG_PCI
-/*
- * Those are normally defined in arch/ppc/kernel/pci.c. But when CONFIG_PCI is
- * not defined, this file is not linked at all, so here are the "empty" versions
- */
-asmlinkage int sys_pciconfig_read() { return -ENOSYS; }
-asmlinkage int sys_pciconfig_write() { return -ENOSYS; }
-asmlinkage long sys_pciconfig_iobase() { return -ENOSYS; }
-#endif
-

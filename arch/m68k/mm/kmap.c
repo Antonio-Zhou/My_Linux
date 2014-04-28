@@ -18,14 +18,13 @@
 #include <asm/setup.h>
 #include <asm/segment.h>
 #include <asm/page.h>
-#include <asm/pgtable.h>
+#include <asm/pgalloc.h>
 #include <asm/io.h>
 #include <asm/system.h>
 
 #undef DEBUG
 
 #define PTRTREESIZE	(256*1024)
-#define ROOTTREESIZE (32*1024*1024)
 
 /*
  * For 040/060 we can use the virtual memory area like other architectures,
@@ -40,7 +39,7 @@
 
 static inline struct vm_struct *get_io_area(unsigned long size)
 {
-	return get_vm_area(size);
+	return get_vm_area(size, VM_IOREMAP);
 }
 
 
@@ -190,20 +189,7 @@ void *__ioremap(unsigned long physaddr, unsigned long size, int cacheflag)
 			printk ("\npa=%#lx va=%#lx ", physaddr, virtaddr);
 #endif
 		pgd_dir = pgd_offset_k(virtaddr);
-		if (CPU_IS_020_OR_030) {
-			if (!(virtaddr & (ROOTTREESIZE-1)) &&
-			    size >= ROOTTREESIZE) {
-				pgd_val(*pgd_dir) = physaddr;
-				size -= ROOTTREESIZE;
-				virtaddr += ROOTTREESIZE;
-				physaddr += ROOTTREESIZE;
-				continue;
-			}
-		}
-		if (!pgd_present(*pgd_dir))
-			pmd_dir = pmd_alloc_kernel(pgd_dir, virtaddr);
-		else
-			pmd_dir = pmd_offset(pgd_dir, virtaddr);
+		pmd_dir = pmd_alloc_kernel(pgd_dir, virtaddr);
 		if (!pmd_dir) {
 			printk("ioremap: no mem for pmd_dir\n");
 			return NULL;
@@ -215,10 +201,7 @@ void *__ioremap(unsigned long physaddr, unsigned long size, int cacheflag)
 			virtaddr += PTRTREESIZE;
 			size -= PTRTREESIZE;
 		} else {
-			if (!pmd_present(*pmd_dir))
-				pte_dir = pte_alloc_kernel(pmd_dir, virtaddr);
-			else
-				pte_dir = pte_offset(pmd_dir, virtaddr);
+			pte_dir = pte_alloc_kernel(pmd_dir, virtaddr);
 			if (!pte_dir) {
 				printk("ioremap: no mem for pte_dir\n");
 				return NULL;

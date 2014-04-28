@@ -6,7 +6,8 @@
 #ifndef _SPARC64_SMP_H
 #define _SPARC64_SMP_H
 
-#include <linux/tasks.h>
+#include <linux/config.h>
+#include <linux/threads.h>
 #include <asm/asi.h>
 
 #ifndef __ASSEMBLY__
@@ -24,7 +25,7 @@ extern struct prom_cpuinfo linux_cpus[64];
 
 #endif /* !(__ASSEMBLY__) */
 
-#ifdef __SMP__
+#ifdef CONFIG_SMP
 
 #ifndef __ASSEMBLY__
 
@@ -33,12 +34,11 @@ extern struct prom_cpuinfo linux_cpus[64];
 /* Keep this a multiple of 64-bytes for cache reasons. */
 struct cpuinfo_sparc {
 	/* Dcache line 1 */
-	unsigned int	irq_count;
 	unsigned int	bh_count;
 	unsigned int	multiplier;
 	unsigned int	counter;
 	unsigned int	idle_volume;
-	unsigned int	clock_tick;	/* %tick's per second */
+	unsigned int	__pad[2];
 	unsigned long	udelay_val;
 
 	/* Dcache line 2 */
@@ -68,12 +68,16 @@ extern void smp_callin(void);
 extern void smp_boot_cpus(void);
 extern void smp_store_cpu_info(int id);
 
-extern __volatile__ int cpu_number_map[NR_CPUS];
+extern __volatile__ int __cpu_number_map[NR_CPUS];
 extern __volatile__ int __cpu_logical_map[NR_CPUS];
 
 extern __inline__ int cpu_logical_map(int cpu)
 {
 	return __cpu_logical_map[cpu];
+}
+extern __inline__ int cpu_number_map(int cpu)
+{
+	return __cpu_number_map[cpu];
 }
 
 extern __inline__ int hard_smp_processor_id(void)
@@ -119,7 +123,7 @@ extern __inline__ void smp_send_stop(void) { }
 
 #define PROC_CHANGE_PENALTY	20
 
-#endif /* !(__SMP__) */
+#endif /* !(CONFIG_SMP) */
 
 #define NO_PROC_ID		0xFF
 

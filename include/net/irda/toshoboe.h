@@ -138,7 +138,7 @@ struct OboeTaskFile
 
 struct toshoboe_cb
   {
-    struct device *netdev;      /* Yes! we are some kind of netdevice */
+    struct net_device *netdev;      /* Yes! we are some kind of netdevice */
     struct net_device_stats stats;
 
     struct irlap_cb    *irlap;  /* The link layer we are binded to */

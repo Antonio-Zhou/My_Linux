@@ -305,7 +305,7 @@ int mac_scca_console_wait_key(struct console *co)
     } while(0)
     
 #ifndef CONFIG_SERIAL_CONSOLE
-__initfunc(static void mac_init_scc_port( int cflag, int port ))
+static void __init mac_init_scc_port( int cflag, int port )
 #else
 void mac_init_scc_port( int cflag, int port )
 #endif
@@ -395,12 +395,8 @@ void mac_init_sccb_port( int cflag )
 	mac_init_scc_port(cflag, 1);
 }
 
-__initfunc(void mac_debug_init(void))
+void __init mac_debug_init(void)
 {
-#ifdef CONFIG_KGDB
-    /* the m68k_debug_device is used by the GDB stub, do nothing here */
-    return;
-#endif
 #ifdef DEBUG_SERIAL
     if (   !strcmp( m68k_debug_device, "ser"  )
         || !strcmp( m68k_debug_device, "ser1" )) {

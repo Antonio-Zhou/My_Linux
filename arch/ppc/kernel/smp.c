@@ -1,20 +1,20 @@
 /*
- * $Id: smp.c,v 1.49.2.5 1999/07/22 01:49:45 cort Exp $
+ * $Id: smp.c,v 1.68 1999/09/17 19:38:05 cort Exp $
  *
  * Smp support for ppc.
  *
  * Written by Cort Dougan (cort@cs.nmt.edu) borrowing a great
  * deal of code from the sparc and intel versions.
  *
+ * Copyright (C) 1999 Cort Dougan <cort@cs.nmt.edu>
+ *
  * Support for PReP (Motorola MTX/MVME) SMP by Troy Benjegerdes
- * (troy@blacklablinux.com, hozer@drgw.net)
- * Support for PReP (Motorola MTX/MVME) and Macintosh G4 SMP 
- * by Troy Benjegerdes (hozer@drgw.net)
+ * (troy@microux.com, hozer@drgw.net)
  */
 
+#include <linux/config.h>
 #include <linux/kernel.h>
 #include <linux/sched.h>
-#include <linux/tasks.h>
 #include <linux/smp.h>
 #include <linux/smp_lock.h>
 #include <linux/interrupt.h>
@@ -24,53 +24,42 @@
 #include <linux/unistd.h>
 #include <linux/init.h>
 #include <linux/openpic.h>
+#include <linux/spinlock.h>
 
 #include <asm/ptrace.h>
 #include <asm/atomic.h>
 #include <asm/irq.h>
 #include <asm/page.h>
 #include <asm/pgtable.h>
-#include <asm/spinlock.h>
 #include <asm/hardirq.h>
 #include <asm/softirq.h>
 #include <asm/init.h>
 #include <asm/io.h>
 #include <asm/prom.h>
+#include <asm/smp.h>
 #include <asm/gemini.h>
-#include <asm/residual.h>
-#include <asm/time.h>
-#include <asm/feature.h>
-#include "open_pic.h"
 
-int first_cpu_booted = 0;
+#include "time.h"
+#include "open_pic.h"
 int smp_threads_ready = 0;
 volatile int smp_commenced = 0;
 int smp_num_cpus = 1;
 struct cpuinfo_PPC cpu_data[NR_CPUS];
 struct klock_info_struct klock_info = { KLOCK_CLEAR, 0 };
 volatile unsigned char active_kernel_processor = NO_PROC_ID;	/* Processor holding kernel spinlock		*/
-atomic_t ipi_recv;
-atomic_t ipi_sent;
+volatile unsigned long ipi_count;
 spinlock_t kernel_flag = SPIN_LOCK_UNLOCKED;
 unsigned int prof_multiplier[NR_CPUS];
 unsigned int prof_counter[NR_CPUS];
 cycles_t cacheflush_time;
 
 /* all cpu mappings are 1-1 -- Cort */
-int cpu_number_map[NR_CPUS] = {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,};
 volatile unsigned long cpu_callin_map[NR_CPUS] = {0,};
 
 int start_secondary(void *);
 extern int cpu_idle(void *unused);
 u_int openpic_read(volatile u_int *addr);
 
-extern int mot_multi;
-extern unsigned long *MotSave_SmpIar;
-extern unsigned char *MotSave_CpusState[2];
-
-/* l2 cache stuff for dual G4 macs */
-extern void core99_init_l2(void);
- 
 /* register for interrupting the secondary processor on the powersurge */
 #define PSURGE_INTR	((volatile unsigned *)0xf80000c0)
 
@@ -99,7 +88,7 @@ void smp_local_timer_interrupt(struct pt_regs * regs)
 			update_one_process(p, 1, user, system, cpu);
 
 			p->counter -= 1;
-			if (p->counter < 0) {
+			if (p->counter <= 0) {
 				p->counter = 0;
 				current->need_resched = 1;
 			}
@@ -121,7 +110,7 @@ void smp_local_timer_interrupt(struct pt_regs * regs)
 
 void smp_message_recv(int msg)
 {
- 	atomic_inc(&ipi_recv);
+	ipi_count++;
 	
 	switch( msg )
 	{
@@ -129,7 +118,7 @@ void smp_message_recv(int msg)
 		__cli();
 		while (1) ;
 		break;
-	case MSG_RESCHEDULE:
+	case MSG_RESCHEDULE: 
 		current->need_resched = 1;
 		break;
 	case MSG_INVALIDATE_TLB:
@@ -143,7 +132,6 @@ void smp_message_recv(int msg)
 	}
 }
 
-#ifdef CONFIG_POWERMAC
 /*
  * As it is now, if we're sending two message at the same time
  * we have race conditions on Pmac.  The PowerSurge doesn't easily
@@ -155,11 +143,11 @@ void smp_message_recv(int msg)
  * rather than this.
  *  -- Cort
  */
-int psurge_smp_message[NR_CPUS];
-void psurge_smp_message_recv(void)
+int pmac_smp_message[NR_CPUS];
+void pmac_smp_message_recv(void)
 {
-	int msg = psurge_smp_message[smp_processor_id()];
-
+	int msg = pmac_smp_message[smp_processor_id()];
+	
 	/* clear interrupt */
 	out_be32(PSURGE_INTR, ~0);
 	
@@ -167,11 +155,10 @@ void psurge_smp_message_recv(void)
 	if ( msg == -1 ) return;
 
 	smp_message_recv(msg);
-
-	/* reset message */
-	psurge_smp_message[smp_processor_id()] = -1;
+	
+ 	/* reset message */
+	pmac_smp_message[smp_processor_id()] = -1;
 }
-#endif /* powermac */
 
 /*
  * 750's don't broadcast tlb invalidates so
@@ -195,6 +182,8 @@ void smp_send_reschedule(int cpu)
 	 * as the timer).
 	 *  -- Cort
 	 */
+	/* This is only used if `cpu' is running an idle task,
+	   so it will reschedule itself anyway... */
 	smp_message_pass(cpu, MSG_RESCHEDULE, 0, 0);
 }
 
@@ -203,65 +192,49 @@ void smp_send_stop(void)
 	smp_message_pass(MSG_ALL_BUT_SELF, MSG_STOP_CPU, 0, 0);
 }
 
-#ifdef CONFIG_POWERMAC
-static void psurge_message_pass(int target, int msg, unsigned long data, int wait)
+void smp_message_pass(int target, int msg, unsigned long data, int wait)
 {
 	int i;
 	
-	/*
-	 * IPI's on the Pmac are a hack but without reasonable
-	 * IPI hardware SMP on Pmac is a hack.
-	 *
-	 * We assume here that the msg is not -1.  If it is,
-	 * the recipient won't know the message was destined
-	 * for it. -- Cort
-	 */
-	for ( i = 0; i <= smp_num_cpus ; i++ )
-		psurge_smp_message[i] = -1;
-	switch( target )
-	{
-	case MSG_ALL:
-		psurge_smp_message[smp_processor_id()] = msg;
-		/* fall through */
-	case MSG_ALL_BUT_SELF:
-		for ( i = 0 ; i < smp_num_cpus ; i++ )
-			if ( i != smp_processor_id () )
-				psurge_smp_message[i] = msg;
-		break;
-	default:
-		psurge_smp_message[target] = msg;
-		break;
-	}
-	/* interrupt secondary processor */
-	out_be32(PSURGE_INTR, ~0);
-	out_be32(PSURGE_INTR, 0);
-	/*
-	 * Assume for now that the secondary doesn't send
-	 * IPI's -- Cort
-	 * Could be fixed with 2.4 code from Paulus -- BenH
-	 */
-	/* interrupt primary */
-	/**(volatile unsigned long *)(0xf3019000);*/
-}
-#endif /* powermac */
-
-void smp_message_pass(int target, int msg, unsigned long data, int wait)
-{
- 	atomic_inc(&ipi_sent);
-
 	if ( !(_machine & (_MACH_Pmac|_MACH_chrp|_MACH_prep|_MACH_gemini)) )
 		return;
 
 	switch (_machine) {
-#ifdef CONFIG_POWERMAC
 	case _MACH_Pmac:
-		/* Hack, 2.4 does it cleanly */
-		if (OpenPIC == NULL) {
-			psurge_message_pass(target, msg, data, wait);
+		/*
+		 * IPI's on the Pmac are a hack but without reasonable
+		 * IPI hardware SMP on Pmac is a hack.
+		 *
+		 * We assume here that the msg is not -1.  If it is,
+		 * the recipient won't know the message was destined
+		 * for it. -- Cort
+		 */
+		for ( i = 0; i <= smp_num_cpus ; i++ )
+			pmac_smp_message[i] = -1;
+		switch( target )
+		{
+		case MSG_ALL:
+			pmac_smp_message[smp_processor_id()] = msg;
+			/* fall through */
+		case MSG_ALL_BUT_SELF:
+			for ( i = 0 ; i < smp_num_cpus ; i++ )
+				if ( i != smp_processor_id () )
+					pmac_smp_message[i] = msg;
 			break;
-		} 
-		/* else fall through and do something sane --Troy */
-#endif
+		default:
+			pmac_smp_message[target] = msg;
+			break;
+		}
+		/* interrupt secondary processor */
+		out_be32(PSURGE_INTR, ~0);
+		out_be32(PSURGE_INTR, 0);
+		/*
+		 * Assume for now that the secondary doesn't send
+		 * IPI's -- Cort
+		 */
+		/* interrupt primary */
+		/**(volatile unsigned long *)(0xf3019000);*/
+		break;
 	case _MACH_chrp:
 	case _MACH_prep:
 	case _MACH_gemini:
@@ -285,74 +258,29 @@ void smp_message_pass(int target, int msg, unsigned long data, int wait)
 	}
 }
 
-#ifdef CONFIG_POWERMAC
-static void pmac_core99_kick_cpu(int nr)
-{
-	extern void __secondary_start_psurge(void);
-
-	unsigned long save_int;
-	unsigned long flags;
-	volatile unsigned long *vector
-		 = ((volatile unsigned long *)(KERNELBASE+0x500));
-
-	if (nr != 1)
-		return;
-
-	__save_flags(flags);
-	__cli();
-	
-	/* Save EE vector */
-	save_int = *vector;
-	
-	/* Setup fake EE vector that does	  
-	 *   b __secondary_start_psurge - KERNELBASE
-	 */   
-	*vector = 0x48000002 +
-		((unsigned long)__secondary_start_psurge - KERNELBASE);
-	
-	/* flush data cache and inval instruction cache */
-	flush_icache_range((unsigned long) vector, (unsigned long) vector + 4);
-
-	/* Put some life in our friend */
-	feature_core99_kick_cpu1();
-	
-	/* FIXME: We wait a bit for the CPU to take the exception, I should
-	 * instead wait for the entry code to set something for me. Well,
-	 * ideally, all that crap will be done in prom.c and the CPU left
-	 * in a RAM-based wait loop like CHRP.
-	 */
-	mdelay(1);
-	
-	/* Restore our exception vector */
-	*vector = save_int;
-	flush_icache_range((unsigned long) vector, (unsigned long) vector + 4);
-
-	__restore_flags(flags);
-}
-#endif /* powermac */
-
 void __init smp_boot_cpus(void)
 {
 	extern struct task_struct *current_set[NR_CPUS];
+	extern unsigned long smp_chrp_cpu_nr;
 	extern void __secondary_start_psurge(void);
 	extern void __secondary_start_chrp(void);
 	int i, cpu_nr;
 	struct task_struct *p;
 	unsigned long a;
 
-        printk("Entering SMP Mode...\n");
-	/* let other processors know to not do certain initialization */
-	first_cpu_booted = 1;
+	printk("Entering SMP Mode...\n");
 	smp_num_cpus = 1;
-	
+        smp_store_cpu_info(0);
+
 	/*
 	 * assume for now that the first cpu booted is
 	 * cpu 0, the master -- Cort
 	 */
 	cpu_callin_map[0] = 1;
-        smp_store_cpu_info(0);
         active_kernel_processor = 0;
 	current->processor = 0;
+
+	init_idle();
 
 	for (i = 0; i < NR_CPUS; i++) {
 		prof_counter[i] = 1;
@@ -365,40 +293,29 @@ void __init smp_boot_cpus(void)
 	 */
 	cacheflush_time = 5 * 1024;
 
+	if ( !(_machine & (_MACH_Pmac|_MACH_chrp|_MACH_gemini)) )
+	{
+		printk("SMP not supported on this machine.\n");
+		return;
+	}
+	
 	switch ( _machine )
 	{
-#ifdef CONFIG_POWERMAC
 	case _MACH_Pmac:
-		/* assum e powersurge board - 2 processors -- Cort */
-		/* or a dual G4 -- Troy */
-		cpu_nr = 2;
+		/* assume powersurge board - 2 processors -- Cort */
+		cpu_nr = 2; 
 		break;
-#endif
-#if defined(CONFIG_ALL_PPC) || defined(CONFIG_CHRP)
 	case _MACH_chrp:
-		cpu_nr = ((openpic_read(&OpenPIC->Global.Feature_Reporting0)
-				 & OPENPIC_FEATURE_LAST_PROCESSOR_MASK) >>
-				OPENPIC_FEATURE_LAST_PROCESSOR_SHIFT)+1;
+		for ( i = 0; i < 4 ; i++ )
+			openpic_enable_IPI(i);
+		cpu_nr = smp_chrp_cpu_nr;
 		break;
-#endif
-#if defined(CONFIG_ALL_PPC) || defined(CONFIG_PREP)
- 	case _MACH_prep:
- 		/* assume 2 for now == fix later -- Johnnie */
-		if ( mot_multi )
-		{
-			cpu_nr = 2;
-			break;
-		}
-#endif
-#ifdef CONFIG_GEMINI
 	case _MACH_gemini:
+		for ( i = 0; i < 4 ; i++ )
+			openpic_enable_IPI(i);
                 cpu_nr = (readb(GEMINI_CPUSTAT) & GEMINI_CPU_COUNT_MASK)>>2;
                 cpu_nr = (cpu_nr == 0) ? 4 : cpu_nr;
 		break;
-#endif
-	default:
-		printk("SMP not supported on this machine.\n");
-		return;
 	}
 
 	/*
@@ -408,12 +325,20 @@ void __init smp_boot_cpus(void)
 	for ( i = 1 ; i < cpu_nr; i++ )
 	{
 		int c;
+		struct pt_regs regs;
 		
 		/* create a process for the processor */
-		kernel_thread(start_secondary, NULL, CLONE_PID);
-		p = task[i];
-		if ( !p )
-			panic("No idle task for secondary processor\n");
+		/* we don't care about the values in regs since we'll
+		   never reschedule the forked task. */
+		if (do_fork(CLONE_VM|CLONE_PID, 0, &regs) < 0)
+			panic("failed fork for CPU %d", i);
+		p = init_task.prev_task;
+		if (!p)
+			panic("No idle task for CPU %d", i);
+		del_from_runqueue(p);
+		unhash_process(p);
+		init_tasks[i] = p;
+
 		p->processor = i;
 		p->has_cpu = 1;
 		current_set[i] = p;
@@ -426,41 +351,26 @@ void __init smp_boot_cpus(void)
 		/* wake up cpus */
 		switch ( _machine )
 		{
-#ifdef CONFIG_POWERMAC
 		case _MACH_Pmac:
-			if (OpenPIC == NULL) {
-				/* setup entry point of secondary processor */
-				*(volatile unsigned long *)(0xf2800000) =
-					(unsigned long)__secondary_start_psurge-KERNELBASE;
-				eieio();
-				/* interrupt secondary to begin executing code */
-				out_be32(PSURGE_INTR, ~0);
-				out_be32(PSURGE_INTR, 0);
-			} else
-				pmac_core99_kick_cpu(i);
+			/* setup entry point of secondary processor */
+			*(volatile unsigned long *)(0xf2800000) =
+				(unsigned long)__secondary_start_psurge-KERNELBASE;
+			eieio();
+			/* interrupt secondary to begin executing code */
+			out_be32(PSURGE_INTR, ~0);
+			udelay(1);
+			out_be32(PSURGE_INTR, 0);
 			break;
-#endif
-#if defined(CONFIG_ALL_PPC) || defined(CONFIG_CHRP)
 		case _MACH_chrp:
 			*(unsigned long *)KERNELBASE = i;
 			asm volatile("dcbf 0,%0"::"r"(KERNELBASE):"memory");
 			break;
-#endif
-#if defined(CONFIG_ALL_PPC) || defined(CONFIG_PREP)
-		case _MACH_prep:
-			*MotSave_SmpIar = (unsigned long)__secondary_start_psurge - KERNELBASE;
-			*MotSave_CpusState[1] = CPU_GOOD;
-			printk("CPU1 reset, waiting\n");
-			break;
-#endif
-#ifdef CONFIG_GEMINI
 		case _MACH_gemini:
 			openpic_init_processor( 1<<i );
 			openpic_init_processor( 0 );
 			break;
-#endif
 		}
-
+		
 		/*
 		 * wait to see if the cpu made a callin (is actually up).
 		 * use this value that I found through experimentation.
@@ -481,9 +391,10 @@ void __init smp_boot_cpus(void)
 		}
 	}
 	
-	if (OpenPIC)
+	if ( _machine & (_MACH_gemini|_MACH_chrp|_MACH_prep) )
 		do_openpic_setup_cpu();
-	else if ( _machine == _MACH_Pmac )
+	
+	if ( _machine == _MACH_Pmac )
 	{
 		/* reset the entry point so if we get another intr we won't
 		 * try to startup again */
@@ -498,6 +409,7 @@ void __init smp_commence(void)
 	/*
 	 *	Lets the callin's below out of their loop.
 	 */
+	wmb();
 	smp_commenced = 1;
 }
 
@@ -507,8 +419,10 @@ void __init initialize_secondary(void)
 }
 
 /* Activate a secondary processor. */
-asmlinkage int __init start_secondary(void *unused)
+int __init start_secondary(void *unused)
 {
+	atomic_inc(&init_mm.mm_count);
+	current->active_mm = &init_mm;
 	smp_callin();
 	return cpu_idle(NULL);
 }
@@ -517,28 +431,24 @@ void __init smp_callin(void)
 {
         smp_store_cpu_info(current->processor);
 	set_dec(decrementer_count);
+	
+	init_idle();
 #if 0
 	current->mm->mmap->vm_page_prot = PAGE_SHARED;
 	current->mm->mmap->vm_start = PAGE_OFFSET;
-	current->mm->mmap->vm_end = init_task.mm->mmap->vm_end;
+	current->mm->mmap->vm_end = init_mm.mmap->vm_end;
 #endif
-	init_idle();
 	cpu_callin_map[current->processor] = 1;
 	/*
 	 * Each processor has to do this and this is the best
 	 * place to stick it for now.
 	 *  -- Cort
 	 */
-	if (OpenPIC) {
+	if ( _machine & (_MACH_gemini|_MACH_chrp|_MACH_prep) )
 		do_openpic_setup_cpu();
-#ifdef CONFIG_POWERMAC
- 		if ( _machine == _MACH_Pmac )
- 			core99_init_l2();
-#endif
- 	}
-#ifdef CONFIG_GEMINI
+#ifdef CONFIG_GEMINI	
 	if ( _machine == _MACH_gemini )
-	        gemini_init_l2();
+		gemini_init_l2();
 #endif
 	while(!smp_commenced)
 		barrier();
@@ -557,8 +467,8 @@ int __init setup_profiling_timer(unsigned int multiplier)
 void __init smp_store_cpu_info(int id)
 {
         struct cpuinfo_PPC *c = &cpu_data[id];
+
 	/* assume bogomips are same for everything */
-        c->loops_per_jiffy = loops_per_jiffy;
+        c->loops_per_sec = loops_per_sec;
         c->pvr = _get_PVR();
 }
-

@@ -189,7 +189,7 @@ typedef u8			BYTE;
 typedef u16			USHORT;
 typedef u16			WORD;
 typedef u32			DWORD;
-typedef volatile BYTE *		LPDAQD;
+typedef unsigned long		LPDAQD;
 
 /* Generic FIFO */
 typedef struct {
@@ -209,12 +209,12 @@ typedef struct multisound_dev {
 	int memid, irqid;
 	int irq, irq_ref;
 	unsigned char info;
-	volatile BYTE *base;
+	unsigned long base;
 
 	/* Motorola 56k DSP SMA */
-	volatile BYTE *SMA;
-	volatile BYTE *DAPQ, *DARQ, *MODQ, *MIDQ, *DSPQ;
-	volatile WORD *pwDSPQData, *pwMIDQData, *pwMODQData;
+	unsigned long SMA;
+	unsigned long DAPQ, DARQ, MODQ, MIDQ, DSPQ;
+	unsigned long pwDSPQData, pwMIDQData, pwMODQData;
 	int dspq_data_buff, dspq_buff_size;
 
 	/* State variables */
@@ -233,8 +233,9 @@ typedef struct multisound_dev {
 #define F_EXT_MIDI_INUSE		9
 #define F_HDR_MIDI_INUSE		10
 #define F_DISABLE_WRITE_NDELAY		11
-	struct wait_queue *writeblock, *readblock;
-	struct wait_queue *writeflush;
+	wait_queue_head_t writeblock;
+	wait_queue_head_t readblock;
+	wait_queue_head_t writeflush;
 #ifndef LINUX20
 	spinlock_t lock;
 #endif
@@ -270,7 +271,7 @@ void				msnd_unregister(multisound_dev_t *dev);
 int				msnd_get_num_devs(void);
 multisound_dev_t *		msnd_get_dev(int i);
 
-void				msnd_init_queue(volatile BYTE *base, int start, int size);
+void				msnd_init_queue(unsigned long, int start, int size);
 
 void				msnd_fifo_init(msnd_fifo *f);
 void				msnd_fifo_free(msnd_fifo *f);

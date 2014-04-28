@@ -1,11 +1,52 @@
-/* $Id: divert_procfs.c,v 1.1.2.1 2001/12/31 13:26:44 kai Exp $
+/*
+ * $Id: divert_procfs.c,v 1.8 2000/03/03 16:37:11 kai Exp $
  *
  * Filesystem handling for the diversion supplementary services.
  *
  * Copyright 1998       by Werner Cornelius (werner@isdn4linux.de)
  *
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2, or (at your option)
+ * any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ *
+ * $Log: divert_procfs.c,v $
+ * Revision 1.8  2000/03/03 16:37:11  kai
+ * incorporated some cosmetic changes from the official kernel tree back
+ * into CVS
+ *
+ * Revision 1.7  2000/03/02 00:11:06  werner
+ *
+ * Changes related to procfs for 2.3.48
+ *
+ * Revision 1.6  2000/02/14 19:23:03  werner
+ *
+ * Changed handling of proc filesystem tables to a more portable version
+ *
+ * Revision 1.5  1999/09/14 20:31:01  werner
+ *
+ * Removed obsoleted functions for proc fs and synced with new ones.
+ *
+ * Revision 1.4  1999/08/06 07:42:48  calle
+ * Added COMPAT_HAS_NEW_WAITQ for rd_queue for newer kernels.
+ *
+ * Revision 1.3  1999/07/05 20:21:41  werner
+ * changes to use diversion sources for all kernel versions.
+ * removed static device, only proc filesystem used
+ *
+ * Revision 1.2  1999/07/04 21:37:31  werner
+ * Ported from kernel version 2.0
+ *
+ *
  *
  */
 
@@ -20,7 +61,6 @@
 #include <linux/fs.h>
 #endif
 #include <linux/isdnif.h>
-#include <linux/isdn_compat.h>
 #include "isdn_divert.h"
 
 /*********************************/
@@ -38,7 +78,7 @@ void
 put_info_buffer(char *cp)
 {
 	struct divert_info *ib;
-	unsigned long flags;
+	int flags;
 
 	if (if_used <= 0)
 		return;
@@ -133,7 +173,7 @@ isdn_divert_poll(struct file *file, poll_table * wait)
 static int
 isdn_divert_open(struct inode *ino, struct file *filep)
 {
-	unsigned long flags;
+	int flags;
 
 	MOD_INC_USE_COUNT;
 	save_flags(flags);
@@ -155,7 +195,7 @@ static int
 isdn_divert_close(struct inode *ino, struct file *filep)
 {
 	struct divert_info *inf;
-	unsigned long flags;
+	int flags;
 
 	save_flags(flags);
 	cli();
@@ -184,8 +224,7 @@ isdn_divert_ioctl(struct inode *inode, struct file *file,
 		  uint cmd, ulong arg)
 {
 	divert_ioctl dioctl;
-	int i;
-	unsigned long flags;
+	int i, flags;
 	divert_rule *rulep;
 	char *cp;
 
@@ -279,7 +318,6 @@ static struct file_operations isdn_fops =
 	open:           isdn_divert_open,
 	release:        isdn_divert_close,                                      
 };
-struct inode_operations divert_file_inode_operations;
 
 /****************************/
 /* isdn subdir in /proc/net */
@@ -306,9 +344,7 @@ divert_dev_init(void)
 		remove_proc_entry("isdn", proc_net);
 		return (-1);
 	}
-	memset(&divert_file_inode_operations, 0, sizeof(struct inode_operations));
-	divert_file_inode_operations.default_file_ops = &isdn_fops;
-	isdn_divert_entry->ops = &divert_file_inode_operations;
+	isdn_divert_entry->proc_fops = &isdn_fops; 
 #endif	/* CONFIG_PROC_FS */
 
 	return (0);

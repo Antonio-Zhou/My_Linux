@@ -77,19 +77,18 @@ gemini_pcibios_write_config_dword(unsigned char bus, unsigned char dev,
 	return PCIBIOS_SUCCESSFUL;
 }
 
-__initfunc(void gemini_pcibios_fixup(void))
+void __init gemini_pcibios_fixup(void)
 {
-	struct pci_bus *bus;
-	struct pci_dev *dev;
 	int i;
-
-	for(bus = &pci_root; bus; bus = bus->children) {
-	    for(dev = bus->devices; dev; dev = dev->sibling) {
+	struct pci_dev *dev;
+	
+	pci_for_each_dev(dev) {
 		for(i = 0; i < 6; i++) {
-		    if (dev->base_address[i] & PCI_COMMAND_IO)
-			dev->base_address[i] |= (0xfe << 24);
+			if (dev->resource[i].flags & IORESOURCE_IO) {
+				dev->resource[i].start |= (0xfe << 24);
+				dev->resource[i].end |= (0xfe << 24);
+			}
 		}
-	    }
 	}
 }
 
@@ -97,9 +96,8 @@ decl_config_access_method(gemini);
 
 /* The "bootloader" for Synergy boards does none of this for us, so we need to
    lay it all out ourselves... --Dan */
-__initfunc(void gemini_setup_pci_ptrs(void))
+void __init gemini_setup_pci_ptrs(void)
 {
-
 	set_config_access_method(gemini);
 	ppc_md.pcibios_fixup = gemini_pcibios_fixup;
 }

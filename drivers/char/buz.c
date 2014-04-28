@@ -47,14 +47,14 @@
 #include <asm/segment.h>
 #include <linux/types.h>
 #include <linux/wrapper.h>
-#include <asm/spinlock.h>
+#include <linux/spinlock.h>
 
 #include <linux/videodev.h>
 
 #include <linux/version.h>
 #include <asm/uaccess.h>
 
-#include <linux/i2c.h>
+#include <linux/i2c-old.h>
 #include "buz.h"
 #include <linux/video_decoder.h>
 #include <linux/video_encoder.h>
@@ -201,7 +201,6 @@ static int v4l_fbuffer_alloc(struct zoran *zr)
 				mem_map_reserve(MAP_NR(mem + off));
 			DEBUG(printk(BUZ_INFO ": V4L frame %d mem 0x%x (bus: 0x%x=%d)\n", i, mem, virt_to_bus(mem), virt_to_bus(mem)));
 		} else {
-			v4l_fbuffer_free(zr);
 			return -ENOBUFS;
 		}
 	}
@@ -992,14 +991,10 @@ static int post_office_wait(struct zoran *zr)
 		printk(KERN_WARNING "%s: pop pending %08x\n", zr->name, por);
 		return -1;
 	}
-#if 0
-	/* The LML 33 gets this bit wrong */
-		
 	if ((por & (ZR36057_POR_POTime | ZR36057_POR_POPen)) != 0) {
 		printk(KERN_WARNING "%s: pop timeout %08x\n", zr->name, por);
 		return -1;
 	}
-#endif	
 	return 0;
 }
 
@@ -2390,7 +2385,7 @@ static int zoran_ioctl(struct video_device *dev, unsigned int cmd, void *arg)
 	case VIDIOCSCHAN:
 		{
 			struct video_channel v;
-			int input, norm;
+			int input;
 			int on, res;
 
 			if (copy_from_user(&v, arg, sizeof(v))) {
@@ -2422,10 +2417,9 @@ static int zoran_ioctl(struct video_device *dev, unsigned int cmd, void *arg)
 			if (on)
 				zr36057_overlay(zr, 0);
 
-			norm = zr->params.norm;
 			i2c_control_device(&zr->i2c, I2C_DRIVERID_VIDEODECODER, DECODER_SET_INPUT, &input);
-			i2c_control_device(&zr->i2c, I2C_DRIVERID_VIDEODECODER, DECODER_SET_NORM, &norm);
-			i2c_control_device(&zr->i2c, I2C_DRIVERID_VIDEOENCODER, ENCODER_SET_NORM, &norm);
+			i2c_control_device(&zr->i2c, I2C_DRIVERID_VIDEODECODER, DECODER_SET_NORM, &zr->params.norm);
+			i2c_control_device(&zr->i2c, I2C_DRIVERID_VIDEOENCODER, ENCODER_SET_NORM, &zr->params.norm);
 
 			if (on)
 				zr36057_overlay(zr, 1);
@@ -2586,8 +2580,7 @@ static int zoran_ioctl(struct video_device *dev, unsigned int cmd, void *arg)
 
 			/* Check for vaild parameters */
 			if (vw.width < BUZ_MIN_WIDTH || vw.height < BUZ_MIN_HEIGHT ||
-			    vw.width > BUZ_MAX_WIDTH || vw.height > BUZ_MAX_HEIGHT ||
-			    vw.clipcount < 0 || vw.clipcount > 2048) {
+			    vw.width > BUZ_MAX_WIDTH || vw.height > BUZ_MAX_HEIGHT) {
 				return -EINVAL;
 			}
 #ifdef XAWTV_HACK
@@ -2784,7 +2777,7 @@ static int zoran_ioctl(struct video_device *dev, unsigned int cmd, void *arg)
 	case BUZIOC_S_PARAMS:
 		{
 			struct zoran_params bp;
-			int input, on, norm;
+			int input, on;
 
 			if (zr->codec_mode != BUZ_MODE_IDLE) {
 				return -EINVAL;
@@ -2811,10 +2804,9 @@ static int zoran_ioctl(struct video_device *dev, unsigned int cmd, void *arg)
 				zr36057_overlay(zr, 0);
 
 			input = zr->params.input == 0 ? 3 : 7;
-			norm = zr->params.norm;
 			i2c_control_device(&zr->i2c, I2C_DRIVERID_VIDEODECODER, DECODER_SET_INPUT, &input);
-			i2c_control_device(&zr->i2c, I2C_DRIVERID_VIDEODECODER, DECODER_SET_NORM, &norm);
-			i2c_control_device(&zr->i2c, I2C_DRIVERID_VIDEOENCODER, ENCODER_SET_NORM, &norm);
+			i2c_control_device(&zr->i2c, I2C_DRIVERID_VIDEODECODER, DECODER_SET_NORM, &zr->params.norm);
+			i2c_control_device(&zr->i2c, I2C_DRIVERID_VIDEOENCODER, ENCODER_SET_NORM, &zr->params.norm);
 
 			if (on)
 				zr36057_overlay(zr, 1);
@@ -2943,9 +2935,8 @@ static int zoran_ioctl(struct video_device *dev, unsigned int cmd, void *arg)
 
 			/* restore previous input and norm */
 			input = zr->params.input == 0 ? 3 : 7;
-			norm = zr->params.norm;
 			i2c_control_device(&zr->i2c, I2C_DRIVERID_VIDEODECODER, DECODER_SET_INPUT, &input);
-			i2c_control_device(&zr->i2c, I2C_DRIVERID_VIDEODECODER, DECODER_SET_NORM, &norm);
+			i2c_control_device(&zr->i2c, I2C_DRIVERID_VIDEODECODER, DECODER_SET_NORM, &zr->params.norm);
 
 			if (copy_to_user(arg, &bs, sizeof(bs))) {
 				return -EFAULT;
@@ -3044,7 +3035,7 @@ static struct video_device zoran_template =
 	BUZ_NAME,
 	VID_TYPE_CAPTURE | VID_TYPE_OVERLAY | VID_TYPE_CLIPPING | VID_TYPE_FRAMERAM |
 	VID_TYPE_SCALES | VID_TYPE_SUBCAPTURE,
-	VID_HARDWARE_BT848,	/* Not true, but the buz is not yet in the list */
+	VID_HARDWARE_ZR36067,
 	zoran_open,
 	zoran_close,
 	zoran_read,
@@ -3073,6 +3064,9 @@ static int zr36057_init(int i)
 	/* default setup of all parameters which will persist beetween opens */
 
 	zr->user = 0;
+	
+	init_waitqueue_head(&zr->v4l_capq);
+	init_waitqueue_head(&zr->jpg_capq);
 
 	zr->map_mjpeg_buffers = 0;	/* Map V4L buffers by default */
 
@@ -3172,15 +3166,9 @@ static int zr36057_init(int i)
 			mdelay(10);
 			zr36060_reset(zr);
 			mdelay(10);
-//			zr36060_sleep(zr, 1);
-//			mdelay(10);
 	
 			/* display codec revision */
 			if ((rev=zr36060_read_8(zr, 0x022)) == 0x33) {
-				printk(KERN_INFO "%s: Zoran ZR36060 (rev %d)\n",
-			       zr->name, zr36060_read_8(zr, 0x023));
-			}
-			else if ((rev=zr36060_read_8(zr, 0x022)) == 0xA2) {
 				printk(KERN_INFO "%s: Zoran ZR36060 (rev %d)\n",
 			       zr->name, zr36060_read_8(zr, 0x023));
 			} else {
@@ -3214,8 +3202,6 @@ static int zr36057_init(int i)
 			udelay(3000);
 			zr36060_reset(zr);
 			udelay(3000);
-//			zr36060_sleep(zr, 1);
-//			udelay(3000);
 
 			/* display codec revision */
 			if ((rev=zr36060_read_8(zr, 0x022)) == 0x33) {
@@ -3223,8 +3209,8 @@ static int zr36057_init(int i)
 			       zr->name, zr36060_read_8(zr, 0x023));
 			} else {
 				printk(KERN_ERR "%s: Zoran ZR36060 not found (rev=%d)\n", zr->name, rev);
-//				kfree((void *) zr->stat_com);
-//				return -1;
+				kfree((void *) zr->stat_com);
+				return -1;
 			}
 			break;
 	}
@@ -3257,9 +3243,8 @@ static int zr36057_init(int i)
 
 	j = zr->params.input == 0 ? 3 : 7;
 	i2c_control_device(&zr->i2c, I2C_DRIVERID_VIDEODECODER, DECODER_SET_INPUT, &j);
-	j = zr->params.norm;
-	i2c_control_device(&zr->i2c, I2C_DRIVERID_VIDEODECODER, DECODER_SET_NORM, &j);
-	i2c_control_device(&zr->i2c, I2C_DRIVERID_VIDEOENCODER, ENCODER_SET_NORM, &j);
+	i2c_control_device(&zr->i2c, I2C_DRIVERID_VIDEODECODER, DECODER_SET_NORM, &zr->params.norm);
+	i2c_control_device(&zr->i2c, I2C_DRIVERID_VIDEOENCODER, ENCODER_SET_NORM, &zr->params.norm);
 
 	/* set individual interrupt enables (without GIRQ0)
 	   but don't global enable until zoran_open() */
@@ -3339,7 +3324,10 @@ static int find_zr36057(void)
 
 		spin_lock_init(&zr->lock);
 
-		zr->zr36057_adr = zr->pci_dev->base_address[0] & PCI_BASE_ADDRESS_MEM_MASK;
+		if (pci_enable_device(dev))
+			continue;
+
+		zr->zr36057_adr = pci_resource_start(zr->pci_dev, 0);
 		pci_read_config_byte(zr->pci_dev, PCI_CLASS_REVISION, &zr->revision);
 		if (zr->revision < 2) {
 			printk(KERN_INFO "%s: Zoran ZR36057 (rev %d) irq: %d, memory: 0x%08x.\n",
@@ -3347,8 +3335,8 @@ static int find_zr36057(void)
 		} else {
 			unsigned short ss_vendor_id, ss_id;
 
-			pci_read_config_word(zr->pci_dev, PCI_SUBSYSTEM_VENDOR_ID, &ss_vendor_id);
-			pci_read_config_word(zr->pci_dev, PCI_SUBSYSTEM_ID, &ss_id);
+			ss_vendor_id = zr->pci_dev->subsystem_vendor;
+			ss_id = zr->pci_dev->subsystem_device;
 			printk(KERN_INFO "%s: Zoran ZR36067 (rev %d) irq: %d, memory: 0x%08x\n",
 			       zr->name, zr->revision, zr->pci_dev->irq, zr->zr36057_adr);
 			printk(KERN_INFO "%s: subsystem vendor=0x%04x id=0x%04x\n",
@@ -3361,6 +3349,10 @@ static int find_zr36057(void)
 		}
 
 		zr->zr36057_mem = ioremap(zr->zr36057_adr, 0x1000);
+		if (!zr->zr36057_mem) {
+			printk(KERN_ERR "%s: ioremap failed\n", zr->name);
+			/* XXX handle error */
+		}
 
 		/* set PCI latency timer */
 		pci_read_config_byte(zr->pci_dev, PCI_LATENCY_TIMER, &latency);
@@ -3377,29 +3369,25 @@ static int find_zr36057(void)
 	return zoran_num;
 }
 
-#include "chipsets.h"
-
 static void handle_chipset(void)
 {
-	int index;
-	struct pci_dev *dev = NULL;
+	if(pci_pci_problems&PCIPCI_FAIL)
+	{
+		printk(KERN_WARNING "buz: This configuration is known to have PCI to PCI DMA problems\n");
+		printk(KERN_WARNING "buz: You may not be able to use overlay mode.\n");
+	}
+			
 
-	for (index = 0; index < sizeof(black) / sizeof(black[0]); index++) {
-		if ((dev = pci_find_device(black[index].vendor, black[index].device, dev)) != NULL) {
-			printk(KERN_INFO ": Host bridge: %s, ", black[index].name);
-			switch (black[index].action) {
-
-			case TRITON:
-				printk("enabling Triton support.\n");
-				triton = 1;
-				break;
-
-			case NATOMA:
-				printk("enabling Natoma workaround.\n");
-				natoma = 1;
-				break;
-			}
-		}
+	if(pci_pci_problems&PCIPCI_TRITON)
+	{
+		printk("buz: Enabling Triton support.\n");
+		triton = 1;
+	}
+	
+	if(pci_pci_problems&PCIPCI_NATOMA)
+	{
+		printk("buz: Enabling Natoma workaround.\n");
+		natoma = 1;
 	}
 }
 

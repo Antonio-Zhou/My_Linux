@@ -1,4 +1,8 @@
-TLAN driver for Linux, version 1.3b
+(C) 1997-1998 Caldera, Inc.
+(C) 1998 James Banks
+(C) 1999-2000 Torben Mathiasen <tmm@image.dk, torben.mathiasen@compaq.com>
+
+TLAN driver for Linux, version 1.5
 README
 
 
@@ -36,7 +40,7 @@ I.  Supported Devices.
     but I do not expect any problems.
     
 
-II.  Driver Options
+II.   Driver Options
 	1. You can append debug=x to the end of the insmod line to get
            debug messages, where x is a bit field where the bits mean
 	   the following:
@@ -44,7 +48,7 @@ II.  Driver Options
 	   0x01		Turn on general debugging messages.
 	   0x02		Turn on receive debugging messages.
 	   0x04		Turn on transmit debugging messages.
-	   0x08		Turn on list debugging messages.
+	   0x08		Turn on list debugging messsages.
 
 	2. You can append aui=1 to the end of the insmod line to cause
            the adapter to use the AUI interface instead of the 10 Base T
@@ -65,6 +69,8 @@ II.  Driver Options
 	   and 4th parameters to set aui and debug respectively.  For
 	   example:
 
+/* kernel-parameters are currently not supported. I will fix this asap. */
+
 	   ether=0,0,0x1,0x7,eth0
 
 	   This sets aui to 0x1 and debug to 0x7, assuming eth0 is a
@@ -73,19 +79,17 @@ II.  Driver Options
 	   The bits in the third byte are assigned as follows:
 
 		0x01 = aui
-		0x02 = use SA_INTERRUPT flag when reserving the irq.
 		0x04 = use half duplex
 		0x08 = use full duplex
 		0x10 = use 10BaseT
 		0x20 = use 100BaseTx
 
-	6. This driver can be used as a loadable module. Se net-modules.txt
-	   for details.
 
 III.  Things to try if you have problems.
 	1. Make sure your card's PCI id is among those listed in
 	   section I, above.
 	2. Make sure routing is correct.
+	3. Try forcing different speed/duplex settings
 
 
 There is also a tlan mailing list which you can join by sending "subscribe tlan"

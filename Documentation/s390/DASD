@@ -2,8 +2,8 @@ DASD device driver
 
 S/390's disk devices (DASDs) are managed by Linux via the DASD device
 driver. It is valid for all types of DASDs and represents them to
-Linux as block devices, namely "dasd". Currently the DASD driver uses a
-single major number (94) and 4 minor numbers per volume (1 for the
+Linux as block devices, namely "dd". Currently the DASD driver uses a
+single major number (254) and 4 minor numbers per volume (1 for the
 physical volume and 3 for partitions). With respect to partitions see
 below. Thus you may have up to 64 DASD devices in your system.
 
@@ -30,7 +30,7 @@ an Enterprise Storage Server (Seascape) should work fine as well.
 We currently implement one partition per volume, which is the whole
 volume, skipping the first blocks up to the volume label. These are
 reserved for IPL records and IBM's volume label to assure
-accessibility of the DASD from other OSs. In a later stage we will
+accessability of the DASD from other OSs. In a later stage we will
 provide support of partitions, maybe VTOC oriented or using a kind of
 partition table in the label record.
 
@@ -38,7 +38,7 @@ USAGE
 
 -Low-level format (?CKD only)
 For using an ECKD-DASD as a Linux harddisk you have to low-level
-format the tracks by issuing the BLKDASDFORMAT-ioctl on that
+format the tracks by issueing the BLKDASDFORMAT-ioctl on that
 device. This will erase any data on that volume including IBM volume
 labels, VTOCs etc. The ioctl may take a 'struct format_data *' or
 'NULL' as an argument.  

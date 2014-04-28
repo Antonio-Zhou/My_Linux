@@ -31,6 +31,7 @@
 
 #define IDESCSI_VERSION "0.9"
 
+#include <linux/config.h>
 #include <linux/module.h>
 #include <linux/types.h>
 #include <linux/string.h>
@@ -41,12 +42,11 @@
 #include <linux/errno.h>
 #include <linux/hdreg.h>
 #include <linux/malloc.h>
+#include <linux/ide.h>
 
 #include <asm/io.h>
 #include <asm/bitops.h>
 #include <asm/uaccess.h>
-
-#include "../block/ide.h"
 
 #include "scsi.h"
 #include "hosts.h"
@@ -96,7 +96,6 @@ typedef struct {
 	unsigned long flags;			/* Status/Action flags */
 	unsigned long transform;		/* SCSI cmd translation layer */
 	unsigned long log;			/* log flags */
-	int last_lun;				/* last LUN */
 } idescsi_scsi_t;
 
 /*
@@ -220,7 +219,7 @@ static inline void idescsi_transform_pc2 (ide_drive_t *drive, idescsi_pc_t *pc)
 
 	if (!test_bit(PC_TRANSFORM, &pc->flags))
 		return;
-	if (!pc->scsi_cmd->use_sg && (drive->media == ide_cdrom || drive->media == ide_optical)) {
+	if (drive->media == ide_cdrom || drive->media == ide_optical) {
 		if (pc->c[0] == MODE_SENSE_10 && sc[0] == MODE_SENSE) {
 			scsi_buf[0] = atapi_buf[1];		/* Mode data length */
 			scsi_buf[1] = atapi_buf[2];		/* Medium type */
@@ -303,7 +302,7 @@ static void idescsi_end_request (byte uptodate, ide_hwgroup_t *hwgroup)
 
 static inline unsigned long get_timeout(idescsi_pc_t *pc)
 {
-	return IDE_MAX((30 * HZ), pc->timeout - jiffies);	/* CD-RW drives need long timeouts */
+	return IDE_MAX(WAIT_CMD, pc->timeout - jiffies);
 }
 
 /*
@@ -432,7 +431,8 @@ static ide_startstop_t idescsi_issue_pc (ide_drive_t *drive, idescsi_pc_t *pc)
 	if (drive->using_dma && rq->bh)
 		dma_ok=!HWIF(drive)->dmaproc(test_bit (PC_WRITING, &pc->flags) ? ide_dma_write : ide_dma_read, drive);
 
-	OUT_BYTE (drive->ctl,IDE_CONTROL_REG);
+	if (IDE_CONTROL_REG)
+		OUT_BYTE (drive->ctl,IDE_CONTROL_REG);
 	OUT_BYTE (dma_ok,IDE_FEATURE_REG);
 	OUT_BYTE (bcount >> 8,IDE_BCOUNTH_REG);
 	OUT_BYTE (bcount & 0xff,IDE_BCOUNTL_REG);
@@ -491,7 +491,7 @@ static void idescsi_add_settings(ide_drive_t *drive)
 /*
  *			drive	setting name	read/write	ioctl	ioctl		data type	min	max	mul_factor	div_factor	data pointer		set function
  */
-	ide_add_setting(drive,	"bios_cyl",	SETTING_RW,	-1,	-1,		TYPE_SHORT,	0,	1023,	1,		1,		&drive->bios_cyl,	NULL);
+	ide_add_setting(drive,	"bios_cyl",	SETTING_RW,	-1,	-1,		TYPE_INT,	0,	1023,	1,		1,		&drive->bios_cyl,	NULL);
 	ide_add_setting(drive,	"bios_head",	SETTING_RW,	-1,	-1,		TYPE_BYTE,	0,	255,	1,		1,		&drive->bios_head,	NULL);
 	ide_add_setting(drive,	"bios_sect",	SETTING_RW,	-1,	-1,		TYPE_BYTE,	0,	63,	1,		1,		&drive->bios_sect,	NULL);
 	ide_add_setting(drive,	"transform",	SETTING_RW,	-1,	-1,		TYPE_INT,	0,	3,	1,		1,		&scsi->transform,	NULL);
@@ -509,11 +509,8 @@ static void idescsi_setup (ide_drive_t *drive, idescsi_scsi_t *scsi, int id)
 	drive->ready_stat = 0;
 	memset (scsi, 0, sizeof (idescsi_scsi_t));
 	scsi->drive = drive;
-	if (drive->id) {
-		if ((drive->id->config & 0x0060) == 0x20)
-			set_bit (IDESCSI_DRQ_INTERRUPT, &scsi->flags);
-		scsi->last_lun = drive->id->last_lun;
-	}
+	if (drive->id && (drive->id->config & 0x0060) == 0x20)
+		set_bit (IDESCSI_DRQ_INTERRUPT, &scsi->flags);
 	set_bit(IDESCSI_TRANSFORM, &scsi->transform);
 	clear_bit(IDESCSI_SG_TRANSFORM, &scsi->transform);
 #if IDESCSI_DEBUG_LOG
@@ -550,6 +547,7 @@ static ide_driver_t idescsi_driver = {
 	idescsi_open,		/* open */
 	idescsi_ide_release,	/* release */
 	NULL,			/* media_change */
+	NULL,			/* revalidate */
 	NULL,			/* pre_reset */
 	NULL,			/* capacity */
 	NULL,			/* special */
@@ -563,8 +561,6 @@ static ide_module_t idescsi_module = {
 	&idescsi_driver,
 	NULL
 };
-
-static struct proc_dir_entry idescsi_proc_dir = {PROC_SCSI_IDESCSI, 8, "ide-scsi", S_IFDIR | S_IRUGO | S_IXUGO, 2};
 
 /*
  *	idescsi_init will register the driver for each scsi.
@@ -585,6 +581,17 @@ int idescsi_init (void)
 	for (i = 0; media[i] != 255; i++) {
 		failed = 0;
 		while ((drive = ide_scan_devices (media[i], idescsi_driver.name, NULL, failed++)) != NULL) {
+
+#ifndef CONFIG_BLK_DEV_IDETAPE
+			/*
+			 * The Onstream DI-30 does not handle clean emulation, yet.
+			 */
+			if (strstr(drive->id->model, "OnStream DI-30")) {
+				printk("ide-tape: ide-scsi emulation is not supported for %s.\n", drive->id->model);
+				continue;
+			}
+#endif /* CONFIG_BLK_DEV_IDETAPE */
+
 			if ((scsi = (idescsi_scsi_t *) kmalloc (sizeof (idescsi_scsi_t), GFP_KERNEL)) == NULL) {
 				printk (KERN_ERR "ide-scsi: %s: Can't allocate a scsi structure\n", drive->name);
 				continue;
@@ -607,16 +614,15 @@ int idescsi_init (void)
 int idescsi_detect (Scsi_Host_Template *host_template)
 {
 	struct Scsi_Host *host;
-	int last_lun = 0;
 	int id;
+	int last_lun = 0;
 
-	host_template->proc_dir = &idescsi_proc_dir;
+	host_template->proc_name = "ide-scsi";
 	host = scsi_register(host_template, 0);
 	for (id = 0; id < MAX_HWIFS * MAX_DRIVES && idescsi_drives[id]; id++)
-		last_lun = IDE_MAX(last_lun, idescsi_drives[id]->id->last_lun);
-
-	host->max_lun = last_lun + 1;
+		last_lun = IDE_MAX(last_lun, idescsi_drives[id]->last_lun);
 	host->max_id = id;
+	host->max_lun = last_lun + 1;
 	host->can_queue = host->cmd_per_lun * id;
 	return 1;
 }
@@ -643,10 +649,9 @@ int idescsi_ioctl (Scsi_Device *dev, int cmd, void *arg)
 {
 	ide_drive_t *drive = idescsi_drives[dev->id];
 	idescsi_scsi_t *scsi = drive->driver_data;
-	int enable = (int) arg;
 
 	if (cmd == SG_SET_TRANSFORM) {
-		if (enable)
+		if (arg)
 			set_bit(IDESCSI_SG_TRANSFORM, &scsi->transform);
 		else
 			clear_bit(IDESCSI_SG_TRANSFORM, &scsi->transform);
@@ -744,24 +749,20 @@ int idescsi_queue (Scsi_Cmnd *cmd, void (*done)(Scsi_Cmnd *))
 
 	if (!drive) {
 		printk (KERN_ERR "ide-scsi: drive id %d not present\n", cmd->target);
-		goto error;
+		goto abort;
 	}
 	scsi = drive->driver_data;
 	pc = kmalloc (sizeof (idescsi_pc_t), GFP_ATOMIC);
 	rq = kmalloc (sizeof (struct request), GFP_ATOMIC);
 	if (rq == NULL || pc == NULL) {
 		printk (KERN_ERR "ide-scsi: %s: out of memory\n", drive->name);
-		goto error;
+		goto abort;
 	}
 
 	memset (pc->c, 0, 12);
 	pc->flags = 0;
 	pc->rq = rq;
 	memcpy (pc->c, cmd->cmnd, cmd->cmd_len);
-	if ((pc->c[1] >> 5) > scsi->last_lun) {
-		cmd->result = DID_ABORT << 16;
-		goto abort;
-	}
 	if (cmd->use_sg) {
 		pc->buffer = NULL;
 		pc->sg = cmd->request_buffer;
@@ -796,12 +797,10 @@ int idescsi_queue (Scsi_Cmnd *cmd, void (*done)(Scsi_Cmnd *))
 	(void) ide_do_drive_cmd (drive, rq, ide_end);
 	spin_lock_irq(&io_request_lock);
 	return 0;
-
-error:
-	cmd->result = DID_ERROR << 16;
 abort:
 	if (pc) kfree (pc);
 	if (rq) kfree (rq);
+	cmd->result = DID_ERROR << 16;
 	done(cmd);
 	return 0;
 }

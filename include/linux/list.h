@@ -20,7 +20,7 @@ struct list_head {
 #define LIST_HEAD_INIT(name) { &(name), &(name) }
 
 #define LIST_HEAD(name) \
-	struct list_head name = { &name, &name }
+	struct list_head name = LIST_HEAD_INIT(name)
 
 #define INIT_LIST_HEAD(ptr) do { \
 	(ptr)->next = (ptr); (ptr)->prev = (ptr); \
@@ -51,7 +51,7 @@ static __inline__ void list_add(struct list_head *new, struct list_head *head)
 }
 
 /*
- * Insert a new entry at the tail
+ * Insert a new entry before the specified head..
  */
 static __inline__ void list_add_tail(struct list_head *new, struct list_head *head)
 {
@@ -105,7 +105,7 @@ static __inline__ void list_splice(struct list_head *list, struct list_head *hea
 	((type *)((char *)(ptr)-(unsigned long)(&((type *)0)->member)))
 
 #define list_for_each(pos, head) \
-        for (pos = (head)->next; pos != (head); pos = pos->next)
+	for (pos = (head)->next; pos != (head); pos = pos->next)
 
 #endif /* __KERNEL__ */
 

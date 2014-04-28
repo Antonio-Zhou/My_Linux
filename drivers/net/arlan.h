@@ -45,7 +45,7 @@
 extern int 	init_arlan_proc(void);
 #endif
 
-extern struct device *arlan_device[MAX_ARLANS];
+extern struct net_device *arlan_device[MAX_ARLANS];
 extern int	arlan_debug;
 extern char *	siteName;
 extern int	arlan_entry_debug;
@@ -53,7 +53,7 @@ extern int	arlan_exit_debug;
 extern int	arlan_entry_and_exit_debug;
 extern int	testMemory;
 extern const char* arlan_version;
-extern  int	arlan_command(struct device * dev, int command);
+extern int     arlan_command(struct net_device * dev, int command);
  
 #define SIDUNKNOWN -1
 #define radioNodeIdUNKNOWN -1

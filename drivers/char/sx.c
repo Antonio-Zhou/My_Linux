@@ -419,9 +419,9 @@ static struct real_driver sx_real_driver = {
  */
 
 static struct file_operations sx_fw_fops = {
+	ioctl:		sx_fw_ioctl,
 	open:		sx_fw_open,
-	release:       	sx_fw_release,
-	ioctl:		sx_fw_ioctl
+	release:	sx_fw_release,
 };
 
 struct miscdevice sx_fw_device = {
@@ -1028,8 +1028,8 @@ void sx_transmit_chars (struct sx_port *port)
 		if (c > SERIAL_XMIT_SIZE - port->gs.xmit_tail) 
 			c = SERIAL_XMIT_SIZE - port->gs.xmit_tail;
 
-		sx_dprintk (SX_DEBUG_TRANSMIT, " %d(%ld) \n", 
-		            c, (long)SERIAL_XMIT_SIZE- port->gs.xmit_tail);
+		sx_dprintk (SX_DEBUG_TRANSMIT, " %d(%d) \n", 
+		            c, SERIAL_XMIT_SIZE- port->gs.xmit_tail);
 
 		/* If for one reason or another, we can't copy more data, we're done! */
 		if (c == 0) break;
@@ -1169,8 +1169,7 @@ inline void sx_check_modem_signals (struct sx_port *port)
 				/* DCD went UP */
 				if( (~(port->gs.flags & ASYNC_NORMAL_ACTIVE) || 
 						 ~(port->gs.flags & ASYNC_CALLOUT_ACTIVE)) &&
-						(sx_read_channel_byte(port, hi_hstat) != HS_IDLE_CLOSED) &&
-						!(port->gs.tty->termios->c_cflag & CLOCAL) ) {
+						(sx_read_channel_byte(port, hi_hstat) != HS_IDLE_CLOSED)) {
 					/* Are we blocking in open?*/
 					sx_dprintk (SX_DEBUG_MODEMSIGNALS, "DCD active, unblocking open\n");
 					wake_up_interruptible(&port->gs.open_wait);
@@ -1180,8 +1179,7 @@ inline void sx_check_modem_signals (struct sx_port *port)
 			} else {
 				/* DCD went down! */
 				if (!((port->gs.flags & ASYNC_CALLOUT_ACTIVE) &&
-				      (port->gs.flags & ASYNC_CALLOUT_NOHUP)) &&
-				    !(port->gs.tty->termios->c_cflag & CLOCAL) ) {
+				      (port->gs.flags & ASYNC_CALLOUT_NOHUP))) {
 					sx_dprintk (SX_DEBUG_MODEMSIGNALS, "DCD dropped. hanging up....\n");
 					tty_hangup (port->gs.tty);
 				} else {
@@ -1420,6 +1418,7 @@ static void sx_shutdown_port (void * ptr)
  *               interface with the rest of the system                    *
  * ********************************************************************** */
 
+
 static int sx_fw_open(struct inode *inode, struct file *filp)
 {
 	func_enter ();
@@ -1436,7 +1435,6 @@ static INT sx_fw_release(struct inode *inode, struct file *filp)
 	func_exit ();
 	return NO_ERROR;
 }
-
 
 
 static int sx_open  (struct tty_struct * tty, struct file * filp)
@@ -1545,9 +1543,6 @@ static void sx_hungup (void *ptr)
 	struct sx_port *port = ptr; 
 	func_enter ();
 
-	/* Don't force the SX card to close. mgetty doesn't like it !!!!!! -- pvdl */
-	/* For some reson we added this code. Don't know why anymore ;-) -- pvdl */
-	/*
 	sx_setsignals (port, 0, 0);
 	sx_reconfigure_port(port);	
 	sx_send_command (port, HS_CLOSE, 0, 0);
@@ -1559,7 +1554,7 @@ static void sx_hungup (void *ptr)
 		} else
 			sx_dprintk (SX_DEBUG_CLOSE, "sent the force_close command.\n");
 	}
-	*/
+
 	MOD_DEC_USE_COUNT;
 	func_exit ();
 }
@@ -1801,20 +1796,6 @@ static int sx_fw_ioctl (struct inode *inode, struct file *filp,
 }
 
 
-static void sx_break (struct tty_struct * tty, int flag)
-{
-	struct sx_port *port = tty->driver_data;
-	int rv;
-
-	if (flag) 
-		rv = sx_send_command (port, HS_START, -1, HS_IDLE_BREAK);
-	else 
-		rv = sx_send_command (port, HS_STOP, -1, HS_IDLE_OPEN);
-	if (rv != 1) printk (KERN_ERR "sx: couldn't send break (%x).\n",
-			read_sx_byte (port->board, CHAN_OFFSET (port, hi_hstat)));
-}
-
-
 static int sx_ioctl (struct tty_struct * tty, struct file * filp, 
                      unsigned int cmd, unsigned long arg)
 {
@@ -1883,6 +1864,7 @@ static int sx_ioctl (struct tty_struct * tty, struct file * filp,
 			sx_reconfigure_port(port);
 		}
 		break;
+
 	default:
 		rc = -ENOIOCTLCMD;
 		break;
@@ -2262,7 +2244,6 @@ static int sx_init_drivers(void)
 	sx_driver.table = sx_table;
 	sx_driver.termios = sx_termios;
 	sx_driver.termios_locked = sx_termios_locked;
-	sx_driver.break_ctl = sx_break;
 
 	sx_driver.open	= sx_open;
 	sx_driver.close = gs_close;
@@ -2365,10 +2346,9 @@ static int sx_init_portstructs (int nboards, int nports)
 			/*
 			 * Initializing wait queue
 			 */
-			/*
 			init_waitqueue_head(&port->gs.open_wait);
 			init_waitqueue_head(&port->gs.close_wait); 		
-			*/
+			
 			port++;
 		}
 	}
@@ -2410,7 +2390,7 @@ static int sx_init_portstructs (int nboards, int nports)
 	return 0;
 }
 
-#ifdef MODULE
+
 static void sx_release_drivers(void)
 {
 	func_enter();
@@ -2418,7 +2398,6 @@ static void sx_release_drivers(void)
 	tty_unregister_driver(&sx_callout_driver);
 	func_exit();
 }
-#endif
 
 #ifdef TWO_ZERO
 #define PDEV unsigned char pci_bus, unsigned pci_fun
@@ -2499,10 +2478,8 @@ int sx_init(void)
 		while ((pdev = pci_find_device (PCI_VENDOR_ID_SPECIALIX, 
 		                                PCI_DEVICE_ID_SPECIALIX_SX_XIO_IO8, 
 			                              pdev))) {
-		  /*
 			if (pci_enable_device(pdev))
 				continue;
-		  */
 #else
 			for (i=0;i< SX_NBOARDS;i++) {
 				if (pcibios_find_device (PCI_VENDOR_ID_SPECIALIX, 
@@ -2534,12 +2511,9 @@ int sx_init(void)
 
 			/* CF boards use base address 3.... */
 			if (IS_CF_BOARD (board))
-				pci_read_config_dword(pdev, PCI_BASE_ADDRESS_3,
-				                      &tint);
+				board->hw_base = pci_resource_start (pdev, 3);
 			else
-				pci_read_config_dword(pdev, PCI_BASE_ADDRESS_2,
-						      &tint);
-			board->hw_base = tint & PCI_BASE_ADDRESS_MEM_MASK;
+				board->hw_base = pci_resource_start (pdev, 2);
 			board->base2 = 
 			board->base = (ulong) ioremap(board->hw_base, WINDOW_LEN (board));
 			if (!board->base) {

@@ -52,7 +52,6 @@ enum nubus_type_cpu {
  *
  *  SONIC comm-slot/on-board and DuoDock Ethernet: <4,1,1,272>
  *  SONIC LC-PDS Ethernet (Dayna, but like Apple 16-bit, sort of): <4,1,1,271>
- *  Apple SONIC LC-PDS Ethernet ("Apple Ethernet LC Twisted-Pair Card"): <4,1,0,281>
  *  Sonic Systems Ethernet A-Series Card: <4,1,268,256>
  *  Asante MacCon NuBus-A: <4,1,260,256> (alpha-1.0,1.1 revision)
  *   ROM on the above card: <2,1,0,0>
@@ -116,7 +115,6 @@ enum nubus_drhw {
 	NUBUS_DRHW_CABLETRON    = 0x0109,
 	NUBUS_DRHW_ASANTE_LC    = 0x010f,
 	NUBUS_DRHW_SONIC        = 0x0110,
-	NUBUS_DRHW_APPLE_SONIC_LC = 0x0119,
 };
 
 /* Resource IDs: These are the identifiers for the various weird and
@@ -264,9 +262,9 @@ extern struct nubus_dev* nubus_devices;
 extern struct nubus_board* nubus_boards;
 
 /* Generic NuBus interface functions, modelled after the PCI interface */
-void nubus_init(void);
+extern void nubus_init(void);
 void nubus_scan_bus(void);
-void nubus_proc_init(void);
+extern void nubus_proc_init(void);
 int get_nubus_list(char *buf);
 int nubus_proc_attach_device(struct nubus_dev *dev);
 int nubus_proc_detach_device(struct nubus_dev *dev);

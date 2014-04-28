@@ -42,7 +42,7 @@
  */
 
 /*
- *  ==FILEVERSION 20000223==
+ *  ==FILEVERSION 990806==
  *
  *  NOTE TO MAINTAINERS:
  *   If you modify this file at all, please set the above date.
@@ -86,9 +86,10 @@ struct ppp {
 	/* Information specific to using ppp on async serial lines. */
 	struct tty_struct *tty;		/* ptr to TTY structure	*/
 	struct tty_struct *backup_tty;	/* TTY to use if tty gets closed */
-	unsigned long	state;		/* state flags, use atomic ops  */
 	__u8		escape;		/* 0x20 if prev char was PPP_ESC */
 	__u8		toss;		/* toss this frame		*/
+	volatile __u8	tty_pushing;	/* internal state flag		*/
+	volatile __u8	woke_up;	/* internal state flag		*/
 	__u32		xmit_async_map[8]; /* 1 bit means that given control 
 					   character is quoted on output*/
 	__u32		recv_async_map; /* 1 bit means that given control 
@@ -108,7 +109,7 @@ struct ppp {
 	__u16		rfcs;		/* FCS so far of rpkt		*/
 
 	/* Queues for select() functionality */
-	struct wait_queue *read_wait;	/* queue for reading processes	*/
+	wait_queue_head_t read_wait;	/* queue for reading processes	*/
 
 	/* info for detecting idle channels */
 	unsigned long	last_xmit;	/* time of last transmission	*/
@@ -125,10 +126,13 @@ struct ppp {
 
 	enum	NPmode sc_npmode[NUM_NP]; /* what to do with each NP */
 	int	 sc_xfer;		/* PID of reserved PPP table */
-	char	name[8];		/* space for unit name */
-	struct device	dev;		/* net device structure */
+	char	name[16];		/* space for unit name */
+	struct net_device	dev;		/* net device structure */
 	struct enet_statistics estats;	/* more detailed stats */
 
 	/* tty output buffer */
 	unsigned char	obuf[OBUFSIZE];	/* buffer for characters to send */
 };
+
+#define PPP_MAGIC	0x5002
+#define PPP_VERSION	"2.3.7"

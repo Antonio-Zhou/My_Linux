@@ -1,18 +1,35 @@
-/* $Id: gazel.c,v 1.1.2.1 2001/12/31 13:26:45 kai Exp $
- *
- * low level stuff for Gazel isdn cards
+/* $Id: gazel.c,v 2.6 1999/08/22 20:27:03 calle Exp $
+
+ * gazel.c     low level stuff for Gazel isdn cards
  *
  * Author       BeWan Systems
  *              based on source code from Karsten Keil
- * Copyright    by BeWan Systems
- * 
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
+ *
+ * $Log: gazel.c,v $
+ * Revision 2.6  1999/08/22 20:27:03  calle
+ * backported changes from kernel 2.3.14:
+ * - several #include "config.h" gone, others come.
+ * - "struct device" changed to "struct net_device" in 2.3.14, added a
+ *   define in isdn_compat.h for older kernel versions.
+ *
+ * Revision 2.5  1999/08/11 21:01:26  keil
+ * new PCI codefix
+ *
+ * Revision 2.4  1999/08/10 16:01:54  calle
+ * struct pci_dev changed in 2.3.13. Made the necessary changes.
+ *
+ * Revision 2.3  1999/07/12 21:05:09  keil
+ * fix race in IRQ handling
+ * added watchdog for lost IRQs
+ *
+ * Revision 2.1  1999/07/08 21:26:17  keil
+ * new card
+ *
+ * Revision 1.0  1999/28/06
+ * Initial revision
  *
  */
-
 #include <linux/config.h>
-#include <linux/init.h>
 #define __NO_VERSION__
 #include "hisax.h"
 #include "isac.h"
@@ -20,15 +37,20 @@
 #include "isdnl1.h"
 #include "ipac.h"
 #include <linux/pci.h>
-#include <linux/isdn_compat.h>
 
 extern const char *CardType[];
-const char *gazel_revision = "$Revision: 1.1.2.1 $";
+const char *gazel_revision = "$Revision: 2.6 $";
 
 #define R647      1
 #define R685      2
 #define R753      3
 #define R742      4
+
+/* Gazel R685 stuff */
+#define GAZEL_MANUFACTURER     0x10b5
+#define GAZEL_R685             0x1030
+#define GAZEL_R753             0x1152
+#define GAZEL_DJINN_ITOO       0x1151
 
 #define PLX_CNTRL    0x50	/* registre de controle PLX */
 #define RESET_GAZEL  0x4
@@ -443,6 +465,10 @@ static int
 reserve_regions(struct IsdnCard *card, struct IsdnCardState *cs)
 {
 	unsigned int i, base = 0, adr = 0, len = 0;
+	long flags;
+
+	save_flags(flags);
+	cli();
 
 	switch (cs->subtyp) {
 		case R647:
@@ -487,15 +513,17 @@ reserve_regions(struct IsdnCard *card, struct IsdnCardState *cs)
 			break;
 	}
 
+	restore_flags(flags);
 	return 0;
 
       error:
+	restore_flags(flags);
 	printk(KERN_WARNING "Gazel: %s io ports 0x%x-0x%x already in use\n",
 	       CardType[cs->typ], adr, adr + len);
 	return 1;
 }
 
-static int __init
+static int
 setup_gazelisa(struct IsdnCard *card, struct IsdnCardState *cs)
 {
 	printk(KERN_INFO "Gazel: ISA PnP card automatic recognition\n");
@@ -544,7 +572,7 @@ setup_gazelisa(struct IsdnCard *card, struct IsdnCardState *cs)
 
 static struct pci_dev *dev_tel __initdata = NULL;
 
-static int __init
+static int
 setup_gazelpci(struct IsdnCardState *cs)
 {
 	u_int pci_ioaddr0 = 0, pci_ioaddr1 = 0;
@@ -558,25 +586,24 @@ setup_gazelpci(struct IsdnCardState *cs)
 		printk(KERN_WARNING "Gazel: No PCI bus present\n");
 		return 1;
 	}
-	seekcard = PCI_DEVICE_ID_PLX_R685;
+	seekcard = GAZEL_R685;
 	for (nbseek = 0; nbseek < 3; nbseek++) {
-		if ((dev_tel = pci_find_device(PCI_VENDOR_ID_PLX, seekcard, dev_tel))) {
-			if (pci_enable_device(dev_tel))
-				return 1;
+		if ((dev_tel = pci_find_device(GAZEL_MANUFACTURER, seekcard, dev_tel))) {
+
 			pci_irq = dev_tel->irq;
-			pci_ioaddr0 = dev_tel->base_address[ 1] & PCI_BASE_ADDRESS_IO_MASK;
-			pci_ioaddr1 = dev_tel->base_address[ 2] & PCI_BASE_ADDRESS_IO_MASK;
+			pci_ioaddr0 = dev_tel->resource[ 1].start;
+			pci_ioaddr1 = dev_tel->resource[ 2].start;
 			found = 1;
 		}
 		if (found)
 			break;
 		else {
 			switch (seekcard) {
-				case PCI_DEVICE_ID_PLX_R685:
-					seekcard = PCI_DEVICE_ID_PLX_R753;
+				case GAZEL_R685:
+					seekcard = GAZEL_R753;
 					break;
-				case PCI_DEVICE_ID_PLX_R753:
-					seekcard = PCI_DEVICE_ID_PLX_DJINN_ITOO;
+				case GAZEL_R753:
+					seekcard = GAZEL_DJINN_ITOO;
 					break;
 			}
 		}
@@ -605,7 +632,7 @@ setup_gazelpci(struct IsdnCardState *cs)
 	cs->irq_flags |= SA_SHIRQ;
 
 	switch (seekcard) {
-		case PCI_DEVICE_ID_PLX_R685:
+		case GAZEL_R685:
 			printk(KERN_INFO "Gazel: Card PCI R685 found\n");
 			cs->subtyp = R685;
 			cs->dc.isac.adf2 = 0x87;
@@ -616,8 +643,8 @@ setup_gazelpci(struct IsdnCardState *cs)
 			       "Gazel: hscx A:0x%X  hscx B:0x%X\n",
 			     cs->hw.gazel.hscx[0], cs->hw.gazel.hscx[1]);
 			break;
-		case PCI_DEVICE_ID_PLX_R753:
-		case PCI_DEVICE_ID_PLX_DJINN_ITOO:
+		case GAZEL_R753:
+		case GAZEL_DJINN_ITOO:
 			printk(KERN_INFO "Gazel: Card PCI R753 found\n");
 			cs->subtyp = R753;
 			test_and_set_bit(HW_IPAC, &cs->HW_Flags);
@@ -630,8 +657,8 @@ setup_gazelpci(struct IsdnCardState *cs)
 	return (0);
 }
 
-int __init
-setup_gazel(struct IsdnCard *card)
+__initfunc(int
+	   setup_gazel(struct IsdnCard *card))
 {
 	struct IsdnCardState *cs = card->cs;
 	char tmp[64];

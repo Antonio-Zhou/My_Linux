@@ -13,10 +13,6 @@
 #include <linux/nfs2.h>
 #include <linux/nfs3.h>
 
-#define NFS_FHSIZE		32
-#define NFS_MAXPATHLEN		1024
-#define NFS_MAXNAMLEN		255
-
 /*
  * Maximum protocol version supported by knfsd
  */
@@ -26,12 +22,6 @@
  * Maximum blocksize supported by daemon currently at 8K
  */
 #define NFSSVC_MAXBLKSIZE	8192
-
-#define NFS2_COOKIESIZE		4
-
-#define NFS3_COOKIEVERFSIZE	8
-#define NFS3_CREATEVERFSIZE	8
-#define NFS3_WRITEVERFSIZE	8
 
 #ifdef __KERNEL__
 

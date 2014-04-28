@@ -1,33 +1,135 @@
-/* $Id: hfc_pci.c,v 1.1.2.1 2001/12/31 13:26:45 kai Exp $
+/* $Id: hfc_pci.c,v 1.27 2000/02/26 00:35:12 keil Exp $
+
+ * hfc_pci.c     low level driver for CCD?s hfc-pci based cards
  *
- * low level driver for CCD?s hfc-pci based cards
+ * Author     Werner Cornelius (werner@isdn4linux.de)
+ *            based on existing driver for CCD hfc ISA cards
  *
- * Author       Werner Cornelius
- *              based on existing driver for CCD hfc ISA cards
- * Copyright    by Werner Cornelius  <werner@isdn4linux.de>
- *              by Karsten Keil      <keil@isdn4linux.de>
- * 
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
+ * Copyright 1999  by Werner Cornelius (werner@isdn4linux.de)
+ * Copyright 1999  by Karsten Keil (keil@isdn4linux.de)
  *
- * For changes and modifications please read
- * ../../../Documentation/isdn/HiSax.cert
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2, or (at your option)
+ * any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ *
+ * $Log: hfc_pci.c,v $
+ * Revision 1.27  2000/02/26 00:35:12  keil
+ * Fix skb freeing in interrupt context
+ *
+ * Revision 1.26  2000/02/09 20:22:55  werner
+ *
+ * Updated PCI-ID table
+ *
+ * Revision 1.25  1999/12/19 13:09:42  keil
+ * changed TASK_INTERRUPTIBLE into TASK_UNINTERRUPTIBLE for
+ * signal proof delays
+ *
+ * Revision 1.24  1999/11/17 23:59:55  werner
+ *
+ * removed unneeded data
+ *
+ * Revision 1.23  1999/11/07 17:01:55  keil
+ * fix for 2.3 pci structs
+ *
+ * Revision 1.22  1999/10/10 20:14:27  werner
+ *
+ * Correct B2-chan usage in conjuntion with echo mode. First implementation of NT-leased line mode.
+ *
+ * Revision 1.21  1999/10/02 17:47:49  werner
+ *
+ * Changed init order, added correction for page alignment with shared mem
+ *
+ * Revision 1.20  1999/09/07 06:18:55  werner
+ *
+ * Added io parameter for HFC-PCI based cards. Needed only with multiple cards
+ * when initialisation/selection order needs to be set.
+ *
+ * Revision 1.19  1999/09/04 06:20:06  keil
+ * Changes from kernel set_current_state()
+ *
+ * Revision 1.18  1999/08/29 17:05:44  werner
+ * corrected tx_lo line setup. Datasheet is not correct.
+ *
+ * Revision 1.17  1999/08/28 21:04:27  werner
+ * Implemented full audio support (transparent mode)
+ *
+ * Revision 1.16  1999/08/25 17:01:27  keil
+ * Use new LL->HL auxcmd call
+ *
+ * Revision 1.15  1999/08/22 20:27:05  calle
+ * backported changes from kernel 2.3.14:
+ * - several #include "config.h" gone, others come.
+ * - "struct device" changed to "struct net_device" in 2.3.14, added a
+ *   define in isdn_compat.h for older kernel versions.
+ *
+ * Revision 1.14  1999/08/12 18:59:45  werner
+ * Added further manufacturer and device ids to PCI list
+ *
+ * Revision 1.13  1999/08/11 21:01:28  keil
+ * new PCI codefix
+ *
+ * Revision 1.12  1999/08/10 16:01:58  calle
+ * struct pci_dev changed in 2.3.13. Made the necessary changes.
+ *
+ * Revision 1.11  1999/08/09 19:13:32  werner
+ * moved constant pci ids to pci id table
+ *
+ * Revision 1.10  1999/08/08 10:17:34  werner
+ * added new PCI vendor and card ids for Manufacturer 0x1043
+ *
+ * Revision 1.9  1999/08/07 21:09:10  werner
+ * Fixed another memcpy problem in fifo handling.
+ * Thanks for debugging aid by Olaf Kordwittenborg.
+ *
+ * Revision 1.8  1999/07/23 14:25:15  werner
+ * Some smaller bug fixes and prepared support for GCI/IOM bus
+ *
+ * Revision 1.7  1999/07/14 21:24:20  werner
+ * fixed memcpy problem when using E-channel feature
+ *
+ * Revision 1.6  1999/07/13 21:08:08  werner
+ * added echo channel logging feature.
+ *
+ * Revision 1.5  1999/07/12 21:05:10  keil
+ * fix race in IRQ handling
+ * added watchdog for lost IRQs
+ *
+ * Revision 1.4  1999/07/04 21:51:39  werner
+ * Changes to solve problems with irq sharing and smp machines
+ * Thanks to Karsten Keil and Alex Holden for giving aid with
+ * testing and debugging
+ *
+ * Revision 1.3  1999/07/01 09:43:19  keil
+ * removed additional schedules in timeouts
+ *
+ * Revision 1.2  1999/07/01 08:07:51  keil
+ * Initial version
+ *
+ *
  *
  */
 
-#include <linux/init.h>
 #include <linux/config.h>
 #define __NO_VERSION__
 #include "hisax.h"
 #include "hfc_pci.h"
 #include "isdnl1.h"
 #include <linux/pci.h>
-#include <linux/isdn_compat.h>
 #include <linux/interrupt.h>
 
 extern const char *CardType[];
 
-static const char *hfcpci_revision = "$Revision: 1.1.2.1 $";
+static const char *hfcpci_revision = "$Revision: 1.27 $";
 
 /* table entry in the PCI devices list */
 typedef struct {
@@ -37,32 +139,26 @@ typedef struct {
 	char *card_name;
 } PCI_ENTRY;
 
-#define NT_T1_COUNT	20	/* number of 3.125ms interrupts for G2 timeout */
-#define CLKDEL_TE	0x0e	/* CLKDEL in TE mode */
-#define CLKDEL_NT	0x6c	/* CLKDEL in NT mode */
+#define NT_T1_COUNT 20		/* number of 3.125ms interrupts for G2 timeout */
 
 static const PCI_ENTRY id_list[] =
 {
-	{PCI_VENDOR_ID_CCD, PCI_DEVICE_ID_CCD_2BD0, "CCD/Billion/Asuscom", "2BD0"},
-	{PCI_VENDOR_ID_CCD, PCI_DEVICE_ID_CCD_B000, "Billion", "B000"},
-	{PCI_VENDOR_ID_CCD, PCI_DEVICE_ID_CCD_B006, "Billion", "B006"},
-	{PCI_VENDOR_ID_CCD, PCI_DEVICE_ID_CCD_B007, "Billion", "B007"},
-	{PCI_VENDOR_ID_CCD, PCI_DEVICE_ID_CCD_B008, "Billion", "B008"},
-	{PCI_VENDOR_ID_CCD, PCI_DEVICE_ID_CCD_B009, "Billion", "B009"},
-	{PCI_VENDOR_ID_CCD, PCI_DEVICE_ID_CCD_B00A, "Billion", "B00A"},
-	{PCI_VENDOR_ID_CCD, PCI_DEVICE_ID_CCD_B00B, "Billion", "B00B"},
-	{PCI_VENDOR_ID_CCD, PCI_DEVICE_ID_CCD_B00C, "Billion", "B00C"},
-	{PCI_VENDOR_ID_CCD, PCI_DEVICE_ID_CCD_B100, "Seyeon", "B100"},
-	{PCI_VENDOR_ID_ABOCOM, PCI_DEVICE_ID_ABOCOM_2BD1, "Abocom/Magitek", "2BD1"},
-	{PCI_VENDOR_ID_ASUSTEK, PCI_DEVICE_ID_ASUSTEK_0675, "Asuscom/Askey", "675"},
-	{PCI_VENDOR_ID_BERKOM, PCI_DEVICE_ID_BERKOM_T_CONCEPT, "German telekom", "T-Concept"},
-	{PCI_VENDOR_ID_BERKOM, PCI_DEVICE_ID_BERKOM_A1T, "German telekom", "A1T"},
-	{PCI_VENDOR_ID_ANIGMA, PCI_DEVICE_ID_ANIGMA_MC145575, "Motorola MC145575", "MC145575"},
-	{PCI_VENDOR_ID_ZOLTRIX, PCI_DEVICE_ID_ZOLTRIX_2BD0, "Zoltrix", "2BD0"},
-	{PCI_VENDOR_ID_DIGI, PCI_DEVICE_ID_DIGI_DF_M_IOM2_E,"Digi International", "Digi DataFire Micro V IOM2 (Europe)"},
-	{PCI_VENDOR_ID_DIGI, PCI_DEVICE_ID_DIGI_DF_M_E,"Digi International", "Digi DataFire Micro V (Europe)"},
-	{PCI_VENDOR_ID_DIGI, PCI_DEVICE_ID_DIGI_DF_M_IOM2_A,"Digi International", "Digi DataFire Micro V IOM2 (North America)"},
-	{PCI_VENDOR_ID_DIGI, PCI_DEVICE_ID_DIGI_DF_M_A,"Digi International", "Digi DataFire Micro V (North America)"},
+	{0x1397, 0x2BD0, "CCD/Billion/Asuscom", "2BD0"},
+	{0x1397, 0xB000, "Billion", "B000"},
+	{0x1397, 0xB006, "Billion", "B006"},
+	{0x1397, 0xB007, "Billion", "B007"},
+	{0x1397, 0xB008, "Billion", "B008"},
+	{0x1397, 0xB009, "Billion", "B009"},
+	{0x1397, 0xB00A, "Billion", "B00A"},
+	{0x1397, 0xB00B, "Billion", "B00B"},
+	{0x1397, 0xB00C, "Billion", "B00C"},
+	{0x1043, 0x0675, "Asuscom/Askey", "675"},
+	{0x0871, 0xFFA2, "German telekom", "T-Concept"},
+	{0x0871, 0xFFA1, "German telekom", "A1T"},
+	{0x1051, 0x0100, "Motorola MC145575", "MC145575"},
+	{0x1397, 0xB100, "Seyeon", "B100"},
+	{0x15B0, 0x2BD0, "Zoltrix", "2BD0"},
+	{0x114f, 0x71,   "Digi intl.","Digicom"}, 
 	{0, 0, NULL, NULL},
 };
 
@@ -103,7 +199,7 @@ release_io_hfcpci(struct IsdnCardState *cs)
 static void
 reset_hfcpci(struct IsdnCardState *cs)
 {
-	unsigned long flags;
+	long flags;
 
 	save_flags(flags);
 	cli();
@@ -129,7 +225,7 @@ reset_hfcpci(struct IsdnCardState *cs)
 	cs->hw.hfcpci.trm = 0 + HFCPCI_BTRANS_THRESMASK;	/* no echo connect , threshold */
 	Write_hfc(cs, HFCPCI_TRM, cs->hw.hfcpci.trm);
 
-	Write_hfc(cs, HFCPCI_CLKDEL, CLKDEL_TE); /* ST-Bit delay for TE-Mode */
+	Write_hfc(cs, HFCPCI_CLKDEL, 0x0e);	/* ST-Bit delay for TE-Mode */
 	cs->hw.hfcpci.sctrl_e = HFCPCI_AUTO_AWAKE;
 	Write_hfc(cs, HFCPCI_SCTRL_E, cs->hw.hfcpci.sctrl_e);	/* S/T Auto awake */
 	cs->hw.hfcpci.bswapped = 0;	/* no exchange */
@@ -227,59 +323,6 @@ Sel_BCS(struct IsdnCardState *cs, int channel)
 		return (NULL);
 }
 
-/***************************************/
-/* clear the desired B-channel rx fifo */
-/***************************************/
-static void hfcpci_clear_fifo_rx(struct IsdnCardState *cs, int fifo)
-{       u_char fifo_state;
-        bzfifo_type *bzr;
-
-	if (fifo) {
-	        bzr = &((fifo_area *) (cs->hw.hfcpci.fifos))->b_chans.rxbz_b2;
-		fifo_state = cs->hw.hfcpci.fifo_en & HFCPCI_FIFOEN_B2RX;
-	} else {
-	        bzr = &((fifo_area *) (cs->hw.hfcpci.fifos))->b_chans.rxbz_b1;
-		fifo_state = cs->hw.hfcpci.fifo_en & HFCPCI_FIFOEN_B1RX;
-	}
-	if (fifo_state)
-	        cs->hw.hfcpci.fifo_en ^= fifo_state;
-	Write_hfc(cs, HFCPCI_FIFO_EN, cs->hw.hfcpci.fifo_en);
-	cs->hw.hfcpci.last_bfifo_cnt[fifo] = 0;
-	bzr->za[MAX_B_FRAMES].z1 = B_FIFO_SIZE + B_SUB_VAL - 1;
-	bzr->za[MAX_B_FRAMES].z2 = bzr->za[MAX_B_FRAMES].z1;
-	bzr->f1 = MAX_B_FRAMES;
-	bzr->f2 = bzr->f1;	/* init F pointers to remain constant */
-	if (fifo_state)
-	        cs->hw.hfcpci.fifo_en |= fifo_state;
-	Write_hfc(cs, HFCPCI_FIFO_EN, cs->hw.hfcpci.fifo_en);
-}   
-
-/***************************************/
-/* clear the desired B-channel tx fifo */
-/***************************************/
-static void hfcpci_clear_fifo_tx(struct IsdnCardState *cs, int fifo)
-{       u_char fifo_state;
-        bzfifo_type *bzt;
-
-	if (fifo) {
-	        bzt = &((fifo_area *) (cs->hw.hfcpci.fifos))->b_chans.txbz_b2;
-		fifo_state = cs->hw.hfcpci.fifo_en & HFCPCI_FIFOEN_B2TX;
-	} else {
-	        bzt = &((fifo_area *) (cs->hw.hfcpci.fifos))->b_chans.txbz_b1;
-		fifo_state = cs->hw.hfcpci.fifo_en & HFCPCI_FIFOEN_B1TX;
-	}
-	if (fifo_state)
-	        cs->hw.hfcpci.fifo_en ^= fifo_state;
-	Write_hfc(cs, HFCPCI_FIFO_EN, cs->hw.hfcpci.fifo_en);
-	bzt->za[MAX_B_FRAMES].z1 = B_FIFO_SIZE + B_SUB_VAL - 1;
-	bzt->za[MAX_B_FRAMES].z2 = bzt->za[MAX_B_FRAMES].z1;
-	bzt->f1 = MAX_B_FRAMES;
-	bzt->f2 = bzt->f1;	/* init F pointers to remain constant */
-	if (fifo_state)
-	        cs->hw.hfcpci.fifo_en |= fifo_state;
-	Write_hfc(cs, HFCPCI_FIFO_EN, cs->hw.hfcpci.fifo_en);
-}   
-
 /*********************************************/
 /* read a complete B-frame out of the buffer */
 /*********************************************/
@@ -306,9 +349,6 @@ hfcpci_empty_fifo(struct BCState *bcs, bzfifo_type * bz, u_char * bdata, int cou
 	    (*(bdata + (zp->z1 - B_SUB_VAL)))) {
 		if (cs->debug & L1_DEB_WARN)
 			debugl1(cs, "hfcpci_empty_fifo: incoming packet invalid length %d or crc", count);
-#ifdef ERROR_STATISTIC
-		bcs->err_inv++;
-#endif
 		bz->za[new_f2].z2 = new_z2;
 		bz->f2 = new_f2;	/* next buffer */
 		skb = NULL;
@@ -375,9 +415,6 @@ receive_dmsg(struct IsdnCardState *cs)
 		    (df->data[zp->z1])) {
 			if (cs->debug & L1_DEB_WARN)
 				debugl1(cs, "empty_fifo hfcpci paket inv. len %d or crc %d", rcnt, df->data[zp->z1]);
-#ifdef ERROR_STATISTIC
-			cs->err_rx++;
-#endif
 			df->f2 = ((df->f2 + 1) & MAX_D_FRAMES) | (MAX_D_FRAMES + 1);	/* next buffer */
 			df->za[df->f2 & D_FREG_MASK].z2 = (zp->z2 + rcnt) & (D_FIFO_SIZE - 1);
 		} else if ((skb = dev_alloc_skb(rcnt - 3))) {
@@ -471,9 +508,9 @@ hfcpci_empty_fifo_trans(struct BCState *bcs, bzfifo_type * bz, u_char * bdata)
 void
 main_rec_hfcpci(struct BCState *bcs)
 {
-	unsigned long flags;
+	long flags;
 	struct IsdnCardState *cs = bcs->cs;
-	int rcnt, real_fifo;
+	int rcnt;
 	int receive, count = 5;
 	struct sk_buff *skb;
 	bzfifo_type *bz;
@@ -485,11 +522,9 @@ main_rec_hfcpci(struct BCState *bcs)
 	if ((bcs->channel) && (!cs->hw.hfcpci.bswapped)) {
 		bz = &((fifo_area *) (cs->hw.hfcpci.fifos))->b_chans.rxbz_b2;
 		bdata = ((fifo_area *) (cs->hw.hfcpci.fifos))->b_chans.rxdat_b2;
-		real_fifo = 1;
 	} else {
 		bz = &((fifo_area *) (cs->hw.hfcpci.fifos))->b_chans.rxbz_b1;
 		bdata = ((fifo_area *) (cs->hw.hfcpci.fifos))->b_chans.rxdat_b1;
-		real_fifo = 0;
 	}
       Begin:
 	count--;
@@ -522,11 +557,6 @@ main_rec_hfcpci(struct BCState *bcs)
 		rcnt = bz->f1 - bz->f2;
 		if (rcnt < 0)
 			rcnt += MAX_B_FRAMES + 1;
-		if (cs->hw.hfcpci.last_bfifo_cnt[real_fifo] > rcnt + 1) {
-		        rcnt = 0;
-			hfcpci_clear_fifo_rx(cs, real_fifo);
-		}
-		cs->hw.hfcpci.last_bfifo_cnt[real_fifo] = rcnt;
 		if (rcnt > 1)
 			receive = 1;
 		else
@@ -548,7 +578,7 @@ main_rec_hfcpci(struct BCState *bcs)
 static void
 hfcpci_fill_dfifo(struct IsdnCardState *cs)
 {
-	unsigned long flags;
+	long flags;
 	int fcnt;
 	int count, new_z1, maxlen;
 	dfifo_type *df;
@@ -571,9 +601,6 @@ hfcpci_fill_dfifo(struct IsdnCardState *cs)
 	if (fcnt > (MAX_D_FRAMES - 1)) {
 		if (cs->debug & L1_DEB_ISAC)
 			debugl1(cs, "hfcpci_fill_Dfifo more as 14 frames");
-#ifdef ERROR_STATISTIC
-		cs->err_tx++;
-#endif
 		return;
 	}
 	/* now determine free bytes in FIFO buffer */
@@ -612,7 +639,7 @@ hfcpci_fill_dfifo(struct IsdnCardState *cs)
 	df->f1 = new_f1;	/* next frame */
 	restore_flags(flags);
 
-	dev_kfree_skb(cs->tx_skb);
+	dev_kfree_skb_any(cs->tx_skb);
 	cs->tx_skb = NULL;
 	return;
 }
@@ -686,7 +713,7 @@ hfcpci_fill_fifo(struct BCState *bcs)
 				debugl1(cs, "hfcpci_fill_fifo_trans %d frame length %d discarded",
 					bcs->channel, bcs->tx_skb->len);
 
-			dev_kfree_skb(bcs->tx_skb);
+			dev_kfree_skb_any(bcs->tx_skb);
 			cli();
 			bcs->tx_skb = skb_dequeue(&bcs->squeue);	/* fetch next data */
 			sti();
@@ -754,7 +781,7 @@ hfcpci_fill_fifo(struct BCState *bcs)
 	bz->f1 = new_f1;	/* next frame */
 	restore_flags(flags);
 
-	dev_kfree_skb(bcs->tx_skb);
+	dev_kfree_skb_any(bcs->tx_skb);
 	bcs->tx_skb = NULL;
 	test_and_clear_bit(BC_FLG_BUSY, &bcs->Flag);
 	return;
@@ -808,7 +835,6 @@ hfcpci_auxcmd(struct IsdnCardState *cs, isdn_ctrl * ic)
 	    (!(cs->hw.hfcpci.int_m1 & (HFCPCI_INTS_B2TRANS + HFCPCI_INTS_B2REC + HFCPCI_INTS_B1TRANS + HFCPCI_INTS_B1REC)))) {
 		save_flags(flags);
 		cli();
-		Write_hfc(cs, HFCPCI_CLKDEL, CLKDEL_NT); /* ST-Bit delay for NT-Mode */
 		Write_hfc(cs, HFCPCI_STATES, HFCPCI_LOAD_STATE | 0);	/* HFC ST G0 */
 		udelay(10);
 		cs->hw.hfcpci.sctrl |= SCTRL_MODE_NT;
@@ -863,7 +889,7 @@ hfcpci_auxcmd(struct IsdnCardState *cs, isdn_ctrl * ic)
 static void
 receive_emsg(struct IsdnCardState *cs)
 {
-	unsigned long flags;
+	long flags;
 	int rcnt;
 	int receive, count = 5;
 	bzfifo_type *bz;
@@ -973,7 +999,7 @@ hfcpci_interrupt(int intno, void *dev_id, struct pt_regs *regs)
 	u_char exval;
 	struct BCState *bcs;
 	int count = 15;
-	unsigned long flags;
+	long flags;
 	u_char val, stat;
 
 	if (!cs) {
@@ -1107,7 +1133,7 @@ hfcpci_interrupt(int intno, void *dev_id, struct pt_regs *regs)
 					}
 					goto afterXPR;
 				} else {
-					dev_kfree_skb(cs->tx_skb);
+					dev_kfree_skb_irq(cs->tx_skb);
 					cs->tx_cnt = 0;
 					cs->tx_skb = NULL;
 				}
@@ -1224,7 +1250,7 @@ HFCPCI_l1hw(struct PStack *st, int pr, void *arg)
 			l1_msg(cs, HW_POWERUP | CONFIRM, NULL);
 			break;
 		case (HW_ENABLE | REQUEST):
-			Write_hfc(cs, HFCPCI_STATES, HFCPCI_DO_ACTION);
+			Write_hfc(cs, HFCPCI_STATES, HFCPCI_ACTIVATE | HFCPCI_DO_ACTION);
 			break;
 		case (HW_DEACTIVATE | REQUEST):
 			cs->hw.hfcpci.mst_m &= ~HFCPCI_MASTER;
@@ -1305,6 +1331,7 @@ void
 mode_hfcpci(struct BCState *bcs, int mode, int bc)
 {
 	struct IsdnCardState *cs = bcs->cs;
+	bzfifo_type *bzr, *bzt;
 	int flags, fifo2;
 
 	if (cs->debug & L1_DEB_HSCX)
@@ -1351,8 +1378,6 @@ mode_hfcpci(struct BCState *bcs, int mode, int bc)
 			}
 			break;
 		case (L1_MODE_TRANS):
-		        hfcpci_clear_fifo_rx(cs, fifo2);
-		        hfcpci_clear_fifo_tx(cs, fifo2);
 			if (bc) {
 				cs->hw.hfcpci.sctrl |= SCTRL_B2_ENA;
 				cs->hw.hfcpci.sctrl_r |= SCTRL_B2_ENA;
@@ -1365,16 +1390,26 @@ mode_hfcpci(struct BCState *bcs, int mode, int bc)
 				cs->hw.hfcpci.int_m1 |= (HFCPCI_INTS_B2TRANS + HFCPCI_INTS_B2REC);
 				cs->hw.hfcpci.ctmt |= 2;
 				cs->hw.hfcpci.conn &= ~0x18;
+				bzr = &((fifo_area *) (cs->hw.hfcpci.fifos))->b_chans.rxbz_b2;
+				bzt = &((fifo_area *) (cs->hw.hfcpci.fifos))->b_chans.txbz_b2;
 			} else {
 				cs->hw.hfcpci.fifo_en |= HFCPCI_FIFOEN_B1;
 				cs->hw.hfcpci.int_m1 |= (HFCPCI_INTS_B1TRANS + HFCPCI_INTS_B1REC);
 				cs->hw.hfcpci.ctmt |= 1;
 				cs->hw.hfcpci.conn &= ~0x03;
+				bzr = &((fifo_area *) (cs->hw.hfcpci.fifos))->b_chans.rxbz_b1;
+				bzt = &((fifo_area *) (cs->hw.hfcpci.fifos))->b_chans.txbz_b1;
 			}
+			bzr->za[MAX_B_FRAMES].z1 = B_FIFO_SIZE + B_SUB_VAL - 1;
+			bzr->za[MAX_B_FRAMES].z2 = bzr->za[MAX_B_FRAMES].z1;
+			bzr->f1 = MAX_B_FRAMES;
+			bzr->f2 = bzr->f1;	/* init F pointers to remain constant */
+			bzt->za[MAX_B_FRAMES].z1 = B_FIFO_SIZE + B_SUB_VAL - 1;
+			bzt->za[MAX_B_FRAMES].z2 = bzt->za[MAX_B_FRAMES].z1;
+			bzt->f1 = MAX_B_FRAMES;
+			bzt->f2 = bzt->f1;	/* init F pointers to remain constant */
 			break;
 		case (L1_MODE_HDLC):
-		        hfcpci_clear_fifo_rx(cs, fifo2);
-		        hfcpci_clear_fifo_tx(cs, fifo2);
 			if (bc) {
 				cs->hw.hfcpci.sctrl |= SCTRL_B2_ENA;
 				cs->hw.hfcpci.sctrl_r |= SCTRL_B2_ENA;
@@ -1383,13 +1418,11 @@ mode_hfcpci(struct BCState *bcs, int mode, int bc)
 				cs->hw.hfcpci.sctrl_r |= SCTRL_B1_ENA;
 			}
 			if (fifo2) {
-			        cs->hw.hfcpci.last_bfifo_cnt[1] = 0;  
 				cs->hw.hfcpci.fifo_en |= HFCPCI_FIFOEN_B2;
 				cs->hw.hfcpci.int_m1 |= (HFCPCI_INTS_B2TRANS + HFCPCI_INTS_B2REC);
 				cs->hw.hfcpci.ctmt &= ~2;
 				cs->hw.hfcpci.conn &= ~0x18;
 			} else {
-			        cs->hw.hfcpci.last_bfifo_cnt[0] = 0;  
 				cs->hw.hfcpci.fifo_en |= HFCPCI_FIFOEN_B1;
 				cs->hw.hfcpci.int_m1 |= (HFCPCI_INTS_B1TRANS + HFCPCI_INTS_B1REC);
 				cs->hw.hfcpci.ctmt &= ~1;
@@ -1429,7 +1462,7 @@ static void
 hfcpci_l2l1(struct PStack *st, int pr, void *arg)
 {
 	struct sk_buff *skb = arg;
-	unsigned long flags;
+	long flags;
 
 	switch (pr) {
 		case (PH_DATA | REQUEST):
@@ -1489,10 +1522,10 @@ close_hfcpci(struct BCState *bcs)
 {
 	mode_hfcpci(bcs, 0, bcs->channel);
 	if (test_and_clear_bit(BC_FLG_INIT, &bcs->Flag)) {
-		skb_queue_purge(&bcs->rqueue);
-		skb_queue_purge(&bcs->squeue);
+		discard_queue(&bcs->rqueue);
+		discard_queue(&bcs->squeue);
 		if (bcs->tx_skb) {
-			dev_kfree_skb(bcs->tx_skb);
+			dev_kfree_skb_any(bcs->tx_skb);
 			bcs->tx_skb = NULL;
 			test_and_clear_bit(BC_FLG_BUSY, &bcs->Flag);
 		}
@@ -1617,8 +1650,8 @@ hfcpci_bh(struct IsdnCardState *cs)
 /********************************/
 /* called for card init message */
 /********************************/
-void __init
-inithfcpci(struct IsdnCardState *cs)
+__initfunc(void
+	   inithfcpci(struct IsdnCardState *cs))
 {
 	cs->setstack_d = setstack_hfcpci;
 	cs->dbusytimer.function = (void *) hfcpci_dbusy_timer;
@@ -1642,7 +1675,7 @@ inithfcpci(struct IsdnCardState *cs)
 static int
 hfcpci_card_msg(struct IsdnCardState *cs, int mt, void *arg)
 {
-	unsigned long flags;
+	long flags;
 
 	if (cs->debug & L1_DEB_ISAC)
 		debugl1(cs, "HFCPCI: card_msg %x", mt);
@@ -1678,17 +1711,15 @@ static struct pci_dev *dev_hfcpci __initdata = NULL;
 
 #endif				/* CONFIG_PCI */
 
-int __init
-setup_hfcpci(struct IsdnCard *card)
+__initfunc(int
+	   setup_hfcpci(struct IsdnCard *card))
 {
 	struct IsdnCardState *cs = card->cs;
+	unsigned short cmd;
 	char tmp[64];
 	int i;
 	struct pci_dev *tmp_hfcpci = NULL;
 
-#ifdef __BIG_ENDIAN
-#error "not running on big endian machines now"
-#endif
 	strcpy(tmp, hfcpci_revision);
 	printk(KERN_INFO "HiSax: HFC-PCI driver Rev. %s\n", HiSax_getrev(tmp));
 #if CONFIG_PCI
@@ -1696,6 +1727,10 @@ setup_hfcpci(struct IsdnCard *card)
 	cs->dc.hfcpci.ph_state = 0;
 	cs->hw.hfcpci.fifo = 255;
 	if (cs->typ == ISDN_CTYPE_HFC_PCI) {
+		if (!pci_present()) {
+			printk(KERN_ERR "HFC-PCI: no PCI bus present\n");
+			return (0);
+		}
 		i = 0;
 		while (id_list[i].vendor_id) {
 			tmp_hfcpci = pci_find_device(id_list[i].vendor_id,
@@ -1703,10 +1738,7 @@ setup_hfcpci(struct IsdnCard *card)
 						     dev_hfcpci);
 			i++;
 			if (tmp_hfcpci) {
-				if (pci_enable_device(tmp_hfcpci))
-					continue;
-				pci_set_master(tmp_hfcpci);
-				if ((card->para[0]) && (card->para[0] != (tmp_hfcpci->base_address[ 0] & PCI_BASE_ADDRESS_IO_MASK)))
+				if ((card->para[0]) && (card->para[0] != (tmp_hfcpci->resource[ 0].start & PCI_BASE_ADDRESS_IO_MASK)))
 					continue;
 				else
 					break;
@@ -1723,11 +1755,44 @@ setup_hfcpci(struct IsdnCard *card)
 				printk(KERN_WARNING "HFC-PCI: No IRQ for PCI card found\n");
 				return (0);
 			}
-			cs->hw.hfcpci.pci_io = (char *) dev_hfcpci->base_address[ 1];
+			cs->hw.hfcpci.pci_io = (char *) dev_hfcpci->resource[ 1].start;
 			printk(KERN_INFO "HiSax: HFC-PCI card manufacturer: %s card name: %s\n", id_list[i].vendor_name, id_list[i].card_name);
 		} else {
 			printk(KERN_WARNING "HFC-PCI: No PCI card found\n");
 			return (0);
+		}
+		if (((int) cs->hw.hfcpci.pci_io & (PAGE_SIZE - 1))) {
+			printk(KERN_WARNING "HFC-PCI shared mem address will be corrected\n");
+			pcibios_write_config_word(cs->hw.hfcpci.pci_bus,
+					     cs->hw.hfcpci.pci_device_fn,
+						  PCI_COMMAND,
+						  0x0103);	/* set SERR */
+			pcibios_read_config_word(cs->hw.hfcpci.pci_bus,
+					     cs->hw.hfcpci.pci_device_fn,
+						 PCI_COMMAND,
+						 &cmd);
+			pcibios_write_config_word(cs->hw.hfcpci.pci_bus,
+					     cs->hw.hfcpci.pci_device_fn,
+						  PCI_COMMAND,
+						  cmd & ~2);
+			(int) cs->hw.hfcpci.pci_io &= ~(PAGE_SIZE - 1);
+			pcibios_write_config_dword(cs->hw.hfcpci.pci_bus,
+					     cs->hw.hfcpci.pci_device_fn,
+						   PCI_BASE_ADDRESS_1,
+					     (int) cs->hw.hfcpci.pci_io);
+			pcibios_write_config_word(cs->hw.hfcpci.pci_bus,
+					     cs->hw.hfcpci.pci_device_fn,
+						  PCI_COMMAND,
+						  cmd);
+			pcibios_read_config_dword(cs->hw.hfcpci.pci_bus,
+					     cs->hw.hfcpci.pci_device_fn,
+						  PCI_BASE_ADDRESS_1,
+					 (void *) &cs->hw.hfcpci.pci_io);
+			if (((int) cs->hw.hfcpci.pci_io & (PAGE_SIZE - 1))) {
+				printk(KERN_WARNING "HFC-PCI unable to align address %x\n", (unsigned) cs->hw.hfcpci.pci_io);
+				return (0);
+			}
+			dev_hfcpci->resource[1].start = (int) cs->hw.hfcpci.pci_io;
 		}
 		if (!cs->hw.hfcpci.pci_io) {
 			printk(KERN_WARNING "HFC-PCI: No IO-Mem for PCI card found\n");

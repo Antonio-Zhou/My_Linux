@@ -2,7 +2,6 @@
  * Created: Tue Feb  2 08:37:54 1999 by faith@precisioninsight.com
  *
  * Copyright 1999 Precision Insight, Inc., Cedar Park, Texas.
- * Copyright 2000 VA Linux Systems, Inc., Sunnyvale, California.
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -25,7 +24,7 @@
  * DEALINGS IN THE SOFTWARE.
  * 
  * Authors:
- *    Rickard E. (Rik) Faith <faith@valinux.com>
+ *    Rickard E. (Rik) Faith <faith@precisioninsight.com>
  *
  */
 
@@ -91,13 +90,10 @@ static int drm_alloc_queue(drm_device_t *dev)
 		atomic_dec(&dev->queuelist[i]->use_count);
 	}
 				/* Allocate a new queue */
+	down(&dev->struct_sem);
 	
 	queue = drm_alloc(sizeof(*queue), DRM_MEM_QUEUES);
-	if(queue == NULL)
-		return -ENOMEM;	
-
 	memset(queue, 0, sizeof(*queue));
-	down(&dev->struct_sem);
 	atomic_set(&queue->use_count, 1);
 	
 	++dev->queue_count;

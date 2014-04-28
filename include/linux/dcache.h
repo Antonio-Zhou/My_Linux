@@ -1,6 +1,9 @@
 #ifndef __LINUX_DCACHE_H
 #define __LINUX_DCACHE_H
 
+#include <asm/atomic.h>
+#include <linux/mount.h>
+
 #ifdef __KERNEL__
 
 /*
@@ -11,8 +14,6 @@
  * (C) Copyright 1997 Thomas Schoebel-Theuer,
  * with heavy changes by Linus Torvalds
  */
-
-#define D_MAXLEN 1024
 
 #define IS_ROOT(x) ((x) == (x)->d_parent)
 
@@ -60,8 +61,7 @@ struct dentry {
 	unsigned int d_flags;
 	struct inode  * d_inode;	/* Where the name belongs to - NULL is negative */
 	struct dentry * d_parent;	/* parent directory */
-	struct dentry * d_mounts;	/* mount information */
-	struct dentry * d_covers;
+	struct list_head d_vfsmnt;
 	struct list_head d_hash;	/* lookup hash list */
 	struct list_head d_lru;		/* d_count = 0 LRU list */
 	struct list_head d_child;	/* child of parent list */
@@ -80,7 +80,7 @@ struct dentry_operations {
 	int (*d_revalidate)(struct dentry *, int);
 	int (*d_hash) (struct dentry *, struct qstr *);
 	int (*d_compare) (struct dentry *, struct qstr *, struct qstr *);
-	void (*d_delete)(struct dentry *);
+	int (*d_delete)(struct dentry *);
 	void (*d_release)(struct dentry *);
 	void (*d_iput)(struct dentry *, struct inode *);
 };
@@ -106,12 +106,11 @@ struct dentry_operations {
 					 * If this dentry points to a directory, then
 					 * s_nfsd_free_path semaphore will be down
 					 */
-#define	DCACHE_REFERENCED 0x0008	/* This dentry is been recently
-					 * referenced so try to keep it in
-					 * cache.
-					 */
 
-/*
+/**
+ * d_drop - drop a dentry
+ * @dentry: dentry to drop
+ *
  * d_drop() unhashes the entry from the parent
  * dentry hashes, so that it won't be found through
  * a VFS lookup any more. Note that this is different
@@ -124,6 +123,7 @@ struct dentry_operations {
  * to invalidate a dentry for some reason (NFS
  * timeouts or autofs deletes).
  */
+
 static __inline__ void d_drop(struct dentry * dentry)
 {
 	list_del(&dentry->d_hash);
@@ -142,36 +142,47 @@ extern void d_instantiate(struct dentry *, struct inode *);
 extern void d_delete(struct dentry *);
 
 /* allocate/de-allocate */
-extern struct dentry * d_alloc(struct dentry * parent, const struct qstr *name);
-extern int prune_dcache(int, int);
+extern struct dentry * d_alloc(struct dentry *, const struct qstr *);
 extern void shrink_dcache_sb(struct super_block *);
 extern void shrink_dcache_parent(struct dentry *);
 extern int d_invalidate(struct dentry *);
 
-#define shrink_dcache() prune_dcache(0, -1)
-
+#define shrink_dcache() prune_dcache(0)
+struct zone_struct;
 /* dcache memory management */
-extern void shrink_dcache_memory(int, unsigned int);
-extern void check_dcache_memory(void);
-extern void free_inode_memory(void);	/* defined in fs/inode.c */
+extern int shrink_dcache_memory(int, unsigned int);
+extern void prune_dcache(int);
+
+/* icache memory management (defined in linux/fs/inode.c) */
+extern int shrink_icache_memory(int, int);
+extern void prune_icache(int);
 
 /* only used at mount-time */
-extern struct dentry * d_alloc_root(struct inode * root_inode, struct dentry * old_root);
+extern struct dentry * d_alloc_root(struct inode *);
 
-/* test whether root is busy without destroying dcache */
-extern int is_root_busy(struct dentry *);
+/* <clickety>-<click> the ramfs-type tree */
+extern void d_genocide(struct dentry *);
 
-/* test whether we have any submounts */
+extern struct dentry *d_find_alias(struct inode *);
+extern void d_prune_aliases(struct inode *);
+
+/* test whether we have any submounts in a subdir tree */
 extern int have_submounts(struct dentry *);
 
 /*
  * This adds the entry to the hash queues.
  */
-extern void d_rehash(struct dentry * entry);
-/*
- * This adds the entry to the hash queues and initializes "d_inode".
- * The entry was actually filled in earlier during "d_alloc()"
+extern void d_rehash(struct dentry *);
+
+/**
+ * d_add - add dentry to hash queues
+ * @entry: dentry to add
+ * @inode: The inode to attach to this dentry
+ *
+ * This adds the entry to the hash queues and initializes @inode.
+ * The entry was actually filled in earlier during d_alloc().
  */
+ 
 static __inline__ void d_add(struct dentry * entry, struct inode * inode)
 {
 	d_rehash(entry);
@@ -179,19 +190,32 @@ static __inline__ void d_add(struct dentry * entry, struct inode * inode)
 }
 
 /* used for rename() and baskets */
-extern void d_move(struct dentry * entry, struct dentry * newdentry);
+extern void d_move(struct dentry *, struct dentry *);
 
 /* appendix may either be NULL or be used for transname suffixes */
-extern struct dentry * d_lookup(struct dentry * dir, struct qstr * name);
+extern struct dentry * d_lookup(struct dentry *, struct qstr *);
 
 /* validate "insecure" dentry pointer */
-extern int d_validate(struct dentry *dentry, struct dentry *dparent,
-		      unsigned int hash, unsigned int len);
+extern int d_validate(struct dentry *, struct dentry *, unsigned int, unsigned int);
 
+extern char * __d_path(struct dentry *, struct vfsmount *, struct dentry *,
+	struct vfsmount *, char *, int);
 /* write full pathname into buffer and return start of pathname */
-extern char * d_path(struct dentry * entry, char * buf, int buflen);
-
+#define d_path(dentry, vfsmnt, buffer, buflen) \
+	__d_path(dentry, vfsmnt, current->fs->root, current->fs->rootmnt, \
+	buffer, buflen)
+  
 /* Allocation counts.. */
+
+/**
+ *	dget	-	get a reference to a dentry
+ *	@dentry: dentry to get a reference to
+ *
+ *	Given a dentry or %NULL pointer increment the reference count
+ *	if appropriate and return the dentry. A dentry will not be 
+ *	destroyed when it has references.
+ */
+ 
 static __inline__ struct dentry * dget(struct dentry *dentry)
 {
 	if (dentry)
@@ -199,7 +223,25 @@ static __inline__ struct dentry * dget(struct dentry *dentry)
 	return dentry;
 }
 
+/**
+ *	d_unhashed -	is dentry hashed
+ *	@dentry: entry to check
+ *
+ *	Returns true if the dentry passed is not currently hashed.
+ */
+ 
+static __inline__ int d_unhashed(struct dentry *dentry)
+{
+	return list_empty(&dentry->d_hash);
+}
+
 extern void dput(struct dentry *);
+
+static __inline__ int d_mountpoint(struct dentry *dentry)
+{
+	return !list_empty(&dentry->d_vfsmnt);
+}
+
 
 #endif /* __KERNEL__ */
 

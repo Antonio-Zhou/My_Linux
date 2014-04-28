@@ -126,15 +126,11 @@ svc_proc_read(char *buffer, char **start, off_t offset, int count,
 static inline struct proc_dir_entry *
 do_register(const char *name, void *data, int issvc)
 {
-	struct proc_dir_entry	*ent;
-
 	rpc_proc_init();
 	dprintk("RPC: registering /proc/net/rpc/%s\n", name);
-	ent = create_proc_entry(name, 0, proc_net_rpc);
-	ent->read_proc = issvc? svc_proc_read : rpc_proc_read;
-	ent->data = data;
-
-	return ent;
+	return create_proc_read_entry(name, 0, proc_net_rpc, 
+				      issvc? svc_proc_read : rpc_proc_read,
+				      data);
 }
 
 struct proc_dir_entry *
@@ -167,17 +163,12 @@ rpc_proc_init(void)
 	dprintk("RPC: registering /proc/net/rpc\n");
 	if (!proc_net_rpc) {
 		struct proc_dir_entry *ent;
-		ent = create_proc_entry("net/rpc", S_IFDIR, 0);
+		ent = proc_mkdir("net/rpc", 0);
 		if (ent) {
-#ifdef MODULE
-			ent->fill_inode = rpc_modcount;
-#endif
+			ent->owner = THIS_MODULE;
 			proc_net_rpc = ent;
 		}
 	}
-#ifdef RPC_DEBUG
-	rpc_register_sysctl();
-#endif
 }
 
 void
@@ -188,31 +179,16 @@ rpc_proc_exit(void)
 		proc_net_rpc = NULL;
 		remove_proc_entry("net/rpc", 0);
 	}
-#ifdef RPC_DEBUG
-	rpc_unregister_sysctl();
-#endif
 }
 
 #ifdef MODULE
-/*
- * This is called as the proc_dir_entry fill_inode function
- * when an inode is going into or out of service (fill == 1
- * or 0 respectively).
- *
- * We use it here to keep the module from being unloaded
- * while /proc inodes are in use.
- */
-void rpc_modcount(struct inode *inode, int fill)
-{
-	if (fill)
-		MOD_INC_USE_COUNT;
-	else
-		MOD_DEC_USE_COUNT;
-}
 
 int
 init_module(void)
 {
+#ifdef RPC_DEBUG
+	rpc_register_sysctl();
+#endif
 	rpc_proc_init();
 	return 0;
 }
@@ -220,6 +196,9 @@ init_module(void)
 void
 cleanup_module(void)
 {
+#ifdef RPC_DEBUG
+	rpc_unregister_sysctl();
+#endif
 	rpc_proc_exit();
 }
 #endif

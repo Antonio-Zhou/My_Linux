@@ -6,7 +6,7 @@
  * Status:        Experimental.
  * Author:        Thomas Davis (tadavis@jps.net)
  * Created at:    
- * Modified at:   Fri Jan 21 09:41:08 2000
+ * Modified at:   Tue Feb 22 10:05:06 2000
  * Modified by:   Dag Brattli <dagb@cs.uit.no>
  * 
  *     Copyright (c) 1999-2000 Dag Brattli
@@ -34,7 +34,6 @@
  ********************************************************************/
 
 #include <linux/module.h>
-
 #include <linux/kernel.h>
 #include <linux/types.h>
 #include <linux/skbuff.h>
@@ -50,9 +49,7 @@
 #include <asm/dma.h>
 #include <asm/byteorder.h>
 
-#ifdef CONFIG_APM
-#include <linux/apm_bios.h>
-#endif
+#include <linux/pm.h>
 
 #include <net/irda/wrapper.h>
 #include <net/irda/irda.h>
@@ -82,17 +79,15 @@ static int  ircc_probe_58(smc_chip_t *chip, chipio_t *info);
 static int  ircc_probe_69(smc_chip_t *chip, chipio_t *info);
 static int  ircc_dma_receive(struct ircc_cb *self, int iobase); 
 static void ircc_dma_receive_complete(struct ircc_cb *self, int iobase);
-static int  ircc_hard_xmit(struct sk_buff *skb, struct device *dev);
+static int  ircc_hard_xmit(struct sk_buff *skb, struct net_device *dev);
 static void ircc_dma_xmit(struct ircc_cb *self, int iobase, int bofs);
 static void ircc_change_speed(void *priv, __u32 speed);
 static void ircc_interrupt(int irq, void *dev_id, struct pt_regs *regs);
 static int  ircc_is_receiving(struct ircc_cb *self);
 
-static int  ircc_net_open(struct device *dev);
-static int  ircc_net_close(struct device *dev);
-#ifdef CONFIG_APM
-static int  ircc_apmproc(apm_event_t event);
-#endif /* CONFIG_APM */
+static int  ircc_net_open(struct net_device *dev);
+static int  ircc_net_close(struct net_device *dev);
+static int  ircc_pmproc(struct pm_dev *dev, pm_request_t rqst, void *data);
 
 /* These are the currently known SMC chipsets */
 static smc_chip_t chips[] =
@@ -289,6 +284,10 @@ static int ircc_open(int i, unsigned int fir_base, unsigned int sir_base)
 	self->netdev->stop   = &ircc_net_close;
 
 	irport_start(self->irport);
+
+        self->pmdev = pm_register(PM_SYS_DEV, PM_SYS_IRDA, ircc_pmproc);
+        if (self->pmdev)
+                self->pmdev->data = self;
 
 	return 0;
 }
@@ -491,7 +490,7 @@ static void ircc_change_speed(void *priv, __u32 speed)
 {
 	int iobase, ir_mode, ctrl, fast; 
 	struct ircc_cb *self = (struct ircc_cb *) priv;
-	struct device *dev;
+	struct net_device *dev;
 
 	IRDA_DEBUG(0, __FUNCTION__ "\n");
 
@@ -568,7 +567,6 @@ static void ircc_change_speed(void *priv, __u32 speed)
 			   "(), using irport to change speed to %d\n", speed);
 		irport_change_speed(self->irport, speed);
 	}	
-	dev->tbusy = 0;
 
 	register_bank(iobase, 1);
 	outb(((inb(iobase+IRCC_SCE_CFGA) & 0x87) | ir_mode), 
@@ -597,7 +595,7 @@ static void ircc_change_speed(void *priv, __u32 speed)
  *    Transmit the frame!
  *
  */
-static int ircc_hard_xmit(struct sk_buff *skb, struct device *dev)
+static int ircc_hard_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct irport_cb *irport;
 	struct ircc_cb *self;
@@ -618,9 +616,7 @@ static int ircc_hard_xmit(struct sk_buff *skb, struct device *dev)
 	if ((speed = irda_get_speed(skb)) != self->io.speed)
 		self->new_speed = speed;
 	
-	/* Lock transmit buffer */
-	if (irda_lock((void *) &dev->tbusy) == FALSE)
-		return -EBUSY;
+	netif_stop_queue(dev);
 
 	memcpy(self->tx_buff.head, skb->data, skb->len);
 
@@ -742,11 +738,7 @@ static void ircc_dma_xmit_complete(struct ircc_cb *self, int iobase)
 		self->new_speed = 0;
 	}
 
-	/* Unlock tx_buff and request another frame */
-	self->netdev->tbusy = 0; /* Unlock */
-	
-	/* Tell the network layer, that we can accept more frames */
-	mark_bh(NET_BH);
+	netif_wake_queue(self->netdev);
 }
 
 /*
@@ -853,7 +845,7 @@ static void ircc_dma_receive_complete(struct ircc_cb *self, int iobase)
  */
 static void ircc_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 {
-	struct device *dev = (struct device *) dev_id;
+	struct net_device *dev = (struct net_device *) dev_id;
 	struct irport_cb *irport;
 	struct ircc_cb *self;
 	int iobase, iir;
@@ -876,7 +868,6 @@ static void ircc_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 	iobase = self->io.fir_base;
 
 	spin_lock(&self->lock);	
-	dev->interrupt = 1;
 
 	register_bank(iobase, 0);
 	iir = inb(iobase+IRCC_IIR);
@@ -899,7 +890,6 @@ static void ircc_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 	register_bank(iobase, 0);
 	outb(IRCC_IER_ACTIVE_FRAME|IRCC_IER_EOM, iobase+IRCC_IER);
 
-	dev->interrupt = 0;
 	spin_unlock(&self->lock);
 }
 
@@ -932,7 +922,7 @@ static int ircc_is_receiving(struct ircc_cb *self)
  *    Start the device
  *
  */
-static int ircc_net_open(struct device *dev)
+static int ircc_net_open(struct net_device *dev)
 {
 	struct irport_cb *irport;
 	struct ircc_cb *self;
@@ -971,7 +961,7 @@ static int ircc_net_open(struct device *dev)
  *    Stop the device
  *
  */
-static int ircc_net_close(struct device *dev)
+static int ircc_net_close(struct net_device *dev)
 {
 	struct irport_cb *irport;
 	struct ircc_cb *self;
@@ -998,7 +988,6 @@ static int ircc_net_close(struct device *dev)
 	return 0;
 }
 
-#ifdef CONFIG_APM
 static void ircc_suspend(struct ircc_cb *self)
 {
 	int i = 10;
@@ -1015,7 +1004,7 @@ static void ircc_suspend(struct ircc_cb *self)
 
 static void ircc_wakeup(struct ircc_cb *self)
 {
-	struct device *dev = self->netdev;
+	struct net_device *dev = self->netdev;
 	unsigned long flags;
 
 	if (!self->io.suspended)
@@ -1030,36 +1019,21 @@ static void ircc_wakeup(struct ircc_cb *self)
 	MESSAGE("%s, Waking up\n", driver_name);
 }
 
-static int ircc_apmproc(apm_event_t event)
+static int ircc_pmproc(struct pm_dev *dev, pm_request_t rqst, void *data)
 {
-	static int down = 0;          /* Filter out double events */
-	int i;
-
-	switch (event) {
-	case APM_SYS_SUSPEND:
-	case APM_USER_SUSPEND:
-		if (!down) {			
-			for (i=0; i<4; i++) {
-				if (dev_self[i])
-					ircc_suspend(dev_self[i]);
-			}
-		}
-		down = 1;
-		break;
-	case APM_NORMAL_RESUME:
-	case APM_CRITICAL_RESUME:
-		if (down) {
-			for (i=0; i<4; i++) {
-				if (dev_self[i])
-					ircc_wakeup(dev_self[i]);
-			}
-		}
-		down = 0;
-		break;
-	}
+        struct ircc_cb *self = (struct ircc_cb*) dev->data;
+        if (self) {
+                switch (rqst) {
+                case PM_SUSPEND:
+                        ircc_suspend(self);
+                        break;
+                case PM_RESUME:
+                        ircc_wakeup(self);
+                        break;
+                }
+        }
 	return 0;
 }
-#endif /* CONFIG_APM */
 
 #ifdef MODULE
 MODULE_AUTHOR("Thomas Davis <tadavis@jps.net>");

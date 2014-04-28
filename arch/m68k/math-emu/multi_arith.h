@@ -329,7 +329,7 @@ extern inline int fp_addmant(struct fp_ext *dest, struct fp_ext *src)
 	int carry;
 
 	/* we assume here, gcc only insert move and a clr instr */
-	asm volatile ("add.b %1,%0" : "=d,g" (dest->lowmant)
+	asm volatile ("add.b %1,%0" : "=d,=g" (dest->lowmant)
 		: "g,d" (src->lowmant), "0,0" (dest->lowmant));
 	asm volatile ("addx.l %1,%0" : "=d" (dest->mant.m32[1])
 		: "d" (src->mant.m32[1]), "0" (dest->mant.m32[1]));
@@ -360,7 +360,7 @@ extern inline int fp_addcarry(struct fp_ext *reg)
 extern inline void fp_submant(struct fp_ext *dest, struct fp_ext *src1, struct fp_ext *src2)
 {
 	/* we assume here, gcc only insert move and a clr instr */
-	asm volatile ("sub.b %1,%0" : "=d,g" (dest->lowmant)
+	asm volatile ("sub.b %1,%0" : "=d,=g" (dest->lowmant)
 		: "g,d" (src2->lowmant), "0,0" (src1->lowmant));
 	asm volatile ("subx.l %1,%0" : "=d" (dest->mant.m32[1])
 		: "d" (src2->mant.m32[1]), "0" (src1->mant.m32[1]));
@@ -376,14 +376,14 @@ extern inline void fp_submant(struct fp_ext *dest, struct fp_ext *src1, struct f
 	asm ("divu.l %2,%1:%0" : "=d" (quot), "=d" (rem)		\
 		: "dm" (div), "1" (srch), "0" (srcl))
 #define fp_add64(dest1, dest2, src1, src2) ({				\
-	asm ("add.l %1,%0" : "=d,dm" (dest2)				\
+	asm ("add.l %1,%0" : "=d,=dm" (dest2)				\
 		: "dm,d" (src2), "0,0" (dest2));			\
 	asm ("addx.l %1,%0" : "=d" (dest1)				\
 		: "d" (src1), "0" (dest1));				\
 })
 #define fp_addx96(dest, src) ({						\
 	/* we assume here, gcc only insert move and a clr instr */	\
-	asm volatile ("add.l %1,%0" : "=d,g" (dest->m32[2])		\
+	asm volatile ("add.l %1,%0" : "=d,=g" (dest->m32[2])		\
 		: "g,d" (temp.m32[1]), "0,0" (dest->m32[2]));		\
 	asm volatile ("addx.l %1,%0" : "=d" (dest->m32[1])		\
 		: "d" (temp.m32[0]), "0" (dest->m32[1]));		\
@@ -391,14 +391,14 @@ extern inline void fp_submant(struct fp_ext *dest, struct fp_ext *src1, struct f
 		: "d" (0), "0" (dest->m32[0]));				\
 })
 #define fp_sub64(dest, src) ({						\
-	asm ("sub.l %1,%0" : "=d,dm" (dest.m32[1])			\
+	asm ("sub.l %1,%0" : "=d,=dm" (dest.m32[1])			\
 		: "dm,d" (src.m32[1]), "0,0" (dest.m32[1]));		\
 	asm ("subx.l %1,%0" : "=d" (dest.m32[0])			\
 		: "d" (src.m32[0]), "0" (dest.m32[0]));			\
 })
 #define fp_sub96c(dest, srch, srcm, srcl) ({				\
 	char carry;							\
-	asm ("sub.l %1,%0" : "=d,dm" (dest.m32[2])			\
+	asm ("sub.l %1,%0" : "=d,=dm" (dest.m32[2])			\
 		: "dm,d" (srcl), "0,0" (dest.m32[2]));			\
 	asm ("subx.l %1,%0" : "=d" (dest.m32[1])			\
 		: "d" (srcm), "0" (dest.m32[1]));			\

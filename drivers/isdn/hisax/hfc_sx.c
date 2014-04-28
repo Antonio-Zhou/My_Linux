@@ -1,18 +1,47 @@
-/* $Id: hfc_sx.c,v 1.1.2.1 2001/12/31 13:26:45 kai Exp $
+/* $Id: hfc_sx.c,v 1.4 2000/02/26 00:35:12 keil Exp $
+
+ * hfc_sx.c     low level driver for CCD?s hfc-s+/sp based cards
  *
- * level driver for CCD?s hfc-s+/sp based cards
+ * Author     Werner Cornelius (werner@isdn4linux.de)
+ *            based on existing driver for CCD HFC PCI cards
  *
- * Author       Werner Cornelius
- *              based on existing driver for CCD HFC PCI cards
- * Copyright    by Werner Cornelius  <werner@isdn4linux.de>
- * 
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
+ * Copyright 1999  by Werner Cornelius (werner@isdn4linux.de)
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2, or (at your option)
+ * any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ *
+ * $Log: hfc_sx.c,v $
+ * Revision 1.4  2000/02/26 00:35:12  keil
+ * Fix skb freeing in interrupt context
+ *
+ * Revision 1.3  2000/01/20 19:49:36  keil
+ * Support teles 13.3c vendor version 2.1
+ *
+ * Revision 1.2  1999/12/19 13:09:42  keil
+ * changed TASK_INTERRUPTIBLE into TASK_UNINTERRUPTIBLE for
+ * signal proof delays
+ *
+ * Revision 1.1  1999/11/18 00:09:18  werner
+ *
+ * Initial release of files for HFC-S+ and HFC-SP cards with 32K-RAM.
+ * Audio and Echo are supported.
+ *
+ *
  *
  */
 
 #define __NO_VERSION__
-#include <linux/init.h>
 #include "hisax.h"
 #include "hfc_sx.h"
 #include "isdnl1.h"
@@ -20,7 +49,7 @@
 
 extern const char *CardType[];
 
-static const char *hfcsx_revision = "$Revision: 1.1.2.1 $";
+static const char *hfcsx_revision = "$Revision: 1.4 $";
 
 /***************************************/
 /* IRQ-table for CCDs demo board       */
@@ -301,7 +330,7 @@ read_fifo(struct IsdnCardState *cs, u_char fifo, int trans_max)
 	      Read_hfc(cs, HFCSX_FIF_DRD); /* CRC 1 */
 	      Read_hfc(cs, HFCSX_FIF_DRD); /* CRC 2 */
 	      if (Read_hfc(cs, HFCSX_FIF_DRD)) {
-		dev_kfree_skb(skb);
+		dev_kfree_skb_irq(skb);
 		if (cs->debug & L1_DEB_ISAC_FIFO)
 		  debugl1(cs, "hfcsx_read_fifo %d crc error", fifo);
 		skb = NULL;
@@ -370,7 +399,7 @@ static int set_fifo_size(struct IsdnCardState *cs)
 static void
 reset_hfcsx(struct IsdnCardState *cs)
 {
-	unsigned long flags;
+	long flags;
 
 	save_flags(flags);
 	cli();
@@ -527,7 +556,7 @@ receive_dmsg(struct IsdnCardState *cs)
 void
 main_rec_hfcsx(struct BCState *bcs)
 {
-	unsigned long flags;
+	long flags;
 	struct IsdnCardState *cs = bcs->cs;
 	int count = 5;
 	struct sk_buff *skb;
@@ -574,7 +603,7 @@ hfcsx_fill_dfifo(struct IsdnCardState *cs)
 		return;
 
 	if (write_fifo(cs, cs->tx_skb, HFCSX_SEL_D_TX, 0)) {
-	  dev_kfree_skb(cs->tx_skb);
+	  dev_kfree_skb_any(cs->tx_skb);
 	  cs->tx_skb = NULL;
 	}
 	return;
@@ -607,7 +636,7 @@ hfcsx_fill_fifo(struct BCState *bcs)
 	  if (bcs->st->lli.l1writewakeup &&
 	      (PACKET_NOACK != bcs->tx_skb->pkt_type))
 	    bcs->st->lli.l1writewakeup(bcs->st, bcs->tx_skb->len);
-	  dev_kfree_skb(bcs->tx_skb);
+	  dev_kfree_skb_any(bcs->tx_skb);
 	  bcs->tx_skb = NULL;
 	  test_and_clear_bit(BC_FLG_BUSY, &bcs->Flag);
 	}
@@ -751,7 +780,7 @@ receive_emsg(struct IsdnCardState *cs)
 	      } else
 		HiSax_putstatus(cs, "LogEcho: ", "warning Frame too big (%d)", skb->len);
 	    }
-	    dev_kfree_skb(skb);
+	    dev_kfree_skb_any(skb);
 	  }
 	} while (--count && skb);
 
@@ -771,7 +800,7 @@ hfcsx_interrupt(int intno, void *dev_id, struct pt_regs *regs)
 	u_char exval;
 	struct BCState *bcs;
 	int count = 15;
-	unsigned long flags;
+	long flags;
 	u_char val, stat;
 
 	if (!cs) {
@@ -905,7 +934,7 @@ hfcsx_interrupt(int intno, void *dev_id, struct pt_regs *regs)
 					}
 					goto afterXPR;
 				} else {
-					dev_kfree_skb(cs->tx_skb);
+					dev_kfree_skb_irq(cs->tx_skb);
 					cs->tx_cnt = 0;
 					cs->tx_skb = NULL;
 				}
@@ -1216,7 +1245,7 @@ static void
 hfcsx_l2l1(struct PStack *st, int pr, void *arg)
 {
 	struct sk_buff *skb = arg;
-	unsigned long flags;
+	long flags;
 
 	switch (pr) {
 		case (PH_DATA | REQUEST):
@@ -1276,10 +1305,10 @@ close_hfcsx(struct BCState *bcs)
 {
 	mode_hfcsx(bcs, 0, bcs->channel);
 	if (test_and_clear_bit(BC_FLG_INIT, &bcs->Flag)) {
-		skb_queue_purge(&bcs->rqueue);
-		skb_queue_purge(&bcs->squeue);
+		discard_queue(&bcs->rqueue);
+		discard_queue(&bcs->squeue);
 		if (bcs->tx_skb) {
-			dev_kfree_skb(bcs->tx_skb);
+			dev_kfree_skb_any(bcs->tx_skb);
 			bcs->tx_skb = NULL;
 			test_and_clear_bit(BC_FLG_BUSY, &bcs->Flag);
 		}
@@ -1404,8 +1433,8 @@ hfcsx_bh(struct IsdnCardState *cs)
 /********************************/
 /* called for card init message */
 /********************************/
-void 
-inithfcsx(struct IsdnCardState *cs)
+__initfunc(void
+	   inithfcsx(struct IsdnCardState *cs))
 {
 	cs->setstack_d = setstack_hfcsx;
 	cs->dbusytimer.function = (void *) hfcsx_dbusy_timer;
@@ -1429,7 +1458,7 @@ inithfcsx(struct IsdnCardState *cs)
 static int
 hfcsx_card_msg(struct IsdnCardState *cs, int mt, void *arg)
 {
-	unsigned long flags;
+	long flags;
 
 	if (cs->debug & L1_DEB_ISAC)
 		debugl1(cs, "HFCSX: card_msg %x", mt);
@@ -1461,8 +1490,8 @@ hfcsx_card_msg(struct IsdnCardState *cs, int mt, void *arg)
 
 
 
-int 
-setup_hfcsx(struct IsdnCard *card)
+__initfunc(int
+	   setup_hfcsx(struct IsdnCard *card))
 {
 	struct IsdnCardState *cs = card->cs;
 	char tmp[64];
@@ -1475,12 +1504,11 @@ setup_hfcsx(struct IsdnCard *card)
 	cs->hw.hfcsx.int_s1 = 0;
 	cs->dc.hfcsx.ph_state = 0;
 	cs->hw.hfcsx.fifo = 255;
-	if ((cs->typ == ISDN_CTYPE_HFC_SX) || 
-	    (cs->typ == ISDN_CTYPE_HFC_SP_PCMCIA)) {
+	if (cs->typ == ISDN_CTYPE_HFC_SX) {
 	        if ((!cs->hw.hfcsx.base) || 
 		    check_region((cs->hw.hfcsx.base), 2)) {
 		  printk(KERN_WARNING
-			 "HiSax: HFC-SX io-base %#lx already in use\n",
+			 "HiSax: HFC-SX io-base 0x%x already in use\n",
 		          cs->hw.hfcsx.base);
 		  return(0);
 		} else {

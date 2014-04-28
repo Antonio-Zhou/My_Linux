@@ -4,10 +4,6 @@
  * The kernel statd client.
  *
  * Copyright (C) 1996, Olaf Kirch <okir@monad.swb.de>
- *
- * Note: In a future release, we should fold all NSM activity into
- * rpc.mountd and the mount program, respectively. Stuff like this
- * really doesn't belong in the kernel.	--okir
  */
 
 #include <linux/types.h>
@@ -47,7 +43,7 @@ nsm_mon_unmon(struct nlm_host *host, u32 proc, struct nsm_res *res)
 
 	args.addr = host->h_addr.sin_addr.s_addr;
 	args.prog = NLM_PROGRAM;
-	args.vers = host->h_version;
+	args.vers = 1;
 	args.proc = NLMPROC_NSM_NOTIFY;
 	memset(res, 0, sizeof(*res));
 
@@ -76,10 +72,8 @@ nsm_monitor(struct nlm_host *host)
 
 	if (status < 0 || res.status != 0)
 		printk(KERN_NOTICE "lockd: cannot monitor %s\n", host->h_name);
-	else {
+	else
 		host->h_monitored = 1;
-		host->h_nsmstate = res.state;
-	}
 	return status;
 }
 
@@ -163,8 +157,8 @@ xdr_encode_mon(struct rpc_rqst *rqstp, u32 *p, struct nsm_args *argp)
 	 */
 	sprintf(buffer, "%d.%d.%d.%d", (addr>>24) & 0xff, (addr>>16) & 0xff,
 				 	(addr>>8) & 0xff,  (addr) & 0xff);
-	if (!(p = xdr_encode_string(p, buffer, -1))
-	 || !(p = xdr_encode_string(p, system_utsname.nodename, -1)))
+	if (!(p = xdr_encode_string(p, buffer))
+	 || !(p = xdr_encode_string(p, system_utsname.nodename)))
 		return -EIO;
 	*p++ = htonl(argp->prog);
 	*p++ = htonl(argp->vers);

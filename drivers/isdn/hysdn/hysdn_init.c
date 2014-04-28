@@ -1,31 +1,43 @@
-/* $Id: hysdn_init.c,v 1.1.2.1 2001/12/31 13:26:46 kai Exp $
- *
+/* $Id: hysdn_init.c,v 1.1 2000/02/10 19:45:18 werner Exp $
+
  * Linux driver for HYSDN cards, init functions.
+ * written by Werner Cornelius (werner@titro.de) for Hypercope GmbH
  *
- * Author    Werner Cornelius (werner@titro.de) for Hypercope GmbH
- * Copyright 1999 by Werner Cornelius (werner@titro.de)
+ * Copyright 1999  by Werner Cornelius (werner@titro.de)
  *
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2, or (at your option)
+ * any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ *
+ * $Log: hysdn_init.c,v $
+ * Revision 1.1  2000/02/10 19:45:18  werner
+ *
+ * Initial release
+ *
  *
  */
 
 #include <linux/config.h>
 #include <linux/module.h>
-#include <linux/init.h>
 #include <linux/version.h>
 #include <linux/poll.h>
 #include <linux/vmalloc.h>
-#include <linux/slab.h>
+#include <linux/malloc.h>
 #include <linux/pci.h>
 
 #include "hysdn_defs.h"
 
-MODULE_DESCRIPTION("ISDN4Linux: Driver for HYSDN cards");
-MODULE_AUTHOR("Werner Cornelius");
-MODULE_LICENSE("GPL");
-
-static char *hysdn_init_revision = "$Revision: 1.1.2.1 $";
+static char *hysdn_init_revision = "$Revision: 1.1 $";
 int cardmax;			/* number of found cards */
 hysdn_card *card_root = NULL;	/* pointer to first card */
 
@@ -39,22 +51,21 @@ static struct {
 } pci_subid_map[] = {
 
 	{
-		PCI_SUBDEVICE_ID_HYPERCOPE_METRO, BD_METRO
+		PCI_SUB_ID_METRO, BD_METRO
 	},
 	{
-		PCI_SUBDEVICE_ID_HYPERCOPE_CHAMP2, BD_CHAMP2
+		PCI_SUB_ID_CHAMP2, BD_CHAMP2
 	},
 	{
-		PCI_SUBDEVICE_ID_HYPERCOPE_ERGO, BD_ERGO
+		PCI_SUB_ID_ERGO, BD_ERGO
 	},
 	{
-		PCI_SUBDEVICE_ID_HYPERCOPE_OLD_ERGO, BD_ERGO
+		PCI_SUB_ID_OLD_ERGO, BD_ERGO
 	},
 	{
 		0, 0
 	}			/* terminating entry */
 };
-
 
 /*********************************************************************/
 /* search_cards searches for available cards in the pci config data. */
@@ -66,14 +77,13 @@ search_cards(void)
 {
 	struct pci_dev *akt_pcidev = NULL;
 	hysdn_card *card, *card_last;
+	uchar irq;
 	int i;
 
 	card_root = NULL;
 	card_last = NULL;
-	while ((akt_pcidev = pci_find_device(PCI_VENDOR_ID_HYPERCOPE, PCI_DEVICE_ID_HYPERCOPE_PLX,
+	while ((akt_pcidev = pci_find_device(PCI_VENDOR_ID_HYPERCOPE, PCI_DEVICE_ID_PLX,
 					     akt_pcidev)) != NULL) {
-		if (pci_enable_device(akt_pcidev))
-			continue;
 
 		if (!(card = kmalloc(sizeof(hysdn_card), GFP_KERNEL))) {
 			printk(KERN_ERR "HYSDN: unable to alloc device mem \n");
@@ -83,11 +93,12 @@ search_cards(void)
 		card->myid = cardmax;	/* set own id */
 		card->bus = akt_pcidev->bus->number;
 		card->devfn = akt_pcidev->devfn;	/* slot + function */
-		pci_read_config_word(akt_pcidev, PCI_SUBSYSTEM_ID, &card->subsysid);
-		card->irq = akt_pcidev->irq;
-		card->iobase = akt_pcidev->base_address[ PCI_REG_PLX_IO_BASE] & PCI_BASE_ADDRESS_IO_MASK;
-		card->plxbase = akt_pcidev->base_address[ PCI_REG_PLX_MEM_BASE] & PCI_BASE_ADDRESS_MEM_MASK;
-		card->membase = akt_pcidev->base_address[ PCI_REG_MEMORY_BASE] & PCI_BASE_ADDRESS_MEM_MASK;
+		pcibios_read_config_word(card->bus, card->devfn, PCI_SUBSYSTEM_ID, &card->subsysid);
+		pcibios_read_config_byte(card->bus, card->devfn, PCI_INTERRUPT_LINE, &irq);
+		card->irq = irq;
+		card->iobase = akt_pcidev->resource[ PCI_REG_PLX_IO_BASE].start & PCI_BASE_ADDRESS_IO_MASK;
+		card->plxbase = akt_pcidev->resource[ PCI_REG_PLX_MEM_BASE].start;
+		card->membase = akt_pcidev->resource[ PCI_REG_MEMORY_BASE].start;
 		card->brdtype = BD_NONE;	/* unknown */
 		card->debug_flags = DEF_DEB_FLAGS;	/* set default debug */
 		card->faxchans = 0;	/* default no fax channels */
@@ -159,6 +170,7 @@ stop_cards(void)
 /* image becomes smaller and the driver code is only loaded when needed.    */
 /* Additionally newer versions may be activated without rebooting.          */
 /****************************************************************************/
+#ifdef CONFIG_MODULES
 
 /******************************************************/
 /* extract revision number from string for log output */
@@ -182,12 +194,12 @@ hysdn_getrev(const char *revision)
 /****************************************************************************/
 /* init_module is called once when the module is loaded to do all necessary */
 /* things like autodetect...                                                */
-/* If the return value of this function is 0 the init has been successful   */
+/* If the return value of this function is 0 the init has been successfull  */
 /* and the module is added to the list in /proc/modules, otherwise an error */
 /* is assumed and the module will not be kept in memory.                    */
 /****************************************************************************/
-static int __init
-hysdn_init(void)
+int
+init_module(void)
 {
 	char tmp[50];
 
@@ -206,45 +218,26 @@ hysdn_init(void)
 		free_resources();	/* proc file_sys not created */
 		return (-1);
 	}
-#ifdef CONFIG_HYSDN_CAPI
-	if(cardmax > 0) {
-		if(hycapi_init()) {
-			printk(KERN_ERR "HYCAPI: init failed\n");
-			return(-1);
-		}
-	}
-#endif /* CONFIG_HYSDN_CAPI */
 	return (0);		/* no error */
 }				/* init_module */
 
 
 /***********************************************************************/
 /* cleanup_module is called when the module is released by the kernel. */
-/* The routine is only called if init_module has been successful and   */
+/* The routine is only called if init_module has been successfull and  */
 /* the module counter has a value of 0. Otherwise this function will   */
 /* not be called. This function must release all resources still allo- */
 /* cated as after the return from this function the module code will   */
 /* be removed from memory.                                             */
 /***********************************************************************/
-static void 
-hysdn_exit(void)
+void
+cleanup_module(void)
 {
-#ifdef CONFIG_HYSDN_CAPI
-	hysdn_card *card;
-#endif /* CONFIG_HYSDN_CAPI */
+
 	stop_cards();
-#ifdef CONFIG_HYSDN_CAPI
-	card = card_root;	/* first in chain */
-	while (card) {
-		hycapi_capi_release(card);
-		card = card->next;	/* remove card from chain */
-	}			/* while card */
-	hycapi_cleanup();
-#endif /* CONFIG_HYSDN_CAPI */
 	hysdn_procconf_release();
 	free_resources();
 	printk(KERN_NOTICE "HYSDN: module unloaded\n");
 }				/* cleanup_module */
 
-module_init(hysdn_init);
-module_exit(hysdn_exit);
+#endif				/* CONFIG_MODULES */

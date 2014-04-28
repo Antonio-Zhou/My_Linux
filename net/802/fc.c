@@ -10,9 +10,9 @@
  *		v 1.0 03/22/99
  */
 
+#include <linux/config.h>
 #include <asm/uaccess.h>
 #include <asm/system.h>
-#include <linux/config.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/sched.h>
@@ -25,7 +25,6 @@
 #include <linux/fcdevice.h>
 #include <linux/skbuff.h>
 #include <linux/errno.h>
-#include <linux/string.h>
 #include <linux/timer.h>
 #include <linux/net.h>
 #include <linux/proc_fs.h>
@@ -36,7 +35,7 @@
  *	Put the headers on a Fibre Channel packet. 
  */
  
-int fc_header(struct sk_buff *skb, struct device *dev, unsigned short type,
+int fc_header(struct sk_buff *skb, struct net_device *dev, unsigned short type,
               void *daddr, void *saddr, unsigned len) 
 {
 	struct fch_hdr *fch;
@@ -93,7 +92,7 @@ int fc_rebuild_header(struct sk_buff *skb)
 #ifdef CONFIG_INET
 	return arp_find(fch->daddr, skb);
 #else
-	return 0; /* Cannot happen because of ETH_P_IP test */
-#endif	
+	return 0;
+#endif
 }
 	

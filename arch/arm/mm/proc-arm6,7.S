@@ -1,7 +1,7 @@
 /*
  * linux/arch/arm/mm/proc-arm6,7.S: MMU functions for ARM6
  *
- * (C) 1997-1999 Russell King
+ * (C) 1997-2000 Russell King
  *
  * These are the low level assembler for performing cache and TLB
  * functions on the ARM6 & ARM7.
@@ -22,10 +22,26 @@
  *
  * Purpose : Flush all cache lines
  */
-_arm6_7_flush_cache:
+ENTRY(cpu_arm6_flush_cache_all)
+ENTRY(cpu_arm7_flush_cache_all)
+ENTRY(cpu_arm6_flush_cache_area)
+ENTRY(cpu_arm7_flush_cache_area)
+ENTRY(cpu_arm6_flush_cache_entry)
+ENTRY(cpu_arm7_flush_cache_entry)
+ENTRY(cpu_arm6_flush_icache_area)
+ENTRY(cpu_arm7_flush_icache_area)
+ENTRY(cpu_arm6_flush_icache_page)
+ENTRY(cpu_arm7_flush_icache_page)
+ENTRY(cpu_arm6_cache_wback_area)
+ENTRY(cpu_arm7_cache_wback_area)
+ENTRY(cpu_arm6_cache_purge_area)
+ENTRY(cpu_arm7_cache_purge_area)
 		mov	r0, #0
 		mcr	p15, 0, r0, c7, c0, 0		@ flush cache
-_arm6_7_null:
+ENTRY(cpu_arm6_clean_cache_area)
+ENTRY(cpu_arm7_clean_cache_area)
+ENTRY(cpu_arm6_flush_ram_page)
+ENTRY(cpu_arm7_flush_ram_page)
 		mov	pc, lr
 
 /*
@@ -33,7 +49,8 @@ _arm6_7_null:
  *
  * Purpose : flush all TLB entries in all caches
  */
-_arm6_7_flush_tlb_all:
+ENTRY(cpu_arm6_flush_tlb_all)
+ENTRY(cpu_arm7_flush_tlb_all)
 		mov	r0, #0
 		mcr	p15, 0, r0, c5, c0, 0		@ flush TLB
 		mov	pc, lr
@@ -47,7 +64,8 @@ _arm6_7_flush_tlb_all:
  *
  * Purpose : flush a TLB entry
  */
-_arm6_7_flush_tlb_area:
+ENTRY(cpu_arm6_flush_tlb_area)
+ENTRY(cpu_arm7_flush_tlb_area)
 1:		mcr	p15, 0, r0, c6, c0, 0		@ flush TLB
 		add	r0, r0, #4096
 		cmp	r0, r1
@@ -55,36 +73,17 @@ _arm6_7_flush_tlb_area:
 		mov	pc, lr
 
 /*
- * Function: arm6_7_switch_to (struct task_struct *prev, struct task_struct *next)
+ * Function: arm6_7_flush_tlb_page (unsigned long address, int flags)
  *
- * Params  : prev	Old task structure
- *	   : next	New task structure for process to run
+ * Params  : address	Address
+ *	   : flags	b0 = I-TLB as well
  *
- * Returns : prev
- *
- * Purpose : Perform a task switch, saving the old processes state, and restoring
- *	     the new.
- *
- * Notes   : We don't fiddle with the FP registers here - we postpone this until
- *	     the new task actually uses FP.  This way, we don't swap FP for tasks
- *	     that do not require it.
+ * Purpose : flush a TLB entry
  */
-_arm6_7_switch_to:
-		stmfd	sp!, {r4 - r10, fp, lr}		@ Store most regs on stack
-		mrs	ip, cpsr
-		stmfd	sp!, {ip}			@ Save cpsr_SVC
-		str	sp, [r0, #TSS_SAVE]		@ Save sp_SVC
-		ldr	sp, [r1, #TSS_SAVE]		@ Get saved sp_SVC
-		ldr	r2, [r1, #TSS_DOMAIN]
-		ldr	r3, [r1, #TSS_MEMMAP]		@ Page table pointer
-		mcr	p15, 0, r2, c3, c0		@ Set domain reg
-		mov	r1, #0
-		mcr	p15, 0, r1, c7, c0, 0		@ flush cache
-		mcr	p15, 0, r3, c2, c0, 0		@ update page table ptr
-		mcr	p15, 0, r1, c5, c0, 0		@ flush TLBs
-		ldmfd	sp!, {ip}
-		msr	spsr, ip			@ Save tasks CPSR into SPSR for this return
-		ldmfd	sp!, {r4 - r10, fp, pc}^	@ Load all regs saved previously
+ENTRY(cpu_arm6_flush_tlb_page)
+ENTRY(cpu_arm7_flush_tlb_page)
+		mcr	p15, 0, r0, c6, c0, 0		@ flush TLB
+		mov	pc, lr
 
 /*
  * Function: arm6_7_data_abort ()
@@ -105,13 +104,14 @@ Lukabttxt:	.ascii	"Unknown data abort code %d [pc=%p, *pc=%p] LR=%p\0"
 msg:		.ascii	"DA*%p=%p\n\0"
 		.align
 
-_arm6_data_abort:
+ENTRY(cpu_arm6_data_abort)
 		ldr	r4, [r0]			@ read instruction causing problem
 		mov	r2, r4, lsr #19			@ r2 b1 = L
 		and	r1, r4, #14 << 24
 		and	r2, r2, #2			@ check read/write bit
-		teq	r1, #8 << 24
+		teq	r1, #4 << 23
 		bne	Ldata_simple
+
 
 Ldata_ldmstm:	tst	r4, #1 << 21			@ check writeback bit
 		beq	Ldata_simple
@@ -138,7 +138,7 @@ Ldata_simple:	mrc	p15, 0, r0, c6, c0, 0		@ get FAR
 		and	r1, r1, #255
 		mov	pc, lr
 
-_arm7_data_abort:
+ENTRY(cpu_arm7_data_abort)
 		ldr	r4, [r0]			@ read instruction causing problem
 		mov	r2, r4, lsr #19			@ r2 b1 = L
 		and	r1, r4, #15 << 24
@@ -162,7 +162,11 @@ _arm7_data_abort:
 		b	Ldata_simple			@ ldc	rd, [rn, #m]
 		b	Ldata_unknown
 Ldata_unknown:	@ Part of jumptable
-		b	Ldata_unknown
+		mov	r0, r1
+		mov	r1, r4
+		mov	r2, r3
+		b	baddataabort
+
 
 Ldata_lateldrpreconst:
 		tst	r4, #1 << 21			@ check writeback bit
@@ -237,19 +241,20 @@ Ldata_lateldrpostreg:
  *
  * Notes   : This processor does not require these
  */
-_arm6_7_check_bugs:
+ENTRY(cpu_arm6_check_bugs)
+ENTRY(cpu_arm7_check_bugs)
 		mrs	ip, cpsr
 		bic	ip, ip, #F_BIT
 		msr	cpsr, ip
 		mov	pc, lr
 
-_arm6_7_proc_init:
+ENTRY(cpu_arm6_proc_init)
+ENTRY(cpu_arm7_proc_init)
 		mov	pc, lr
 
-_arm6_7_proc_fin:
-		mrs	r0, cpsr
-		orr	r0, r0, #F_BIT | I_BIT
-		msr	cpsr, r0
+ENTRY(cpu_arm6_proc_fin)
+ENTRY(cpu_arm7_proc_fin)
+		msr	cpsr_c, #F_BIT | I_BIT | SVC_MODE
 		mov	r0, #0x31			@ ....S..DP...M
 		mcr	p15, 0, r0, c1, c0, 0		@ disable caches
 		mov	pc, lr
@@ -260,6 +265,20 @@ ENTRY(cpu_arm7_do_idle)
 		mov	pc, lr
 
 /*
+ * Function: arm6_7_set_pgd(unsigned long pgd_phys)
+ * Params  : pgd_phys	Physical address of page table
+ * Purpose : Perform a task switch, saving the old processes state, and restoring
+ *	     the new.
+ */
+ENTRY(cpu_arm6_set_pgd)
+ENTRY(cpu_arm7_set_pgd)
+		mov	r1, #0
+		mcr	p15, 0, r1, c7, c0, 0		@ flush cache
+		mcr	p15, 0, r0, c2, c0, 0		@ update page table ptr
+		mcr	p15, 0, r1, c5, c0, 0		@ flush TLBs
+		mov	pc, lr
+
+/*
  * Function: arm6_set_pmd ()
  *
  * Params  : r0 = Address to set
@@ -267,7 +286,8 @@ ENTRY(cpu_arm7_do_idle)
  *
  * Purpose : Set a PMD and flush it out of any WB cache
  */
-_arm6_set_pmd:	and	r2, r1, #11
+ENTRY(cpu_arm6_set_pmd)
+		and	r2, r1, #11
 		teq	r2, #1
 		teqne	r2, #9
 		teqne	r2, #10
@@ -283,7 +303,8 @@ _arm6_set_pmd:	and	r2, r1, #11
  *
  * Purpose : Set a PMD and flush it out of any WB cache
  */
-_arm7_set_pmd:	tst	r1, #3
+ENTRY(cpu_arm7_set_pmd)
+		tst	r1, #3
 		orrne	r1, r1, #16			@ Updatable bit is always set on ARM7
 		str	r1, [r0]
 		mov	pc, lr
@@ -295,7 +316,8 @@ _arm7_set_pmd:	tst	r1, #3
  * Purpose : Set a PTE and flush it out of any WB cache
  */
 		.align	5
-_arm6_7_set_pte:
+ENTRY(cpu_arm6_set_pte)
+ENTRY(cpu_arm7_set_pte)
 		str	r1, [r0], #-1024		@ linux version
 
 		eor	r1, r1, #LPTE_PRESENT | LPTE_YOUNG | LPTE_WRITE | LPTE_DIRTY
@@ -318,10 +340,11 @@ _arm6_7_set_pte:
 
 /*
  * Function: _arm6_7_reset
- *
+ * Params  : r0 = address to jump to
  * Notes   : This sets up everything for a reset
  */
-_arm6_7_reset:
+ENTRY(cpu_arm6_reset)
+ENTRY(cpu_arm7_reset)
 		mov	r1, #0
 		mcr	p15, 0, r1, c7, c0, 0		@ flush cache
 		mcr	p15, 0, r1, c5, c0, 0		@ flush TLB
@@ -341,7 +364,8 @@ cpu_arm710_name:
 
 		.section ".text.init", #alloc, #execinstr
 
-__arm6_setup:	mov	r0, #0
+__arm6_setup:	msr	cpsr_c, #F_BIT | I_BIT | SVC_MODE
+		mov	r0, #0
 		mcr	p15, 0, r0, c7, c0		@ flush caches on v3
 		mcr	p15, 0, r0, c5, c0		@ flush TLBs on v3
 		mcr	p15, 0, r4, c2, c0		@ load page table pointer
@@ -351,7 +375,8 @@ __arm6_setup:	mov	r0, #0
 		orr	r0, r0, #0x100
 		mov	pc, lr
 
-__arm7_setup:	mov	r0, #0
+__arm7_setup:	msr	cpsr_c, #F_BIT | I_BIT | SVC_MODE
+		mov	r0, #0
 		mcr	p15, 0, r0, c7, c0		@ flush caches on v3
 		mcr	p15, 0, r0, c5, c0		@ flush TLBs on v3
 		mcr	p15, 0, r4, c2, c0		@ load page table pointer
@@ -366,30 +391,28 @@ __arm7_setup:	mov	r0, #0
  *	     come through these
  */
 		.type	arm6_processor_functions, #object
-arm6_processor_functions:
-		.word	cpu_arm6_name			@  0
-		.word	_arm6_7_switch_to		@  4
-		.word	_arm6_data_abort		@  8
-		.word	_arm6_7_check_bugs		@ 12
-		.word	_arm6_7_proc_init		@ 16
-		.word	_arm6_7_proc_fin		@ 20
-
-		.word	_arm6_7_flush_cache		@ 24
-		.word	_arm6_7_flush_cache		@ 28
-		.word	_arm6_7_flush_cache		@ 32
-		.word	_arm6_7_null			@ 36
-		.word	_arm6_7_flush_cache		@ 40
-		.word	_arm6_7_flush_tlb_all		@ 44
-		.word	_arm6_7_flush_tlb_area		@ 48
-		.word	_arm6_set_pmd			@ 52
-		.word	_arm6_7_set_pte			@ 56
-		.word	_arm6_7_reset			@ 60
-		.word	_arm6_7_flush_cache		@ 64
-
-		.word	_arm6_7_flush_cache		@ 68
-		.word	_arm6_7_flush_cache		@ 72
-		.word	0
+ENTRY(arm6_processor_functions)
+		.word	cpu_arm6_data_abort
+		.word	cpu_arm6_check_bugs
+		.word	cpu_arm6_proc_init
+		.word	cpu_arm6_proc_fin
+		.word	cpu_arm6_flush_cache_all
+		.word	cpu_arm6_flush_cache_area
+		.word	cpu_arm6_flush_cache_entry
+		.word	cpu_arm6_clean_cache_area
+		.word	cpu_arm6_flush_ram_page
+		.word	cpu_arm6_flush_tlb_all
+		.word	cpu_arm6_flush_tlb_area
+		.word	cpu_arm6_set_pgd
+		.word	cpu_arm6_set_pmd
+		.word	cpu_arm6_set_pte
+		.word	cpu_arm6_reset
+		.word	cpu_arm6_flush_icache_area
+		.word	cpu_arm6_cache_wback_area
+		.word	cpu_arm6_cache_purge_area
+		.word	cpu_arm6_flush_tlb_page
 		.word	cpu_arm6_do_idle
+		.word	cpu_arm6_flush_icache_page
 		.size	arm6_processor_functions, . - arm6_processor_functions
 
 /*
@@ -397,30 +420,28 @@ arm6_processor_functions:
  *	     come through these
  */
 		.type	arm7_processor_functions, #object
-arm7_processor_functions:
-		.word	cpu_arm7_name			@  0
-		.word	_arm6_7_switch_to		@  4
-		.word	_arm7_data_abort		@  8
-		.word	_arm6_7_check_bugs		@ 12
-		.word	_arm6_7_proc_init		@ 16
-		.word	_arm6_7_proc_fin		@ 20
-
-		.word	_arm6_7_flush_cache		@ 24
-		.word	_arm6_7_flush_cache		@ 28
-		.word	_arm6_7_flush_cache		@ 32
-		.word	_arm6_7_null			@ 36
-		.word	_arm6_7_flush_cache		@ 40
-		.word	_arm6_7_flush_tlb_all		@ 44
-		.word	_arm6_7_flush_tlb_area		@ 48
-		.word	_arm7_set_pmd			@ 52
-		.word	_arm6_7_set_pte			@ 56
-		.word	_arm6_7_reset			@ 60
-		.word	_arm6_7_flush_cache		@ 64
-
-		.word	_arm6_7_flush_cache		@ 68
-		.word	_arm6_7_flush_cache		@ 72
-		.word	0
+ENTRY(arm7_processor_functions)
+		.word	cpu_arm7_data_abort
+		.word	cpu_arm7_check_bugs
+		.word	cpu_arm7_proc_init
+		.word	cpu_arm7_proc_fin
+		.word	cpu_arm7_flush_cache_all
+		.word	cpu_arm7_flush_cache_area
+		.word	cpu_arm7_flush_cache_entry
+		.word	cpu_arm7_clean_cache_area
+		.word	cpu_arm7_flush_ram_page
+		.word	cpu_arm7_flush_tlb_all
+		.word	cpu_arm7_flush_tlb_area
+		.word	cpu_arm7_set_pgd
+		.word	cpu_arm7_set_pmd
+		.word	cpu_arm7_set_pte
+		.word	cpu_arm7_reset
+		.word	cpu_arm7_flush_icache_area
+		.word	cpu_arm7_cache_wback_area
+		.word	cpu_arm7_cache_purge_area
+		.word	cpu_arm7_flush_tlb_page
 		.word	cpu_arm7_do_idle
+		.word	cpu_arm7_flush_icache_page
 		.size	arm7_processor_functions, . - arm7_processor_functions
 
 		.type	cpu_arm6_info, #object
@@ -458,7 +479,7 @@ cpu_elf_name:	.asciz	"v3"
 
 		.section ".proc.info", #alloc, #execinstr
 
-		.type   __arm6_proc_info, #object
+		.type	__arm6_proc_info, #object
 __arm6_proc_info:
 		.long	0x41560600
 		.long	0xfffffff0
@@ -471,7 +492,7 @@ __arm6_proc_info:
 		.long	arm6_processor_functions
 		.size	__arm6_proc_info, . - __arm6_proc_info
 
-		.type   __arm610_proc_info, #object
+		.type	__arm610_proc_info, #object
 __arm610_proc_info:
 		.long	0x41560610
 		.long	0xfffffff0
@@ -484,7 +505,7 @@ __arm610_proc_info:
 		.long	arm6_processor_functions
 		.size	__arm610_proc_info, . - __arm610_proc_info
 
-		.type   __arm7_proc_info, #object
+		.type	__arm7_proc_info, #object
 __arm7_proc_info:
 		.long	0x41007000
 		.long	0xffffff00
@@ -497,7 +518,7 @@ __arm7_proc_info:
 		.long	arm7_processor_functions
 		.size	__arm7_proc_info, . - __arm7_proc_info
 
-		.type   __arm710_proc_info, #object
+		.type	__arm710_proc_info, #object
 __arm710_proc_info:
 		.long	0x41007100
 		.long	0xfff8ff00

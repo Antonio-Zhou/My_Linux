@@ -3,7 +3,7 @@
  *	
  *		Alan Cox, <alan@redhat.com>
  *
- *	Version: $Id: icmp.c,v 1.52.2.7 2001/02/02 01:27:08 davem Exp $
+ *	Version: $Id: icmp.c,v 1.69 2000/04/15 01:48:10 davem Exp $
  *
  *	This program is free software; you can redistribute it and/or
  *	modify it under the terms of the GNU General Public License
@@ -261,6 +261,7 @@
 #include <linux/inet.h>
 #include <linux/netdevice.h>
 #include <linux/string.h>
+#include <linux/netfilter_ipv4.h>
 #include <net/snmp.h>
 #include <net/ip.h>
 #include <net/route.h>
@@ -269,7 +270,6 @@
 #include <net/tcp.h>
 #include <net/udp.h>
 #include <net/raw.h>
-#include <net/snmp.h>
 #include <linux/skbuff.h>
 #include <net/sock.h>
 #include <linux/errno.h>
@@ -279,17 +279,13 @@
 #include <asm/uaccess.h>
 #include <net/checksum.h>
 
-#ifdef CONFIG_IP_MASQUERADE
-#include <net/ip_masq.h>
-#endif
-
 #define min(a,b)	((a)<(b)?(a):(b))
 
 /*
  *	Statistics
  */
  
-struct icmp_mib icmp_statistics;
+struct icmp_mib icmp_statistics[NR_CPUS*2];
 
 /* An array of errno for error messages from dest unreach. */
 /* RFC 1122: 3.2.2.1 States that NET_UNREACH, HOS_UNREACH and SR_FAIELD MUST be considered 'transient errs'. */
@@ -320,8 +316,6 @@ int sysctl_icmp_echo_ignore_broadcasts = 0;
 /* Control parameter - ignore bogus broadcast responses? */
 int sysctl_icmp_ignore_bogus_error_responses =0;
 
-extern int sysctl_ip_always_defrag;
-
 /*
  *	ICMP control array. This specifies what to do with each ICMP.
  */
@@ -338,20 +332,6 @@ struct icmp_control
 static struct icmp_control icmp_pointers[NR_ICMP_TYPES+1];
 
 /*
- *	Build xmit assembly blocks
- */
-
-struct icmp_bxm
-{
-	void *data_ptr;
-	int data_len;
-	struct icmphdr icmph;
-	unsigned long csum;
-	struct ip_options replyopts;
-	unsigned char  optbuf[40];
-};
-
-/*
  *	The ICMP socket. This is the most convenient way to flow control
  *	our ICMP output as well as maintain a clean interface throughout
  *	all layers. All Socketless IP sends will soon be gone.
@@ -359,6 +339,47 @@ struct icmp_bxm
 	
 struct inode icmp_inode;
 struct socket *icmp_socket=&icmp_inode.u.socket_i;
+
+/* ICMPv4 socket is only a bit non-reenterable (unlike ICMPv6,
+   which is strongly non-reenterable). A bit later it will be made
+   reenterable and the lock may be removed then.
+ */
+
+static int icmp_xmit_holder = -1;
+
+static int icmp_xmit_lock_bh(void)
+{
+	if (!spin_trylock(&icmp_socket->sk->lock.slock)) {
+		if (icmp_xmit_holder == smp_processor_id())
+			return -EAGAIN;
+		spin_lock(&icmp_socket->sk->lock.slock);
+	}
+	icmp_xmit_holder = smp_processor_id();
+	return 0;
+}
+
+static __inline__ int icmp_xmit_lock(void)
+{
+	int ret;
+	local_bh_disable();
+	ret = icmp_xmit_lock_bh();
+	if (ret)
+		local_bh_enable();
+	return ret;
+}
+
+static void icmp_xmit_unlock_bh(void)
+{
+	icmp_xmit_holder = -1;
+	spin_unlock(&icmp_socket->sk->lock.slock);
+}
+
+static __inline__ void icmp_xmit_unlock(void)
+{
+	icmp_xmit_unlock_bh();
+	local_bh_enable();
+}
+
 
 /*
  *	Send an ICMP frame.
@@ -433,8 +454,8 @@ static void icmp_out_count(int type)
 {
 	if (type>NR_ICMP_TYPES)
 		return;
-	(*icmp_pointers[type].output)++;
-	icmp_statistics.IcmpOutMsgs++;
+	(icmp_pointers[type].output)[(smp_processor_id()*2+!in_softirq())*sizeof(struct icmp_mib)/sizeof(unsigned long)]++;
+	ICMP_INC_STATS(IcmpOutMsgs);
 }
  
 /*
@@ -448,7 +469,7 @@ static int icmp_glue_bits(const void *p, char *to, unsigned int offset, unsigned
 	unsigned long csum;
 
 	if (offset) {
-		icmp_param->csum=csum_partial_copy(icmp_param->data_ptr+offset-sizeof(struct icmphdr), 
+		icmp_param->csum=csum_partial_copy_nocheck(icmp_param->data_ptr+offset-sizeof(struct icmphdr), 
 				to, fraglen,icmp_param->csum);
 		return 0;
 	}
@@ -458,10 +479,10 @@ static int icmp_glue_bits(const void *p, char *to, unsigned int offset, unsigned
 	 *	the other fragments first, so that we get the checksum
 	 *	for the whole packet here.
 	 */
-	csum = csum_partial_copy((void *)&icmp_param->icmph,
+	csum = csum_partial_copy_nocheck((void *)&icmp_param->icmph,
 		to, sizeof(struct icmphdr), 
 		icmp_param->csum);
-	csum = csum_partial_copy(icmp_param->data_ptr,
+	csum = csum_partial_copy_nocheck(icmp_param->data_ptr,
 		to+sizeof(struct icmphdr),
 		fraglen-sizeof(struct icmphdr), csum);
 	icmph=(struct icmphdr *)to;
@@ -473,7 +494,7 @@ static int icmp_glue_bits(const void *p, char *to, unsigned int offset, unsigned
  *	Driving logic for building and sending ICMP messages.
  */
 
-static void icmp_reply(struct icmp_bxm *icmp_param, struct sk_buff *skb)
+void icmp_reply(struct icmp_bxm *icmp_param, struct sk_buff *skb)
 {
 	struct sock *sk=icmp_socket->sk;
 	struct ipcm_cookie ipc;
@@ -483,17 +504,23 @@ static void icmp_reply(struct icmp_bxm *icmp_param, struct sk_buff *skb)
 	if (ip_options_echo(&icmp_param->replyopts, skb))
 		return;
 
+	if (icmp_xmit_lock_bh())
+		return;
+
 	icmp_param->icmph.checksum=0;
 	icmp_param->csum=0;
 	icmp_out_count(icmp_param->icmph.type);
 
-	sk->ip_tos = skb->nh.iph->tos;
+	sk->protinfo.af_inet.tos = skb->nh.iph->tos;
 	daddr = ipc.addr = rt->rt_src;
-	ipc.opt = &icmp_param->replyopts;
-	if (ipc.opt->srr)
-		daddr = icmp_param->replyopts.faddr;
+	ipc.opt = NULL;
+	if (icmp_param->replyopts.optlen) {
+		ipc.opt = &icmp_param->replyopts;
+		if (ipc.opt->srr)
+			daddr = icmp_param->replyopts.faddr;
+	}
 	if (ip_route_output(&rt, daddr, rt->rt_spec_dst, RT_TOS(skb->nh.iph->tos), 0))
-		return;
+		goto out;
 	if (icmpv4_xrlim_allow(rt, icmp_param->icmph.type, 
 			       icmp_param->icmph.code)) { 
 		ip_build_xmit(sk, icmp_glue_bits, icmp_param, 
@@ -501,6 +528,8 @@ static void icmp_reply(struct icmp_bxm *icmp_param, struct sk_buff *skb)
 			      &ipc, rt, MSG_DONTWAIT);
 	}
 	ip_rt_put(rt);
+out:
+	icmp_xmit_unlock_bh();
 }
 
 
@@ -522,53 +551,43 @@ void icmp_send(struct sk_buff *skb_in, int type, int code, unsigned long info)
 	struct icmp_bxm icmp_param;
 	struct rtable *rt = (struct rtable*)skb_in->dst;
 	struct ipcm_cookie ipc;
-	unsigned int offset;
 	u32 saddr;
 	u8  tos;
-	
+
+	if (!rt)
+		return;
+
 	/*
 	 *	Find the original header
 	 */
-	 
 	iph = skb_in->nh.iph;
-	
+
 	/*
 	 *	No replies to physical multicast/broadcast
 	 */
-	 
 	if (skb_in->pkt_type!=PACKET_HOST)
 		return;
-		
+
 	/*
 	 *	Now check at the protocol level
 	 */
-	if (!rt) {
-                if (sysctl_ip_always_defrag == 0 &&
-                    net_ratelimit())
-			printk(KERN_DEBUG "icmp_send: destinationless packet\n");
-		return;
-	}
 	if (rt->rt_flags&(RTCF_BROADCAST|RTCF_MULTICAST))
 		return;
-	 
-		
+
 	/*
 	 *	Only reply to fragment 0. We byte re-order the constant
 	 *	mask for efficiency.
 	 */
-	 
 	if (iph->frag_off&htons(IP_OFFSET))
 		return;
-		
+
 	/* 
 	 *	If we send an ICMP error to an ICMP error a mess would result..
 	 */
-	 
 	if (icmp_pointers[type].error) {
 		/*
 		 *	We are an error, check if we are replying to an ICMP error
 		 */
-		 
 		if (iph->protocol==IPPROTO_ICMP) {
 			icmph = (struct icmphdr *)((char *)iph + (iph->ihl<<2));
 			/*
@@ -581,6 +600,9 @@ void icmp_send(struct sk_buff *skb_in, int type, int code, unsigned long info)
 	}
 
 
+	if (icmp_xmit_lock())
+		return;
+
 	/*
 	 *	Construct source address and options.
 	 */
@@ -592,11 +614,6 @@ void icmp_send(struct sk_buff *skb_in, int type, int code, unsigned long info)
 	if (rt->rt_flags&RTCF_NAT && IPCB(skb_in)->flags&IPSKB_TRANSLATED) {
 		iph->daddr = rt->key.dst;
 		iph->saddr = rt->key.src;
-	}
-#endif
-#ifdef CONFIG_IP_MASQUERADE
-	if (type==ICMP_DEST_UNREACH && IPCB(skb_in)->flags&IPSKB_MASQUERADED) {
-			ip_fw_unmasq_icmp(skb_in);
 	}
 #endif
 
@@ -615,8 +632,8 @@ void icmp_send(struct sk_buff *skb_in, int type, int code, unsigned long info)
 	 * grow the routing table.
 	 */
 	if (ip_route_output(&rt, iph->saddr, saddr, RT_TOS(tos), 0))
-		return;
-	
+		goto out;
+
 	if (ip_options_echo(&icmp_param.replyopts, skb_in)) 
 		goto ende;
 
@@ -632,13 +649,13 @@ void icmp_send(struct sk_buff *skb_in, int type, int code, unsigned long info)
 	icmp_param.csum=0;
 	icmp_param.data_ptr=iph;
 	icmp_out_count(icmp_param.icmph.type);
-	icmp_socket->sk->ip_tos = tos;
+	icmp_socket->sk->protinfo.af_inet.tos = tos;
 	ipc.addr = iph->saddr;
 	ipc.opt = &icmp_param.replyopts;
 	if (icmp_param.replyopts.srr) {
 		ip_rt_put(rt);
 		if (ip_route_output(&rt, icmp_param.replyopts.faddr, saddr, RT_TOS(tos), 0))
-			return;
+			goto out;
 	}
 
 	if (!icmpv4_xrlim_allow(rt, type, code))
@@ -652,12 +669,7 @@ void icmp_send(struct sk_buff *skb_in, int type, int code, unsigned long info)
 	room -= sizeof(struct iphdr) + icmp_param.replyopts.optlen;
 	room -= sizeof(struct icmphdr);
 
-	if (skb_in->data > skb_in->nh.raw) 
-		offset = (skb_in->data - skb_in->nh.raw);
-	else 
-		offset = 0;
-	icmp_param.data_len = (skb_in->len + offset);
-
+	icmp_param.data_len=(iph->ihl<<2)+skb_in->len;
 	if (icmp_param.data_len > room)
 		icmp_param.data_len = room;
 	
@@ -667,6 +679,8 @@ void icmp_send(struct sk_buff *skb_in, int type, int code, unsigned long info)
 
 ende:
 	ip_rt_put(rt);
+out:
+	icmp_xmit_unlock();
 }
 
 
@@ -689,7 +703,7 @@ static void icmp_unreach(struct icmphdr *icmph, struct sk_buff *skb, int len)
 	 */
 
 	if(len<sizeof(struct iphdr)) {
-		icmp_statistics.IcmpInErrors++;
+		ICMP_INC_STATS_BH(IcmpInErrors);
 		return;
 	}
 		
@@ -708,9 +722,9 @@ static void icmp_unreach(struct icmphdr *icmph, struct sk_buff *skb, int len)
 				break;
 			case ICMP_FRAG_NEEDED:
 				if (ipv4_config.no_pmtu_disc) {
-					if (sysctl_ip_always_defrag == 0 && net_ratelimit())
-						printk(KERN_INFO "ICMP: %d.%d.%d.%d: fragmentation needed and DF set.\n",
-					       NIPQUAD(iph->daddr));
+					if (net_ratelimit())
+						printk(KERN_INFO "ICMP: %u.%u.%u.%u: fragmentation needed and DF set.\n",
+						       NIPQUAD(iph->daddr));
 				} else {
 					unsigned short new_mtu;
 					new_mtu = ip_rt_frag_needed(iph, ntohs(icmph->un.frag.mtu));
@@ -720,8 +734,8 @@ static void icmp_unreach(struct icmphdr *icmph, struct sk_buff *skb, int len)
 				}
 				break;
 			case ICMP_SR_FAILED:
-				if (sysctl_ip_always_defrag == 0 && net_ratelimit())
-					printk(KERN_INFO "ICMP: %d.%d.%d.%d: Source Route Failed.\n", NIPQUAD(iph->daddr));
+				if (net_ratelimit())
+					printk(KERN_INFO "ICMP: %u.%u.%u.%u: Source Route Failed.\n", NIPQUAD(iph->daddr));
 				break;
 			default:
 				break;
@@ -751,7 +765,7 @@ static void icmp_unreach(struct icmphdr *icmph, struct sk_buff *skb, int len)
 		if (inet_addr_type(iph->daddr) == RTN_BROADCAST)
 		{
 			if (net_ratelimit())
-				printk(KERN_WARNING "%d.%d.%d.%d sent an invalid ICMP error to a broadcast.\n",
+				printk(KERN_WARNING "%u.%u.%u.%u sent an invalid ICMP error to a broadcast.\n",
 			       	NIPQUAD(skb->nh.iph->saddr));
 			return; 
 		}
@@ -763,17 +777,21 @@ static void icmp_unreach(struct icmphdr *icmph, struct sk_buff *skb, int len)
 
 	/* Note: See raw.c and net/raw.h, RAWV4_HTABLE_SIZE==MAX_INET_PROTOS */
 	hash = iph->protocol & (MAX_INET_PROTOS - 1);
+	read_lock(&raw_v4_lock);
 	if ((raw_sk = raw_v4_htable[hash]) != NULL) 
 	{
-		while ((raw_sk = raw_v4_lookup(raw_sk, iph->protocol, iph->saddr,
-					       iph->daddr, skb->dev->ifindex)) != NULL) {
+		while ((raw_sk = __raw_v4_lookup(raw_sk, iph->protocol, iph->saddr,
+						 iph->daddr, skb->dev->ifindex)) != NULL) {
 			raw_err(raw_sk, skb);
 			raw_sk = raw_sk->next;
 		}
 	}
+	read_unlock(&raw_v4_lock);
 
 	/*
 	 *	This can't change while we are doing it. 
+	 *	Callers have obtained BR_NETPROTO_LOCK so
+	 *	we are OK.
 	 */
 
 	ipprot = (struct inet_protocol *) inet_protos[hash];
@@ -807,7 +825,7 @@ static void icmp_redirect(struct icmphdr *icmph, struct sk_buff *skb, int len)
 	unsigned long ip;
 
 	if (len < sizeof(struct iphdr)) {
-		icmp_statistics.IcmpInErrors++;
+		ICMP_INC_STATS_BH(IcmpInErrors);
 		return; 
 	}
 		
@@ -876,7 +894,7 @@ static void icmp_timestamp(struct icmphdr *icmph, struct sk_buff *skb, int len)
 	 */
 	 
 	if(len<12) {
-		icmp_statistics.IcmpInErrors++;
+		ICMP_INC_STATS_BH(IcmpInErrors);
 		return;
 	}
 	
@@ -933,7 +951,7 @@ static void icmp_timestamp(struct icmphdr *icmph, struct sk_buff *skb, int len)
 static void icmp_address(struct icmphdr *icmph, struct sk_buff *skb, int len)
 {
 #if 0
-	if (sysctl_ip_always_defrag == 0 && net_ratelimit())
+	if (net_ratelimit())
 		printk(KERN_DEBUG "a guy asks for address mask. Who is it?\n");
 #endif		
 }
@@ -946,97 +964,39 @@ static void icmp_address(struct icmphdr *icmph, struct sk_buff *skb, int len)
 static void icmp_address_reply(struct icmphdr *icmph, struct sk_buff *skb, int len)
 {
 	struct rtable *rt = (struct rtable*)skb->dst;
-	struct device *dev = skb->dev;
-	struct in_device *in_dev = dev->ip_ptr;
+	struct net_device *dev = skb->dev;
+	struct in_device *in_dev;
 	struct in_ifaddr *ifa;
 	u32 mask;
 
-	if (!in_dev || !in_dev->ifa_list ||
-	    !IN_DEV_LOG_MARTIANS(in_dev) ||
-	    !IN_DEV_FORWARD(in_dev) ||
-	    len < 4 ||
-	    !(rt->rt_flags&RTCF_DIRECTSRC))
+	if (len < 4 || !(rt->rt_flags&RTCF_DIRECTSRC))
 		return;
 
-	mask = *(u32*)&icmph[1];
-	for (ifa=in_dev->ifa_list; ifa; ifa = ifa->ifa_next) {
-		if (mask == ifa->ifa_mask && inet_ifa_match(rt->rt_src, ifa))
-			return;
+	in_dev = in_dev_get(dev);
+	if (!in_dev)
+		return;
+	read_lock(&in_dev->lock);
+	if (in_dev->ifa_list &&
+	    IN_DEV_LOG_MARTIANS(in_dev) &&
+	    IN_DEV_FORWARD(in_dev)) {
+
+		mask = *(u32*)&icmph[1];
+		for (ifa=in_dev->ifa_list; ifa; ifa = ifa->ifa_next) {
+			if (mask == ifa->ifa_mask && inet_ifa_match(rt->rt_src, ifa))
+				break;
+		}
+		if (!ifa && net_ratelimit()) {
+			printk(KERN_INFO "Wrong address mask %u.%u.%u.%u from %s/%u.%u.%u.%u\n",
+			       NIPQUAD(mask), dev->name, NIPQUAD(rt->rt_src));
+		}
 	}
-	if (sysctl_ip_always_defrag == 0 && net_ratelimit())
-		printk(KERN_INFO "Wrong address mask %08X from %08X/%s\n",
-		       ntohl(mask), ntohl(rt->rt_src), dev->name);
+	read_unlock(&in_dev->lock);
+	in_dev_put(in_dev);
 }
 
 static void icmp_discard(struct icmphdr *icmph, struct sk_buff *skb, int len)
 {
 }
-
-#ifdef CONFIG_IP_TRANSPARENT_PROXY
-/*
- *	Check incoming icmp packets not addressed locally, to check whether
- *	they relate to a (proxying) socket on our system.
- *	Needed for transparent proxying.
- *
- *	This code is presently ugly and needs cleanup.
- *	Probably should add a chkaddr entry to ipprot to call a chk routine
- *	in udp.c or tcp.c...
- */
-
-/* This should work with the new hashes now. -DaveM */
-extern struct sock *tcp_v4_lookup(u32 saddr, u16 sport, u32 daddr, u16 dport, int dif);
-extern struct sock *udp_v4_lookup(u32 saddr, u16 sport, u32 daddr, u16 dport, int dif);
-
-int icmp_chkaddr(struct sk_buff *skb)
-{
-	unsigned short size = skb->nh.iph->ihl*4;
-	unsigned short clen = ntohs(skb->nh.iph->tot_len) - size;
-	struct icmphdr *icmph=(struct icmphdr *)(skb->nh.raw + size);
-	struct iphdr *iph = (struct iphdr *) (icmph + 1);
-	void (*handler)(struct icmphdr *icmph, struct sk_buff *skb, int len);
-
-	if (clen < sizeof(struct icmphdr)) return 0;
-	handler = icmp_pointers[icmph->type].handler;
-	if (handler == icmp_unreach || handler == icmp_redirect) {
-		struct sock *sk;
-		
-		clen -= sizeof(struct icmphdr);
-		if (clen < sizeof(struct iphdr) ||
-			clen < iph->ihl * 4 + sizeof(struct udphdr))
-			return 0;
-		switch (iph->protocol) {
-		case IPPROTO_TCP:
-			{
-			struct tcphdr *th = (struct tcphdr *)(((unsigned char *)iph)+(iph->ihl<<2));
-
-			sk = tcp_v4_lookup(iph->daddr, th->dest, iph->saddr, th->source, skb->dev->ifindex);
-			if (!sk || (sk->state == TCP_LISTEN))
-				return 0;
-			/*
-			 * This packet came from us.
-			 */
-			return 1;
-			}
-		case IPPROTO_UDP:
-			{
-			struct udphdr *uh = (struct udphdr *)(((unsigned char *)iph)+(iph->ihl<<2));
-
-			sk = udp_v4_lookup(iph->daddr, uh->dest, iph->saddr, uh->source, skb->dev->ifindex);
-			if (!sk) return 0;
-			if (sk->saddr != iph->saddr && inet_addr_type(iph->saddr) != RTN_LOCAL)
-				return 0;
-			/*
-			 * This packet may have come from us.
-			 * Assume it did.
-			 */
-			return 1;
-			}
-		}
-	}
-	return 0;
-}
-
-#endif
 
 /* 
  *	Deal with incoming ICMP packets.
@@ -1047,7 +1007,7 @@ int icmp_rcv(struct sk_buff *skb, unsigned short len)
 	struct icmphdr *icmph = skb->h.icmph;
 	struct rtable *rt = (struct rtable*)skb->dst;
 
-	icmp_statistics.IcmpInMsgs++;
+	ICMP_INC_STATS_BH(IcmpInMsgs);
 
 	/*
 	 *	18 is the highest 'known' ICMP type. Anything else is a mystery
@@ -1083,14 +1043,14 @@ int icmp_rcv(struct sk_buff *skb, unsigned short len)
 	}
 
 	len -= sizeof(struct icmphdr);
-	(*icmp_pointers[icmph->type].input)++;
+	icmp_pointers[icmph->type].input[smp_processor_id()*2*sizeof(struct icmp_mib)/sizeof(unsigned long)]++;
 	(icmp_pointers[icmph->type].handler)(icmph, skb, len);
 
 drop:
 	kfree_skb(skb);
 	return 0;
 error:
-	icmp_statistics.IcmpInErrors++;
+	ICMP_INC_STATS_BH(IcmpInErrors);
 	goto drop;
 }
 
@@ -1119,40 +1079,40 @@ int sysctl_icmp_echoreply_time = 0; /* don't limit it per default. */
  
 static struct icmp_control icmp_pointers[NR_ICMP_TYPES+1] = {
 /* ECHO REPLY (0) */
- { &icmp_statistics.IcmpOutEchoReps, &icmp_statistics.IcmpInEchoReps, icmp_discard, 0, &sysctl_icmp_echoreply_time},
- { &dummy, &icmp_statistics.IcmpInErrors, icmp_discard, 1, },
- { &dummy, &icmp_statistics.IcmpInErrors, icmp_discard, 1, },
+ { &icmp_statistics[0].IcmpOutEchoReps, &icmp_statistics[0].IcmpInEchoReps, icmp_discard, 0, &sysctl_icmp_echoreply_time},
+ { &dummy, &icmp_statistics[0].IcmpInErrors, icmp_discard, 1, },
+ { &dummy, &icmp_statistics[0].IcmpInErrors, icmp_discard, 1, },
 /* DEST UNREACH (3) */
- { &icmp_statistics.IcmpOutDestUnreachs, &icmp_statistics.IcmpInDestUnreachs, icmp_unreach, 1, &sysctl_icmp_destunreach_time },
+ { &icmp_statistics[0].IcmpOutDestUnreachs, &icmp_statistics[0].IcmpInDestUnreachs, icmp_unreach, 1, &sysctl_icmp_destunreach_time },
 /* SOURCE QUENCH (4) */
- { &icmp_statistics.IcmpOutSrcQuenchs, &icmp_statistics.IcmpInSrcQuenchs, icmp_unreach, 1, },
+ { &icmp_statistics[0].IcmpOutSrcQuenchs, &icmp_statistics[0].IcmpInSrcQuenchs, icmp_unreach, 1, },
 /* REDIRECT (5) */
- { &icmp_statistics.IcmpOutRedirects, &icmp_statistics.IcmpInRedirects, icmp_redirect, 1, },
- { &dummy, &icmp_statistics.IcmpInErrors, icmp_discard, 1, },
- { &dummy, &icmp_statistics.IcmpInErrors, icmp_discard, 1, },
+ { &icmp_statistics[0].IcmpOutRedirects, &icmp_statistics[0].IcmpInRedirects, icmp_redirect, 1, },
+ { &dummy, &icmp_statistics[0].IcmpInErrors, icmp_discard, 1, },
+ { &dummy, &icmp_statistics[0].IcmpInErrors, icmp_discard, 1, },
 /* ECHO (8) */
- { &icmp_statistics.IcmpOutEchos, &icmp_statistics.IcmpInEchos, icmp_echo, 0, },
- { &dummy, &icmp_statistics.IcmpInErrors, icmp_discard, 1, },
- { &dummy, &icmp_statistics.IcmpInErrors, icmp_discard, 1, },
+ { &icmp_statistics[0].IcmpOutEchos, &icmp_statistics[0].IcmpInEchos, icmp_echo, 0, },
+ { &dummy, &icmp_statistics[0].IcmpInErrors, icmp_discard, 1, },
+ { &dummy, &icmp_statistics[0].IcmpInErrors, icmp_discard, 1, },
 /* TIME EXCEEDED (11) */
- { &icmp_statistics.IcmpOutTimeExcds, &icmp_statistics.IcmpInTimeExcds, icmp_unreach, 1, &sysctl_icmp_timeexceed_time },
+ { &icmp_statistics[0].IcmpOutTimeExcds, &icmp_statistics[0].IcmpInTimeExcds, icmp_unreach, 1, &sysctl_icmp_timeexceed_time },
 /* PARAMETER PROBLEM (12) */
- { &icmp_statistics.IcmpOutParmProbs, &icmp_statistics.IcmpInParmProbs, icmp_unreach, 1, &sysctl_icmp_paramprob_time },
+ { &icmp_statistics[0].IcmpOutParmProbs, &icmp_statistics[0].IcmpInParmProbs, icmp_unreach, 1, &sysctl_icmp_paramprob_time },
 /* TIMESTAMP (13) */
- { &icmp_statistics.IcmpOutTimestamps, &icmp_statistics.IcmpInTimestamps, icmp_timestamp, 0,  },
+ { &icmp_statistics[0].IcmpOutTimestamps, &icmp_statistics[0].IcmpInTimestamps, icmp_timestamp, 0,  },
 /* TIMESTAMP REPLY (14) */
- { &icmp_statistics.IcmpOutTimestampReps, &icmp_statistics.IcmpInTimestampReps, icmp_discard, 0, },
+ { &icmp_statistics[0].IcmpOutTimestampReps, &icmp_statistics[0].IcmpInTimestampReps, icmp_discard, 0, },
 /* INFO (15) */
  { &dummy, &dummy, icmp_discard, 0, },
 /* INFO REPLY (16) */
  { &dummy, &dummy, icmp_discard, 0, },
 /* ADDR MASK (17) */
- { &icmp_statistics.IcmpOutAddrMasks, &icmp_statistics.IcmpInAddrMasks, icmp_address, 0,  },
+ { &icmp_statistics[0].IcmpOutAddrMasks, &icmp_statistics[0].IcmpInAddrMasks, icmp_address, 0,  },
 /* ADDR MASK REPLY (18) */
- { &icmp_statistics.IcmpOutAddrMaskReps, &icmp_statistics.IcmpInAddrMaskReps, icmp_address_reply, 0, }
+ { &icmp_statistics[0].IcmpOutAddrMaskReps, &icmp_statistics[0].IcmpInAddrMaskReps, icmp_address_reply, 0, }
 };
 
-__initfunc(void icmp_init(struct net_proto_family *ops))
+void __init icmp_init(struct net_proto_family *ops)
 {
 	int err;
 
@@ -1160,6 +1120,8 @@ __initfunc(void icmp_init(struct net_proto_family *ops))
 	icmp_inode.i_sock = 1;
 	icmp_inode.i_uid = 0;
 	icmp_inode.i_gid = 0;
+	init_waitqueue_head(&icmp_inode.i_wait);
+	init_waitqueue_head(&icmp_inode.u.socket_i.wait);
 
 	icmp_socket->inode = &icmp_inode;
 	icmp_socket->state = SS_UNCONNECTED;
@@ -1168,6 +1130,12 @@ __initfunc(void icmp_init(struct net_proto_family *ops))
 	if ((err=ops->create(icmp_socket, IPPROTO_ICMP))<0)
 		panic("Failed to create the ICMP control socket.\n");
 	icmp_socket->sk->allocation=GFP_ATOMIC;
-	icmp_socket->sk->num = 256;		/* Don't receive any data */
-	icmp_socket->sk->ip_ttl = MAXTTL;
+	icmp_socket->sk->sndbuf = SK_WMEM_MAX*2;
+	icmp_socket->sk->protinfo.af_inet.ttl = MAXTTL;
+
+	/* Unhash it so that IP input processing does not even
+	 * see it, we do not wish this socket to see incoming
+	 * packets.
+	 */
+	icmp_socket->sk->prot->unhash(icmp_socket->sk);
 }

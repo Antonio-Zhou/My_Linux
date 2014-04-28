@@ -77,17 +77,11 @@ extern __inline__ int tc_classify(struct sk_buff *skb, struct tcf_proto *tp, str
 	return -1;
 }
 
-extern __inline__ unsigned long cls_set_class(unsigned long *clp, unsigned long cl)
-{
-	unsigned long old_cl; 
 
-	old_cl = *clp;
-	*clp = cl;
-	synchronize_bh();
-	return old_cl;
-}
 
 extern int register_tcf_proto_ops(struct tcf_proto_ops *ops);
 extern int unregister_tcf_proto_ops(struct tcf_proto_ops *ops);
+
+
 
 #endif

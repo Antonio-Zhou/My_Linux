@@ -2,7 +2,7 @@
  *  arch/s390/kernel/sys_s390.c
  *
  *  S390 version
- *    Copyright (C) 1999 IBM Deutschland Entwicklung GmbH, IBM Corporation
+ *    Copyright (C) 1999,2000 IBM Deutschland Entwicklung GmbH, IBM Corporation
  *    Author(s): Martin Schwidefsky (schwidefsky@de.ibm.com),
  *
  *  Derived from "arch/i386/kernel/sys_i386.c"
@@ -47,6 +47,44 @@ asmlinkage int sys_pipe(unsigned long * fildes)
 	return error;
 }
 
+/* common code for old and new mmaps */
+static inline long do_mmap2(
+	unsigned long addr, unsigned long len,
+	unsigned long prot, unsigned long flags,
+	unsigned long fd, unsigned long pgoff)
+{
+	int error = -EBADF;
+	struct file * file = NULL;
+
+	flags &= ~(MAP_EXECUTABLE | MAP_DENYWRITE);
+	if (!(flags & MAP_ANONYMOUS)) {
+		file = fget(fd);
+		if (!file)
+			goto out;
+	}
+
+	down(&current->mm->mmap_sem);
+	lock_kernel();
+
+	error = do_mmap_pgoff(file, addr, len, prot, flags, pgoff);
+
+	unlock_kernel();
+	up(&current->mm->mmap_sem);
+
+	if (file)
+		fput(file);
+out:
+	return error;
+}
+
+/* FIXME: 6 parameters is one too much ... */
+asmlinkage long sys_mmap2(unsigned long addr, unsigned long len,
+	unsigned long prot, unsigned long flags,
+	unsigned long fd, unsigned long pgoff)
+{
+	return do_mmap2(addr, len, prot, flags, fd, pgoff);
+}
+
 /*
  * Perform the select(nd, in, out, ex, tv) and mmap() system
  * calls. Linux/i386 didn't use to be able to handle more than
@@ -65,29 +103,18 @@ struct mmap_arg_struct {
 
 asmlinkage int old_mmap(struct mmap_arg_struct *arg)
 {
-	int error = -EFAULT;
-	struct file * file = NULL;
 	struct mmap_arg_struct a;
+	int error = -EFAULT;
 
 	if (copy_from_user(&a, arg, sizeof(a)))
-		return -EFAULT;
+		goto out;
 
-	down(&current->mm->mmap_sem);
-	lock_kernel();
-	if (!(a.flags & MAP_ANONYMOUS)) {
-		error = -EBADF;
-		file = fget(a.fd);
-		if (!file)
-			goto out;
-	}
-	a.flags &= ~(MAP_EXECUTABLE | MAP_DENYWRITE);
+	error = -EINVAL;
+	if (a.offset & ~PAGE_MASK)
+		goto out;
 
-	error = do_mmap(file, a.addr, a.len, a.prot, a.flags, a.offset);
-	if (file)
-		fput(file);
+	error = do_mmap2(a.addr, a.len, a.prot, a.flags, a.fd, a.offset >> PAGE_SHIFT);
 out:
-	unlock_kernel();
-	up(&current->mm->mmap_sem);
 	return error;
 }
 
@@ -181,9 +208,9 @@ asmlinkage int sys_uname(struct old_utsname * name)
 	int err;
 	if (!name)
 		return -EFAULT;
-	down(&uts_sem);
+	down_read(&uts_sem);
 	err=copy_to_user(name, &system_utsname, sizeof (*name));
-	up(&uts_sem);
+	up_read(&uts_sem);
 	return err?-EFAULT:0;
 }
 
@@ -196,7 +223,7 @@ asmlinkage int sys_olduname(struct oldold_utsname * name)
 	if (!access_ok(VERIFY_WRITE,name,sizeof(struct oldold_utsname)))
 		return -EFAULT;
   
-  	down(&uts_sem);
+  	down_read(&uts_sem);
 	
 	error = __copy_to_user(&name->sysname,&system_utsname.sysname,__OLD_UTS_LEN);
 	error |= __put_user(0,name->sysname+__OLD_UTS_LEN);
@@ -209,7 +236,7 @@ asmlinkage int sys_olduname(struct oldold_utsname * name)
 	error |= __copy_to_user(&name->machine,&system_utsname.machine,__OLD_UTS_LEN);
 	error |= __put_user(0,name->machine+__OLD_UTS_LEN);
 	
-	up(&uts_sem);
+	up_read(&uts_sem);
 	
 	error = error ? -EFAULT : 0;
 

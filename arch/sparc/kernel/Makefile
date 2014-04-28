@@ -1,4 +1,4 @@
-# $Id: Makefile,v 1.49.2.1 1999/09/22 11:37:25 jj Exp $
+# $Id: Makefile,v 1.54 2000/05/12 23:51:24 davem Exp $
 # Makefile for the linux kernel.
 #
 # Note! Dependencies are done automagically by 'make dep', which also
@@ -8,10 +8,10 @@
 # Note 2! The CFLAGS definitions are now in the main makefile...
 
 .S.s:
-	$(CPP) -D__ASSEMBLY__ $(AFLAGS) -ansi $< -o $*.s
+	$(CPP) $(AFLAGS) -ansi $< -o $*.s
 
 .S.o:
-	$(CC) -D__ASSEMBLY__ $(AFLAGS) -ansi -c $< -o $*.o
+	$(CC) $(AFLAGS) -ansi -c $< -o $*.o
 
 all: kernel.o head.o init_task.o
 
@@ -19,10 +19,10 @@ O_TARGET := kernel.o
 IRQ_OBJS := irq.o sun4m_irq.o sun4c_irq.o sun4d_irq.o
 O_OBJS   := entry.o wof.o wuf.o etrap.o rtrap.o traps.o ${IRQ_OBJS} \
 	    process.o signal.o ioport.o setup.o idprom.o \
-	    sys_sparc.o sunos_asm.o sparc-stub.o systbls.o  \
+	    sys_sparc.o sunos_asm.o sparc-stub.o systbls.o \
 	    time.o windows.o cpu.o devices.o sclow.o solaris.o \
 	    tadpole.o tick14.o ptrace.o sys_solaris.o \
-	    unaligned.o muldiv.o pcic.o
+	    unaligned.o muldiv.o pcic.o semaphore.o
 
 OX_OBJS  := sparc_ksyms.o
 
@@ -47,7 +47,7 @@ O_OBJS += ebus.o
 endif
 
 head.o: head.S
-	$(CC) -D__ASSEMBLY__ $(AFLAGS) -ansi -c $*.S -o $*.o
+	$(CC) $(AFLAGS) -ansi -c $*.S -o $*.o
 
 check_asm: dummy
 	@echo "/* Automatically generated. Do not edit. */" > asm_offsets.h
@@ -61,7 +61,7 @@ check_asm: dummy
 	@echo "#include <linux/config.h>" > tmp.c
 	@echo "#undef CONFIG_SMP" >> tmp.c
 	@echo "#include <linux/sched.h>" >> tmp.c
-	$(CC) -E tmp.c -o tmp.i
+	$(CPP) $(CPPFLAGS) tmp.c -o tmp.i
 	@echo "/* Automatically generated. Do not edit. */" > check_asm.c
 	@echo "#include <linux/config.h>" >> check_asm.c
 	@echo "#undef CONFIG_SMP" >> check_asm.c
@@ -75,7 +75,7 @@ check_asm: dummy
 	$(SH) ./check_asm.sh thread tmp.i check_asm.c
 	@echo 'return 0; }' >> check_asm.c
 	@rm -f tmp.[ci]
-	$(CC) -o check_asm check_asm.c
+	$(CC) $(CFLAGS) -o check_asm check_asm.c
 	./check_asm >> asm_offsets.h
 	@rm -f check_asm check_asm.c
 	@echo "" >> asm_offsets.h
@@ -85,7 +85,7 @@ check_asm: dummy
 	@echo "#undef CONFIG_SMP" >> tmp.c
 	@echo "#define CONFIG_SMP 1" >> tmp.c
 	@echo "#include <linux/sched.h>" >> tmp.c
-	$(CC) -D__SMP__ -E tmp.c -o tmp.i
+	$(CPP) $(CPPFLAGS) tmp.c -o tmp.i
 	@echo "/* Automatically generated. Do not edit. */" > check_asm.c
 	@echo "#include <linux/config.h>" >> check_asm.c
 	@echo "#undef CONFIG_SMP" >> check_asm.c
@@ -100,7 +100,7 @@ check_asm: dummy
 	$(SH) ./check_asm.sh thread tmp.i check_asm.c
 	@echo 'return 0; }' >> check_asm.c
 	@rm -f tmp.[ci]
-	$(CC) -D__SMP__ -o check_asm check_asm.c
+	$(CC) $(CFLAGS) -o check_asm check_asm.c
 	./check_asm >> asm_offsets.h
 	@rm -f check_asm check_asm.c
 	@echo "" >> asm_offsets.h

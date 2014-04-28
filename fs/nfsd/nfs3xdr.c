@@ -21,10 +21,6 @@
 # define inline
 #endif
 
-/*
- * Size of encoded NFS3 file handle, in words
- */
-#define NFS3_FHANDLE_WORDS	(1 + XDR_QUADLEN(sizeof(struct knfs_fh)))
 
 /*
  * Mapping of S_IF* types to NFS file types
@@ -35,6 +31,17 @@ static u32	nfs3_ftypes[] = {
 	NF3REG,  NF3BAD,  NF3LNK, NF3BAD,
 	NF3SOCK, NF3BAD,  NF3LNK, NF3BAD,
 };
+
+/*
+ * XDR functions for basic NFS types
+ */
+static inline u32 *
+dec64(u32 *p, u64 *valp)
+{
+	*valp  = ((u64) ntohl(*p++)) << 32;
+	*valp |= ntohl(*p++);
+	return p;
+}
 
 static inline u32 *
 encode_time3(u32 *p, time_t secs)
@@ -53,19 +60,25 @@ decode_time3(u32 *p, time_t *secp)
 static inline u32 *
 decode_fh(u32 *p, struct svc_fh *fhp)
 {
-	if (ntohl(*p++) != sizeof(struct knfs_fh))
+	int size;
+	fh_init(fhp, NFS3_FHSIZE);
+	size = ntohl(*p++);
+	if (size > NFS3_FHSIZE)
 		return NULL;
 
-	memcpy(&fhp->fh_handle, p, sizeof(struct knfs_fh));
-	return p + (sizeof(struct knfs_fh) >> 2);
+	memcpy(&fhp->fh_handle.fh_base, p, size);
+	fhp->fh_handle.fh_size = size;
+	return p + XDR_QUADLEN(size);
 }
 
 static inline u32 *
 encode_fh(u32 *p, struct svc_fh *fhp)
 {
-	*p++ = htonl(sizeof(struct knfs_fh));
-	memcpy(p, &fhp->fh_handle, sizeof(struct knfs_fh));
-	return p + (sizeof(struct knfs_fh) >> 2);
+	int size = fhp->fh_handle.fh_size;
+	*p++ = htonl(size);
+	if (size) p[XDR_QUADLEN(size)-1]=0;
+	memcpy(p, &fhp->fh_handle.fh_base, size);
+	return p + XDR_QUADLEN(size);
 }
 
 /*
@@ -129,7 +142,7 @@ decode_sattr3(u32 *p, struct iattr *iap)
 		u64	newsize;
 
 		iap->ia_valid |= ATTR_SIZE;
-		p = xdr_decode_hyper(p, &newsize);
+		p = dec64(p, &newsize);
 		if (newsize <= NFS_OFFSET_MAX)
 			iap->ia_size = (u32) newsize;
 		else
@@ -170,16 +183,11 @@ encode_fattr3(struct svc_rqst *rqstp, u32 *p, struct dentry *dentry)
 	} else {
 		p = xdr_encode_hyper(p, (u64) inode->i_size);
 	}
-	/*
-	 *  For the 'used' member, we take i_blocks if set; assuming 512-byte
-	 *  units.  Some FSs don't set this, so all we can do then is
-	 *  use the size.
-	 */
-	if (inode->i_blocks)
-		p = xdr_encode_hyper(p,  ((u64)inode->i_blocks)<<9 );
+	if (inode->i_blksize == 0 && inode->i_blocks == 0)
+		/* Minix file system(?) i_size is (hopefully) close enough */
+		p = xdr_encode_hyper(p, (u64)(inode->i_size +511)& ~511);
 	else
-		p = xdr_encode_hyper(p, (u64) inode->i_size);
-
+		p = xdr_encode_hyper(p, ((u64)inode->i_blocks) << 9);
 	*p++ = htonl((u32) MAJOR(inode->i_rdev));
 	*p++ = htonl((u32) MINOR(inode->i_rdev));
 	p = xdr_encode_hyper(p, (u64) inode->i_dev);
@@ -209,11 +217,7 @@ encode_saved_post_attr(struct svc_rqst *rqstp, u32 *p, struct svc_fh *fhp)
 	} else {
 		p = xdr_encode_hyper(p, (u64) fhp->fh_post_size);
 	}
-	if (fhp->fh_post_blocks) {
-		p = xdr_encode_hyper(p, ((u64)fhp->fh_post_blocks)<<9);
-	} else {
-		p = xdr_encode_hyper(p, (u64) fhp->fh_post_size);
-	}
+	p = xdr_encode_hyper(p, ((u64)fhp->fh_post_blocks) << 9);
 	*p++ = htonl((u32) MAJOR(fhp->fh_post_rdev));
 	*p++ = htonl((u32) MINOR(fhp->fh_post_rdev));
 	p = xdr_encode_hyper(p, (u64) inode->i_dev);
@@ -339,7 +343,7 @@ nfs3svc_decode_readargs(struct svc_rqst *rqstp, u32 *p,
 					struct nfsd3_readargs *args)
 {
 	if (!(p = decode_fh(p, &args->fh))
-	 || !(p = xdr_decode_hyper(p, &args->offset)))
+	 || !(p = dec64(p, &args->offset)))
 		return 0;
 
 	args->count = ntohl(*p++);
@@ -351,7 +355,7 @@ nfs3svc_decode_writeargs(struct svc_rqst *rqstp, u32 *p,
 					struct nfsd3_writeargs *args)
 {
 	if (!(p = decode_fh(p, &args->fh))
-	 || !(p = xdr_decode_hyper(p, &args->offset)))
+	 || !(p = dec64(p, &args->offset)))
 		return 0;
 
 	args->count = ntohl(*p++);
@@ -467,7 +471,7 @@ nfs3svc_decode_readdirargs(struct svc_rqst *rqstp, u32 *p,
 {
 	if (!(p = decode_fh(p, &args->fh)))
 		return 0;
-	p = xdr_decode_hyper(p, &args->cookie);
+	p = dec64(p, &args->cookie);
 	args->verf   = p; p += 2;
 	args->dircount = ~0;
 	args->count  = ntohl(*p++);
@@ -481,7 +485,7 @@ nfs3svc_decode_readdirplusargs(struct svc_rqst *rqstp, u32 *p,
 {
 	if (!(p = decode_fh(p, &args->fh)))
 		return 0;
-	p = xdr_decode_hyper(p, &args->cookie);
+	p = dec64(p, &args->cookie);
 	args->verf     = p; p += 2;
 	args->dircount = ntohl(*p++);
 	args->count    = ntohl(*p++);
@@ -495,7 +499,7 @@ nfs3svc_decode_commitargs(struct svc_rqst *rqstp, u32 *p,
 {
 	if (!(p = decode_fh(p, &args->fh)))
 		return 0;
-	p = xdr_decode_hyper(p, &args->offset);
+	p = dec64(p, &args->offset);
 	args->count = ntohl(*p++);
 
 	return xdr_argsize_check(rqstp, p);
@@ -694,9 +698,17 @@ encode_entry(struct readdir_cd *cd, const char *name,
 		cd->eob = 1;
 		return -EINVAL;
 	}
-	*p++ = xdr_one;				  /* mark entry present */
-	p    = xdr_encode_hyper(p, ino);	  /* file id */
-	p    = xdr_encode_string(p, name, namlen);/* name length & name */
+	*p++ = xdr_one;				   /* mark entry present */
+	p    = xdr_encode_hyper(p, ino);			   /* file id */
+	p[slen - 1] = 0;		/* don't leak kernel data */
+#ifdef XDR_ENCODE_STRING_TAKES_LENGTH
+	p    = xdr_encode_string(p, name, namlen); /* name length & name */
+#else
+	/* just like nfsproc.c */
+	*p++ = htonl((u32) namlen);
+	memcpy(p, name, namlen);
+	p += slen;
+#endif
 
 	cd->offset = p;			/* remember pointer */
 	p = xdr_encode_hyper(p, NFS_OFFSET_MAX);	/* offset of next entry */
@@ -704,25 +716,41 @@ encode_entry(struct readdir_cd *cd, const char *name,
 	/* throw in readdirplus baggage */
 	if (plus) {
 		struct svc_fh	fh;
+		struct svc_export	*exp;
+		struct dentry		*dparent, *dchild;
 
-		fh_init(&fh);
-		/* Disabled for now because of lock-up */
-		if (0 && nfsd_lookup(cd->rqstp, cd->dirfh, name, namlen, &fh) == 0) {
-			p = encode_post_op_attr(cd->rqstp, p, fh.fh_dentry);
-			p = encode_fh(p, &fh);
-			fh_put(&fh);
-		} else {
-			/* Didn't find this entry... weird.
-			 * Proceed without the attrs anf fh anyway.
-			 */
-			*p++ = 0;
-			*p++ = 0;
-		}
+		dparent = cd->dirfh->fh_dentry;
+		exp  = cd->dirfh->fh_export;
+
+		fh_init(&fh, NFS3_FHSIZE);
+		if (fh_verify(cd->rqstp, cd->dirfh, S_IFDIR, MAY_EXEC) != 0)
+			goto noexec;
+		if (isdotent(name, namlen)) {
+			dchild = dparent;
+			if (namlen == 2)
+				dchild = dchild->d_parent;
+			dchild = dget(dchild);
+		} else
+			dchild = lookup_one(name, dparent);
+		if (IS_ERR(dchild))
+			goto noexec;
+		if (fh_compose(&fh, exp, dchild) != 0 || !dchild->d_inode)
+			goto noexec;
+		p = encode_post_op_attr(cd->rqstp, p, fh.fh_dentry);
+		*p++ = xdr_one; /* yes, a file handle follows */
+		p = encode_fh(p, &fh);
+		fh_put(&fh);
 	}
 
+out:
 	cd->buflen = buflen;
 	cd->buffer = p;
 	return 0;
+
+noexec:
+	*p++ = 0;
+	*p++ = 0;
+	goto out;
 }
 
 int

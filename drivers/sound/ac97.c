@@ -1,3 +1,6 @@
+#include <linux/module.h>
+#include <linux/kernel.h>
+#include <linux/init.h>
 #include "ac97.h"
 
 /* Flag for mono controls. */
@@ -404,19 +407,19 @@ ac97_mixer_ioctl (struct ac97_hwint *dev, unsigned int cmd, caddr_t arg)
 	/* Read or write request. */
 	ret = -EINVAL;
 	if (_IOC_TYPE (cmd) == 'M') {
-	    int dir = _SIOC_DIR (cmd);
+	    int dir = _IOC_DIR (cmd);
 	    int channel = _IOC_NR (cmd);
 
 	    if (channel >= 0 && channel < SOUND_MIXER_NRDEVICES) {
 		ret = 0;
-		if (dir & _SIOC_WRITE) {
+		if (dir & _IOC_WRITE) {
 		    int val;
 		    if (get_user (val, (int *) arg) == 0)
 			ret = ac97_set_mixer (dev, channel, val);
 		    else
 			ret = -EFAULT;
 		}
-		if (ret >= 0 && (dir & _SIOC_READ)) {
+		if (ret >= 0 && (dir & _IOC_READ)) {
 		    if (dev->last_written_OSS_values[channel]
 			== AC97_REGVAL_UNKNOWN)
 			dev->last_written_OSS_values[channel]
@@ -434,6 +437,14 @@ ac97_mixer_ioctl (struct ac97_hwint *dev, unsigned int cmd, caddr_t arg)
 	return put_user(ret, (int *) arg);
 }
 
+EXPORT_SYMBOL(ac97_init);
+EXPORT_SYMBOL(ac97_set_values);
+EXPORT_SYMBOL(ac97_set_mixer);
+EXPORT_SYMBOL(ac97_get_register);
+EXPORT_SYMBOL(ac97_put_register);
+EXPORT_SYMBOL(ac97_get_mixer_scaled);
+EXPORT_SYMBOL(ac97_mixer_ioctl);
+EXPORT_SYMBOL(ac97_reset);
 
 /*
  * Local variables:

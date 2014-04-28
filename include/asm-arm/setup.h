@@ -49,6 +49,7 @@ struct param_struct {
 	    unsigned long system_rev;		/* 76 */
 	    unsigned long system_serial_low;	/* 80 */
 	    unsigned long system_serial_high;	/* 84 */
+	    unsigned long mem_fclk_21285;       /* 88 */ 
 	} s;
 	char unused[256];
     } u1;
@@ -61,5 +62,21 @@ struct param_struct {
     } u2;
     char commandline[COMMAND_LINE_SIZE];
 };
+
+/*
+ * Memory map description
+ */
+#define NR_BANKS 4
+
+struct meminfo {
+	int nr_banks;
+	unsigned long end;
+	struct {
+		unsigned long start;
+		unsigned long size;
+	} bank[NR_BANKS];
+};
+
+extern struct meminfo meminfo;
 
 #endif

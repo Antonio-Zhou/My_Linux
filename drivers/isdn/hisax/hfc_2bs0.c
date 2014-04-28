@@ -1,17 +1,56 @@
-/* $Id: hfc_2bs0.c,v 1.1.2.1 2001/12/31 13:26:45 kai Exp $
+/* $Id: hfc_2bs0.c,v 1.13 2000/02/26 00:35:12 keil Exp $
+
+ *  specific routines for CCD's HFC 2BS0
  *
- * specific routines for CCD's HFC 2BS0
+ * Author       Karsten Keil (keil@isdn4linux.de)
  *
- * Author       Karsten Keil
- * Copyright    by Karsten Keil      <keil@isdn4linux.de>
- * 
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
+ *
+ * $Log: hfc_2bs0.c,v $
+ * Revision 1.13  2000/02/26 00:35:12  keil
+ * Fix skb freeing in interrupt context
+ *
+ * Revision 1.12  1999/12/19 14:17:12  keil
+ * fix compiler warning
+ *
+ * Revision 1.11  1999/11/21 12:41:18  werner
+ *
+ * Implemented full audio support
+ *
+ * Revision 1.10  1999/10/14 20:25:28  keil
+ * add a statistic for error monitoring
+ *
+ * Revision 1.9  1999/07/01 08:11:36  keil
+ * Common HiSax version for 2.0, 2.1, 2.2 and 2.3 kernel
+ *
+ * Revision 1.8  1998/11/15 23:54:43  keil
+ * changes from 2.0
+ *
+ * Revision 1.7  1998/09/30 22:24:46  keil
+ * Fix missing line in setstack*
+ *
+ * Revision 1.6  1998/08/13 23:36:28  keil
+ * HiSax 3.1 - don't work stable with current LinkLevel
+ *
+ * Revision 1.5  1998/05/25 12:57:54  keil
+ * HiSax golden code from certification, Don't use !!!
+ * No leased lines, no X75, but many changes.
+ *
+ * Revision 1.4  1998/02/12 23:07:29  keil
+ * change for 2.1.86 (removing FREE_READ/FREE_WRITE from [dev]_kfree_skb()
+ *
+ * Revision 1.3  1997/11/06 17:13:35  keil
+ * New 2.1 init code
+ *
+ * Revision 1.2  1997/10/29 19:04:47  keil
+ * changes for 2.1
+ *
+ * Revision 1.1  1997/09/11 17:31:33  keil
+ * Common part for HFC 2BS0 based cards
+ *
  *
  */
 
 #define __NO_VERSION__
-#include <linux/init.h>
 #include "hisax.h"
 #include "hfc_2bs0.h"
 #include "isac.h"
@@ -206,14 +245,14 @@ hfc_empty_fifo(struct BCState *bcs, int count)
 		ptr = skb_put(skb, count);
 		idx = 0;
 		cip = HFC_CIP | HFC_FIFO_OUT | HFC_REC | HFC_CHANNEL(bcs->channel);
-		while ((idx < count) && WaitNoBusy(cs)) {
+		while ((idx < count - 3) && WaitNoBusy(cs)) {
 			*ptr++ = cs->BC_Read_Reg(cs, HFC_DATA_NODEB, cip);
 			idx++;
 		}
 		if (idx != count) {
 			debugl1(cs, "RFIFO BUSY error");
 			printk(KERN_WARNING "HFC FIFO channel %d BUSY Error\n", bcs->channel);
-			dev_kfree_skb(skb);
+			dev_kfree_skb_any(skb);
 			if (bcs->mode != L1_MODE_TRANS) {
 			  WaitNoBusy(cs);
 			  stat = cs->BC_Read_Reg(cs, HFC_DATA, HFC_CIP | HFC_F2_INC | HFC_REC |
@@ -234,7 +273,7 @@ hfc_empty_fifo(struct BCState *bcs, int count)
 			    bcs->channel, chksum, stat);
 		  if (stat) {
 		    debugl1(cs, "FIFO CRC error");
-		    dev_kfree_skb(skb);
+		    dev_kfree_skb_any(skb);
 		    skb = NULL;
 #ifdef ERROR_STATISTIC
 		    bcs->err_crc++;
@@ -323,7 +362,7 @@ hfc_fill_fifo(struct BCState *bcs)
 		bcs->tx_cnt -= count;
 		if (PACKET_NOACK == bcs->tx_skb->pkt_type)
 			count = -1;
-		dev_kfree_skb(bcs->tx_skb);
+		dev_kfree_skb_any(bcs->tx_skb);
 		bcs->tx_skb = NULL;
 		if (bcs->mode != L1_MODE_TRANS) {
 		  WaitForBusy(cs);
@@ -534,10 +573,10 @@ close_hfcstate(struct BCState *bcs)
 {
 	mode_hfc(bcs, 0, bcs->channel);
 	if (test_bit(BC_FLG_INIT, &bcs->Flag)) {
-		skb_queue_purge(&bcs->rqueue);
-		skb_queue_purge(&bcs->squeue);
+		discard_queue(&bcs->rqueue);
+		discard_queue(&bcs->squeue);
 		if (bcs->tx_skb) {
-			dev_kfree_skb(bcs->tx_skb);
+			dev_kfree_skb_any(bcs->tx_skb);
 			bcs->tx_skb = NULL;
 			test_and_clear_bit(BC_FLG_BUSY, &bcs->Flag);
 		}
@@ -573,8 +612,8 @@ setstack_hfc(struct PStack *st, struct BCState *bcs)
 	return (0);
 }
 
-void __init
-init_send(struct BCState *bcs)
+__initfunc(void
+init_send(struct BCState *bcs))
 {
 	int i;
 
@@ -587,8 +626,8 @@ init_send(struct BCState *bcs)
 		bcs->hw.hfc.send[i] = 0x1fff;
 }
 
-void __init
-inithfc(struct IsdnCardState *cs)
+__initfunc(void
+inithfc(struct IsdnCardState *cs))
 {
 	init_send(&cs->bcs[0]);
 	init_send(&cs->bcs[1]);

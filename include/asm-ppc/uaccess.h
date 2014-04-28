@@ -21,8 +21,8 @@
 #define USER_DS		((mm_segment_t) { 1 })
 
 #define get_ds()	(KERNEL_DS)
-#define get_fs()	(current->tss.fs)
-#define set_fs(val)	(current->tss.fs = (val))
+#define get_fs()	(current->thread.fs)
+#define set_fs(val)	(current->thread.fs = (val))
 
 #define segment_eq(a,b)	((a).seg == (b).seg)
 
@@ -57,7 +57,7 @@ struct exception_table_entry
 
 /* Returns 0 if exception not found and fixup otherwise.  */
 extern unsigned long search_exception_table(unsigned long);
-extern void sort_exception_table(void);
+
 
 /*
  * These are the main single-value transfer routines.  They automatically
@@ -268,13 +268,17 @@ extern int __strnlen_user(const char *str, long len, unsigned long top);
  *
  * The `top' parameter to __strnlen_user is to make sure that
  * we can never overflow from the user area into kernel space.
- * It is 1 + the highest address the task can access.
  */
 extern __inline__ int strnlen_user(const char *str, long len)
 {
-	unsigned long top = __kernel_ok? 0: TASK_SIZE;
+	unsigned long top = __kernel_ok? ~0UL: TASK_SIZE - 1;
+
+	if ((unsigned long)str > top)
+		return 0;
 	return __strnlen_user(str, len, top);
 }
+
+#define strlen_user(str)	strnlen_user((str), 0x7ffffffe)
 
 #endif  /* __ASSEMBLY__ */
 

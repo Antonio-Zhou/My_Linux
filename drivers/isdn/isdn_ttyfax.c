@@ -1,26 +1,62 @@
-/* $Id: isdn_ttyfax.c,v 1.1.2.1 2001/12/31 13:26:34 kai Exp $
- *
+/* $Id: isdn_ttyfax.c,v 1.6 2000/01/26 00:41:13 keil Exp $
  * Linux ISDN subsystem, tty_fax AT-command emulator (linklevel).
  *
  * Copyright 1999    by Armin Schindler (mac@melware.de)
  * Copyright 1999    by Ralf Spachmann (mel@melware.de)
  * Copyright 1999    by Cytronics & Melware
  *
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2, or (at your option)
+ * any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ *
+ * $Log: isdn_ttyfax.c,v $
+ * Revision 1.6  2000/01/26 00:41:13  keil
+ * add "00" as dummy msn in isdn_get_free_channel call
+ *
+ * Revision 1.5  2000/01/20 19:55:33  keil
+ * Add FAX Class 1 support
+ *
+ * Revision 1.4  1999/09/21 19:00:35  armin
+ * Extended FCON message with added CPN
+ * can now be activated with Bit 1 of Reg 23.
+ *
+ * Revision 1.3  1999/08/22 20:26:12  calle
+ * backported changes from kernel 2.3.14:
+ * - several #include "config.h" gone, others come.
+ * - "struct device" changed to "struct net_device" in 2.3.14, added a
+ *   define in isdn_compat.h for older kernel versions.
+ *
+ * Revision 1.2  1999/08/05 10:36:10  armin
+ * Bugfix: kernel oops on getting revision.
+ *
+ * Revision 1.1  1999/07/31 12:59:50  armin
+ * Added tty fax capabilities.
+ *
  *
  */
 
 #undef ISDN_TTY_FAX_STAT_DEBUG
 #undef ISDN_TTY_FAX_CMD_DEBUG
 
+#define __NO_VERSION__
+#include <linux/module.h>
 #include <linux/isdn.h>
 #include "isdn_common.h"
 #include "isdn_tty.h"
 #include "isdn_ttyfax.h"
 
 
-static char *isdn_tty_fax_revision = "$Revision: 1.1.2.1 $";
+static char *isdn_tty_fax_revision = "$Revision: 1.6 $";
 
 #define PARSE_ERROR1 { isdn_tty_fax_modem_result(1, info); return 1; }
 
@@ -73,7 +109,7 @@ isdn_tty_fax_modem_result(int code, modem_info * info)
 			break;
 		case 2:	/* +FCON */
 			/* Append CPN, if enabled */
-			if ((m->mdmreg[REG_CPNFCON] & BIT_CPNFCON) &&
+			if ((m->mdmreg[REG_CPN] & BIT_CPNFCON) &&
 				(!(dev->usage[info->isdn_channel] & ISDN_USAGE_OUTGOING))) {
 				sprintf(rs, "/%s", m->cpn);
 				isdn_tty_at_cout(rs, info);

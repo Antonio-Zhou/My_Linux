@@ -3,8 +3,6 @@
  *
  * Copyright 1998, Michael Schmitz <mschmitz@lbl.gov>
  *
- * Pseudo-DMA, Ove Edlund <ove.edlund@sm.luth.se>, June 2000
- *
  * derived in part from:
  */
 /*
@@ -27,9 +25,25 @@
  * 1+ (800) 334-5454
  */
 
+
+/*
+ * Options :
+ *
+ * PARITY - enable parity checking.  Not supported.
+ *
+ * SCSI2 - enable support for SCSI-II tagged queueing.  Untested.
+ *
+ * USLEEP - enable support for devices that don't disconnect.  Untested.
+ */
+
 /*
  * $Log: mac_NCR5380.c,v $
  */
+
+#define AUTOSENSE
+#if 0
+#define PSEUDO_DMA
+#endif
 
 #include <linux/types.h>
 #include <linux/stddef.h>
@@ -64,20 +78,35 @@
 #define NDEBUG (NDEBUG_ABORT)
 #endif
 
+#define RESET_BOOT
+#define DRIVER_SETUP
+
+/*
+ * BUG can be used to trigger a strange code-size related hang on 2.1 kernels
+ */
+#ifdef BUG
+#undef RESET_BOOT
+#undef DRIVER_SETUP
+#endif
+
 #define	ENABLE_IRQ()	mac_enable_irq( IRQ_MAC_SCSI ); 
 #define	DISABLE_IRQ()	mac_disable_irq( IRQ_MAC_SCSI );
 
-extern void via_scsi_clear(void);
-
+#ifdef RESET_BOOT
 static void mac_scsi_reset_boot(struct Scsi_Host *instance);
+#endif
 static char macscsi_read(struct Scsi_Host *instance, int reg);
 static void macscsi_write(struct Scsi_Host *instance, int reg, int value);
 
 static int setup_can_queue = -1;
 static int setup_cmd_per_lun = -1;
 static int setup_sg_tablesize = -1;
+#ifdef SUPPORT_TAGS
 static int setup_use_tagged_queuing = -1;
+#endif
 static int setup_hostid = -1;
+
+static int polled_scsi_on = 0;
 
 /* Time (in jiffies) to wait after a reset; the SCSI standard calls for 250ms,
  * we usually do 0.5s to be on the safe side. But Toshiba CD-ROMs once more
@@ -90,11 +119,6 @@ static int setup_hostid = -1;
 #define	AFTER_RESET_DELAY	(HZ/2)
 #endif
 
-static struct proc_dir_entry proc_scsi_mac5380 = {
-	PROC_SCSI_MAC, 13, "Mac 5380 SCSI", S_IFDIR | S_IRUGO, S_IXUGO, 2
-};
-
-/* Must move these into a per-host thingy once the DuoDock is supported */
 static volatile unsigned char *mac_scsi_regp = NULL;
 static volatile unsigned char *mac_scsi_drq  = NULL;
 static volatile unsigned char *mac_scsi_nodrq = NULL;
@@ -109,8 +133,8 @@ static volatile unsigned char *mac_scsi_nodrq = NULL;
  *
  */
 
-void mac_scsi_setup(char *str, int *ints)
-{
+void mac_scsi_setup(char *str, int *ints) {
+#ifdef DRIVER_SETUP
 	/* Format of mac5380 parameter is:
 	 *   mac5380=<can_queue>,<cmd_per_lun>,<sg_tablesize>,<hostid>,<use_tags>
 	 * Negative values mean don't change.
@@ -162,11 +186,21 @@ void mac_scsi_setup(char *str, int *ints)
 		else if (ints[4] > 7)
 			printk( "mac_scsi_setup: invalid host ID %d !\n", ints[4] );
 	}
+#ifdef SUPPORT_TAGS
 	if (ints[0] >= 5) {
 		if (ints[5] >= 0)
 			setup_use_tagged_queuing = !!ints[5];
 	}
+#endif
+#endif
 }
+
+__setup("mac5380=", mac_scsi_setup);
+
+#if 0
+#define MAC_ADDRESS(card) (ecard_address((card), ECARD_IOC, ECARD_SLOW) + 0x800)
+#define MAC_IRQ(card)     ((card)->irq)
+#endif
 
 /*
  * XXX: status debug
@@ -187,103 +221,102 @@ static struct Scsi_Host *default_instance;
  
 int macscsi_detect(Scsi_Host_Template * tpnt)
 {
+    int count = 0;
     static int called = 0;
-    int flags = 0;
     struct Scsi_Host *instance;
 
     if (!MACH_IS_MAC || called)
 	return( 0 );
 
     if (macintosh_config->scsi_type != MAC_SCSI_OLD)
-	return( 0 );
+	 return( 0 );
 
-    tpnt->proc_dir = &proc_scsi_mac5380;
+    tpnt->proc_name = "mac5380";
 
     /* setup variables */
     tpnt->can_queue =
-	(setup_can_queue > 0) ? setup_can_queue : CAN_QUEUE;
+      (setup_can_queue > 0) ? setup_can_queue : CAN_QUEUE;
     tpnt->cmd_per_lun =
-	(setup_cmd_per_lun > 0) ? setup_cmd_per_lun : CMD_PER_LUN;
+      (setup_cmd_per_lun > 0) ? setup_cmd_per_lun : CMD_PER_LUN;
     tpnt->sg_tablesize = 
-	(setup_sg_tablesize >= 0) ? setup_sg_tablesize : SG_TABLESIZE;
+      (setup_sg_tablesize >= 0) ? setup_sg_tablesize : SG_TABLESIZE;
 
     if (setup_hostid >= 0)
-	tpnt->this_id = setup_hostid;
+      tpnt->this_id = setup_hostid;
     else {
-	/* use 7 as default */
-	tpnt->this_id = 7;
+      /* use 7 as default */
+      tpnt->this_id = 7;
     }
 
-    if (setup_use_tagged_queuing < 0)
-	setup_use_tagged_queuing = USE_TAGGED_QUEUING;
+#ifdef SUPPORT_TAGS
+	if (setup_use_tagged_queuing < 0)
+		setup_use_tagged_queuing = DEFAULT_USE_TAGGED_QUEUING;
+#endif
 
-    /* Once we support multiple 5380s (e.g. DuoDock) we'll do
-       something different here */
-    instance = scsi_register (tpnt, sizeof(struct NCR5380_hostdata));
-    default_instance = instance;
-    
-    if (macintosh_config->ident == MAC_MODEL_IIFX) {
-	mac_scsi_regp  = via1+0x8000;
-	mac_scsi_drq   = via1+0xE000;
-	mac_scsi_nodrq = via1+0xC000;
-	flags = FLAG_NO_PSEUDO_DMA;
-    } else {
-	mac_scsi_regp  = via1+0x10000;
-	mac_scsi_drq   = via1+0x6000;
-	mac_scsi_nodrq = via1+0x12000;
-    }
+#if 0	/* loop over multiple adapters (Powerbooks ??) */
+    for (count = 0; count < mac_num_scsi; count++) {
+#endif
+        instance = scsi_register (tpnt, sizeof(struct NCR5380_hostdata));
+	default_instance = instance;
 
-    instance->io_port = (unsigned long) mac_scsi_regp;
-    instance->irq = IRQ_MAC_SCSI;
-
-    /* Turn off pseudo DMA and IRQs for II, IIx, IIcx, and SE/30.
-     * XXX: This is a kludge until we can figure out why interrupts 
-     * won't work.
-     */
-   
-    if (macintosh_config->via_type == MAC_VIA_II) {
-        flags = FLAG_NO_PSEUDO_DMA;
-        instance->irq = IRQ_NONE;
-    }
-   
-    mac_scsi_reset_boot(instance);
-
-    NCR5380_init(instance, flags);
-
-    instance->n_io_port = 255;
-
-    ((struct NCR5380_hostdata *)instance->hostdata)->ctrl = 0;
-
-    if (instance->irq != IRQ_NONE)
-	if (request_irq(instance->irq, macscsi_intr, 0, "MacSCSI-5380",
-			(void *) mac_scsi_regp)) {
-	    printk("scsi%d: IRQ%d not free, interrupts disabled\n",
-		   instance->host_no, instance->irq);
-	    instance->irq = IRQ_NONE;
+	if (macintosh_config->ident == MAC_MODEL_IIFX) {
+		mac_scsi_regp  = via1+0x8000;
+		mac_scsi_drq   = via1+0xE000;
+		mac_scsi_nodrq = via1+0xC000;
+	} else {
+		mac_scsi_regp  = via1+0x10000;
+		mac_scsi_drq   = via1+0x6000;
+		mac_scsi_nodrq = via1+0x12000;
 	}
 
-    printk("scsi%d: generic 5380 at port %lX irq", instance->host_no, instance->io_port);
-    if (instance->irq == IRQ_NONE)
-	printk ("s disabled");
-    else
-	printk (" %d", instance->irq);
-    printk(" options CAN_QUEUE=%d CMD_PER_LUN=%d release=%d",
-	   instance->can_queue, instance->cmd_per_lun, MACSCSI_PUBLIC_RELEASE);
-    printk("\nscsi%d:", instance->host_no);
-    NCR5380_print_options(instance);
-    printk("\n");
+
+        instance->io_port = (unsigned long) mac_scsi_regp;
+	instance->irq = IRQ_MAC_SCSI;
+
+#ifdef RESET_BOOT
+	mac_scsi_reset_boot(instance);
+#endif
+
+	NCR5380_init(instance, 0);
+
+	instance->n_io_port = 255;
+
+        ((struct NCR5380_hostdata *)instance->hostdata)->ctrl = 0;
+
+	if (instance->irq != IRQ_NONE)
+	    if (request_irq(instance->irq, NCR5380_intr, IRQ_FLG_SLOW, "ncr5380", NCR5380_intr)) {
+		printk("scsi%d: IRQ%d not free, interrupts disabled\n",
+		    instance->host_no, instance->irq);
+		instance->irq = IRQ_NONE;
+	    }
+
+	printk("scsi%d: generic 5380 at port %lX irq", instance->host_no, instance->io_port);
+	if (instance->irq == IRQ_NONE)
+	    printk ("s disabled");
+	else
+	    printk (" %d", instance->irq);
+	printk(" options CAN_QUEUE=%d CMD_PER_LUN=%d release=%d",
+	    instance->can_queue, instance->cmd_per_lun, MACSCSI_PUBLIC_RELEASE);
+	printk("\nscsi%d:", instance->host_no);
+	NCR5380_print_options(instance);
+	printk("\n");
+#if 0	/* multiple adapters */
+    }
+#endif
     called = 1;
     return 1;
+
 }
 
 int macscsi_release (struct Scsi_Host *shpnt)
 {
 	if (shpnt->irq != IRQ_NONE)
-		free_irq (shpnt->irq, NULL);
+		free_irq (shpnt->irq, NCR5380_intr);
 
 	return 0;
 }
 
+#ifdef RESET_BOOT
 /*
  * Our 'bus reset on boot' function
  */
@@ -303,7 +336,7 @@ static void mac_scsi_reset_boot(struct Scsi_Host *instance)
 	printk( "Macintosh SCSI: resetting the SCSI bus..." );
 
 	/* switch off SCSI IRQ - catch an interrupt without IRQ bit set else */
-	DISABLE_IRQ()
+       	mac_disable_irq(IRQ_MAC_SCSI);
 
 	/* get in phase */
 	NCR5380_write( TARGET_COMMAND_REG,
@@ -321,16 +354,207 @@ static void mac_scsi_reset_boot(struct Scsi_Host *instance)
 		barrier();
 
 	/* switch on SCSI IRQ again */
-	ENABLE_IRQ()
+       	mac_enable_irq(IRQ_MAC_SCSI);
 
 	printk( " done\n" );
 }
+#endif
+
+const char * macscsi_info (struct Scsi_Host *spnt) {
+    return "";
+}
+
+void restore_irq(struct pt_regs *regs)
+{
+	unsigned long flags;
+
+	save_flags(flags);
+	flags = (flags & ~0x0700) | (regs->sr & 0x0700);
+	restore_flags(flags);
+}
+
+/*
+ * pseudo-DMA transfer functions, copied and modified from Russel King's
+ * ARM 5380 driver (cumana_1)
+ *
+ * Work in progress (sort of), didn't work last time I checked, don't use!
+ */
+
+#ifdef NOT_EFFICIENT
+#define CTRL(p,v)     outb(*ctrl = (v), (p) - 577)
+#define STAT(p)       inb((p)+1)
+#define IN(p)         inb((p))
+#define OUT(v,p)      outb((v), (p))
+#else
+#if 0
+#define CTRL(p,v)	(p[-2308] = (*ctrl = (v)))
+#else
+#define CTRL(p,v)	(*ctrl = (v))
+#endif
+#define STAT(p)		(p[1<<4])
+#define IN(p)		(*(p))
+#define IN2(p)		((unsigned short)(*(volatile unsigned long *)(p)))
+#define OUT(v,p)	(*(p) = (v))
+#define OUT2(v,p)	(*((volatile unsigned long *)(p)) = (v))
+#endif
+#define L(v)		(((v)<<16)|((v) & 0x0000ffff))
+#define H(v)		(((v)>>16)|((v) & 0xffff0000))
+#define ioaddr(v)	(v)
+
+static inline int NCR5380_pwrite(struct Scsi_Host *instance, unsigned char *addr,
+              int len)
+{
+  int *ctrl = &((struct NCR5380_hostdata *)instance->hostdata)->ctrl;
+  int oldctrl = *ctrl;
+  unsigned long *laddr;
+#ifdef NOT_EFFICIENT
+  int iobase = instance->io_port;
+  int dma_io = mac_scsi_nodrq;
+#else
+  volatile unsigned char *iobase = (unsigned char *)ioaddr(instance->io_port);
+  volatile unsigned char *dma_io = (unsigned char *)(mac_scsi_nodrq);
+#endif
+
+  if(!len) return 0;
+
+  CTRL(iobase, 0x02);
+  laddr = (unsigned long *)addr;
+  while(len >= 32)
+  {
+    int status;
+    unsigned long v;
+    status = STAT(iobase);
+    if(status & 0x80)
+      goto end;
+    if(!(status & 0x40))
+      continue;
+    v=*laddr++; OUT2(L(v),dma_io); OUT2(H(v),dma_io);
+    v=*laddr++; OUT2(L(v),dma_io); OUT2(H(v),dma_io);
+    v=*laddr++; OUT2(L(v),dma_io); OUT2(H(v),dma_io);
+    v=*laddr++; OUT2(L(v),dma_io); OUT2(H(v),dma_io);
+    v=*laddr++; OUT2(L(v),dma_io); OUT2(H(v),dma_io);
+    v=*laddr++; OUT2(L(v),dma_io); OUT2(H(v),dma_io);
+    v=*laddr++; OUT2(L(v),dma_io); OUT2(H(v),dma_io);
+    v=*laddr++; OUT2(L(v),dma_io); OUT2(H(v),dma_io);
+    len -= 32;
+    if(len == 0)
+      break;
+  }
+
+  addr = (unsigned char *)laddr;
+  CTRL(iobase, 0x12);
+  while(len > 0)
+  {
+    int status;
+    status = STAT(iobase);
+    if(status & 0x80)
+      goto end;
+    if(status & 0x40)
+    {
+      OUT(*addr++, dma_io);
+      if(--len == 0)
+        break;
+    }
+
+    status = STAT(iobase);
+    if(status & 0x80)
+      goto end;
+    if(status & 0x40)
+    {
+      OUT(*addr++, dma_io);
+      if(--len == 0)
+        break;
+    }
+  }
+end:
+  CTRL(iobase, oldctrl|0x40);
+  return len;
+}
+
+static inline int NCR5380_pread(struct Scsi_Host *instance, unsigned char *addr,
+              int len)
+{
+  int *ctrl = &((struct NCR5380_hostdata *)instance->hostdata)->ctrl;
+  int oldctrl = *ctrl;
+  unsigned long *laddr;
+#ifdef NOT_EFFICIENT
+  int iobase = instance->io_port;
+  int dma_io = mac_scsi_nodrq;
+#else
+  volatile unsigned char *iobase = (unsigned char *)ioaddr(instance->io_port);
+  volatile unsigned char *dma_io = (unsigned char *)((int)mac_scsi_nodrq);
+#endif
+
+  if(!len) return 0;
+
+  CTRL(iobase, 0x00);
+  laddr = (unsigned long *)addr;
+  while(len >= 32)
+  {
+    int status;
+    status = STAT(iobase);
+    if(status & 0x80)
+      goto end;
+    if(!(status & 0x40))
+      continue;
+    *laddr++ = IN2(dma_io)|(IN2(dma_io)<<16);
+    *laddr++ = IN2(dma_io)|(IN2(dma_io)<<16);
+    *laddr++ = IN2(dma_io)|(IN2(dma_io)<<16);
+    *laddr++ = IN2(dma_io)|(IN2(dma_io)<<16);
+    *laddr++ = IN2(dma_io)|(IN2(dma_io)<<16);
+    *laddr++ = IN2(dma_io)|(IN2(dma_io)<<16);
+    *laddr++ = IN2(dma_io)|(IN2(dma_io)<<16);
+    *laddr++ = IN2(dma_io)|(IN2(dma_io)<<16);
+    len -= 32;
+    if(len == 0)
+      break;
+  }
+
+  addr = (unsigned char *)laddr;
+  CTRL(iobase, 0x10);
+  while(len > 0)
+  {
+    int status;
+    status = STAT(iobase);
+    if(status & 0x80)
+      goto end;
+    if(status & 0x40)
+    {
+      *addr++ = IN(dma_io);
+      if(--len == 0)
+        break;
+    }
+
+    status = STAT(iobase);
+    if(status & 0x80)
+      goto end;
+    if(status & 0x40)
+    {
+      *addr++ = IN(dma_io);
+      if(--len == 0)
+        break;
+    }
+  }
+end:
+  CTRL(iobase, oldctrl|0x40);
+  return len;
+}
+
+#undef STAT
+#undef CTRL
+#undef IN
+#undef OUT
 
 /*
  * NCR 5380 register access functions
  */
 
+#ifdef ORIG
+#if 0
+#define CTRL(p,v) outb(*ctrl = (v), (p) - 577)
+#else
 #define CTRL(p,v) (*ctrl = (v))
+#endif
 
 static char macscsi_read(struct Scsi_Host *instance, int reg)
 {
@@ -339,7 +563,11 @@ static char macscsi_read(struct Scsi_Host *instance, int reg)
   int *ctrl = &((struct NCR5380_hostdata *)instance->hostdata)->ctrl;
 
   CTRL(iobase, 0);
-  i = inb(iobase + (reg<<4));
+#if 0
+  i = inb(iobase + 64 + reg);
+#else
+  i = inb(iobase + reg<<4);
+#endif
   CTRL(iobase, 0x40);
 
   return i;
@@ -351,148 +579,87 @@ static void macscsi_write(struct Scsi_Host *instance, int reg, int value)
   int *ctrl = &((struct NCR5380_hostdata *)instance->hostdata)->ctrl;
 
   CTRL(iobase, 0);
-  outb(value, iobase + (reg<<4));
+#if 0
+  outb(value, iobase + 64 + reg);
+#else
+  outb(value, iobase + reg<<4);
+#endif
   CTRL(iobase, 0x40);
 }
 
-/* Pseudo-DMA stuff */
+#undef CTRL
 
-static inline void cp_io_to_mem(volatile unsigned char *s, volatile unsigned char *d, int len)
+#else
+static char macscsi_read(struct Scsi_Host *instance, int reg)
 {
-  asm volatile("   cmp.w  #4,%2; \
-                   ble    8f; \
-                   move.w %1,%%d0; \
-                   neg.b  %%d0; \
-                   and.w  #3,%%d0; \
-                   sub.w  %%d0,%2; \
-                   bra    2f; \
-                1: move.b (%0),(%1)+; \
-                2: dbf    %%d0,1b; \
-                   move.w %2,%%d0; \
-                   lsr.w  #5,%%d0; \
-                   bra    4f; \
-                3: move.l (%0),(%1)+; \
-                   move.l (%0),(%1)+; \
-                   move.l (%0),(%1)+; \
-                   move.l (%0),(%1)+; \
-                   move.l (%0),(%1)+; \
-                   move.l (%0),(%1)+; \
-                   move.l (%0),(%1)+; \
-                   move.l (%0),(%1)+; \
-                4: dbf    %%d0,3b; \
-                   move.w %2,%%d0; \
-                   lsr.w  #2,%%d0; \
-                   and.w  #7,%%d0; \
-                   bra    6f; \
-                5: move.l (%0),(%1)+; \
-                6: dbf    %%d0,5b; \
-                   and.w  #3,%2
-                   bra    8f; \
-                7: move.b (%0),(%1)+; \
-                8: dbf    %2,7b"
-               :: "a" (s), "a" (d), "d" (len)
-               :  "%%d0");
+	return( mac_scsi_regp[reg << 4] );
 }
 
-static inline int macscsi_pread (struct Scsi_Host *instance,
-				 unsigned char *dst, int len)
+static void macscsi_write(struct Scsi_Host *instance, int reg, int value)
 {
-   unsigned char *d;
-   volatile unsigned char *s;
-
-   NCR5380_local_declare();
-   NCR5380_setup(instance);
-
-   s = mac_scsi_drq+0x60;
-   d = dst;
-
-/* These conditions are derived from MacOS. (How to read CONTROL_STATUS_REG?) */
-
-   while (!(NCR5380_read(BUS_AND_STATUS_REG) & BASR_DRQ) 
-         && !(NCR5380_read(STATUS_REG) & SR_REQ))
-      ;
-   if (!(NCR5380_read(BUS_AND_STATUS_REG) & BASR_DRQ) 
-         && (NCR5380_read(BUS_AND_STATUS_REG) & BASR_PHASE_MATCH)) {
-      printk("Error in macscsi_pread\n");
-      return 5;
-   }
-
-   cp_io_to_mem(s, d, len);
-   
-   return 0;
+	mac_scsi_regp[reg << 4] = value;
 }
 
-
-
-static inline void cp_mem_to_io(volatile unsigned char *s, volatile unsigned char *d, int len)
-{
-  asm volatile("   cmp.w  #4,%2; \
-                   ble    8f; \
-                   move.w %0,%%d0; \
-                   neg.b  %%d0; \
-                   and.w  #3,%%d0; \
-                   sub.w  %%d0,%2; \
-                   bra    2f; \
-                1: move.b (%0)+,(%1); \
-                2: dbf    %%d0,1b; \
-                   move.w %2,%%d0; \
-                   lsr.w  #5,%%d0; \
-                   bra    4f; \
-                3: move.l (%0)+,(%1); \
-                   move.l (%0)+,(%1); \
-                   move.l (%0)+,(%1); \
-                   move.l (%0)+,(%1); \
-                   move.l (%0)+,(%1); \
-                   move.l (%0)+,(%1); \
-                   move.l (%0)+,(%1); \
-                   move.l (%0)+,(%1); \
-                4: dbf    %%d0,3b; \
-                   move.w %2,%%d0; \
-                   lsr.w  #2,%%d0; \
-                   and.w  #7,%%d0; \
-                   bra    6f; \
-                5: move.l (%0)+,(%1); \
-                6: dbf    %%d0,5b; \
-                   and.w  #3,%2
-                   bra    8f; \
-                7: move.b (%0)+,(%1); \
-                8: dbf    %2,7b"
-               :: "a" (s), "a" (d), "d" (len)
-               :  "%%d0");
-}
-
-static inline int macscsi_pwrite (struct Scsi_Host *instance,
-				  unsigned char *src, int len)
-{
-   unsigned char *d;
-
-   NCR5380_local_declare();
-   NCR5380_setup(instance);
-
-   d = mac_scsi_drq;
-   
-/* These conditions are derived from MacOS. (How to read CONTROL_STATUS_REG?) */
-
-   while (!(NCR5380_read(BUS_AND_STATUS_REG) & BASR_DRQ) 
-         && !(NCR5380_read(STATUS_REG) & SR_REQ) 
-         && (NCR5380_read(BUS_AND_STATUS_REG) & BASR_PHASE_MATCH)) 
-      ;
-   if (!(NCR5380_read(BUS_AND_STATUS_REG) & BASR_DRQ)) {
-      printk("Error in macscsi_pwrite\n");
-      return 5;
-   }
-
-   cp_mem_to_io(src, d, len);   
-
-   return 0;
-}
-
-/* These control the behaviour of the generic 5380 core */
-#define AUTOSENSE
-#undef DMA_WORKS_RIGHT
-#define PSEUDO_DMA
+#endif
 
 #include "NCR5380.c"
+
+/*
+ * Debug stuff - to be called on NMI, or sysrq key. Use at your own risk; 
+ * reentering NCR5380_print_status seems to have ugly side effects
+ */
+
+void scsi_mac_debug (void)
+{
+	unsigned long flags;
+	NCR5380_local_declare();
+
+	if (default_instance) {
+#if 0
+		NCR5380_setup(default_instance);
+		if(NCR5380_read(BUS_AND_STATUS_REG)&BASR_IRQ)
+#endif
+			save_flags(flags);
+			cli();
+			NCR5380_print_status(default_instance);
+			restore_flags(flags);
+	}
+#if 0
+	polled_scsi_on = 1;
+#endif
+}
+/*
+ * Helper function for interrupt trouble. More ugly side effects here.
+ */
+
+void scsi_mac_polled (void)
+{
+	unsigned long flags;
+	NCR5380_local_declare();
+	struct Scsi_Host *instance;
+	
+#if 0
+	for (instance = first_instance; instance && (instance->hostt == 
+	    the_template); instance = instance->next)
+	    if (instance->irq == IRQ_MAC_SCSI && polled_scsi_on) {
+#else
+		instance = default_instance;
+#endif
+		NCR5380_setup(instance);
+		if(NCR5380_read(BUS_AND_STATUS_REG)&BASR_IRQ)
+		{
+			printk("SCSI poll\n");
+			save_flags(flags);
+			cli();
+			NCR5380_intr(IRQ_MAC_SCSI, instance, NULL);
+			restore_flags(flags);
+		}
+#if 0
+	    }
+#endif
+}
+
+
 
 #ifdef MODULE
 

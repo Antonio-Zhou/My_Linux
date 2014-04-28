@@ -34,7 +34,6 @@ ssize_t umsdos_file_read_kmem (	struct file *filp,
 	mm_segment_t old_fs = get_fs ();
 
 	set_fs (KERNEL_DS);
-	MSDOS_I (filp->f_dentry->d_inode)->i_binary = 2;
 	ret = fat_file_read (filp, buf, count, &filp->f_pos);
 	set_fs (old_fs);
 	return ret;
@@ -53,15 +52,6 @@ ssize_t umsdos_file_write_kmem_real (struct file * filp,
 {
 	mm_segment_t old_fs = get_fs ();
 	ssize_t ret;
-
-	/* note: i_binary=2 is for CVF-FAT. We put it here, instead of
-	 * umsdos_file_write_kmem, since it is also wise not to compress
-	 * symlinks (in the unlikely event that they are > 512 bytes and
-	 * can be compressed.
-	 * FIXME: should we set it when reading symlinks too?
-	 */
-
-	MSDOS_I (filp->f_dentry->d_inode)->i_binary = 2;
 
 	set_fs (KERNEL_DS);
 	ret = fat_file_write (filp, buf, count, &filp->f_pos);
@@ -273,16 +263,6 @@ int umsdos_emd_dir_readentry (struct file *filp, struct umsdos_dirent *entry)
 	Printk ((KERN_DEBUG "umsdos_emd_dir_readentry /mn/: entering.\n"));
 
 	ret = umsdos_emd_dir_read (filp, (char *) entry, UMSDOS_REC_SIZE);
-
-	/* if this is an invalid entry (invalid name length), ignore it */
-	if( entry->name_len > UMSDOS_MAXNAME )
-	{
-		printk (KERN_WARNING "Ignoring invalid EMD entry with size %d\n", entry->name_len);
-		entry->name_len = 0; 
-		ret = -ENAMETOOLONG; /* notify umssync(8) code that something is wrong */
-	}
-
-
 	if (ret == 0) {	/* if no error */
 		/* Variable size record. Maybe, we have to read some more */
 		int recsize = umsdos_evalrecsize (entry->name_len);
@@ -297,7 +277,6 @@ recsize, UMSDOS_REC_SIZE));
 	}
 	Printk (("umsdos_emd_dir_readentry /mn/: ret=%d.\n", ret));
 	if (entry && ret == 0) {
-		entry->name[entry->name_len]='\0';
 Printk (("umsdos_emd_dir_readentry /mn/: returning len=%d,name=%.*s\n",
 (int) entry->name_len, (int) entry->name_len, entry->name));
 	}

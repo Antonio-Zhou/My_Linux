@@ -6,9 +6,9 @@
 #include <asm/uaccess.h>
 
 #include "sfp-util.h"
-#include "soft-fp.h"
-#include "single.h"
-#include "double.h"
+#include <math-emu/soft-fp.h>
+#include <math-emu/single.h>
+#include <math-emu/double.h>
 
 #define	OPC_PAL		0x00
 #define OPC_INTA	0x10
@@ -84,6 +84,66 @@ void cleanup_module(void)
 
 #endif /* MODULE */
 
+/* For 128-bit division.  */
+
+void
+udiv128(unsigned long divisor_f0, unsigned long divisor_f1,
+	unsigned long dividend_f0, unsigned long dividend_f1,
+	unsigned long *quot, unsigned long *remd)
+{
+	_FP_FRAC_DECL_2(quo);
+	_FP_FRAC_DECL_2(rem);
+	_FP_FRAC_DECL_2(tmp);
+	unsigned long i, num_bits, bit;
+
+	_FP_FRAC_SET_2(rem, _FP_ZEROFRAC_2);
+	_FP_FRAC_SET_2(quo, _FP_ZEROFRAC_2);
+
+	if (_FP_FRAC_ZEROP_2(divisor))
+		goto out;
+
+	if (_FP_FRAC_GT_2(divisor, dividend)) {
+		_FP_FRAC_COPY_2(rem, dividend);
+		goto out;
+	}
+
+	if (_FP_FRAC_EQ_2(divisor, dividend)) {
+		__FP_FRAC_SET_2(quo, 0, 1);
+		goto out;
+	}
+
+	num_bits = 128;
+	while (1) {
+		bit = _FP_FRAC_NEGP_2(dividend);
+		_FP_FRAC_COPY_2(tmp, rem);
+		_FP_FRAC_SLL_2(tmp, 1);
+		_FP_FRAC_LOW_2(tmp) |= bit;
+		if (! _FP_FRAC_GE_2(tmp, divisor))
+			break;
+		_FP_FRAC_COPY_2(rem, tmp);
+		_FP_FRAC_SLL_2(dividend, 1);
+		num_bits--;
+	}
+
+	for (i = 0; i < num_bits; i++) {
+		bit = _FP_FRAC_NEGP_2(dividend);
+		_FP_FRAC_SLL_2(rem, 1);
+		_FP_FRAC_LOW_2(rem) |= bit;
+		_FP_FRAC_SUB_2(tmp, rem, divisor);
+		bit = _FP_FRAC_NEGP_2(tmp);
+		_FP_FRAC_SLL_2(dividend, 1);
+		_FP_FRAC_SLL_2(quo, 1);
+		if (!bit) {
+			_FP_FRAC_LOW_2(quo) |= 1;
+			_FP_FRAC_COPY_2(rem, tmp);
+		}
+	}
+
+out:
+	*quot = quo_f1;
+	*remd = rem_f1;
+	return;
+}
 
 /*
  * Emulate the floating point instruction at address PC.  Returns 0 if
@@ -99,8 +159,8 @@ alpha_fp_emul (unsigned long pc)
 	FP_DECL_S(SA); FP_DECL_S(SB); FP_DECL_S(SR);
 	FP_DECL_D(DA); FP_DECL_D(DB); FP_DECL_D(DR);
 
-	unsigned long fa, fb, fc, func, mode, src, swcr;
-	unsigned long res, va, vb, vc, fpcr;
+	unsigned long fa, fb, fc, func, mode, src;
+	unsigned long res, va, vb, vc, swcr, fpcr;
 	__u32 insn;
 
 	MOD_INC_USE_COUNT;
@@ -114,7 +174,7 @@ alpha_fp_emul (unsigned long pc)
 	mode   = (insn >> 11) & 0x3;
 	
 	fpcr = rdfpcr();
-	swcr = swcr_update_status(current->tss.flags, fpcr);
+	swcr = swcr_update_status(current->thread.flags, fpcr);
 
 	if (mode == 3) {
 		/* Dynamic -- get rounding mode from fpcr.  */
@@ -297,9 +357,9 @@ done:
 	if (_fex) {
 		/* Record exceptions in software control word.  */
 		swcr |= (_fex << IEEE_STATUS_TO_EXCSUM_SHIFT);
-		current->tss.flags |= (_fex << IEEE_STATUS_TO_EXCSUM_SHIFT);
+		current->thread.flags |= (_fex << IEEE_STATUS_TO_EXCSUM_SHIFT);
 
-		/* Update hardware control register */
+		/* Update hardware control register.  */
 		fpcr &= (~FPCR_MASK | FPCR_DYN_MASK);
 		fpcr |= ieee_swcr_to_fpcr(swcr);
 		wrfpcr(fpcr);
@@ -329,7 +389,7 @@ long
 alpha_fp_emul_imprecise (struct pt_regs *regs, unsigned long write_mask)
 {
 	unsigned long trigger_pc = regs->pc - 4;
-	unsigned long insn, opcode, rc;
+	unsigned long insn, opcode, rc, no_signal = 0;
 
 	MOD_INC_USE_COUNT;
 
@@ -353,15 +413,13 @@ alpha_fp_emul_imprecise (struct pt_regs *regs, unsigned long write_mask)
 		      case OPC_PAL:
 		      case OPC_JSR:
 		      case 0x30 ... 0x3f:	/* branches */
-			MOD_DEC_USE_COUNT;
-			return 0;
+			goto egress;
 
 		      case OPC_MISC:
 			switch (insn & 0xffff) {
 			      case MISC_TRAPB:
 			      case MISC_EXCB:
-				MOD_DEC_USE_COUNT;
-				return 0;
+				goto egress;
 
 			      default:
 				break;
@@ -383,16 +441,15 @@ alpha_fp_emul_imprecise (struct pt_regs *regs, unsigned long write_mask)
 			break;
 		}
 		if (!write_mask) {
-			if (alpha_fp_emul(trigger_pc)) {
-				/* re-execute insns in trap-shadow: */
-				regs->pc = trigger_pc + 4;
-				MOD_DEC_USE_COUNT;
-				return 1;
-			}
-			break;
+			/* Re-execute insns in the trap-shadow.  */
+			regs->pc = trigger_pc + 4;
+			no_signal = alpha_fp_emul(trigger_pc);
+			goto egress;
 		}
 		trigger_pc -= 4;
 	}
+
+egress:
 	MOD_DEC_USE_COUNT;
-	return 0;
+	return no_signal;
 }

@@ -62,7 +62,7 @@
  * determined for each queue request anew.
  */
 
-#if BITS_PER_LONG > 32
+#if PCI64_DMA_BITS > 32
 #define DATASEGS_PER_COMMAND 2
 #define DATASEGS_PER_CONT 5
 #else
@@ -85,8 +85,6 @@ int isp2x00_biosparam(Disk *, kdev_t, int[]);
 #ifndef NULL
 #define NULL (0)
 #endif
-
-extern struct proc_dir_entry proc_scsi_isp2x00;
 
 #define QLOGICFC {							   \
         detect:                 isp2x00_detect,                            \

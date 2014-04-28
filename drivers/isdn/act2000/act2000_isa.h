@@ -1,14 +1,34 @@
-/* $Id: act2000_isa.h,v 1.1.2.1 2001/12/31 13:26:38 kai Exp $
+/* $Id: act2000_isa.h,v 1.3 1999/10/24 18:46:05 fritz Exp $
  *
  * ISDN lowlevel-module for the IBM ISDN-S0 Active 2000 (ISA-Version).
  *
- * Author       Fritz Elfert
- * Copyright    by Fritz Elfert      <fritz@isdn4linux.de>
- * 
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
- *
+ * Copyright 1998 by Fritz Elfert (fritz@isdn4linux.de)
  * Thanks to Friedemann Baitinger and IBM Germany
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2, or (at your option)
+ * any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. 
+ *
+ * $Log: act2000_isa.h,v $
+ * Revision 1.3  1999/10/24 18:46:05  fritz
+ * Changed isa_ prefix to act2000_isa_ to prevent name-clash in latest
+ * kernels.
+ *
+ * Revision 1.2  1998/11/05 22:12:43  fritz
+ * Changed mail-address.
+ *
+ * Revision 1.1  1997/09/23 18:00:07  fritz
+ * New driver for IBM Active 2000.
  *
  */
 

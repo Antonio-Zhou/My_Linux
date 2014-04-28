@@ -1,15 +1,35 @@
-/* $Id: isdn_concap.c,v 1.1.2.1 2001/12/31 13:26:34 kai Exp $
- * 
- * Linux ISDN subsystem, protocol encapsulation
- *
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
- *
- */
-
-/* Stuff to support the concap_proto by isdn4linux. isdn4linux - specific
+/* $Id: isdn_concap.c,v 1.7 2000/03/21 23:53:22 kai Exp $
+ 
+ * Stuff to support the concap_proto by isdn4linux. isdn4linux - specific
  * stuff goes here. Stuff that depends only on the concap protocol goes to
  * another -- protocol specific -- source file.
+ *
+ * $Log: isdn_concap.c,v $
+ * Revision 1.7  2000/03/21 23:53:22  kai
+ * fix backwards compatibility
+ *
+ * Revision 1.6  1999/08/22 20:26:01  calle
+ * backported changes from kernel 2.3.14:
+ * - several #include "config.h" gone, others come.
+ * - "struct device" changed to "struct net_device" in 2.3.14, added a
+ *   define in isdn_compat.h for older kernel versions.
+ *
+ * Revision 1.5  1998/10/30 18:44:48  he
+ * pass return value from isdn_net_dial_req for dialmode change
+ *
+ * Revision 1.4  1998/10/30 17:55:24  he
+ * dialmode for x25iface and multulink ppp
+ *
+ * Revision 1.3  1998/05/26 22:39:22  he
+ * sync'ed with 2.1.102 where appropriate (CAPABILITY changes)
+ * concap typo
+ * cleared dev.tbusy in isdn_net BCONN status callback
+ *
+ * Revision 1.2  1998/01/31 22:49:21  keil
+ * correct comments
+ *
+ * Revision 1.1  1998/01/31 22:27:57  keil
+ * New files from Henner Eisen for X.25 support
  *
  */
 
@@ -41,7 +61,7 @@
 
 int isdn_concap_dl_data_req(struct concap_proto *concap, struct sk_buff *skb)
 {
-	struct device *ndev = concap -> net_dev;
+	struct net_device *ndev = concap -> net_dev;
 	isdn_net_dev *nd = ((isdn_net_local *) ndev->priv)->netdev;
 	isdn_net_local *lp = isdn_net_get_locked_lp(nd);
 
@@ -52,6 +72,7 @@ int isdn_concap_dl_data_req(struct concap_proto *concap, struct sk_buff *skb)
 	}
 	lp->huptimer = 0;
 	isdn_net_writebuf_skb(lp, skb);
+	spin_unlock_bh(&lp->xmit_lock);
 	IX25DEBUG( "isdn_concap_dl_data_req: %s : isdn_net_send_skb returned %d\n", concap -> net_dev -> name, 0);
 	return 0;
 }
@@ -59,7 +80,7 @@ int isdn_concap_dl_data_req(struct concap_proto *concap, struct sk_buff *skb)
 
 int isdn_concap_dl_connect_req(struct concap_proto *concap)
 {
-	struct device *ndev = concap -> net_dev;
+	struct net_device *ndev = concap -> net_dev;
 	isdn_net_local *lp = (isdn_net_local *) ndev->priv;
 	int ret;
 	IX25DEBUG( "isdn_concap_dl_connect_req: %s \n", ndev -> name);

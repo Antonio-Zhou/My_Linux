@@ -1,8 +1,7 @@
 /* dma.c -- DMA IOCTL and function support -*- linux-c -*-
  * Created: Fri Mar 19 14:30:16 1999 by faith@precisioninsight.com
  *
- * Copyright 1999, 2000 Precision Insight, Inc., Cedar Park, Texas.
- * Copyright 2000 VA Linux Systems, Inc., Sunnyvale, California.
+ * Copyright 1999 Precision Insight, Inc., Cedar Park, Texas.
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -25,7 +24,7 @@
  * DEALINGS IN THE SOFTWARE.
  * 
  * Authors:
- *    Rickard E. (Rik) Faith <faith@valinuxa.com>
+ *    Rickard E. (Rik) Faith <faith@precisioninsight.com>
  *
  */
 
@@ -38,10 +37,7 @@ void drm_dma_setup(drm_device_t *dev)
 {
 	int i;
 	
-	if (!(dev->dma = drm_alloc(sizeof(*dev->dma), DRM_MEM_DRIVER))) {
-                printk(KERN_ERR "drm_dma_setup: can't drm_alloc dev->dma");
-                return;
-        }       
+	dev->dma = drm_alloc(sizeof(*dev->dma), DRM_MEM_DRIVER);
 	memset(dev->dma, 0, sizeof(*dev->dma));
 	for (i = 0; i <= DRM_MAX_ORDER; i++)
 		memset(&dev->dma->bufs[i], 0, sizeof(dev->dma->bufs[0]));
@@ -67,24 +63,15 @@ void drm_dma_takedown(drm_device_t *dev)
 					       dma->bufs[i].page_order,
 					       DRM_MEM_DMA);
 			}
+			drm_free(dma->bufs[i].buflist,
+				 dma->buf_count
+				 * sizeof(*dma->bufs[0].buflist),
+				 DRM_MEM_BUFS);
 			drm_free(dma->bufs[i].seglist,
-				 dma->bufs[i].seg_count
+				 dma->buf_count
 				 * sizeof(*dma->bufs[0].seglist),
 				 DRM_MEM_SEGS);
-		}
-	   	if(dma->bufs[i].buf_count) {
-		   	for(j = 0; j < dma->bufs[i].buf_count; j++) {
-			   if(dma->bufs[i].buflist[j].dev_private) {
-			      drm_free(dma->bufs[i].buflist[j].dev_private,
-				       dma->bufs[i].buflist[j].dev_priv_size,
-				       DRM_MEM_BUFS);
-			   }
-			}
-		   	drm_free(dma->bufs[i].buflist,
-				 dma->bufs[i].buf_count *
-				 sizeof(*dma->bufs[0].buflist),
-				 DRM_MEM_BUFS);
-		   	drm_freelist_destroy(&dma->bufs[i].freelist);
+			drm_freelist_destroy(&dma->bufs[i].freelist);
 		}
 	}
 	
@@ -400,10 +387,10 @@ int drm_dma_enqueue(drm_device_t *dev, drm_dma_t *d)
 
 	atomic_inc(&q->use_count);
 	if (atomic_read(&q->block_write)) {
+		current->state = TASK_INTERRUPTIBLE;
 		add_wait_queue(&q->write_queue, &entry);
 		atomic_inc(&q->block_count);
 		for (;;) {
-			current->state = TASK_INTERRUPTIBLE;
 			if (!atomic_read(&q->block_write)) break;
 			schedule();
 			if (signal_pending(current)) {

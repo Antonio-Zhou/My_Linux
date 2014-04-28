@@ -1,8 +1,6 @@
 #ifndef _NFS_FS_SB
 #define _NFS_FS_SB
 
-#include <linux/in.h>
-
 /*
  * NFS client parameters stored in the superblock.
  */
@@ -22,18 +20,14 @@ struct nfs_server {
 	unsigned int		acdirmax;
 	unsigned int		namelen;
 	char *			hostname;	/* remote hostname */
-	struct nfs_dircache *	dircache;	/* readdir cache info */
-	struct nfs_reqlist *	rw_requests;    /* async read/write requests */
+	struct nfs_reqlist *	rw_requests;	/* async read/write requests */
 };
-
 
 /*
  * nfs super-block data in memory
  */
 struct nfs_sb_info {
-	struct nfs_server	s_server;	/* NFS server info */
-	unsigned int		s_fhsize;	/* File handle size */
-	struct nfs_fh *		s_root;		/* The root file handle */
+	struct nfs_server	s_server;
 };
 
 #endif

@@ -50,7 +50,7 @@ nlmclnt_setlockargs(struct nlm_rqst *req, struct file_lock *fl)
 	memset(argp, 0, sizeof(*argp));
 	nlmclnt_next_cookie(&argp->cookie);
 	argp->state   = nsm_local_state;
-	memcpy(&lock->fh, NFS_FH(fl->fl_file->f_dentry->d_inode), sizeof(lock->fh));
+	lock->fh      = *NFS_FH(fl->fl_file->f_dentry);
 	lock->caller  = system_utsname.nodename;
 	lock->oh.data = req->a_owner;
 	lock->oh.len  = sprintf(req->a_owner, "%d@%s",
@@ -69,6 +69,7 @@ nlmclnt_setgrantargs(struct nlm_rqst *call, struct nlm_lock *lock)
 	call->a_args.lock    = *lock;
 	call->a_args.lock.caller = system_utsname.nodename;
 
+	init_waitqueue_head(&call->a_args.lock.fl.fl_wait);
 	/* set default data area */
 	call->a_args.lock.oh.data = call->a_owner;
 
@@ -100,6 +101,7 @@ nlmclnt_freegrantargs(struct nlm_rqst *call)
 int
 nlmclnt_proc(struct inode *inode, int cmd, struct file_lock *fl)
 {
+	struct nfs_server	*nfssrv = NFS_SERVER(inode);
 	struct nlm_host		*host;
 	struct nlm_rqst		reqst, *call = &reqst;
 	sigset_t		oldset;
@@ -129,9 +131,9 @@ nlmclnt_proc(struct inode *inode, int cmd, struct file_lock *fl)
 			status = -ENOLCK;
 			goto done;
 		}
-		clnt->cl_softrtry = NFS_CLIENT(inode)->cl_softrtry;
-		clnt->cl_intr     = NFS_CLIENT(inode)->cl_intr;
-		clnt->cl_chatty   = NFS_CLIENT(inode)->cl_chatty;
+		clnt->cl_softrtry = nfssrv->client->cl_softrtry;
+		clnt->cl_intr     = nfssrv->client->cl_intr;
+		clnt->cl_chatty   = nfssrv->client->cl_chatty;
 	}
 
 	/* Keep the old signal mask */
@@ -177,7 +179,7 @@ nlmclnt_proc(struct inode *inode, int cmd, struct file_lock *fl)
 	if (status < 0 && (call->a_flags & RPC_TASK_ASYNC))
 		kfree(call);
 
-out_restore:
+ out_restore:
 	spin_lock_irqsave(&current->sigmask_lock, flags);
 	current->blocked = oldset;
 	recalc_sigpending(current);
@@ -315,6 +317,7 @@ nlmsvc_async_call(struct nlm_rqst *req, u32 proc, rpc_action callback)
 	struct nlm_args	*argp = &req->a_args;
 	struct nlm_res	*resp = &req->a_res;
 	struct rpc_message msg;
+	int		status;
 
 	dprintk("lockd: call procedure %s on %s (async)\n",
 			nlm_procname(proc), host->h_name);
@@ -323,12 +326,14 @@ nlmsvc_async_call(struct nlm_rqst *req, u32 proc, rpc_action callback)
 	if ((clnt = nlm_bind_host(host)) == NULL)
 		return -ENOLCK;
 
-	/* bootstrap and kick off the async RPC call */
+        /* bootstrap and kick off the async RPC call */
 	msg.rpc_proc = proc;
 	msg.rpc_argp = argp;
 	msg.rpc_resp =resp;
 	msg.rpc_cred = NULL;	
-	return rpc_call_async(clnt, &msg, RPC_TASK_ASYNC, callback, req);
+        status = rpc_call_async(clnt, &msg, RPC_TASK_ASYNC, callback, req);
+
+	return status;
 }
 
 int
@@ -349,7 +354,7 @@ nlmclnt_async_call(struct nlm_rqst *req, u32 proc, rpc_action callback)
 	if ((clnt = nlm_bind_host(host)) == NULL)
 		return -ENOLCK;
 
-	/* bootstrap and kick off the async RPC call */
+        /* bootstrap and kick off the async RPC call */
 	msg.rpc_proc = proc;
 	msg.rpc_argp = argp;
 	msg.rpc_resp =resp;
@@ -359,7 +364,7 @@ nlmclnt_async_call(struct nlm_rqst *req, u32 proc, rpc_action callback)
 		msg.rpc_cred = NULL;
 	/* Increment host refcount */
 	nlm_get_host(host);
-	status = rpc_call_async(clnt, &msg, RPC_TASK_ASYNC, callback, req);
+        status = rpc_call_async(clnt, &msg, RPC_TASK_ASYNC, callback, req);
 	if (status < 0)
 		nlm_release_host(host);
 	return status;
@@ -379,7 +384,7 @@ nlmclnt_test(struct nlm_rqst *req, struct file_lock *fl)
 	status = req->a_res.status;
 	if (status == NLM_LCK_GRANTED) {
 		fl->fl_type = F_UNLCK;
-	} else if (status == NLM_LCK_DENIED) {
+	} if (status == NLM_LCK_DENIED) {
 		/*
 		 * Report the conflicting lock back to the application.
 		 * FIXME: Is it OK to report the pid back as well?
@@ -406,7 +411,6 @@ void nlmclnt_remove_lock_callback(struct file_lock *fl)
 		fl->fl_u.nfs_fl.host = NULL;
 	}
 }
-
 
 /*
  * LOCK: Try to create a lock
@@ -551,14 +555,14 @@ nlmclnt_unlock_callback(struct rpc_task *task)
 	 && status != NLM_LCK_DENIED_GRACE_PERIOD) {
 		printk("lockd: unexpected unlock status: %d\n", status);
 	}
- die:
+
+die:
 	nlm_release_host(req->a_host);
 	kfree(req);
 	return;
  retry_unlock:
 	nlm_rebind_host(req->a_host);
 	rpc_restart_call(task);
-	return;
 }
 
 /*
@@ -641,7 +645,6 @@ retry_cancel:
 	nlm_rebind_host(req->a_host);
 	rpc_restart_call(task);
 	rpc_delay(task, 30 * HZ);
-	return;
 }
 
 /*

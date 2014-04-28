@@ -1,6 +1,13 @@
+/*
+ * Generic RTC interface.
+ * This version contains the part of the user interface to the Real Time Clock
+ * service. It is used with both the legacy mc146818 and also  EFI
+ * 
+ * Copyright (C) 1999 Hewlett-Packard Co.
+ * Copyright (C) 1999 Stephane Eranian <eranian@hpl.hp.com>
+ */
 #ifndef _LINUX_RTC_H
 #define _LINUX_RTC_H_
-
 
 /*
  * The struct used to pass data via the following ioctl. Similar to the
@@ -21,7 +28,19 @@ struct rtc_time {
 };
 
 /*
- * ioctls that are permitted to the /dev/rtc interface.
+ * This data structure is inspired by the EFI (v0.92) wakeup
+ * alarm API.
+ */
+struct rtc_wkalrm {
+	unsigned char enabled;	/* 0 = alarm disable, 1 = alarm disabled */
+	unsigned char pending;  /* 0 = alarm pending, 1 = alarm not pending */
+	struct rtc_time time;	/* time the alarm is set to */
+};
+
+
+/*
+ * ioctl calls that are permitted to the /dev/rtc interface, if 
+ * CONFIG_RTC/CONFIG_EFI_RTC was enabled.
  */
 
 #define RTC_AIE_ON	_IO('p', 0x01)	/* Alarm int. enable on		*/
@@ -39,5 +58,8 @@ struct rtc_time {
 #define RTC_IRQP_SET	_IOW('p', 0x0c, unsigned long)	 /* Set IRQ rate    */
 #define RTC_EPOCH_READ	_IOR('p', 0x0d, unsigned long)	 /* Read epoch      */
 #define RTC_EPOCH_SET	_IOW('p', 0x0e, unsigned long)	 /* Set epoch       */
+
+#define RTC_WKALM_SET	_IOW('p', 0x0f, struct rtc_wkalrm)/* Set wakeup alarm*/
+#define RTC_WKALM_RD	_IOR('p', 0x10, struct rtc_wkalrm)/* Get wakeup alarm*/
 
 #endif /* _LINUX_RTC_H_ */

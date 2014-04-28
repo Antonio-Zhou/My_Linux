@@ -10,6 +10,7 @@
 #ifndef LINUX_NFSD_NFSD_H
 #define LINUX_NFSD_NFSD_H
 
+#include <linux/config.h>
 #include <linux/types.h>
 #include <linux/unistd.h>
 #include <linux/dirent.h>
@@ -31,14 +32,13 @@
  * Special flags for nfsd_permission. These must be different from MAY_READ,
  * MAY_WRITE, and MAY_EXEC.
  */
-#define MAY_NOP			0x00000000
-#define MAY_SATTR		0x00000008
-#define MAY_TRUNC		0x00000010
-#define MAY_LOCK		0x00000020
-#define NO_OWNER_OVERRIDE	0x00000040
-
-#if (MAY_SATTR | MAY_TRUNC | MAY_LOCK | NO_OWNER_OVERRIDE) & (MAY_READ | MAY_WRITE | MAY_EXEC)
-# error "please use a different value for MAY_SATTR or MAY_TRUNC or MAY_LOCK or NO_OWNER_OVERRIDE."
+#define MAY_NOP			0
+#define MAY_SATTR		8
+#define MAY_TRUNC		16
+#define MAY_LOCK		32
+#define MAY_OWNER_OVERRIDE	64
+#if (MAY_SATTR | MAY_TRUNC | MAY_LOCK | MAX_OWNER_OVERRIDE) & (MAY_READ | MAY_WRITE | MAY_EXEC | MAY_OWNER_OVERRIDE)
+# error "please use a different value for MAY_SATTR or MAY_TRUNC or MAY_LOCK or MAY_OWNER_OVERRIDE."
 #endif
 #define MAY_CREATE		(MAY_EXEC|MAY_WRITE)
 #define MAY_REMOVE		(MAY_EXEC|MAY_WRITE|MAY_TRUNC)
@@ -76,7 +76,7 @@ int		nfsd_svc(unsigned short port, int nrservs);
 
 /* nfsd/vfs.c */
 int		fh_lock_parent(struct svc_fh *, struct dentry *);
-void		nfsd_racache_init(void);
+int		nfsd_racache_init(int);
 void		nfsd_racache_shutdown(void);
 int		nfsd_lookup(struct svc_rqst *, struct svc_fh *,
 				const char *, int, struct svc_fh *);
@@ -129,8 +129,6 @@ int		nfsd_commit(struct svc_rqst *, struct svc_fh *,
 int		nfsd_notify_change(struct inode *, struct iattr *);
 int		nfsd_permission(struct svc_export *, struct dentry *, int);
 
-/* nfsd/nfsctl.c */
-void		nfsd_modcount(struct inode *, int);
 
 /*
  * lockd binding
@@ -139,10 +137,6 @@ void		nfsd_lockd_init(void);
 void		nfsd_lockd_shutdown(void);
 void		nfsd_lockd_unexport(struct svc_client *);
 
-
-#ifndef makedev
-#define makedev(maj, min)	(((maj) << 8) | (min))
-#endif
 
 /*
  * These macros provide pre-xdr'ed values for faster operation.
@@ -185,11 +179,6 @@ void		nfsd_lockd_unexport(struct svc_client *);
  * Time of server startup
  */
 extern struct timeval	nfssvc_boot;
-
-/*
- * The number of nfsd threads.
- */
-extern int		nfsd_nservers;
 
 #endif /* __KERNEL__ */
 

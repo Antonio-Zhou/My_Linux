@@ -37,9 +37,7 @@
 #define NFSCTL_UGIDUPDATE	5	/* update a client's uid/gid map. */
 #define NFSCTL_GETFH		6	/* get an fh by ino (used by mountd) */
 #define NFSCTL_GETFD		7	/* get an fh by path (used by mountd) */
-
-/* Above this is for lockd. */
-#define NFSCTL_LOCKD		0x10000
+#define	NFSCTL_GETFS		8	/* get an fh by path with max FH len */
 
 /* SVC */
 struct nfsctl_svc {
@@ -94,6 +92,13 @@ struct nfsctl_fdparm {
 	int			gd_version;
 };
 
+/* GETFS - GET Filehandle with Size */
+struct nfsctl_fsparm {
+	struct sockaddr		gd_addr;
+	char			gd_path[NFS_MAXPATHLEN+1];
+	int			gd_maxlen;
+};
+
 /*
  * This is the argument union.
  */
@@ -106,7 +111,7 @@ struct nfsctl_arg {
 		struct nfsctl_uidmap	u_umap;
 		struct nfsctl_fhparm	u_getfh;
 		struct nfsctl_fdparm	u_getfd;
-		unsigned int		u_debug;
+		struct nfsctl_fsparm	u_getfs;
 	} u;
 #define ca_svc		u.u_svc
 #define ca_client	u.u_client
@@ -114,20 +119,24 @@ struct nfsctl_arg {
 #define ca_umap		u.u_umap
 #define ca_getfh	u.u_getfh
 #define ca_getfd	u.u_getfd
+#define	ca_getfs	u.u_getfs
 #define ca_authd	u.u_authd
-#define ca_debug	u.u_debug
 };
 
 union nfsctl_res {
-	struct knfs_fh		cr_getfh;
-	unsigned int		cr_debug;
+	__u8			cr_getfh[NFS_FHSIZE];
+	struct knfsd_fh		cr_getfs;
 };
 
 #ifdef __KERNEL__
 /*
  * Kernel syscall implementation.
  */
+#if defined(CONFIG_NFSD) || defined(CONFIG_NFSD_MODULE)
 extern asmlinkage int	sys_nfsservctl(int, void *, void *);
+#else
+#define sys_nfsservctl		sys_ni_syscall
+#endif
 extern int		exp_addclient(struct nfsctl_client *ncp);
 extern int		exp_delclient(struct nfsctl_client *ncp);
 extern int		exp_export(struct nfsctl_export *nxp);

@@ -46,6 +46,8 @@ dep:
 
 clean:
 	rm -f vmlinux.ecoff
+	rm -f addinitrd
+	rm -f elf2ecoff
 
 dummy:
 

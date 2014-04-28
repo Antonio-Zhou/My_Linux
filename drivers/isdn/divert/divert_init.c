@@ -1,22 +1,45 @@
-/* $Id divert_init.c,v 1.5.6.2 2001/01/24 22:18:17 kai Exp $
+/* 
+ * $Id: divert_init.c,v 1.4 1999/08/22 20:26:32 calle Exp $
  *
  * Module init for DSS1 diversion services for i4l.
  *
  * Copyright 1999       by Werner Cornelius (werner@isdn4linux.de)
  * 
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2, or (at your option)
+ * any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. 
+ *
+ * $Log: divert_init.c,v $
+ * Revision 1.4  1999/08/22 20:26:32  calle
+ * backported changes from kernel 2.3.14:
+ * - several #include "config.h" gone, others come.
+ * - "struct device" changed to "struct net_device" in 2.3.14, added a
+ *   define in isdn_compat.h for older kernel versions.
+ *
+ * Revision 1.3  1999/07/05 20:21:39  werner
+ * changes to use diversion sources for all kernel versions.
+ * removed static device, only proc filesystem used
+ *
+ * Revision 1.2  1999/07/04 21:37:30  werner
+ * Ported from kernel version 2.0
+ *
+ *
  *
  */
 
 #include <linux/module.h>
 #include <linux/version.h>
-#include <linux/init.h>
 #include "isdn_divert.h"
-
-MODULE_DESCRIPTION("ISDN4Linux: Call diversion support");
-MODULE_AUTHOR("Werner Cornelius");
-MODULE_LICENSE("GPL");
 
 /********************/
 /* needed externals */
@@ -39,7 +62,7 @@ isdn_divert_if divert_if =
 /* Module interface code */
 /* no cmd line parms     */
 /*************************/
-static int __init divert_init(void)
+int init_module(void)
 { int i;
 
   if (divert_dev_init())
@@ -56,13 +79,13 @@ static int __init divert_init(void)
 #endif
   printk(KERN_INFO "dss1_divert module successfully installed\n");
   return(0);
-}
+} /* init_module */
 
 /**********************/
 /* Module deinit code */
 /**********************/
-static void  divert_exit(void)
-{ unsigned long flags;
+void cleanup_module(void)
+{ int flags;
   int i;
 
   save_flags(flags);
@@ -82,8 +105,6 @@ static void  divert_exit(void)
   deleterule(-1); /* delete all rules and free mem */
   deleteprocs();
   printk(KERN_INFO "dss1_divert module successfully removed \n");
-}
+} /* cleanup_module */
 
-module_init(divert_init);
-module_exit(divert_exit);
 

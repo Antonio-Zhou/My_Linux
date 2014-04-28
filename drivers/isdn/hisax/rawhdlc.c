@@ -1,13 +1,9 @@
-/* $Id: rawhdlc.c,v 1.1.2.1 2001/12/31 13:26:45 kai Exp $
+/* $Id: rawhdlc.c,v 1.4 1999/12/23 15:09:32 keil Exp $
+
+ * rawhdlc.c     support routines for cards that don't support HDLC
  *
- * support routines for cards that don't support HDLC
- *
- * Author     Brent Baccala
- * Copyright  by Karsten Keil <keil@isdn4linux.de>
- *            by Brent Baccala <baccala@FreeSoft.org>
- *
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
+ * Author     Karsten Keil (keil@isdn4linux.de)
+ *            Brent Baccala <baccala@FreeSoft.org>
  *
  *
  * Some passive ISDN cards, such as the Traverse NETJet and the AMD 7930,

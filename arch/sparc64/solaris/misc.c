@@ -1,9 +1,10 @@
-/* $Id: misc.c,v 1.13 1998/10/28 08:11:58 jj Exp $
+/* $Id: misc.c,v 1.27 2000/05/09 17:40:14 davem Exp $
  * misc.c: Miscelaneous syscall emulation for Solaris
  *
  * Copyright (C) 1997,1998 Jakub Jelinek (jj@sunsite.mff.cuni.cz)
  */
 
+#include <linux/config.h>
 #include <linux/module.h> 
 #include <linux/types.h>
 #include <linux/smp_lock.h>
@@ -54,7 +55,8 @@ static u32 do_solaris_mmap(u32 addr, u32 len, u32 prot, u32 flags, u32 fd, u64 o
 	unsigned long retval, ret_type;
 
 	lock_kernel();
-	current->personality |= PER_SVR4;
+	/* Do we need it here? */
+	set_personality(PER_SVR4);
 	if (flags & MAP_NORESERVE) {
 		static int cnt = 0;
 		
@@ -72,7 +74,7 @@ static u32 do_solaris_mmap(u32 addr, u32 len, u32 prot, u32 flags, u32 fd, u64 o
  		file = fget(fd);
 		if (!file)
 			goto out;
-		if (file->f_dentry && file->f_dentry->d_inode) {
+		else {
 			struct inode * inode = file->f_dentry->d_inode;
 			if(MAJOR(inode->i_rdev) == MEM_MAJOR &&
 			   MINOR(inode->i_rdev) == 5) {
@@ -83,24 +85,24 @@ static u32 do_solaris_mmap(u32 addr, u32 len, u32 prot, u32 flags, u32 fd, u64 o
 		}
 	}
 
-	retval = -ENOMEM;
-	if(!(flags & MAP_FIXED) && !addr) {
-		unsigned long attempt = get_unmapped_area(addr, len);
-		if(!attempt || (attempt >= 0xf0000000UL))
-			goto out_putf;
-		addr = (u32) attempt;
-	}
+	retval = -EINVAL;
+	len = PAGE_ALIGN(len);
 	if(!(flags & MAP_FIXED))
 		addr = 0;
+	else if (len > 0xf0000000UL || addr > 0xf0000000UL - len)
+		goto out_putf;
 	ret_type = flags & _MAP_NEW;
 	flags &= ~_MAP_NEW;
 
+	down(&current->mm->mmap_sem);
 	flags &= ~(MAP_EXECUTABLE | MAP_DENYWRITE);
 	retval = do_mmap(file,
 			 (unsigned long) addr, (unsigned long) len,
 			 (unsigned long) prot, (unsigned long) flags, off);
+	up(&current->mm->mmap_sem);
 	if(!ret_type)
 		retval = ((retval < 0xf0000000) ? 0 : retval);
+	                        
 out_putf:
 	if (file)
 		fput(file);
@@ -240,8 +242,10 @@ asmlinkage int solaris_utssys(u32 buf, u32 flags, int which, u32 buf2)
 		/* Let's cheat */
 		set_utsfield(((struct sol_uname *)A(buf))->sysname, 
 			"SunOS", 1, 0);
+		down_read(&uts_sem);
 		set_utsfield(((struct sol_uname *)A(buf))->nodename, 
 			system_utsname.nodename, 1, 1);
+		up_read(&uts_sem);
 		set_utsfield(((struct sol_uname *)A(buf))->release, 
 			"2.6", 0, 0);
 		set_utsfield(((struct sol_uname *)A(buf))->version, 
@@ -261,7 +265,7 @@ asmlinkage int solaris_utssys(u32 buf, u32 flags, int which, u32 buf2)
 asmlinkage int solaris_utsname(u32 buf)
 {
 	/* Why should we not lie a bit? */
-	down(&uts_sem);
+	down_read(&uts_sem);
 	set_utsfield(((struct sol_utsname *)A(buf))->sysname, 
 			"SunOS", 0, 0);
 	set_utsfield(((struct sol_utsname *)A(buf))->nodename, 
@@ -272,7 +276,7 @@ asmlinkage int solaris_utsname(u32 buf)
 			"Generic", 0, 0);
 	set_utsfield(((struct sol_utsname *)A(buf))->machine, 
 			machine(), 0, 0);
-	up(&uts_sem);
+	up_read(&uts_sem);
 	return 0;
 }
 
@@ -298,8 +302,10 @@ asmlinkage int solaris_sysinfo(int cmd, u32 buf, s32 count)
 	case SI_SYSNAME: r = "SunOS"; break;
 	case SI_HOSTNAME:
 		r = buffer + 256;
+		down_read(&uts_sem);
 		for (p = system_utsname.nodename, q = buffer; 
 		     q < r && *p && *p != '.'; *q++ = *p++);
+		up_read(&uts_sem);
 		*q = 0;
 		r = buffer;
 		break;
@@ -363,7 +369,7 @@ asmlinkage int solaris_sysconf(int id)
 	case SOLARIS_CONFIG_PROF_TCK:
 		return prom_getintdefault(prom_cpu_nodes[smp_processor_id()],
 					  "clock-frequency", 167000000);
-#ifdef __SMP__	
+#ifdef CONFIG_SMP	
 	case SOLARIS_CONFIG_NPROC_CONF:	return NR_CPUS;
 	case SOLARIS_CONFIG_NPROC_ONLN:	return smp_num_cpus;
 #else
@@ -397,18 +403,6 @@ asmlinkage int solaris_sysconf(int id)
 	case SOLARIS_CONFIG_TIMER_MAX:		return -EINVAL;
 	default: return -EINVAL;
 	}
-}
-
-asmlinkage int solaris_setreuid(s32 ruid, s32 euid)
-{
-	int (*sys_setreuid)(uid_t, uid_t) = (int (*)(uid_t, uid_t))SYS(setreuid);
-	return sys_setreuid(ruid, euid);
-}
-
-asmlinkage int solaris_setregid(s32 rgid, s32 egid)
-{
-	int (*sys_setregid)(gid_t, gid_t) = (int (*)(gid_t, gid_t))SYS(setregid);
-	return sys_setregid(rgid, egid);
 }
 
 asmlinkage int solaris_procids(int cmd, s32 pid, s32 pgid)
@@ -474,8 +468,8 @@ asmlinkage int solaris_gettimeofday(u32 tim)
 #define RLIMIT_SOL_VMEM		6
 
 struct rlimit32 {
-	s32	rlim_cur;
-	s32	rlim_max;
+	u32	rlim_cur;
+	u32	rlim_max;
 };
 
 asmlinkage int solaris_getrlimit(unsigned int resource, struct rlimit32 *rlim)
@@ -727,14 +721,7 @@ asmlinkage int do_sol_unimplemented(struct pt_regs *regs)
 
 asmlinkage void solaris_register(void)
 {
-	lock_kernel();
-	current->personality = PER_SVR4;
-	if (current->exec_domain && current->exec_domain->module)
-		__MOD_DEC_USE_COUNT(current->exec_domain->module);
-	current->exec_domain = lookup_exec_domain(current->personality);
-	if (current->exec_domain && current->exec_domain->module)
-		__MOD_INC_USE_COUNT(current->exec_domain->module);
-	unlock_kernel();
+	set_personality(PER_SVR4);
 }
 
 extern long solaris_to_linux_signals[], linux_to_solaris_signals[];
@@ -745,11 +732,7 @@ struct exec_domain solaris_exec_domain = {
 	1, 1,	/* PER_SVR4 personality */
 	solaris_to_linux_signals,
 	linux_to_solaris_signals,
-#ifdef MODULE
-	&__this_module,
-#else
-	NULL,
-#endif
+	THIS_MODULE,
 	NULL
 };
 

@@ -1,4 +1,4 @@
-/* $Id: graphics.c,v 1.16 1999/04/01 23:45:00 ulfc Exp $
+/* $Id: graphics.c,v 1.23 2000/02/23 00:41:21 ralf Exp $
  *
  * gfx.c: support for SGI's /dev/graphics, /dev/opengl
  *
@@ -41,7 +41,7 @@
 #include <asm/rrm.h>
 #include <asm/page.h>
 #include <asm/pgtable.h>
-#include <asm/newport.h>
+#include <video/newport.h>
 
 #define DEBUG
 
@@ -105,7 +105,7 @@ sgi_graphics_ioctl (struct inode *inode, struct file *file, unsigned int cmd, un
 
 		if (board >= boards)
 			return -EINVAL;
-		if (max_len < (int)sizeof (struct gfx_getboardinfo_args))
+		if (max_len < sizeof (struct gfx_getboardinfo_args))
 			return -EINVAL;
 		if (max_len > cards [board].g_board_info_len)
 			max_len = cards [boards].g_board_info_len;
@@ -254,16 +254,7 @@ sgi_graphics_nopage (struct vm_area_struct *vma, unsigned long address, int
  */
 
 static struct vm_operations_struct graphics_mmap = {
-	NULL,			/* no special mmap-open */
-	NULL,			/* no special mmap-close */
-	NULL,			/* no special mmap-unmap */
-	NULL,			/* no special mmap-protect */
-	NULL,			/* no special mmap-sync */
-	NULL,			/* no special mmap-advise */
-	sgi_graphics_nopage,	/* our magic no-page fault handler */
-	NULL,			/* no special mmap-wppage */
-	NULL,			/* no special mmap-swapout */
-	NULL			/* no special mmap-swapin */
+	nopage:	sgi_graphics_nopage,	/* our magic no-page fault handler */
 };
 	
 int
@@ -272,8 +263,6 @@ sgi_graphics_mmap (struct file *file, struct vm_area_struct *vma)
 	uint size;
 
 	size = vma->vm_end - vma->vm_start;
-	if (vma->vm_offset & ~PAGE_MASK)
-		return -ENXIO;
 
 	/* 1. Set our special graphic virtualizer  */
 	vma->vm_ops = &graphics_mmap;
@@ -298,20 +287,10 @@ graphics_ops_post_init (int slot)
 #endif
 
 struct file_operations sgi_graphics_fops = {
-	NULL,			/* llseek */
-	NULL,			/* read */
-	NULL,			/* write */
-	NULL,			/* readdir */
-	NULL,			/* poll */
-	sgi_graphics_ioctl,	/* ioctl */
-	sgi_graphics_mmap,	/* mmap */
-	sgi_graphics_open,	/* open */
-	NULL,			/* flush */
-	sgi_graphics_close,	/* release */
-	NULL,			/* fsync */
-	NULL,			/* check_media_change */
-	NULL,			/* revalidate */
-	NULL			/* lock */
+	ioctl:		sgi_graphics_ioctl,
+	mmap:		sgi_graphics_mmap,
+	open:		sgi_graphics_open,
+	release:	sgi_graphics_close,
 };
 
 /* /dev/graphics */
@@ -325,13 +304,13 @@ static struct miscdevice dev_opengl = {
 };
 
 /* This is called later from the misc-init routine */
-__initfunc(void gfx_register (void))
+void __init gfx_register (void)
 {
 	misc_register (&dev_graphics);
 	misc_register (&dev_opengl);
 }
 
-__initfunc(void gfx_init (const char **name))
+void __init gfx_init (const char **name)
 {
 #if 0
 	struct console_ops *console;

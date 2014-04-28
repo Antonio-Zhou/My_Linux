@@ -44,7 +44,7 @@
 #  include <linux/init.h>
 #  include <asm/io.h>
 #  include <asm/uaccess.h>
-#  include <asm/spinlock.h>
+#  include <linux/spinlock.h>
 #endif
 #include <asm/irq.h>
 #include "msnd.h"
@@ -113,12 +113,12 @@ multisound_dev_t *msnd_get_dev(int j)
 	return devs[i];
 }
 
-void msnd_init_queue(volatile BYTE *base, int start, int size)
+void msnd_init_queue(unsigned long base, int start, int size)
 {
-	writew(PCTODSP_BASED(start), base + JQS_wStart);
-	writew(PCTODSP_OFFSET(size) - 1, base + JQS_wSize);
-	writew(0, base + JQS_wHead);
-	writew(0, base + JQS_wTail);
+	isa_writew(PCTODSP_BASED(start), base + JQS_wStart);
+	isa_writew(PCTODSP_OFFSET(size) - 1, base + JQS_wSize);
+	isa_writew(0, base + JQS_wHead);
+	isa_writew(0, base + JQS_wTail);
 }
 
 void msnd_fifo_init(msnd_fifo *f)

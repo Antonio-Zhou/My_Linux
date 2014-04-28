@@ -688,8 +688,8 @@ ru_end_bytes:
 
 	jr	ra
 	 move	a2, zero
-	END(__rmemcpy)
 #endif /* Horror fix */
+	END(__rmemcpy)
 
 l_fixup:					# clear the rest of the buffer
 	lw	t0, THREAD_BUADDR($28)

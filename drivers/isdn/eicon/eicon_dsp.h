@@ -1,21 +1,94 @@
-/* $Id: eicon_dsp.h,v 1.1.2.1 2001/12/31 13:26:44 kai Exp $
+/* $Id: eicon_dsp.h,v 1.5 2000/01/23 21:21:23 armin Exp $
  *
  * ISDN lowlevel-module for Eicon active cards.
- * DSP definitions
+ *        DSP definitions
  *
  * Copyright 1999,2000  by Armin Schindler (mac@melware.de)
  * Copyright 1999,2000  Cytronics & Melware (info@melware.de)
  *
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2, or (at your option)
+ * any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ *
+ * $Log: eicon_dsp.h,v $
+ * Revision 1.5  2000/01/23 21:21:23  armin
+ * Added new trace capability and some updates.
+ * DIVA Server BRI now supports data for ISDNLOG.
+ *
+ * Revision 1.4  1999/07/25 15:12:02  armin
+ * fix of some debug logs.
+ * enabled ISA-cards option.
+ *
+ * Revision 1.3  1999/07/11 17:16:24  armin
+ * Bugfixes in queue handling.
+ * Added DSP-DTMF decoder functions.
+ * Reorganized ack_handler.
+ *
+ * Revision 1.2  1999/03/29 11:19:42  armin
+ * I/O stuff now in seperate file (eicon_io.c)
+ * Old ISA type cards (S,SX,SCOM,Quadro,S2M) implemented.
+ *
+ * Revision 1.1  1999/03/02 12:18:54  armin
+ * First checkin of DSP defines for audio features.
+ *
  *
  */
 
 #ifndef DSP_H 
 #define DSP_H
 
-#include "dsp_defs.h"
+#define DSP_UDATA_REQUEST_RECONFIGURE           0
+/*
+parameters:
+  <word> reconfigure delay (in 8kHz samples)
+  <word> reconfigure code
+  <byte> reconfigure hdlc preamble flags
+*/
 
+#define DSP_RECONFIGURE_TX_FLAG             0x8000
+#define DSP_RECONFIGURE_SHORT_TRAIN_FLAG    0x4000
+#define DSP_RECONFIGURE_ECHO_PROTECT_FLAG   0x2000
+#define DSP_RECONFIGURE_HDLC_FLAG           0x1000
+#define DSP_RECONFIGURE_SYNC_FLAG           0x0800
+#define DSP_RECONFIGURE_PROTOCOL_MASK       0x00ff
+#define DSP_RECONFIGURE_IDLE                0
+#define DSP_RECONFIGURE_V25                 1
+#define DSP_RECONFIGURE_V21_CH2             2
+#define DSP_RECONFIGURE_V27_2400            3
+#define DSP_RECONFIGURE_V27_4800            4
+#define DSP_RECONFIGURE_V29_7200            5
+#define DSP_RECONFIGURE_V29_9600            6
+#define DSP_RECONFIGURE_V33_12000           7
+#define DSP_RECONFIGURE_V33_14400           8
+#define DSP_RECONFIGURE_V17_7200            9
+#define DSP_RECONFIGURE_V17_9600            10
+#define DSP_RECONFIGURE_V17_12000           11
+#define DSP_RECONFIGURE_V17_14400           12
+
+/*
+data indications if transparent framer
+  <byte> data 0
+  <byte> data 1
+  ...
+
+data indications if HDLC framer
+  <byte> data 0
+  <byte> data 1
+  ...
+  <byte> CRC 0
+  <byte> CRC 1
+  <byte> preamble flags
+*/
 
 #define DSP_UDATA_REQUEST_SWITCH_FRAMER         1
 /*
@@ -49,6 +122,49 @@ parameters:
   - none -
 */
 
+
+#define DSP_UDATA_INDICATION_SYNC               0
+/*
+returns:
+  <word> time of sync (sampled from counter at 8kHz)
+*/
+
+#define DSP_UDATA_INDICATION_DCD_OFF            1
+/*
+returns:
+  <word> time of DCD off (sampled from counter at 8kHz)
+*/
+
+#define DSP_UDATA_INDICATION_DCD_ON             2
+/*
+returns:
+  <word> time of DCD on (sampled from counter at 8kHz)
+  <byte> connected norm
+  <word> connected options
+  <dword> connected speed (bit/s, max of tx and rx speed)
+  <word> roundtrip delay (ms)
+  <dword> connected speed tx (bit/s)
+  <dword> connected speed rx (bit/s)
+*/
+
+#define DSP_UDATA_INDICATION_CTS_OFF            3
+/*
+returns:
+  <word> time of CTS off (sampled from counter at 8kHz)
+*/
+
+#define DSP_UDATA_INDICATION_CTS_ON             4
+/*
+returns:
+  <word> time of CTS on (sampled from counter at 8kHz)
+  <byte> connected norm
+  <word> connected options
+  <dword> connected speed (bit/s, max of tx and rx speed)
+  <word> roundtrip delay (ms)
+  <dword> connected speed tx (bit/s)
+  <dword> connected speed rx (bit/s)
+*/
+
 typedef struct eicon_dsp_ind {
 	__u16	time		__attribute__ ((packed));
 	__u8	norm		__attribute__ ((packed));
@@ -59,10 +175,31 @@ typedef struct eicon_dsp_ind {
 	__u32	rxspeed		__attribute__ ((packed));
 } eicon_dsp_ind;
 
+#define DSP_CONNECTED_NORM_UNSPECIFIED      0
+#define DSP_CONNECTED_NORM_V21              1
+#define DSP_CONNECTED_NORM_V23              2
+#define DSP_CONNECTED_NORM_V22              3
+#define DSP_CONNECTED_NORM_V22_BIS          4
+#define DSP_CONNECTED_NORM_V32_BIS          5
+#define DSP_CONNECTED_NORM_V34              6
+#define DSP_CONNECTED_NORM_V8               7
+#define DSP_CONNECTED_NORM_BELL_212A        8
+#define DSP_CONNECTED_NORM_BELL_103         9
+#define DSP_CONNECTED_NORM_V29_LEASED_LINE  10
+#define DSP_CONNECTED_NORM_V33_LEASED_LINE  11
+#define DSP_CONNECTED_NORM_V90              12
+#define DSP_CONNECTED_NORM_V21_CH2          13
+#define DSP_CONNECTED_NORM_V27_TER          14
+#define DSP_CONNECTED_NORM_V29              15
+#define DSP_CONNECTED_NORM_V33              16
+#define DSP_CONNECTED_NORM_V17              17
+
+#define DSP_CONNECTED_OPTION_TRELLIS             0x0001
 #define DSP_CONNECTED_OPTION_V42_TRANS           0x0002
 #define DSP_CONNECTED_OPTION_V42_LAPM            0x0004
 #define DSP_CONNECTED_OPTION_SHORT_TRAIN         0x0008
 #define DSP_CONNECTED_OPTION_TALKER_ECHO_PROTECT 0x0010
+
 
 #define DSP_UDATA_INDICATION_DISCONNECT         5
 /*
@@ -76,6 +213,7 @@ returns:
 #define DSP_DISCONNECT_CAUSE_INCOMPATIBILITY    0x03
 #define DSP_DISCONNECT_CAUSE_CLEARDOWN          0x04
 #define DSP_DISCONNECT_CAUSE_TRAINING_TIMEOUT   0x05
+
 
 #define DSP_UDATA_INDICATION_TX_CONFIRMATION    6
 /*

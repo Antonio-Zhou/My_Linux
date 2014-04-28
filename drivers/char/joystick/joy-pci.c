@@ -42,6 +42,7 @@
 #include <linux/module.h>
 #include <linux/string.h>
 #include <linux/pci.h>
+#include <linux/pci_ids.h>
 #include <linux/init.h>
 
 MODULE_AUTHOR("Raymond Ingles <sorceror@tir.com>");
@@ -129,8 +130,6 @@ static struct js_pci_data js_pci_data[] =
 	js_pci_vortex_init, js_pci_vortex_cleanup, "Aureal Vortex1" },
  { PCI_VENDOR_ID_AUREAL,  0x0002, 0x40000, 0x2a00c, 0x2880c, 0x28808, 0x28810, 4, 0x1fff,
 	js_pci_vortex_init, js_pci_vortex_cleanup, "Aureal Vortex2" },
- { PCI_VENDOR_ID_AL,      0x5451, 0x10000, 0x00044, 0x00030, 0x00031, 0x00034, 2, 0xffff,
-	js_pci_4dwave_init, js_pci_4dwave_cleanup, "ALi 5451" },
  { 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL }};
 
 /*

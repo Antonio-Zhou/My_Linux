@@ -62,6 +62,7 @@ struct svc_export {
 	struct svc_export *	ex_parent;
 	struct svc_client *	ex_client;
 	int			ex_flags;
+	struct vfsmount *	ex_mnt;
 	struct dentry *		ex_dentry;
 	kdev_t			ex_dev;
 	ino_t			ex_ino;
@@ -89,7 +90,7 @@ struct svc_client *	exp_getclient(struct sockaddr_in *sin);
 void			exp_putclient(struct svc_client *clp);
 struct svc_export *	exp_get(struct svc_client *clp, kdev_t dev, ino_t ino);
 int			exp_rootfh(struct svc_client *, kdev_t, ino_t,
-					char *path, struct knfs_fh *);
+					char *path, struct knfsd_fh *, int maxsize);
 int			nfserrno(int errno);
 void			exp_nlmdetach(void);
 

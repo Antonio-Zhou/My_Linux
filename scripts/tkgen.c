@@ -587,11 +587,11 @@ void generate_if( struct kconfig * cfg, struct condition * ocond,
 	case token_int:
 	    if ( cfg->value && *cfg->value == '$' )
 	    {
-		int i = get_varnum( cfg->value+1 );
+		int index = get_varnum( cfg->value+1 );
 		printf( "\n" );
-		if ( ! vartable[i].global_written )
+		if ( ! vartable[index].global_written )
 		{
-		    global( vartable[i].name );
+		    global( vartable[index].name );
 		}
 		printf( "\t" );
 	    }
@@ -956,6 +956,7 @@ static void generate_update_var( struct kconfig * scfg, int menu_num )
 static void end_proc( struct kconfig * scfg, int menu_num )
 {
     struct kconfig * cfg;
+    int i;
 
     printf( "\n\n\n" );
     printf( "\tfocus $w\n" );
@@ -1050,7 +1051,6 @@ static void end_proc( struct kconfig * scfg, int menu_num )
 	    {
 		if ( cfg->token == token_tristate )
 		{
-		    int i;
 		    if ( ! vartable[cfg->nameindex].global_written )
 		    {
 			vartable[cfg->nameindex].global_written = 1;
@@ -1248,7 +1248,7 @@ void dump_tk_script( struct kconfig * scfg )
 		printf( "\tminimenu $w.config.f %d %d \"%s\" tmpvar_%d %s\n",
 		    cfg->menu_number, cfg->menu_line, cfg->label,
 		    -(cfg->nameindex), vartable[cfg->next->nameindex].name );
-		printf( "\tmenu $w.config.f.x%d.x.menu -tearoffcommand \"menutitle \\\"%s\\\"\"\n",
+		printf( "\tmenu $w.config.f.x%d.x.menu -title \"%s\"\n",
 		    cfg->menu_line, cfg->label );
 		cfg1 = cfg;
 		opt_count = 0;

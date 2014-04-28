@@ -2,8 +2,8 @@
  *
  * Name:	skvpd.c
  * Project:	GEnesis, PCI Gigabit Ethernet Adapter
- * Version:	$Revision: 1.26 $
- * Date:	$Date: 2000/06/13 08:00:01 $
+ * Version:	$Revision: 1.24 $
+ * Date:	$Date: 1999/03/11 14:25:49 $
  * Purpose:	Shared software to read and write VPD data
  *
  ******************************************************************************/
@@ -12,6 +12,8 @@
  *
  *	(C)Copyright 1998,1999 SysKonnect,
  *	a business unit of Schneider & Koch & Co. Datensysteme GmbH.
+ *
+ *	See the file "skge.c" for further information.
  *
  *	This program is free software; you can redistribute it and/or modify
  *	it under the terms of the GNU General Public License as published by
@@ -27,12 +29,6 @@
  * History:
  *
  *	$Log: skvpd.c,v $
- *	Revision 1.26  2000/06/13 08:00:01  mkarl
- *	additional cast to avoid compile problems in 64 bit environment
- *	
- *	Revision 1.25  1999/11/22 13:39:32  cgoos
- *	Changed license header to GPL.
- *	
  *	Revision 1.24  1999/03/11 14:25:49  malthoff
  *	Replace __STDC__ with SK_KR_PROTO.
  *	
@@ -124,7 +120,7 @@
 	Please refer skvpd.txt for infomation how to include this module
  */
 static const char SysKonnectFileId[] =
-	"@(#)$Id: skvpd.c,v 1.26 2000/06/13 08:00:01 mkarl Exp $ (C) SK" ;
+	"@(#)$Id: skvpd.c,v 1.24 1999/03/11 14:25:49 malthoff Exp $ (C) SK" ;
 
 #include "h/skdrv1st.h"
 #include "h/sktypes.h"
@@ -647,7 +643,7 @@ int n)			/* number of bytes the memory block has to be moved */
 	if (n == 0)
 		return ;
 
-	i = (int) (end - start + 1) ;
+	i = end - start + 1 ;
 	if (n < 0) {
 		p = start + n ;
 		while (i != 0) {

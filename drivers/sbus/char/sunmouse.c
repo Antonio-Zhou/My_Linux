@@ -48,6 +48,7 @@
 #include <linux/miscdevice.h>
 #include <linux/mm.h>
 #include <linux/poll.h>
+#include <linux/spinlock.h>
 #include <linux/init.h>
 #include <asm/uaccess.h>
 #include <asm/system.h>
@@ -69,14 +70,13 @@ struct sun_mouse {
 	unsigned char prev_state;      /* Previous button state */
 	int delta_x;                   /* Current delta-x */
 	int delta_y;                   /* Current delta-y */
-	int present;
-	int ready;		       /* set if there if data is available */
 	int active;		       /* set if device is open */
         int vuid_mode;	               /* VUID_NATIVE or VUID_FIRM_EVENT */
-	struct wait_queue *proc_list;
+	wait_queue_head_t proc_list;
 	struct fasync_struct *fasync;
 	
 	/* The event/stream queue */
+	spinlock_t lock;
 	unsigned int head;
 	unsigned int tail;
 	union {
@@ -97,14 +97,22 @@ extern void mouse_put_char(char ch);
 static int
 push_event (Firm_event *ev)
 {
-	int next = (sunmouse.head + 1) % EV_SIZE;
+	unsigned long flags;
+	int next, ret;
 	
-	if (next != sunmouse.tail){
+	spin_lock_irqsave(&sunmouse.lock, flags);
+
+	next = (sunmouse.head + 1) % EV_SIZE;
+	ret = 0;
+	if (next != sunmouse.tail) {
 		sunmouse.queue.ev [sunmouse.head] = *ev;
 		sunmouse.head = next;
-		return 1;
+		ret = 1;
 	}
-	return 0;
+
+	spin_unlock_irqrestore(&sunmouse.lock, flags);
+
+	return ret;
 }
 
 static int
@@ -113,31 +121,34 @@ queue_empty (void)
 	return sunmouse.head == sunmouse.tail;
 }
 
-static Firm_event *
-get_from_queue (void)
+/* Must be invoked under the sunmouse.lock */
+static void get_from_queue (Firm_event *p)
 {
-	Firm_event *result;
-	
-	result = &sunmouse.queue.ev [sunmouse.tail];
+	*p = sunmouse.queue.ev [sunmouse.tail];
 	sunmouse.tail = (sunmouse.tail + 1) % EV_SIZE;
-	return result;
 }
 
 static void
 push_char (char c)
 {
-	int next = (sunmouse.head + 1) % STREAM_SIZE;
+	unsigned long flags;
+	int next;
 
-	if (next != sunmouse.tail){
+	spin_lock_irqsave(&sunmouse.lock, flags);
+
+	next = (sunmouse.head + 1) % STREAM_SIZE;
+	if (next != sunmouse.tail) {
 #ifdef SMOUSE_DEBUG
 		printk("P<%02x>\n", (unsigned char)c);
 #endif
 		sunmouse.queue.stream [sunmouse.head] = c;
 		sunmouse.head = next;
 	}
-	sunmouse.ready = 1;
+
+	spin_unlock_irqrestore(&sunmouse.lock, flags);
+
 	if (sunmouse.fasync)
-		kill_fasync (sunmouse.fasync, SIGIO);
+		kill_fasync (sunmouse.fasync, SIGIO, POLL_IN);
 	wake_up_interruptible (&sunmouse.proc_list);
 }
 
@@ -248,7 +259,7 @@ sun_mouse_inbyte(unsigned char byte, int is_break)
 	 * we are starting at byte zero in the transaction
 	 * protocol.
 	 */
-	if(byte >= 0x80 && byte <= 0x87)
+	if((byte & ~0x0f) == 0x80) 
 		sunmouse.byte = 0;
 #endif
 
@@ -273,6 +284,12 @@ sun_mouse_inbyte(unsigned char byte, int is_break)
 		       ((sunmouse.button_state & 0x2) ? "DOWN" : "UP"),
 		       ((sunmouse.button_state & 0x1) ? "DOWN" : "UP"));
 #endif
+		/* To deal with the Sparcbook 3 */
+		if (byte & 0x8) {
+			sunmouse.byte += 2;
+			sunmouse.delta_y = 0;
+			sunmouse.delta_x = 0;
+		}
 		sunmouse.byte++;
 		return;
 	case 1:
@@ -320,24 +337,26 @@ sun_mouse_inbyte(unsigned char byte, int is_break)
 		sunmouse.byte = 69;  /* What could cause this? */
 		return;
 	};
-	if (!gen_events){
+
+	if (!gen_events) {
 		push_char (~sunmouse.button_state & 0x87);
 		push_char (sunmouse.delta_x);
 		push_char (sunmouse.delta_y);
 		return;
 	}
+
 	d = bstate ^ pstate;
 	pstate = bstate;
-	if (d){
-		if (d & BUTTON_LEFT){
+	if (d) {
+		if (d & BUTTON_LEFT) {
 			ev.id = MS_LEFT;
 			ev.value = bstate & BUTTON_LEFT;
 		}
-		if (d & BUTTON_RIGHT){
+		if (d & BUTTON_RIGHT) {
 			ev.id = MS_RIGHT;
 			ev.value = bstate & BUTTON_RIGHT;
 		}
-		if (d & BUTTON_MIDDLE){
+		if (d & BUTTON_MIDDLE) {
 			ev.id = MS_MIDDLE;
 			ev.value = bstate & BUTTON_MIDDLE;
 		}
@@ -345,27 +364,26 @@ sun_mouse_inbyte(unsigned char byte, int is_break)
 		ev.value = ev.value ? VKEY_DOWN : VKEY_UP;
 		pushed += push_event (&ev);
 	}
-	if (sunmouse.delta_x){
+	if (sunmouse.delta_x) {
 		ev.id = LOC_X_DELTA;
 		ev.time = xtime;
 		ev.value = sunmouse.delta_x;
 		pushed += push_event (&ev);
 		sunmouse.delta_x = 0;
 	}
-	if (sunmouse.delta_y){
+	if (sunmouse.delta_y) {
 		ev.id = LOC_Y_DELTA;
 		ev.time = xtime;
 		ev.value = sunmouse.delta_y;
 		pushed += push_event (&ev);
 	}
 	
-	if(pushed != 0) {
+	if (pushed != 0) {
 		/* We just completed a transaction, wake up whoever is awaiting
 		 * this event.
 		 */
-		sunmouse.ready = 1;
 		if (sunmouse.fasync)
-			kill_fasync (sunmouse.fasync, SIGIO);
+			kill_fasync (sunmouse.fasync, SIGIO, POLL_IN);
 		wake_up_interruptible(&sunmouse.proc_list);
 	}
 	return;
@@ -374,11 +392,9 @@ sun_mouse_inbyte(unsigned char byte, int is_break)
 static int
 sun_mouse_open(struct inode * inode, struct file * file)
 {
-	if(sunmouse.active++)
+	if (sunmouse.active++)
 		return 0;
-	if(!sunmouse.present)
-		return -EINVAL;
-	sunmouse.ready = sunmouse.delta_x = sunmouse.delta_y = 0;
+	sunmouse.delta_x = sunmouse.delta_y = 0;
 	sunmouse.button_state = 0x80;
 	sunmouse.vuid_mode = VUID_NATIVE;
 	return 0;
@@ -398,9 +414,7 @@ static int
 sun_mouse_close(struct inode *inode, struct file *file)
 {
 	sun_mouse_fasync (-1, file, 0);
-	if (--sunmouse.active)
-		return 0;
-	sunmouse.ready = 0;
+	sunmouse.active--;
 	return 0;
 }
 
@@ -415,50 +429,58 @@ static ssize_t
 sun_mouse_read(struct file *file, char *buffer,
 	       size_t count, loff_t *ppos)
 {
-	struct wait_queue wait = { current, NULL };
+	DECLARE_WAITQUEUE(wait, current);
+	unsigned long flags;
 
-	if (queue_empty ()){
+	if (queue_empty ()) {
 		if (file->f_flags & O_NONBLOCK)
 			return -EWOULDBLOCK;
 		add_wait_queue (&sunmouse.proc_list, &wait);
-		while (queue_empty () && !signal_pending(current)) {
-			current->state = TASK_INTERRUPTIBLE;
-			schedule ();
+repeat:
+		set_current_state(TASK_INTERRUPTIBLE);
+		if (queue_empty() && !signal_pending(current)) {
+			schedule();
+			goto repeat;
 		}
 		current->state = TASK_RUNNING;
 		remove_wait_queue (&sunmouse.proc_list, &wait);
 	}
-	if (gen_events){
+	if (gen_events) {
 		char *p = buffer, *end = buffer+count;
 		
+		spin_lock_irqsave(&sunmouse.lock, flags);
 		while (p < end && !queue_empty ()){
+			Firm_event this_event;
+
+			get_from_queue(&this_event);
+			spin_unlock_irqrestore(&sunmouse.lock, flags);
+
 #ifdef CONFIG_SPARC32_COMPAT
-			if (current->tss.flags & SPARC_FLAG_32BIT) {
-				Firm_event *q = get_from_queue();
-				
+			if (current->thread.flags & SPARC_FLAG_32BIT) {
 				if ((end - p) <
 				    ((sizeof(Firm_event) - sizeof(struct timeval) +
 				      (sizeof(u32) * 2))))
 					break;
-				copy_to_user_ret((Firm_event *)p, q, 
+				copy_to_user_ret((Firm_event *)p, &this_event,
 						 sizeof(Firm_event)-sizeof(struct timeval),
 						 -EFAULT);
 				p += sizeof(Firm_event)-sizeof(struct timeval);
-				put_user_ret(q->time.tv_sec, (u32 *)p, -EFAULT);
+				__put_user_ret(this_event.time.tv_sec, (u32 *)p, -EFAULT);
 				p += sizeof(u32);
-				put_user_ret(q->time.tv_usec, (u32 *)p, -EFAULT);
+				__put_user_ret(this_event.time.tv_usec, (u32 *)p, -EFAULT);
 				p += sizeof(u32);
 			} else
 #endif	
 			{	
 				if ((end - p) < sizeof(Firm_event))
 					break;
-				copy_to_user_ret((Firm_event *)p, get_from_queue(),
+				copy_to_user_ret((Firm_event *)p, &this_event,
 				     		 sizeof(Firm_event), -EFAULT);
 				p += sizeof (Firm_event);
 			}
+			spin_lock_irqsave(&sunmouse.lock, flags);
 		}
-		sunmouse.ready = !queue_empty ();
+		spin_unlock_irqrestore(&sunmouse.lock, flags);
 		file->f_dentry->d_inode->i_atime = CURRENT_TIME;
 		return p-buffer;
 	} else {
@@ -467,9 +489,24 @@ sun_mouse_read(struct file *file, char *buffer,
 		if (count < limit)
 			limit = count;
 		for (c = 0; c < limit; c++) {
-			put_user(sunmouse.queue.stream[sunmouse.tail], buffer);
+			unsigned char val;
+			int empty = 0;
+
+			spin_lock_irqsave(&sunmouse.lock, flags);
+			if (queue_empty()) {
+				empty = 1;
+				val = 0;
+			} else {
+				val = sunmouse.queue.stream[sunmouse.tail];
+				sunmouse.tail = (sunmouse.tail + 1) % STREAM_SIZE;
+			}
+			spin_unlock_irqrestore(&sunmouse.lock, flags);
+
+			if (empty)
+				break;
+
+			put_user(val, buffer);
 			buffer++;
-			sunmouse.tail = (sunmouse.tail + 1) % STREAM_SIZE;
 		}
 		while (c < count) {
 			if (c >= 5)
@@ -478,7 +515,6 @@ sun_mouse_read(struct file *file, char *buffer,
 			buffer++;
 			c++;
 		}
-		sunmouse.ready = !queue_empty();
 		file->f_dentry->d_inode->i_atime = CURRENT_TIME;
 		return c;
 	}
@@ -491,7 +527,7 @@ sun_mouse_read(struct file *file, char *buffer,
 static unsigned int sun_mouse_poll(struct file *file, poll_table *wait)
 {
 	poll_wait(file, &sunmouse.proc_list, wait);
-	if(sunmouse.ready)
+	if(!queue_empty())
 		return POLLIN | POLLRDNORM;
 	return 0;
 }
@@ -513,8 +549,11 @@ sun_mouse_ioctl (struct inode *inode, struct file *file, unsigned int cmd, unsig
 			int value;
 
 			get_user_ret(value, (int *)arg, -EFAULT);
+
+			spin_lock_irq(&sunmouse.lock);
 			sunmouse.vuid_mode = value;
 			sunmouse.head = sunmouse.tail = 0;
+			spin_unlock_irq(&sunmouse.lock);
 		} else
 			return -EINVAL;
 		break;
@@ -525,7 +564,6 @@ sun_mouse_ioctl (struct inode *inode, struct file *file, unsigned int cmd, unsig
 		/* we ignore it.  I keep this check here so that we will notice   */
 		/* future mouse vuid ioctls */
 		return -ENOTTY;
-
 		
 	default:
 #ifdef DEBUG
@@ -537,42 +575,28 @@ sun_mouse_ioctl (struct inode *inode, struct file *file, unsigned int cmd, unsig
 }
 
 struct file_operations sun_mouse_fops = {
-	NULL,
-	sun_mouse_read,
-	sun_mouse_write,
-	NULL,
-	sun_mouse_poll,
-	sun_mouse_ioctl,
-	NULL,
-	sun_mouse_open,
-	NULL,		/* flush */
-	sun_mouse_close,
-	NULL,
-	sun_mouse_fasync,
+	read:		sun_mouse_read,
+	write:		sun_mouse_write,
+	poll:		sun_mouse_poll,
+	ioctl:		sun_mouse_ioctl,
+	open:		sun_mouse_open,
+	release:	sun_mouse_close,
+	fasync:		sun_mouse_fasync,
 };
 
 static struct miscdevice sun_mouse_mouse = {
 	SUN_MOUSE_MINOR, "sunmouse", &sun_mouse_fops
 };
 
-__initfunc(int sun_mouse_init(void))
+void sun_mouse_zsinit(void)
 {
-	if (!sunmouse.present)
-		return -ENODEV;
-
 	printk("Sun Mouse-Systems mouse driver version 1.00\n");
 
-	sunmouse.ready = sunmouse.active = 0;
+	sunmouse.active = 0;
 	misc_register (&sun_mouse_mouse);
 	sunmouse.delta_x = sunmouse.delta_y = 0;
 	sunmouse.button_state = 0x80;
-	sunmouse.proc_list = NULL;
+	init_waitqueue_head(&sunmouse.proc_list);
+	spin_lock_init(&sunmouse.lock);
 	sunmouse.byte = 69;
-	return 0;
-}
-
-void
-sun_mouse_zsinit(void)
-{
-	sunmouse.present = 1;
 }

@@ -8,7 +8,6 @@
  * Copyright (C) 1996 Paul Mackerras.
  */
 #include <linux/config.h>
-#include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/delay.h>
 #include <linux/types.h>
@@ -20,6 +19,7 @@
 #include <linux/tqueue.h>
 #include <linux/interrupt.h>
 #include <linux/reboot.h>
+#include <linux/spinlock.h>
 #include <asm/dbdma.h>
 #include <asm/io.h>
 #include <asm/pgtable.h>
@@ -28,12 +28,7 @@
 #include <asm/irq.h>
 #include <asm/hydra.h>
 #include <asm/processor.h>
-#include <asm/spinlock.h>
 #include <asm/feature.h>
-#ifdef CONFIG_PMAC_PBOOK
-#include <asm/adb.h>
-#include <asm/pmu.h>
-#endif
 
 #include "scsi.h"
 #include "hosts.h"
@@ -69,11 +64,6 @@ unsigned char use_active_neg = 0;  /* bit mask for SEQ_ACTIVE_NEG if used */
 #define ALLOW_RESEL(tgt)	((mesh_resel_targets >> (tgt)) & 1)
 #define ALLOW_DEBUG(tgt)	((mesh_debug_targets >> (tgt)) & 1)
 #define DEBUG_TARGET(cmd)	((cmd) && ALLOW_DEBUG((cmd)->target))
-
-struct proc_dir_entry proc_scsi_mesh = {
-	PROC_SCSI_MESH, 4, "mesh",
-	S_IFDIR | S_IRUGO | S_IXUGO, 2
-};
 
 #undef MESH_DBG
 #define N_DBG_LOG	50
@@ -159,8 +149,6 @@ struct mesh_state {
 	struct dbdma_cmd *dma_cmds;	/* space for dbdma commands, aligned */
 	int	clk_freq;
 	struct mesh_target tgts[8];
-	struct device_node *dnode;
-	unsigned char *mio_base;
 #ifndef MESH_NEW_STYLE_EH
 	Scsi_Cmnd *completed_q;
 	Scsi_Cmnd *completed_qtail;
@@ -172,14 +160,6 @@ struct mesh_state {
 	struct dbglog log[N_DBG_SLOG];
 #endif
 };
-
-#ifdef CONFIG_PMAC_PBOOK
-static int mesh_notify_sleep(struct pmu_sleep_notifier *self, int when);
-static struct pmu_sleep_notifier mesh_sleep_notifier = {
-	mesh_notify_sleep,
-	SLEEP_LEVEL_BLOCK,
-};
-#endif
 
 #ifdef MESH_DBG
 
@@ -228,7 +208,6 @@ static void set_dma_cmds(struct mesh_state *, Scsi_Cmnd *);
 static void halt_dma(struct mesh_state *);
 static int data_goes_out(Scsi_Cmnd *);
 static void do_abort(struct mesh_state *ms);
-static void set_mesh_power(struct mesh_state *ms, int state);
 
 static struct notifier_block mesh_notifier = {
 	mesh_notify_reboot,
@@ -263,7 +242,6 @@ mesh_detect(Scsi_Host_Template *tp)
 	if (mesh == 0)
 		mesh = find_compatible_devices("scsi", "chrp,mesh0");
 	for (; mesh != 0; mesh = mesh->next) {
-		struct device_node *mio;
 		if (mesh->n_addrs != 2 || mesh->n_intrs != 2) {
 			printk(KERN_ERR "mesh: expected 2 addrs and 2 intrs"
 			       " (got %d,%d)", mesh->n_addrs, mesh->n_intrs);
@@ -275,7 +253,7 @@ mesh_detect(Scsi_Host_Template *tp)
 			continue;
 		}
 		mesh_host->unique_id = nmeshes;
-#ifndef MODULE
+#if !defined(MODULE)
 		note_scsi_host(mesh, mesh_host);
 #endif
 
@@ -284,7 +262,6 @@ mesh_detect(Scsi_Host_Template *tp)
 			panic("no mesh state");
 		memset(ms, 0, sizeof(*ms));
 		ms->host = mesh_host;
-		ms->dnode = mesh;
 		ms->mesh = (volatile struct mesh_regs *)
 			ioremap(mesh->addrs[0].address, 0x1000);
 		ms->dma = (volatile struct dbdma_regs *)
@@ -328,16 +305,9 @@ mesh_detect(Scsi_Host_Template *tp)
 		if (mesh_sync_period < minper)
 			mesh_sync_period = minper;
 
-		ms->mio_base = 0;
-		for (mio = ms->dnode->parent; mio; mio = mio->parent)
-			if (strcmp(mio->name, "mac-io") == 0
-			    && mio->n_addrs > 0)
-				break;
-		if (mio)
-			ms->mio_base = (unsigned char *)
-				ioremap(mio->addrs[0].address, 0x40);
+		feature_set(mesh, FEATURE_MESH_enable);
+		mdelay(200);
 
-		set_mesh_power(ms, 1);
 		mesh_init(ms);
 
 		if (request_irq(ms->meshintr, do_mesh_interrupt, 0, "MESH", ms)) {
@@ -347,73 +317,11 @@ mesh_detect(Scsi_Host_Template *tp)
 		++nmeshes;
 	}
 
-	if ((_machine == _MACH_Pmac) && (nmeshes > 0)) {
-#ifdef CONFIG_PMAC_PBOOK
-		pmu_register_sleep_notifier(&mesh_sleep_notifier);
-#endif /* CONFIG_PMAC_PBOOK */
- 		register_reboot_notifier(&mesh_notifier);
-	}		
+	if ((_machine == _MACH_Pmac) && (nmeshes > 0))
+		register_reboot_notifier(&mesh_notifier);
 
 	return nmeshes;
 }
-
-static void
-set_mesh_power(struct mesh_state *ms, int state)
-{
-	if (_machine != _MACH_Pmac || ms->mio_base == 0)
-		return;
-		
-	if (state) {
-		feature_set(ms->dnode, FEATURE_MESH_enable);
-		/* This seems to enable the termination power. strangely
-		   this doesn't fully agree with OF, but with MacOS */
-		if (ms->mio_base)
-			out_8(ms->mio_base + 0x36, 0x70);
-		mdelay(200);
-	} else {
-		feature_clear(ms->dnode, FEATURE_MESH_enable);
-		if (ms->mio_base)
-			out_8(ms->mio_base + 0x36, 0x34);
-		mdelay(10);
-	}
-}			
-
-#ifdef CONFIG_PMAC_PBOOK
-/*
- * notify clients before sleep and reset bus afterwards
- */
-int
-mesh_notify_sleep(struct pmu_sleep_notifier *self, int when)
-{
-	struct mesh_state *ms;
-	
-	switch (when) {
-	case PBOOK_SLEEP_REQUEST:
-		/* XXX We should wait for current transactions and queue
-		 * new ones that would be posted beyond this point 
-		 */ 
-		break;
-	case PBOOK_SLEEP_REJECT:
-		break;
-		
-	case PBOOK_SLEEP_NOW:
-		for (ms = all_meshes; ms != 0; ms = ms->next) {
-			disable_irq(ms->meshintr);
-			set_mesh_power(ms, 0);
-		}
-		break;
-	case PBOOK_WAKE:
-		for (ms = all_meshes; ms != 0; ms = ms->next) {
-			set_mesh_power(ms, 1);
-			mesh_init(ms);
-			enable_irq(ms->meshintr);
-		}
-		break;
-	}
-	return PBOOK_SLEEP_OK;
-}
-#endif /* CONFIG_PMAC_PBOOK */
- 
 
 int
 mesh_queue(Scsi_Cmnd *cmd, void (*done)(Scsi_Cmnd *))
@@ -1911,12 +1819,6 @@ data_goes_out(Scsi_Cmnd *cmd)
 		return 0;
 	}
 }
-
-#ifdef MODULE
-Scsi_Host_Template driver_template = SCSI_MESH;
-
-#include "scsi_module.c"
-#endif /* MODULE */
 
 #ifdef MESH_DBG
 static inline u32 readtb(void)

@@ -26,13 +26,13 @@
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
-#define CPIA_MAJ_VER	1
-#define CPIA_MIN_VER    0
-#define CPIA_PATCH_VER	0
+#define CPIA_MAJ_VER	0
+#define CPIA_MIN_VER    7
+#define CPIA_PATCH_VER	4
 
-#define CPIA_PP_MAJ_VER       1
-#define CPIA_PP_MIN_VER       0
-#define CPIA_PP_PATCH_VER     0
+#define CPIA_PP_MAJ_VER       0
+#define CPIA_PP_MIN_VER       7
+#define CPIA_PP_PATCH_VER     4
 
 #define CPIA_MAX_FRAME_SIZE_UNALIGNED	(352 * 288 * 4)   /* CIF at RGB32 */
 #define CPIA_MAX_FRAME_SIZE	((CPIA_MAX_FRAME_SIZE_UNALIGNED + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1)) /* align above to PAGE_SIZE */
@@ -204,15 +204,6 @@ struct cam_params {
 		u8 subSample;
 		u8 yuvOrder;
 	} format;
-
-        struct {     /* GA 04/14/00 - Intel QX3 specific data */
-	        u8 qx3_detected;        /* a QX3 is present */
-	        u8 toplight;            /* top light lit , R/W */
-	        u8 bottomlight;         /* bottom light lit, R/W */
-	        u8 button;              /* snapshot button pressed (R/O) */
-	        u8 cradled;             /* microscope is in cradle (R/O) */
-	} qx3;
-
 	struct {
 		u8 colStart;		/* skip first 8*colStart pixels */
 		u8 colEnd;		/* finish at 8*colEnd pixels */

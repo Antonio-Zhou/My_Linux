@@ -35,7 +35,6 @@
 #define DEVFS_FL_REMOVABLE      0x020 /* This is a removable media device    */
 #define DEVFS_FL_WAIT           0x040 /* Wait for devfsd to finish           */
 #define DEVFS_FL_NO_PERSISTENCE 0x080 /* Forget changes after unregister     */
-#define DEVFS_FL_CURRENT_OWNER  0x100 /* Set initial ownership to current    */
 #define DEVFS_FL_DEFAULT        DEVFS_FL_NONE
 
 
@@ -53,12 +52,12 @@ typedef struct devfs_entry * devfs_handle_t;
 
 
 #ifdef CONFIG_DEVFS_FS
-extern devfs_handle_t devfs_register (devfs_handle_t dir, const char *name,
+extern devfs_handle_t devfs_register (devfs_handle_t dir,
+				      const char *name, unsigned int namelen,
 				      unsigned int flags,
 				      unsigned int major, unsigned int minor,
-				      umode_t mode,
-				      struct file_operations *fops,
-				      void *info);
+				      umode_t mode, uid_t uid, gid_t gid,
+				      void *ops, void *info);
 extern void devfs_unregister (devfs_handle_t de);
 extern int devfs_mk_symlink (devfs_handle_t dir,
 			     const char *name, unsigned int namelen,
@@ -67,8 +66,6 @@ extern int devfs_mk_symlink (devfs_handle_t dir,
 			     devfs_handle_t *handle, void *info);
 extern devfs_handle_t devfs_mk_dir (devfs_handle_t dir, const char *name,
 				    unsigned int namelen, void *info);
-extern int devfs_fill_file (struct inode *inode, struct file *file,
-			    devfs_handle_t de);
 extern devfs_handle_t devfs_find_handle (devfs_handle_t dir,
 					 const char *name,unsigned int namelen,
 					 unsigned int major,unsigned int minor,
@@ -79,7 +76,7 @@ extern int devfs_get_maj_min (devfs_handle_t de,
 			      unsigned int *major, unsigned int *minor);
 extern devfs_handle_t devfs_get_handle_from_inode (struct inode *inode);
 extern int devfs_generate_path (devfs_handle_t de, char *path, int buflen);
-extern struct file_operations *devfs_get_fops (devfs_handle_t de);
+extern void *devfs_get_ops (devfs_handle_t de);
 extern int devfs_set_file_size (devfs_handle_t de, unsigned long size);
 extern void *devfs_get_info (devfs_handle_t de);
 extern int devfs_set_info (devfs_handle_t de, void *info);
@@ -88,14 +85,21 @@ extern devfs_handle_t devfs_get_first_child (devfs_handle_t de);
 extern devfs_handle_t devfs_get_next_sibling (devfs_handle_t de);
 extern void devfs_auto_unregister (devfs_handle_t master,devfs_handle_t slave);
 extern devfs_handle_t devfs_get_unregister_slave (devfs_handle_t master);
+extern const char *devfs_get_name (devfs_handle_t de, unsigned int *namelen);
 extern int devfs_register_chrdev (unsigned int major, const char *name,
 				  struct file_operations *fops);
 extern int devfs_register_blkdev (unsigned int major, const char *name,
-				  struct file_operations *fops);
+				  struct block_device_operations *bdops);
 extern int devfs_unregister_chrdev (unsigned int major, const char *name);
 extern int devfs_unregister_blkdev (unsigned int major, const char *name);
 
 extern void devfs_register_tape (devfs_handle_t de);
+extern void devfs_register_series (devfs_handle_t dir, const char *format,
+				   unsigned int num_entries,
+				   unsigned int flags, unsigned int major,
+				   unsigned int minor_start,
+				   umode_t mode, uid_t uid, gid_t gid,
+				   void *ops, void *info);
 
 extern int init_devfs_fs (void);
 extern void mount_devfs_fs (void);
@@ -103,12 +107,13 @@ extern void devfs_make_root (const char *name);
 #else  /*  CONFIG_DEVFS_FS  */
 static inline devfs_handle_t devfs_register (devfs_handle_t dir,
 					     const char *name,
+					     unsigned int namelen,
 					     unsigned int flags,
 					     unsigned int major,
 					     unsigned int minor,
 					     umode_t mode,
-					     struct file_operations *fops,
-					     void *info)
+					     uid_t uid, gid_t gid,
+					     void *ops, void *info)
 {
     return NULL;
 }
@@ -129,11 +134,6 @@ static inline devfs_handle_t devfs_mk_dir (devfs_handle_t dir,
 					   unsigned int namelen, void *info)
 {
     return NULL;
-}
-static inline int devfs_fill_file (struct inode *inode, struct file *file,
-				   devfs_handle_t de)
-{
-    return -ENOSYS;
 }
 static inline devfs_handle_t devfs_find_handle (devfs_handle_t dir,
 						const char *name,
@@ -167,7 +167,7 @@ static inline int devfs_generate_path (devfs_handle_t de, char *path,
 {
     return -ENOSYS;
 }
-static inline struct file_operations *devfs_get_fops (devfs_handle_t de)
+static inline void *devfs_get_ops (devfs_handle_t de)
 {
     return NULL;
 }
@@ -204,15 +204,20 @@ static inline devfs_handle_t devfs_get_unregister_slave (devfs_handle_t master)
 {
     return NULL;
 }
+static inline const char *devfs_get_name (devfs_handle_t de,
+					  unsigned int *namelen)
+{
+    return NULL;
+}
 static inline int devfs_register_chrdev (unsigned int major, const char *name,
 					 struct file_operations *fops)
 {
     return register_chrdev (major, name, fops);
 }
 static inline int devfs_register_blkdev (unsigned int major, const char *name,
-					 struct file_operations *fops)
+					 struct block_device_operations *bdops)
 {
-    return register_blkdev (major, name, fops);
+    return register_blkdev (major, name, bdops);
 }
 static inline int devfs_unregister_chrdev (unsigned int major,const char *name)
 {
@@ -224,6 +229,18 @@ static inline int devfs_unregister_blkdev (unsigned int major,const char *name)
 }
 
 static inline void devfs_register_tape (devfs_handle_t de)
+{
+    return;
+}
+
+static inline void devfs_register_series (devfs_handle_t dir,
+					  const char *format,
+					  unsigned int num_entries,
+					  unsigned int flags,
+					  unsigned int major,
+					  unsigned int minor_start,
+					  umode_t mode, uid_t uid, gid_t gid,
+					  void *ops, void *info)
 {
     return;
 }
@@ -243,5 +260,3 @@ static inline void devfs_make_root (const char *name)
 #endif  /*  CONFIG_DEVFS_FS  */
 
 #endif  /*  _LINUX_DEVFS_FS_KERNEL_H  */
-#define tty_register_devfs(driver,flags,minor)
-#define tty_unregister_devfs(driver,minor)

@@ -54,10 +54,10 @@
  */
 #define RESTOREMODE(savereg) \
 	msr	cpsr, savereg
-	
+
 /*
  * save interrupt state (uses stack)
- */
+ */	
 #define SAVEIRQS(tmpreg)\
 	mrs	tmpreg, cpsr; \
 	str	tmpreg, [sp, $-4]!

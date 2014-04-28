@@ -1,18 +1,21 @@
-/* $Id: jade.c,v 1.1.2.1 2001/12/31 13:26:45 kai Exp $
+/* $Id: jade.c,v 1.3 2000/02/26 00:35:13 keil Exp $
  *
- * JADE stuff (derived from original hscx.c)
+ * jade.c   JADE stuff (derived from original hscx.c)
  *
- * Author       Roland Klabunde
- * Copyright    by Roland Klabunde   <R.Klabunde@Berkom.de>
- * 
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
+ * Author   Roland Klabunde (R.Klabunde@Berkom.de)
+ *
+ * $Log: jade.c,v $
+ * Revision 1.3  2000/02/26 00:35:13  keil
+ * Fix skb freeing in interrupt context
+ *
+ * Revision 1.2  1999/07/01 08:07:57  keil
+ * Initial version
+ *
  *
  */
 
 
 #define __NO_VERSION__
-#include <linux/init.h>
 #include "hisax.h"
 #include "hscx.h"
 #include "jade.h"
@@ -20,8 +23,8 @@
 #include <linux/interrupt.h>
 
 
-int __init
-JadeVersion(struct IsdnCardState *cs, char *s)
+HISAX_INITFUNC(int
+JadeVersion(struct IsdnCardState *cs, char *s))
 {
     int ver,i;
     int to = 50;
@@ -211,10 +214,10 @@ close_jadestate(struct BCState *bcs)
 		kfree(bcs->blog);
 		bcs->blog = NULL;
 	}
-	skb_queue_purge(&bcs->rqueue);
-	skb_queue_purge(&bcs->squeue);
+	discard_queue(&bcs->rqueue);
+	discard_queue(&bcs->squeue);
 	if (bcs->tx_skb) {
-		dev_kfree_skb(bcs->tx_skb);
+		dev_kfree_skb_any(bcs->tx_skb);
 		bcs->tx_skb = NULL;
 		test_and_clear_bit(BC_FLG_BUSY, &bcs->Flag);
 	}
@@ -265,8 +268,8 @@ setstack_jade(struct PStack *st, struct BCState *bcs)
 	return (0);
 }
 
-void __init
-clear_pending_jade_ints(struct IsdnCardState *cs)
+HISAX_INITFUNC(void
+clear_pending_jade_ints(struct IsdnCardState *cs))
 {
 	int val;
 	char tmp[64];
@@ -291,8 +294,8 @@ clear_pending_jade_ints(struct IsdnCardState *cs)
 	cs->BC_Write_Reg(cs, 1, jade_HDLC_IMR, 0xF8);
 }
 
-void __init
-initjade(struct IsdnCardState *cs)
+HISAX_INITFUNC(void
+initjade(struct IsdnCardState *cs))
 {
 	cs->bcs[0].BC_SetStack = setstack_jade;
 	cs->bcs[1].BC_SetStack = setstack_jade;

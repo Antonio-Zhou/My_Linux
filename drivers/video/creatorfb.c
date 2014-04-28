@@ -1,4 +1,4 @@
-/* $Id: creatorfb.c,v 1.27.2.2 1999/11/05 09:07:56 davem Exp $
+/* $Id: creatorfb.c,v 1.31 1999/11/19 09:57:12 davem Exp $
  * creatorfb.c: Creator/Creator3D frame buffer driver
  *
  * Copyright (C) 1997,1998,1999 Jakub Jelinek (jj@ultra.linux.cz)
@@ -20,6 +20,8 @@
 #include <linux/selection.h>
 
 #include <video/sbusfb.h>
+
+#include <asm/upa.h>
 
 #define	FFB_SFB8R_VOFF		0x00000000
 #define	FFB_SFB8G_VOFF		0x00400000
@@ -49,24 +51,24 @@
 #define	FFB_PROM_VOFF		0x0bc08000
 #define	FFB_EXP_VOFF		0x0bc18000
 
-#define	FFB_SFB8R_POFF		0x04000000
-#define	FFB_SFB8G_POFF		0x04400000
-#define	FFB_SFB8B_POFF		0x04800000
-#define	FFB_SFB8X_POFF		0x04c00000
-#define	FFB_SFB32_POFF		0x05000000
-#define	FFB_SFB64_POFF		0x06000000
-#define	FFB_FBC_REGS_POFF	0x00600000
-#define	FFB_BM_FBC_REGS_POFF	0x00600000
-#define	FFB_DFB8R_POFF		0x01000000
-#define	FFB_DFB8G_POFF		0x01400000
-#define	FFB_DFB8B_POFF		0x01800000
-#define	FFB_DFB8X_POFF		0x01c00000
-#define	FFB_DFB24_POFF		0x02000000
-#define	FFB_DFB32_POFF		0x03000000
-#define	FFB_FBC_KREGS_POFF	0x00610000
-#define	FFB_DAC_POFF		0x00400000
-#define	FFB_PROM_POFF		0x00000000
-#define	FFB_EXP_POFF		0x00200000
+#define	FFB_SFB8R_POFF		0x04000000UL
+#define	FFB_SFB8G_POFF		0x04400000UL
+#define	FFB_SFB8B_POFF		0x04800000UL
+#define	FFB_SFB8X_POFF		0x04c00000UL
+#define	FFB_SFB32_POFF		0x05000000UL
+#define	FFB_SFB64_POFF		0x06000000UL
+#define	FFB_FBC_REGS_POFF	0x00600000UL
+#define	FFB_BM_FBC_REGS_POFF	0x00600000UL
+#define	FFB_DFB8R_POFF		0x01000000UL
+#define	FFB_DFB8G_POFF		0x01400000UL
+#define	FFB_DFB8B_POFF		0x01800000UL
+#define	FFB_DFB8X_POFF		0x01c00000UL
+#define	FFB_DFB24_POFF		0x02000000UL
+#define	FFB_DFB32_POFF		0x03000000UL
+#define	FFB_FBC_KREGS_POFF	0x00610000UL
+#define	FFB_DAC_POFF		0x00400000UL
+#define	FFB_PROM_POFF		0x00000000UL
+#define	FFB_EXP_POFF		0x00200000UL
 
 /* Draw operations */
 #define FFB_DRAWOP_DOT		0x00
@@ -132,10 +134,18 @@
 
 struct ffb_fbc {
 	/* Next vertex registers */
-	u32		xxx1[3]; volatile u32 alpha; volatile u32 red;
-	volatile u32 green; volatile u32 blue; volatile u32 depth; volatile
-	u32 y; volatile u32 x; u32 xxx2[2]; volatile u32 ryf; volatile u32
-	rxf; u32 xxx3[2];
+	u32		xxx1[3];
+	volatile u32	alpha;
+	volatile u32	red;
+	volatile u32	green;
+	volatile u32	blue;
+	volatile u32	depth;
+	volatile u32	y;
+	volatile u32	x;
+	u32		xxx2[2];
+	volatile u32	ryf;
+	volatile u32	rxf;
+	u32		xxx3[2];
 	
 	volatile u32	dmyf;
 	volatile u32	dmxf;
@@ -275,7 +285,7 @@ static __inline__ void FFBFifo(struct fb_info_sbusfb *fb, int n)
 
 	if (cache - n < 0) {
 		fbc = fb->s.ffb.fbc;
-		do {	cache = (fbc->ucsr & FFB_UCSR_FIFO_MASK) - 8;
+		do {	cache = (upa_readl(&fbc->ucsr) & FFB_UCSR_FIFO_MASK) - 8;
 		} while (cache - n < 0);
 	}
 	fb->s.ffb.fifo_cache = cache - n;
@@ -286,10 +296,11 @@ static __inline__ void FFBWait(struct ffb_fbc *ffb)
 	int limit = 10000;
 
 	do {
-		if((ffb->ucsr & FFB_UCSR_ALL_BUSY) == 0)
+		if ((upa_readl(&ffb->ucsr) & FFB_UCSR_ALL_BUSY) == 0)
 			break;
-		if((ffb->ucsr & FFB_UCSR_ALL_ERRORS) != 0)
-			ffb->ucsr = FFB_UCSR_ALL_ERRORS;
+		if ((upa_readl(&ffb->ucsr) & FFB_UCSR_ALL_ERRORS) != 0) {
+			upa_writel(FFB_UCSR_ALL_ERRORS, &ffb->ucsr);
+		}
 	} while(--limit > 0);
 }
 
@@ -341,7 +352,7 @@ static void ffb_clear(struct vc_data *conp, struct display *p, int sy, int sx,
 	fg = ((u32 *)p->dispsw_data)[attr_bgcol_ec(p,conp)];
 	if (fg != fb->s.ffb.fg_cache) {
 		FFBFifo(fb, 5);
-		fbc->fg = fg;
+		upa_writel(fg, &fbc->fg);
 		fb->s.ffb.fg_cache = fg;
 	} else
 		FFBFifo(fb, 4);
@@ -356,8 +367,8 @@ static void ffb_clear(struct vc_data *conp, struct display *p, int sy, int sx,
 	} else {
 		yx += sx * fontwidth(p); hw += width * fontwidth(p);
 	}
-	*(volatile u64 *)&fbc->by = yx + fb->s.ffb.yx_margin;
-	*(volatile u64 *)&fbc->bh = hw;
+	upa_writeq(yx + fb->s.ffb.yx_margin, &fbc->by);
+	upa_writeq(hw, &fbc->bh);
 	spin_unlock_irqrestore(&fb->lock, flags);
 }
 
@@ -372,15 +383,15 @@ static void ffb_fill(struct fb_info_sbusfb *fb, struct display *p, int s,
 	fg = ((u32 *)p->dispsw_data)[attr_bgcol(p,s)];
 	if (fg != fb->s.ffb.fg_cache) {
 		FFBFifo(fb, 1);
-		fbc->fg = fg;
+		upa_writel(fg, &fbc->fg);
 		fb->s.ffb.fg_cache = fg;
 	}
 	while (count-- > 0) {
 		FFBFifo(fb, 4);
-		fbc->by = boxes[1];
-		fbc->bx = boxes[0];
-		fbc->bh = boxes[3] - boxes[1];
-		fbc->bw = boxes[2] - boxes[0];
+		upa_writel(boxes[1], &fbc->by);
+		upa_writel(boxes[0], &fbc->bx);
+		upa_writel(boxes[3] - boxes[1], &fbc->bh);
+		upa_writel(boxes[2] - boxes[0], &fbc->bw);
 		boxes += 4;
 	}
 	spin_unlock_irqrestore(&fb->lock, flags);
@@ -415,18 +426,23 @@ static void ffb_putc(struct vc_data *conp, struct display *p, int c, int yy, int
 	       ((u32 *)p->dispsw_data)[attr_bgcol(p,c)];
 	if (fgbg != *(u64 *)&fb->s.ffb.fg_cache) {
 		FFBFifo(fb, 2);
-		*(volatile u64 *)&fbc->fg = fgbg;
+		upa_writeq(fgbg, &fbc->fg);
 		*(u64 *)&fb->s.ffb.fg_cache = fgbg;
 	}
 	FFBFifo(fb, 2 + fontheight(p));
-	fbc->fontxy = xy;
-	fbc->fontw = fontwidth(p);
+	upa_writel(xy, &fbc->fontxy);
+	upa_writel(fontwidth(p), &fbc->fontw);
 	if (fontwidth(p) <= 8) {
-		for (i = 0; i < fontheight(p); i++)
-			fbc->font = *fd++ << 24;
+		for (i = 0; i < fontheight(p); i++) {
+			u32 val = *fd++ << 24;
+
+			upa_writel(val, &fbc->font);
+		}
 	} else {
 		for (i = 0; i < fontheight(p); i++) {
-			fbc->font = *(u16 *)fd << 16;
+			u32 val = *(u16 *)fd << 16;
+
+			upa_writel(val, &fbc->font);
 			fd += 2;
 		}
 	}
@@ -448,7 +464,7 @@ static void ffb_putcs(struct vc_data *conp, struct display *p, const unsigned sh
 	       ((u32 *)p->dispsw_data)[attr_bgcol(p,scr_readw(s))];
 	if (fgbg != *(u64 *)&fb->s.ffb.fg_cache) {
 		FFBFifo(fb, 2);
-		*(volatile u64 *)&fbc->fg = fgbg;
+		upa_writeq(fgbg, &fbc->fg);
 		*(u64 *)&fb->s.ffb.fg_cache = fgbg;
 	}
 	xy = fb->s.ffb.xy_margin;
@@ -464,8 +480,8 @@ static void ffb_putcs(struct vc_data *conp, struct display *p, const unsigned sh
 		while (count >= 4) {
 			count -= 4;
 			FFBFifo(fb, 2 + fontheight(p));
-			fbc->fontw = 4 * fontwidth(p);
-			fbc->fontxy = xy;
+			upa_writel(4 * fontwidth(p), &fbc->fontw);
+			upa_writel(xy, &fbc->fontxy);
 			if (fontheightlog(p)) {
 				fd1 = p->fontdata + ((scr_readw(s++) & p->charmask) << fontheightlog(p));
 				fd2 = p->fontdata + ((scr_readw(s++) & p->charmask) << fontheightlog(p));
@@ -478,14 +494,20 @@ static void ffb_putcs(struct vc_data *conp, struct display *p, const unsigned sh
 				fd4 = p->fontdata + ((scr_readw(s++) & p->charmask) * fontheight(p));
 			}
 			if (fontwidth(p) == 8) {
-				for (i = 0; i < fontheight(p); i++)
-					fbc->font = ((u32)*fd4++) | ((((u32)*fd3++) | ((((u32)*fd2++) | (((u32)*fd1++) 
+				for (i = 0; i < fontheight(p); i++) {
+					u32 val;
+
+					val = ((u32)*fd4++) | ((((u32)*fd3++) | ((((u32)*fd2++) | (((u32)*fd1++) 
 						<< 8)) << 8)) << 8);
+					upa_writel(val, &fbc->font);
+				}
 				xy += 32;
 			} else {
-				for (i = 0; i < fontheight(p); i++)
-					fbc->font = (((u32)*fd4++) | ((((u32)*fd3++) | ((((u32)*fd2++) | (((u32)*fd1++) 
+				for (i = 0; i < fontheight(p); i++) {
+					u32 val = (((u32)*fd4++) | ((((u32)*fd3++) | ((((u32)*fd2++) | (((u32)*fd1++) 
 						<< fontwidth(p))) << fontwidth(p))) << fontwidth(p))) << (24 - 3 * fontwidth(p));
+					upa_writel(val, &fbc->font);
+				}
 				xy += 4 * fontwidth(p);
 			}
 		}
@@ -493,8 +515,8 @@ static void ffb_putcs(struct vc_data *conp, struct display *p, const unsigned sh
 		while (count >= 2) {
 			count -= 2;
 			FFBFifo(fb, 2 + fontheight(p));
-			fbc->fontw = 2 * fontwidth(p);
-			fbc->fontxy = xy;
+			upa_writel(2 * fontwidth(p), &fbc->fontw);
+			upa_writel(xy, &fbc->fontxy);
 			if (fontheightlog(p)) {
 				fd1 = p->fontdata + ((scr_readw(s++) & p->charmask) << (fontheightlog(p) + 1));
 				fd2 = p->fontdata + ((scr_readw(s++) & p->charmask) << (fontheightlog(p) + 1));
@@ -503,7 +525,9 @@ static void ffb_putcs(struct vc_data *conp, struct display *p, const unsigned sh
 				fd2 = p->fontdata + (((scr_readw(s++) & p->charmask) * fontheight(p)) << 1);
 			}
 			for (i = 0; i < fontheight(p); i++) {
-				fbc->font = ((((u32)*(u16 *)fd1) << fontwidth(p)) | ((u32)*(u16 *)fd2)) << (16 - fontwidth(p));
+				u32 val = ((((u32)*(u16 *)fd1) << fontwidth(p)) | ((u32)*(u16 *)fd2)) << (16 - fontwidth(p));
+
+				upa_writel(val, &fbc->font);
 				fd1 += 2; fd2 += 2;
 			}
 			xy += 2 * fontwidth(p);
@@ -512,20 +536,25 @@ static void ffb_putcs(struct vc_data *conp, struct display *p, const unsigned sh
 	while (count) {
 		count--;
 		FFBFifo(fb, 2 + fontheight(p));
-		fbc->fontw = fontwidth(p);
-		fbc->fontxy = xy;
+		upa_writel(fontwidth(p), &fbc->fontw);
+		upa_writel(xy, &fbc->fontxy);
 		if (fontheightlog(p))
 			i = ((scr_readw(s++) & p->charmask) << fontheightlog(p));
 		else
 			i = ((scr_readw(s++) & p->charmask) * fontheight(p));
 		if (fontwidth(p) <= 8) {
 			fd1 = p->fontdata + i;
-			for (i = 0; i < fontheight(p); i++)
-				fbc->font = *fd1++ << 24;
+			for (i = 0; i < fontheight(p); i++) {
+				u32 val = *fd1++ << 24;
+
+				upa_writel(val, &fbc->font);
+			}
 		} else {
 			fd1 = p->fontdata + (i << 1);
 			for (i = 0; i < fontheight(p); i++) {
-				fbc->font = *(u16 *)fd1 << 16;
+				u32 val = *(u16 *)fd1 << 16;
+
+				upa_writel(val, &fbc->font);
 				fd1 += 2;
 			}
 		}
@@ -547,10 +576,10 @@ static void ffb_blank(struct fb_info_sbusfb *fb)
 	u32 tmp;
 
 	spin_lock_irqsave(&fb->lock, flags);
-	dac->type = 0x6000;
-	tmp = (dac->value & ~0x1);
-	dac->type = 0x6000;
-	dac->value = tmp;
+	upa_writel(0x6000, &dac->type);
+	tmp = (upa_readl(&dac->value) & ~0x1);
+	upa_writel(0x6000, &dac->type);
+	upa_writel(tmp, &dac->value);
 	spin_unlock_irqrestore(&fb->lock, flags);
 }
 #endif
@@ -562,10 +591,10 @@ static void ffb_unblank(struct fb_info_sbusfb *fb)
 	u32 tmp;
 
 	spin_lock_irqsave(&fb->lock, flags);
-	dac->type = 0x6000;
-	tmp = (dac->value | 0x1);
-	dac->type = 0x6000;
-	dac->value = tmp;
+	upa_writel(0x6000, &dac->type);
+	tmp = (upa_readl(&dac->value) | 0x1);
+	upa_writel(0x6000, &dac->type);
+	upa_writel(tmp, &dac->value);
 	spin_unlock_irqrestore(&fb->lock, flags);
 }
 
@@ -576,12 +605,16 @@ static void ffb_loadcmap (struct fb_info_sbusfb *fb, struct display *p, int inde
 	int i, j = count;
 	
 	spin_lock_irqsave(&fb->lock, flags);
-	dac->type = 0x2000 | index;
-	for (i = index; j--; i++)
+	upa_writel(0x2000 | index, &dac->type);
+	for (i = index; j--; i++) {
+		u32 val;
+
 		/* Feed the colors in :)) */
-		dac->value = ((fb->color_map CM(i,0))) |
-			     ((fb->color_map CM(i,1)) << 8) |
-			     ((fb->color_map CM(i,2)) << 16);
+		val = ((fb->color_map CM(i,0))) |
+			((fb->color_map CM(i,1)) << 8) |
+			((fb->color_map CM(i,2)) << 16);
+		upa_writel(val, &dac->value);
+	}
 	if (!p)
 		goto out;
 	for (i = index, j = count; i < 16 && j--; i++)
@@ -613,12 +646,15 @@ static void ffb_margins (struct fb_info_sbusfb *fb, struct display *p, int x_mar
 static __inline__ void __ffb_curs_enable (struct fb_info_sbusfb *fb, int enable)
 {
 	struct ffb_dac *dac = fb->s.ffb.dac;
+	u32 val;
 
-	dac->type2 = 0x100;
-	if (fb->s.ffb.dac_rev <= 2)
-		dac->value2 = enable ? 3 : 0;
-	else
-		dac->value2 = enable ? 0 : 3;
+	upa_writel(0x100, &dac->type2);
+	if (fb->s.ffb.dac_rev <= 2) {
+		val = enable ? 3 : 0;
+	} else {
+		val = enable ? 0 : 3;
+	}
+	upa_writel(val, &dac->value2);
 }
 
 static void ffb_setcursormap (struct fb_info_sbusfb *fb, u8 *red, u8 *green, u8 *blue)
@@ -628,9 +664,9 @@ static void ffb_setcursormap (struct fb_info_sbusfb *fb, u8 *red, u8 *green, u8 
 	
 	spin_lock_irqsave(&fb->lock, flags);
 	__ffb_curs_enable (fb, 0);
-	dac->type2 = 0x102;
-	dac->value2 = (red[0] | (green[0]<<8) | (blue[0]<<16));
-	dac->value2 = (red[1] | (green[1]<<8) | (blue[1]<<16));
+	upa_writel(0x102, &dac->type2);
+	upa_writel((red[0] | (green[0]<<8) | (blue[0]<<16)), &dac->value2);
+	upa_writel((red[1] | (green[1]<<8) | (blue[1]<<16)), &dac->value2);
 	spin_unlock_irqrestore(&fb->lock, flags);
 }
 
@@ -644,14 +680,16 @@ static void ffb_setcurshape (struct fb_info_sbusfb *fb)
 	spin_lock_irqsave(&fb->lock, flags);
 	__ffb_curs_enable (fb, 0);
 	for (j = 0; j < 2; j++) {
-		dac->type2 = j ? 0 : 0x80;
+		u32 val = j ? 0 : 0x80;
+
+		upa_writel(val, &dac->type2);
 		for (i = 0; i < 0x40; i++) {
 			if (fb->cursor.size.fbx <= 32) {
-				dac->value2 = fb->cursor.bits [j][i];
-				dac->value2 = 0;
+				upa_writel(fb->cursor.bits [j][i], &dac->value2);
+				upa_writel(0, &dac->value2);
 			} else {
-				dac->value2 = fb->cursor.bits [j][2*i];
-				dac->value2 = fb->cursor.bits [j][2*i+1];
+				upa_writel(fb->cursor.bits [j][2*i], &dac->value2);
+				upa_writel(fb->cursor.bits [j][2*i+1], &dac->value2);
 			}
 		}
 	}	
@@ -664,13 +702,15 @@ static void ffb_setcursor (struct fb_info_sbusfb *fb)
 	struct ffb_dac *dac = fb->s.ffb.dac;
 	struct cg_cursor *c = &fb->cursor;
 	unsigned long flags;
+	u32 val;
 
 	spin_lock_irqsave(&fb->lock, flags);
-	dac->type2 = 0x104;
+	upa_writel(0x104, &dac->type2);
 	/* Should this be just 0x7ff?? 
 	   Should I do some margin handling and setcurshape in that case? */
-	dac->value2 = (((c->cpos.fby - c->chot.fby) & 0xffff) << 16)
-	              |((c->cpos.fbx - c->chot.fbx) & 0xffff);
+	val = (((c->cpos.fby - c->chot.fby) & 0xffff) << 16)
+		|((c->cpos.fbx - c->chot.fbx) & 0xffff);
+	upa_writel(val, &dac->value2);
 	__ffb_curs_enable (fb, fb->cursor.enable);
 	spin_unlock_irqrestore(&fb->lock, flags);
 }
@@ -684,21 +724,29 @@ static void ffb_switch_from_graph (struct fb_info_sbusfb *fb)
 	FFBWait(fbc);
 	fb->s.ffb.fifo_cache = 0;
 	FFBFifo(fb, 8);
-	fbc->ppc = FFB_PPC_VCE_DISABLE|FFB_PPC_TBE_OPAQUE|FFB_PPC_APE_DISABLE|FFB_PPC_CS_CONST;
-	fbc->fbc = 0x2000707f;
-	fbc->rop = FFB_ROP_NEW;
-	fbc->drawop = FFB_DRAWOP_RECTANGLE;
-	fbc->pmask = 0xffffffff;
-	fbc->fontinc = 0x10000;
-	fbc->fg = fb->s.ffb.fg_cache;
-	fbc->bg = fb->s.ffb.bg_cache;
+	upa_writel(FFB_PPC_VCE_DISABLE|FFB_PPC_TBE_OPAQUE|
+		   FFB_PPC_APE_DISABLE|FFB_PPC_CS_CONST,
+		   &fbc->ppc);
+	upa_writel(0x2000707f, &fbc->fbc);
+	upa_writel(FFB_ROP_NEW, &fbc->rop);
+	upa_writel(FFB_DRAWOP_RECTANGLE, &fbc->drawop);
+	upa_writel(0xffffffff, &fbc->pmask);
+	upa_writel(0x10000, &fbc->fontinc);
+	upa_writel(fb->s.ffb.fg_cache, &fbc->fg);
+	upa_writel(fb->s.ffb.bg_cache, &fbc->bg);
 	FFBWait(fbc);
 	spin_unlock_irqrestore(&fb->lock, flags);
-}                                
+}
+
+static int __init ffb_rasterimg (struct fb_info *info, int start)
+{
+	ffb_switch_from_graph (sbusfbinfo(info));
+	return 0;
+}
 
 static char idstring[60] __initdata = { 0 };
 
-__initfunc(char *creatorfb_init(struct fb_info_sbusfb *fb))
+char __init *creatorfb_init(struct fb_info_sbusfb *fb)
 {
 	struct fb_fix_screeninfo *fix = &fb->fix;
 	struct fb_var_screeninfo *var = &fb->var;
@@ -708,14 +756,25 @@ __initfunc(char *creatorfb_init(struct fb_info_sbusfb *fb))
 	int i, afb = 0;
 	unsigned int btype;
 	char name[64];
+	struct fb_ops *fbops;
 
 	if (prom_getproperty(fb->prom_node, "reg", (void *) regs, sizeof(regs)) <= 0)
 		return NULL;
 		
 	disp->dispsw_data = (void *)kmalloc(16 * sizeof(u32), GFP_KERNEL);
-	if (!disp->dispsw_data)
+	if (disp->dispsw_data == NULL)
 		return NULL;
 	memset(disp->dispsw_data, 0, 16 * sizeof(u32));
+
+	fbops = kmalloc(sizeof(*fbops), GFP_KERNEL);
+	if (fbops == NULL) {
+		kfree(disp->dispsw_data);
+		return NULL;
+	}
+	
+	*fbops = *fb->info.fbops;
+	fbops->fb_rasterimg = ffb_rasterimg;
+	fb->info.fbops = fbops;
 
 	prom_getstring(fb->prom_node, "name", name, sizeof(name));
 	if (!strcmp(name, "SUNW,afb"))
@@ -745,8 +804,8 @@ __initfunc(char *creatorfb_init(struct fb_info_sbusfb *fb))
 	disp->screen_base = (char *)__va(regs[0].phys_addr) + FFB_DFB24_POFF + 8192 * fb->y_margin + 4 * fb->x_margin;
 	fb->s.ffb.xy_margin = (fb->y_margin << 16) + fb->x_margin;
 	fb->s.ffb.yx_margin = (((u64)fb->y_margin) << 32) + fb->x_margin;
-	fb->s.ffb.fbc = (struct ffb_fbc *)((char *)__va(regs[0].phys_addr) + FFB_FBC_REGS_POFF);
-	fb->s.ffb.dac = (struct ffb_dac *)((char *)__va(regs[0].phys_addr) + FFB_DAC_POFF);
+	fb->s.ffb.fbc = (struct ffb_fbc *)(regs[0].phys_addr + FFB_FBC_REGS_POFF);
+	fb->s.ffb.dac = (struct ffb_dac *)(regs[0].phys_addr + FFB_DAC_POFF);
 	fb->dispsw = ffb_dispsw;
 
 	fb->margins = ffb_margins;
@@ -770,8 +829,8 @@ __initfunc(char *creatorfb_init(struct fb_info_sbusfb *fb))
 	/* If there are any read errors or fifo overflow conditions,
 	 * clear them now.
 	 */
-	if((fb->s.ffb.fbc->ucsr & FFB_UCSR_ALL_ERRORS) != 0)
-		fb->s.ffb.fbc->ucsr = FFB_UCSR_ALL_ERRORS;
+	if((upa_readl(&fb->s.ffb.fbc->ucsr) & FFB_UCSR_ALL_ERRORS) != 0)
+		upa_writel(FFB_UCSR_ALL_ERRORS, &fb->s.ffb.fbc->ucsr);
 
 	ffb_switch_from_graph(fb);
 	
@@ -783,12 +842,13 @@ __initfunc(char *creatorfb_init(struct fb_info_sbusfb *fb))
 	
 	type->fb_depth = 24;
 	
-	fb->s.ffb.dac->type = 0x8000;
-	fb->s.ffb.dac_rev = (fb->s.ffb.dac->value >> 0x1c);
+	upa_writel(0x8000, &fb->s.ffb.dac->type);
+	fb->s.ffb.dac_rev = (upa_readl(&fb->s.ffb.dac->value) >> 0x1c);
 	                
 	i = prom_getintdefault (fb->prom_node, "board_type", 8);
-	                                                        
-	sprintf(idstring, "%s at %016lx type %d DAC %d", fix->id, regs[0].phys_addr, i, fb->s.ffb.dac_rev);
+
+	sprintf(idstring, "%s at %016lx type %d DAC %d",
+		fix->id, regs[0].phys_addr, i, fb->s.ffb.dac_rev);
 	
 	/* Elite3D has different DAC revision numbering, and no DAC revisions
 	   have the reversed meaning of cursor enable */

@@ -1,22 +1,44 @@
 /*
  * linux/include/asm-arm/arch-ebsa285/system.h
  *
- * Copyright (c) 1996,1997,1998 Russell King.
+ * Copyright (c) 1996-1999 Russell King.
  */
 #include <asm/dec21285.h>
 #include <asm/io.h>
 #include <asm/hardware.h>
 #include <asm/leds.h>
 
-#define arch_do_idle()		processor.u.armv3v4._do_idle()
+extern __inline__ void arch_idle(void)
+{
+	unsigned long start_idle;
+
+	start_idle = jiffies;
+
+	do {
+		if (current->need_resched || hlt_counter)
+			goto slow_out;
+		cpu_do_idle(IDLE_WAIT_FAST);
+	} while (time_before(start_idle, jiffies + HZ/3));
+
+	cpu_do_idle(IDLE_CLOCK_SLOW);
+
+	while (!current->need_resched && !hlt_counter) {
+		cpu_do_idle(IDLE_WAIT_SLOW);
+	}
+
+	cpu_do_idle(IDLE_CLOCK_FAST);
+slow_out:
+}
+
+#define arch_power_off()	do { } while (0)
 
 extern __inline__ void arch_reset(char mode)
 {
 	if (mode == 's') {
 		/*
-		 * Jump into ROM
+		 * Jump into the ROM
 		 */
-		processor.u.armv3v4.reset(0x41000000);
+		cpu_reset(0x41000000);
 	} else {
 		if (machine_is_netwinder()) {
 			/* open up the SuperIO chip
@@ -49,6 +71,3 @@ extern __inline__ void arch_reset(char mode)
 		}
 	}
 }
-
-#define arch_start_idle()	leds_event(led_idle_start)
-#define arch_end_idle()		leds_event(led_idle_end)

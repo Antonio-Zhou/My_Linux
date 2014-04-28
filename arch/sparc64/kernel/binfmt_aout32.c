@@ -30,20 +30,17 @@
 
 #include <asm/system.h>
 #include <asm/uaccess.h>
-#include <asm/pgtable.h>
+#include <asm/pgalloc.h>
 
 static int load_aout32_binary(struct linux_binprm *, struct pt_regs * regs);
-static int load_aout32_library(struct file *file);
-static int aout32_core_dump(long signr, struct pt_regs * regs, struct file *);
+static int load_aout32_library(struct file*);
+static int aout32_core_dump(long signr, struct pt_regs * regs, struct file *file);
 
 extern void dump_thread(struct pt_regs *, struct user *);
 
 static struct linux_binfmt aout32_format = {
-	module:		THIS_MODULE,
-	load_binary:	load_aout32_binary,
-	load_shlib:	load_aout32_library,
-	core_dump:	aout32_core_dump,
-	min_coredump:	PAGE_SIZE,
+	NULL, THIS_MODULE, load_aout32_binary, load_aout32_library, aout32_core_dump,
+	PAGE_SIZE
 };
 
 static void set_brk(unsigned long start, unsigned long end)
@@ -52,9 +49,7 @@ static void set_brk(unsigned long start, unsigned long end)
 	end = PAGE_ALIGN(end);
 	if (end <= start)
 		return;
-	do_mmap(NULL, start, end - start,
-		PROT_READ | PROT_WRITE | PROT_EXEC,
-		MAP_FIXED | MAP_PRIVATE, 0);
+	do_brk(start, end - start);
 }
 
 /*
@@ -64,21 +59,17 @@ static void set_brk(unsigned long start, unsigned long end)
 
 static int dump_write(struct file *file, const void *addr, int nr)
 {
-	int r;
-	down(&file->f_dentry->d_inode->i_sem);
-	r = file->f_op->write(file, addr, nr, &file->f_pos) == nr;
-	up(&file->f_dentry->d_inode->i_sem);
-	return r;
+	return file->f_op->write(file, addr, nr, &file->f_pos) == nr;
 }
 
 #define DUMP_WRITE(addr, nr)	\
 	if (!dump_write(file, (void *)(addr), (nr))) \
-		goto close_coredump;
+		goto end_coredump;
 
 #define DUMP_SEEK(offset) \
 if (file->f_op->llseek) { \
 	if (file->f_op->llseek(file,(offset),0) != (offset)) \
- 		goto close_coredump; \
+ 		goto end_coredump; \
 } else file->f_pos = (offset)
 
 /*
@@ -91,8 +82,7 @@ if (file->f_op->llseek) { \
  * dumping of the process results in another error..
  */
 
-static int
-aout32_core_dump(long signr, struct pt_regs * regs, struct file * file)
+static int aout32_core_dump(long signr, struct pt_regs *regs, struct file *file)
 {
 	mm_segment_t fs;
 	int has_dumped = 0;
@@ -147,7 +137,7 @@ aout32_core_dump(long signr, struct pt_regs * regs, struct file * file)
 /* Finally dump the task struct.  Not be used by gdb, but could be useful */
 	set_fs(KERNEL_DS);
 	DUMP_WRITE(current,sizeof(*current));
-close_coredump:
+end_coredump:
 	set_fs(fs);
 	return has_dumped;
 }
@@ -208,10 +198,7 @@ static u32 *create_aout32_tables(char * p, struct linux_binprm * bprm)
 static int load_aout32_binary(struct linux_binprm * bprm, struct pt_regs * regs)
 {
 	struct exec ex;
-	struct file * file;
-	int fd;
 	unsigned long error;
-	unsigned long p = bprm->p;
 	unsigned long fd_offset;
 	unsigned long rlim;
 	int retval;
@@ -220,7 +207,7 @@ static int load_aout32_binary(struct linux_binprm * bprm, struct pt_regs * regs)
 	if ((N_MAGIC(ex) != ZMAGIC && N_MAGIC(ex) != OMAGIC &&
 	     N_MAGIC(ex) != QMAGIC && N_MAGIC(ex) != NMAGIC) ||
 	    N_TRSIZE(ex) || N_DRSIZE(ex) ||
-	    bprm->dentry->d_inode->i_size < ex.a_text+ex.a_data+N_SYMSIZE(ex)+N_TXTOFF(ex)) {
+	    bprm->file->f_dentry->d_inode->i_size < ex.a_text+ex.a_data+N_SYMSIZE(ex)+N_TXTOFF(ex)) {
 		return -ENOEXEC;
 	}
 
@@ -242,7 +229,7 @@ static int load_aout32_binary(struct linux_binprm * bprm, struct pt_regs * regs)
 		return retval;
 
 	/* OK, This is the point of no return */
-	current->personality = PER_LINUX;
+	set_personality(PER_SUNOS);
 
 	current->mm->end_code = ex.a_text +
 		(current->mm->start_code = N_TXTADDR(ex));
@@ -256,63 +243,54 @@ static int load_aout32_binary(struct linux_binprm * bprm, struct pt_regs * regs)
 	compute_creds(bprm);
  	current->flags &= ~PF_FORKNOEXEC;
 	if (N_MAGIC(ex) == NMAGIC) {
+		loff_t pos = fd_offset;
 		/* Fuck me plenty... */
-		error = do_mmap(NULL, N_TXTADDR(ex), ex.a_text,
-				PROT_READ|PROT_WRITE|PROT_EXEC,
-				MAP_FIXED|MAP_PRIVATE, 0);
-		read_exec(bprm->dentry, fd_offset, (char *) N_TXTADDR(ex),
-			  ex.a_text, 0);
-		error = do_mmap(NULL, N_DATADDR(ex), ex.a_data,
-				PROT_READ|PROT_WRITE|PROT_EXEC,
-				MAP_FIXED|MAP_PRIVATE, 0);
-		read_exec(bprm->dentry, fd_offset + ex.a_text, (char *) N_DATADDR(ex),
-			  ex.a_data, 0);
+		error = do_brk(N_TXTADDR(ex), ex.a_text);
+		bprm->file->f_op->read(bprm->file, (char *) N_TXTADDR(ex),
+			  ex.a_text, &pos);
+		error = do_brk(N_DATADDR(ex), ex.a_data);
+		bprm->file->f_op->read(bprm->file, (char *) N_DATADDR(ex),
+			  ex.a_data, &pos);
 		goto beyond_if;
 	}
 
 	if (N_MAGIC(ex) == OMAGIC) {
-		do_mmap(NULL, N_TXTADDR(ex) & PAGE_MASK,
-			ex.a_text+ex.a_data + PAGE_SIZE - 1,
-			PROT_READ|PROT_WRITE|PROT_EXEC,
-			MAP_FIXED|MAP_PRIVATE, 0);
-		read_exec(bprm->dentry, fd_offset, (char *) N_TXTADDR(ex),
-			  ex.a_text+ex.a_data, 0);
+		loff_t pos = fd_offset;
+		do_brk(N_TXTADDR(ex) & PAGE_MASK,
+			ex.a_text+ex.a_data + PAGE_SIZE - 1);
+		bprm->file->f_op->read(bprm->file, (char *) N_TXTADDR(ex),
+			  ex.a_text+ex.a_data, &pos);
 	} else {
+		static unsigned long error_time;
 		if ((ex.a_text & 0xfff || ex.a_data & 0xfff) &&
-		    (N_MAGIC(ex) != NMAGIC))
+		    (N_MAGIC(ex) != NMAGIC) && (jiffies-error_time) > 5*HZ)
+		{
 			printk(KERN_NOTICE "executable not page aligned\n");
+			error_time = jiffies;
+		}
 
-		fd = open_dentry(bprm->dentry, O_RDONLY);
-		if (fd < 0)
-			return fd;
-		file = fcheck(fd);
-
-		if (!file->f_op || !file->f_op->mmap) {
-			sys_close(fd);
-			do_mmap(NULL, 0, ex.a_text+ex.a_data,
-				PROT_READ|PROT_WRITE|PROT_EXEC,
-				MAP_FIXED|MAP_PRIVATE, 0);
-			read_exec(bprm->dentry, fd_offset,
-				  (char *) N_TXTADDR(ex), ex.a_text+ex.a_data, 0);
+		if (!bprm->file->f_op->mmap) {
+			loff_t pos = fd_offset;
+			do_brk(0, ex.a_text+ex.a_data);
+			bprm->file->f_op->read(bprm->file,(char *)N_TXTADDR(ex),
+				  ex.a_text+ex.a_data, &pos);
 			goto beyond_if;
 		}
 
-		error = do_mmap(file, N_TXTADDR(ex), ex.a_text,
+		error = do_mmap(bprm->file, N_TXTADDR(ex), ex.a_text,
 			PROT_READ | PROT_EXEC,
 			MAP_FIXED | MAP_PRIVATE | MAP_DENYWRITE | MAP_EXECUTABLE,
 			fd_offset);
 
 		if (error != N_TXTADDR(ex)) {
-			sys_close(fd);
 			send_sig(SIGKILL, current, 0);
 			return error;
 		}
 
- 		error = do_mmap(file, N_DATADDR(ex), ex.a_data,
+ 		error = do_mmap(bprm->file, N_DATADDR(ex), ex.a_data,
 				PROT_READ | PROT_WRITE | PROT_EXEC,
 				MAP_FIXED | MAP_PRIVATE | MAP_DENYWRITE | MAP_EXECUTABLE,
 				fd_offset + ex.a_text);
-		sys_close(fd);
 		if (error != N_DATADDR(ex)) {
 			send_sig(SIGKILL, current, 0);
 			return error;
@@ -320,20 +298,30 @@ static int load_aout32_binary(struct linux_binprm * bprm, struct pt_regs * regs)
 	}
 beyond_if:
 	set_binfmt(&aout32_format);
-	if (current->exec_domain && current->exec_domain->module)
-		__MOD_DEC_USE_COUNT(current->exec_domain->module);
-	current->exec_domain = lookup_exec_domain(current->personality);
-	if (current->exec_domain && current->exec_domain->module)
-		__MOD_INC_USE_COUNT(current->exec_domain->module);
 
 	set_brk(current->mm->start_brk, current->mm->brk);
 
-	p = setup_arg_pages(p, bprm);
+	retval = setup_arg_pages(bprm);
+	if (retval < 0) { 
+		/* Someone check-me: is this error path enough? */ 
+		send_sig(SIGKILL, current, 0); 
+		return retval;
+	}
 
-	p = (unsigned long) create_aout32_tables((char *)p, bprm);
-	current->mm->start_stack = p;
-	start_thread32(regs, ex.a_entry, p);
-	if (current->ptrace & PT_PTRACED)
+	current->mm->start_stack =
+		(unsigned long) create_aout32_tables((char *)bprm->p, bprm);
+	if (!(current->thread.flags & SPARC_FLAG_32BIT)) {
+		unsigned long pgd_cache;
+
+		pgd_cache = ((unsigned long)current->mm->pgd[0])<<11UL;
+		__asm__ __volatile__("stxa\t%0, [%1] %2"
+				     : /* no outputs */
+				     : "r" (pgd_cache),
+				       "r" (TSB_REG), "i" (ASI_DMMU));
+		current->thread.flags |= SPARC_FLAG_32BIT;
+	}
+	start_thread32(regs, ex.a_entry, current->mm->start_stack);
+	if (current->flags & PF_PTRACED)
 		send_sig(SIGTRAP, current, 0);
 	return 0;
 }
@@ -345,34 +333,30 @@ static int load_aout32_library(struct file *file)
 	unsigned long bss, start_addr, len;
 	unsigned long error;
 	int retval;
-	loff_t offset = 0;
 	struct exec ex;
 
 	inode = file->f_dentry->d_inode;
 
 	retval = -ENOEXEC;
-	/* N.B. Save current fs? */
-	set_fs(KERNEL_DS);
-	error = file->f_op->read(file, (char *) &ex, sizeof(ex), &offset);
-	set_fs(USER_DS);
+	error = kernel_read(file, 0, (char *) &ex, sizeof(ex));
 	if (error != sizeof(ex))
-		goto out_putf;
+		goto out;
 
 	/* We come in here for the regular a.out style of shared libraries */
 	if ((N_MAGIC(ex) != ZMAGIC && N_MAGIC(ex) != QMAGIC) || N_TRSIZE(ex) ||
 	    N_DRSIZE(ex) || ((ex.a_entry & 0xfff) && N_MAGIC(ex) == ZMAGIC) ||
 	    inode->i_size < ex.a_text+ex.a_data+N_SYMSIZE(ex)+N_TXTOFF(ex)) {
-		goto out_putf;
+		goto out;
 	}
 
 	if (N_MAGIC(ex) == ZMAGIC && N_TXTOFF(ex) &&
 	    (N_TXTOFF(ex) < inode->i_sb->s_blocksize)) {
 		printk("N_TXTOFF < BLOCK_SIZE. Please convert library\n");
-		goto out_putf;
+		goto out;
 	}
 
 	if (N_FLAGS(ex))
-		goto out_putf;
+		goto out;
 
 	/* For  QMAGIC, the starting address is 0x20 into the page.  We mask
 	   this off to get the starting address for the page */
@@ -380,31 +364,40 @@ static int load_aout32_library(struct file *file)
 	start_addr =  ex.a_entry & 0xfffff000;
 
 	/* Now use mmap to map the library into memory. */
+	down(&current->mm->mmap_sem);
 	error = do_mmap(file, start_addr, ex.a_text + ex.a_data,
 			PROT_READ | PROT_WRITE | PROT_EXEC,
 			MAP_FIXED | MAP_PRIVATE | MAP_DENYWRITE,
 			N_TXTOFF(ex));
+	up(&current->mm->mmap_sem);
 	retval = error;
 	if (error != start_addr)
-		goto out_putf;
+		goto out;
 
 	len = PAGE_ALIGN(ex.a_text + ex.a_data);
 	bss = ex.a_text + ex.a_data + ex.a_bss;
 	if (bss > len) {
-		error = do_mmap(NULL, start_addr + len, bss - len,
-				PROT_READ | PROT_WRITE | PROT_EXEC,
-				MAP_PRIVATE | MAP_FIXED, 0);
+		error = do_brk(start_addr + len, bss - len);
 		retval = error;
 		if (error != start_addr + len)
-			goto out_putf;
+			goto out;
 	}
 	retval = 0;
-
-out_putf:
+out:
 	return retval;
 }
 
-__initfunc(int init_aout32_binfmt(void))
+static int __init init_aout32_binfmt(void)
 {
 	return register_binfmt(&aout32_format);
 }
+
+static void __exit exit_aout32_binfmt(void)
+{
+	unregister_binfmt(&aout32_format);
+}
+
+EXPORT_NO_SYMBOLS;
+
+module_init(init_aout32_binfmt);
+module_exit(exit_aout32_binfmt);

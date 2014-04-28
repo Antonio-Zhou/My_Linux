@@ -10,6 +10,7 @@
  *  26-Jan-1999	PJB	Don't use IACK on CATS
  *  16-Mar-1999	RMK	Added autodetect of ISA PICs
  */
+/* no need for config.h - arch/arm/kernel/irq.c does this for us */
 #include <linux/config.h>
 #include <asm/hardware.h>
 #include <asm/dec21285.h>
@@ -110,6 +111,8 @@ static void no_action(int cpl, void *dev_id, struct pt_regs *regs)
 }
 
 static struct irqaction irq_cascade = { no_action, 0, 0, "cascade", NULL, NULL };
+static struct resource pic1_resource = { "pic1", 0x20, 0x3f };
+static struct resource pic2_resource = { "pic2", 0xa0, 0xbf };
 
 static __inline__ void irq_init_irq(void)
 {
@@ -133,28 +136,21 @@ static __inline__ void irq_init_irq(void)
 	 * Determine the ISA settings for
 	 * the machine we're running on.
 	 */
-	switch (machine_arch_type) {
-	default:
-		isa_irq = -1;
-		break;
+	isa_irq = -1;
 
-	case MACH_TYPE_EBSA285:
+	if (machine_is_ebsa285())
 		/* The following is dependent on which slot
 		 * you plug the Southbridge card into.  We
 		 * currently assume that you plug it into
 		 * the right-hand most slot.
 		 */
 		isa_irq = IRQ_PCI;
-		break;
 
-	case MACH_TYPE_CATS:
+	if (machine_is_cats())
 		isa_irq = IRQ_IN2;
-		break;
 
-	case MACH_TYPE_NETWINDER:
+	if (machine_is_netwinder())
 		isa_irq = IRQ_IN3;
-		break;
-	}
 
 	if (isa_irq != -1) {
 		/*
@@ -174,8 +170,6 @@ static __inline__ void irq_init_irq(void)
 		outb(0x01, PIC_MASK_HI);	/* x86			*/
 		outb(0xfa, PIC_MASK_HI);	/* pattern: 11111010	*/
 
-//		outb(0x68, PIC_LO);		/* enable special mode	*/
-//		outb(0x68, PIC_HI);		/* enable special mode	*/
 		outb(0x0b, PIC_LO);
 		outb(0x0b, PIC_HI);
 
@@ -203,9 +197,18 @@ static __inline__ void irq_init_irq(void)
 			irq_desc[irq].unmask	= isa_unmask_pic_hi_irq;
 		}
 
-		request_region(PIC_LO, 2, "pic1");
-		request_region(PIC_HI, 2, "pic2");
+		request_resource(&ioport_resource, &pic1_resource);
+		request_resource(&ioport_resource, &pic2_resource);
 		setup_arm_irq(IRQ_ISA_CASCADE, &irq_cascade);
 		setup_arm_irq(isa_irq, &irq_cascade);
+
+		/*
+		 * On the NetWinder, don't automatically
+		 * enable ISA IRQ11 when it is requested.
+		 * There appears to be a missing pull-up
+		 * resistor on this line.
+		 */
+		if (machine_is_netwinder())
+			irq_desc[_ISA_IRQ(11)].noautoenable = 1;
 	}
 }

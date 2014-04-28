@@ -6,7 +6,7 @@
  * Status:        Stable.
  * Author:        Dag Brattli <dagb@cs.uit.no>
  * Created at:    Sat Nov  7 21:43:15 1998
- * Modified at:   Tue Apr 25 21:19:12 2000
+ * Modified at:   Wed Mar  1 11:29:34 2000
  * Modified by:   Dag Brattli <dagb@cs.uit.no>
  * 
  *     Copyright (c) 1998-2000 Dag Brattli <dagb@cs.uit.no>
@@ -56,11 +56,8 @@
 #include <asm/io.h>
 #include <asm/dma.h>
 #include <asm/byteorder.h>
-#include <asm/hardirq.h>
 
-#ifdef CONFIG_APM
-#include <linux/apm_bios.h>
-#endif
+#include <linux/pm.h>
 
 #include <net/irda/wrapper.h>
 #include <net/irda/irda.h>
@@ -129,8 +126,8 @@ static int  nsc_ircc_setup(chipio_t *info);
 static void nsc_ircc_pio_receive(struct nsc_ircc_cb *self);
 static int  nsc_ircc_dma_receive(struct nsc_ircc_cb *self); 
 static int  nsc_ircc_dma_receive_complete(struct nsc_ircc_cb *self, int iobase);
-static int  nsc_ircc_hard_xmit_sir(struct sk_buff *skb, struct device *dev);
-static int  nsc_ircc_hard_xmit_fir(struct sk_buff *skb, struct device *dev);
+static int  nsc_ircc_hard_xmit_sir(struct sk_buff *skb, struct net_device *dev);
+static int  nsc_ircc_hard_xmit_fir(struct sk_buff *skb, struct net_device *dev);
 static int  nsc_ircc_pio_write(int iobase, __u8 *buf, int len, int fifo_size);
 static void nsc_ircc_dma_xmit(struct nsc_ircc_cb *self, int iobase);
 static void nsc_ircc_change_speed(struct nsc_ircc_cb *self, __u32 baud);
@@ -139,14 +136,12 @@ static int  nsc_ircc_is_receiving(struct nsc_ircc_cb *self);
 static int  nsc_ircc_read_dongle_id (int iobase);
 static void nsc_ircc_init_dongle_interface (int iobase, int dongle_id);
 
-static int  nsc_ircc_net_init(struct device *dev);
-static int  nsc_ircc_net_open(struct device *dev);
-static int  nsc_ircc_net_close(struct device *dev);
-static int  nsc_ircc_net_ioctl(struct device *dev, struct ifreq *rq, int cmd);
-static struct net_device_stats *nsc_ircc_net_get_stats(struct device *dev);
-#ifdef CONFIG_APM
-static int nsc_ircc_apmproc(apm_event_t event);
-#endif /* CONFIG_APM */
+static int  nsc_ircc_net_init(struct net_device *dev);
+static int  nsc_ircc_net_open(struct net_device *dev);
+static int  nsc_ircc_net_close(struct net_device *dev);
+static int  nsc_ircc_net_ioctl(struct net_device *dev, struct ifreq *rq, int cmd);
+static struct net_device_stats *nsc_ircc_net_get_stats(struct net_device *dev);
+static int nsc_ircc_pmproc(struct pm_dev *dev, pm_request_t rqst, void *data);
 
 /*
  * Function nsc_ircc_init ()
@@ -216,11 +211,6 @@ int __init nsc_ircc_init(void)
 		} 
 		
 	}
-#ifdef CONFIG_APM
-	/* Make sure at least one chip was found before enabling APM */
-	if (ret == 0)
-		apm_register_callback(nsc_ircc_apmproc);
-#endif /* CONFIG_APM */
 
 	return ret;
 }
@@ -236,9 +226,7 @@ static void nsc_ircc_cleanup(void)
 {
 	int i;
 
-#ifdef CONFIG_APM
-	apm_unregister_callback(nsc_ircc_apmproc);
-#endif /* CONFIG_APM */
+	pm_unregister_all(nsc_ircc_pmproc);
 
 	for (i=0; i < 4; i++) {
 		if (dev_self[i])
@@ -255,8 +243,9 @@ static void nsc_ircc_cleanup(void)
  */
 static int nsc_ircc_open(int i, chipio_t *info)
 {
-	struct device *dev;
+	struct net_device *dev;
 	struct nsc_ircc_cb *self;
+        struct pm_dev *pmdev;
 	int ret;
 	int err;
 
@@ -345,8 +334,6 @@ static int nsc_ircc_open(int i, chipio_t *info)
 		ERROR(__FUNCTION__ "(), dev_alloc() failed!\n");
 		return -ENOMEM;
 	}
-	/* dev_alloc doesn't clear the struct, so lets do a little hack */
-	memset(((__u8*)dev)+sizeof(char*),0,sizeof(struct device)-sizeof(char*));
 
 	dev->priv = (void *) self;
 	self->netdev = dev;
@@ -382,6 +369,10 @@ static int nsc_ircc_open(int i, chipio_t *info)
 	self->io.dongle_id = dongle_id;
 	nsc_ircc_init_dongle_interface(self->io.fir_base, dongle_id);
 
+        pmdev = pm_register(PM_SYS_DEV, PM_SYS_IRDA, nsc_ircc_pmproc);
+        if (pmdev)
+                pmdev->data = self;
+
 	return 0;
 }
 
@@ -407,8 +398,6 @@ static int nsc_ircc_close(struct nsc_ircc_cb *self)
 		rtnl_lock();
 		unregister_netdevice(self->netdev);
 		rtnl_unlock();
-		/* Must free the old-style 2.2.x device */
-		kfree(self->netdev);
 	}
 
 	/* Release the PORT that this driver is using */
@@ -968,7 +957,7 @@ static void nsc_ircc_change_dongle_speed(int iobase, int speed, int dongle_id)
  */
 static void nsc_ircc_change_speed(struct nsc_ircc_cb *self, __u32 speed)
 {
-	struct device *dev = self->netdev;
+	struct net_device *dev = self->netdev;
 	__u8 mcr = MCR_SIR;
 	int iobase; 
 	__u8 bank;
@@ -1045,8 +1034,6 @@ static void nsc_ircc_change_speed(struct nsc_ircc_cb *self, __u32 speed)
 	switch_bank(iobase, BANK2);
 	outb(EXCR2_RFSIZ|EXCR2_TFSIZ, iobase+EXCR2);
 	
-	self->netdev->tbusy = 0;
-	
 	/* Enable some interrupts so we can receive frames */
 	switch_bank(iobase, BANK0); 
 	if (speed > 115200) {
@@ -1062,6 +1049,8 @@ static void nsc_ircc_change_speed(struct nsc_ircc_cb *self, __u32 speed)
     	
 	/* Restore BSR */
 	outb(bank, iobase+BSR);
+	netif_wake_queue(dev);
+	
 }
 
 /*
@@ -1070,7 +1059,7 @@ static void nsc_ircc_change_speed(struct nsc_ircc_cb *self, __u32 speed)
  *    Transmit the frame!
  *
  */
-static int nsc_ircc_hard_xmit_sir(struct sk_buff *skb, struct device *dev)
+static int nsc_ircc_hard_xmit_sir(struct sk_buff *skb, struct net_device *dev)
 {
 	struct nsc_ircc_cb *self;
 	unsigned long flags;
@@ -1084,10 +1073,8 @@ static int nsc_ircc_hard_xmit_sir(struct sk_buff *skb, struct device *dev)
 
 	iobase = self->io.fir_base;
 
-	/* Lock transmit buffer */
-	if (irda_lock((void *) &dev->tbusy) == FALSE)
-		return -EBUSY;
-	
+	netif_stop_queue(dev);
+		
 	/* Check if we need to change the speed */
 	if ((speed = irda_get_speed(skb)) != self->io.speed)
 		self->new_speed = speed;
@@ -1118,7 +1105,7 @@ static int nsc_ircc_hard_xmit_sir(struct sk_buff *skb, struct device *dev)
 	return 0;
 }
 
-static int nsc_ircc_hard_xmit_fir(struct sk_buff *skb, struct device *dev)
+static int nsc_ircc_hard_xmit_fir(struct sk_buff *skb, struct net_device *dev)
 {
 	struct nsc_ircc_cb *self;
 	unsigned long flags;
@@ -1130,10 +1117,8 @@ static int nsc_ircc_hard_xmit_fir(struct sk_buff *skb, struct device *dev)
 	self = (struct nsc_ircc_cb *) dev->priv;
 	iobase = self->io.fir_base;
 
-	/* Lock transmit buffer */
-	if (irda_lock((void *) &dev->tbusy) == FALSE)
-		return -EBUSY;
-
+	netif_stop_queue(dev);
+	
 	/* Check if we need to change the speed */
 	if ((speed = irda_get_speed(skb)) != self->io.speed)
 		self->new_speed = speed;
@@ -1211,7 +1196,7 @@ static int nsc_ircc_hard_xmit_fir(struct sk_buff *skb, struct device *dev)
  out:
 	/* Not busy transmitting anymore if window is not full */
 	if (self->tx_fifo.free < MAX_TX_WINDOW)
-		dev->tbusy = 0;
+		netif_wake_queue(self->netdev);
 
 	/* Restore bank register */
 	outb(bank, iobase+BSR);
@@ -1359,10 +1344,8 @@ static int nsc_ircc_dma_xmit_complete(struct nsc_ircc_cb *self)
 	/* Make sure we have room for more frames */
 	if (self->tx_fifo.free < MAX_TX_WINDOW) {
 		/* Not busy transmitting anymore */
-		self->netdev->tbusy = 0;
-
 		/* Tell the network layer, that we can accept more frames */
-		mark_bh(NET_BH);
+		netif_wake_queue(self->netdev);
 	}
 
 	/* Restore bank */
@@ -1626,11 +1609,9 @@ static void nsc_ircc_sir_interrupt(struct nsc_ircc_cb *self, int eir)
 		if (self->tx_buff.len > 0)
 			self->ier = IER_TXLDL_IE;
 		else { 
-			self->netdev->tbusy = 0; /* Unlock */
-			self->stats.tx_packets++;
-			
-		        mark_bh(NET_BH);	
 
+			self->stats.tx_packets++;
+			netif_wake_queue(self->netdev);
 			self->ier = IER_TXEMP_IE;
 		}
 			
@@ -1737,7 +1718,7 @@ static void nsc_ircc_fir_interrupt(struct nsc_ircc_cb *self, int iobase,
  */
 static void nsc_ircc_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 {
-	struct device *dev = (struct device *) dev_id;
+	struct net_device *dev = (struct net_device *) dev_id;
 	struct nsc_ircc_cb *self;
 	__u8 bsr, eir;
 	int iobase;
@@ -1749,7 +1730,6 @@ static void nsc_ircc_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 	self = (struct nsc_ircc_cb *) dev->priv;
 
 	spin_lock(&self->lock);	
-	dev->interrupt = 1;
 
 	iobase = self->io.fir_base;
 
@@ -1772,7 +1752,6 @@ static void nsc_ircc_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 	outb(self->ier, iobase+IER); /* Restore interrupts */
 	outb(bsr, iobase+BSR);       /* Restore bank register */
 
-	dev->interrupt = 0;
 	spin_unlock(&self->lock);
 }
 
@@ -1818,7 +1797,7 @@ static int nsc_ircc_is_receiving(struct nsc_ircc_cb *self)
  *    Initialize network device
  *
  */
-static int nsc_ircc_net_init(struct device *dev)
+static int nsc_ircc_net_init(struct net_device *dev)
 {
 	IRDA_DEBUG(4, __FUNCTION__ "()\n");
 
@@ -1836,7 +1815,7 @@ static int nsc_ircc_net_init(struct device *dev)
  *    Start the device
  *
  */
-static int nsc_ircc_net_open(struct device *dev)
+static int nsc_ircc_net_open(struct net_device *dev)
 {
 	struct nsc_ircc_cb *self;
 	int iobase;
@@ -1878,10 +1857,9 @@ static int nsc_ircc_net_open(struct device *dev)
 	outb(bank, iobase+BSR);
 
 	/* Ready to play! */
-	dev->tbusy = 0;
-	dev->interrupt = 0;
-	dev->start = 1;
 
+	netif_start_queue(dev);
+	
 	/* 
 	 * Open new IrLAP layer instance, now that everything should be
 	 * initialized properly 
@@ -1899,7 +1877,7 @@ static int nsc_ircc_net_open(struct device *dev)
  *    Stop the device
  *
  */
-static int nsc_ircc_net_close(struct device *dev)
+static int nsc_ircc_net_close(struct net_device *dev)
 {
 	struct nsc_ircc_cb *self;
 	int iobase;
@@ -1913,9 +1891,8 @@ static int nsc_ircc_net_close(struct device *dev)
 	ASSERT(self != NULL, return 0;);
 
 	/* Stop device */
-	dev->tbusy = 1;
-	dev->start = 0;
-
+	netif_stop_queue(dev);
+	
 	/* Stop and remove instance of IrLAP */
 	if (self->irlap)
 		irlap_close(self->irlap);
@@ -1949,7 +1926,7 @@ static int nsc_ircc_net_close(struct device *dev)
  *    Process IOCTL commands for this device
  *
  */
-static int nsc_ircc_net_ioctl(struct device *dev, struct ifreq *rq, int cmd)
+static int nsc_ircc_net_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 {
 	struct if_irda_req *irq = (struct if_irda_req *) rq;
 	struct nsc_ircc_cb *self;
@@ -1970,15 +1947,8 @@ static int nsc_ircc_net_ioctl(struct device *dev, struct ifreq *rq, int cmd)
 	
 	switch (cmd) {
 	case SIOCSBANDWIDTH: /* Set bandwidth */
-		/*
-		 * This function will also be used by IrLAP to change the
-		 * speed, so we still must allow for speed change within
-		 * interrupt context.
-		 */
-		if (!in_interrupt() && !capable(CAP_NET_ADMIN)) {
-			IRDA_DEBUG(0, __FUNCTION__ "(), not capable sysadm\n");
+		if (!capable(CAP_NET_ADMIN))
 			return -EPERM;
-		}
 		nsc_ircc_change_speed(self, irq->ifr_baudrate);
 		break;
 	case SIOCSMEDIABUSY: /* Set media busy */
@@ -1998,14 +1968,13 @@ static int nsc_ircc_net_ioctl(struct device *dev, struct ifreq *rq, int cmd)
 	return ret;
 }
 
-static struct net_device_stats *nsc_ircc_net_get_stats(struct device *dev)
+static struct net_device_stats *nsc_ircc_net_get_stats(struct net_device *dev)
 {
 	struct nsc_ircc_cb *self = (struct nsc_ircc_cb *) dev->priv;
 	
 	return &self->stats;
 }
 
-#ifdef CONFIG_APM
 static void nsc_ircc_suspend(struct nsc_ircc_cb *self)
 {
 	MESSAGE("%s, Suspending\n", driver_name);
@@ -2020,7 +1989,7 @@ static void nsc_ircc_suspend(struct nsc_ircc_cb *self)
 
 static void nsc_ircc_wakeup(struct nsc_ircc_cb *self)
 {
-	struct device *dev = self->netdev;
+	struct net_device *dev = self->netdev;
 	int iobase;
 
 	if (!self->io.suspended)
@@ -2040,36 +2009,21 @@ static void nsc_ircc_wakeup(struct nsc_ircc_cb *self)
 	self->io.suspended = 0;
 }
 
-static int nsc_ircc_apmproc(apm_event_t event)
+static int nsc_ircc_pmproc(struct pm_dev *dev, pm_request_t rqst, void *data)
 {
-	static int down = 0; /* Filter out double events */
-	int i;
-
-	switch (event) {
-	case APM_SYS_SUSPEND:
-	case APM_USER_SUSPEND:
-		if (!down) {			
-			for (i=0; i<4; i++) {
-				if (dev_self[i])
-					nsc_ircc_suspend(dev_self[i]);
-			}
-		}
-		down = 1;
-		break;
-	case APM_NORMAL_RESUME:
-	case APM_CRITICAL_RESUME:
-		if (down) {
-			for (i=0; i<4; i++) {
-				if (dev_self[i])
-					nsc_ircc_wakeup(dev_self[i]);
-			}
-		}
-		down = 0;
-		break;
-	}
+        struct nsc_ircc_cb *self = (struct nsc_ircc_cb*) dev->data;
+        if (self) {
+                switch (rqst) {
+                case PM_SUSPEND:
+                        nsc_ircc_suspend(self);
+                        break;
+                case PM_RESUME:
+                        nsc_ircc_wakeup(self);
+                        break;
+                }
+        }
 	return 0;
 }
-#endif /* CONFIG_APM */
 
 #ifdef MODULE
 MODULE_AUTHOR("Dag Brattli <dagb@cs.uit.no>");

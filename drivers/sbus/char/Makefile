@@ -37,22 +37,6 @@ else
   endif
 endif
 
-ifeq ($(CONFIG_DISPLAY7SEG),y)
-O_OBJS += display7seg.o
-else
-  ifeq ($(CONFIG_DISPLAY7SEG),m)
-  M_OBJS += display7seg.o
-  endif
-endif
-
-ifeq ($(CONFIG_WATCHDOG_CP1XXX),y)
-O_OBJS += cpwatchdog.o
-else
-  ifeq ($(CONFIG_WATCHDOG_CP1XXX),m)
-  M_OBJS += cpwatchdog.o
-  endif
-endif
-
 endif # eq($(CONFIG_PCI,y)
 
 ifeq ($(CONFIG_OBP_FLASH),y)
@@ -109,6 +93,21 @@ else
   ifeq ($(CONFIG_SUN_AURORA),m)
   M_OBJS += aurora.o
   endif
+endif
+
+ifeq ($(CONFIG_TADPOLE_TS102_UCTRL),y)
+O_OBJS += uctrl.o
+else
+  ifeq ($(CONFIG_TADPOLE_TS102_UCTRL),m)
+  M_OBJS += uctrl.o
+  endif
+endif
+
+ifeq ($(CONFIG_SUN_JSFLASH),y)
+O_OBJS += jsflash.o
+endif
+ifeq ($(CONFIG_SUN_JSFLASH),m)
+M_OBJS += jsflash.o
 endif
 
 include $(TOPDIR)/Rules.make

@@ -27,7 +27,7 @@ struct unx_cred {
 
 #define UNX_CRED_EXPIRE		(60 * HZ)
 
-#define UNX_WRITESLACK		(9 + NFS_NGROUPS + (UNX_MAXNODENAME >> 2))
+#define UNX_WRITESLACK		(21 + (UNX_MAXNODENAME >> 2))
 
 #ifdef RPC_DEBUG
 # define RPCDBG_FACILITY	RPCDBG_AUTH
@@ -180,8 +180,7 @@ unx_marshal(struct rpc_task *task, u32 *p, int ruid)
 	memcpy(p, clnt->cl_nodename, n);
 	p += (n + 3) >> 2;
 
-	/* Note: we don't use real uid if it involves raising priviledge */
-	if (ruid && cred->uc_uid != 0 && cred->uc_gid != 0) {
+	if (ruid) {
 		*p++ = htonl((u32) cred->uc_uid);
 		*p++ = htonl((u32) cred->uc_gid);
 	} else {
@@ -215,7 +214,7 @@ unx_validate(struct rpc_task *task, u32 *p)
 {
 	u32		n = ntohl(*p++);
 
-	if (n != RPC_AUTH_NULL && n != RPC_AUTH_SHORT) {
+	if (n != RPC_AUTH_NULL && n != RPC_AUTH_UNIX && n != RPC_AUTH_SHORT) {
 		printk("RPC: bad verf flavor: %ld\n", (unsigned long) n);
 		return NULL;
 	}
@@ -223,12 +222,8 @@ unx_validate(struct rpc_task *task, u32 *p)
 		printk("RPC: giant verf size: %ld\n", (unsigned long) n);
 		return NULL;
 	}
-	if (n) {
-		n = XDR_QUADLEN(n);
-		if (n + 2 > task->tk_auth->au_rslack)
-			task->tk_auth->au_rslack = n + 2;
-		p += n;
-	}
+	task->tk_auth->au_rslack = (n >> 2) + 2;
+	p += (n >> 2);
 
 	return p;
 }

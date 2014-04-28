@@ -6,10 +6,10 @@
 #ifndef CFG_H
 #define CFG_H
 
-typedef enum { cft_strg, cft_flag, cft_link, cft_end } CONFIG_TYPE;
+typedef enum { cft_strg, cft_flag, cft_link, cft_end } CFG_TYPE;
 
 typedef struct {
-    CONFIG_TYPE type;
+    CFG_TYPE type;
     char *name;
     void *action;
     void *data;

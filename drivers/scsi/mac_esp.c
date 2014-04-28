@@ -22,6 +22,7 @@
 #include <linux/blk.h>
 #include <linux/proc_fs.h>
 #include <linux/stat.h>
+#include <linux/init.h>
 
 #include "scsi.h"
 #include "hosts.h"
@@ -39,6 +40,9 @@
 #include <asm/pgtable.h>
 
 #include <asm/macintosh.h>
+
+#define mac_turnon_irq(x)	mac_enable_irq(x)
+#define mac_turnoff_irq(x)	mac_disable_irq(x)
 
 extern inline void esp_handle(struct NCR_ESP *esp);
 extern void mac_esp_intr(int irq, void *dev_id, struct pt_regs *pregs);
@@ -235,6 +239,8 @@ void mac_esp_setup(char *str, int *ints) {
 #endif
 }
 
+__setup("mac53c9x=", mac_esp_setup);
+
 /*
  * ESP address 'detection'
  */
@@ -410,7 +416,10 @@ int mac_esp_detect(Scsi_Host_Template * tpnt)
 
 			esp->irq = IRQ_MAC_SCSI;
 
-			request_irq(esp->irq, esp_intr, 0, "Mac ESP SCSI", esp);
+			request_irq(IRQ_MAC_SCSI, esp_intr, 0, "Mac ESP SCSI", esp);
+#if 0	/* conflicts with IOP ADB */
+			request_irq(IRQ_MAC_SCSIDRQ, fake_drq, 0, "Mac ESP DRQ", esp);
+#endif
 
 			if (macintosh_config->scsi_type == MAC_SCSI_QUADRA) {
 				esp->cfreq = 16500000;
@@ -420,8 +429,11 @@ int mac_esp_detect(Scsi_Host_Template * tpnt)
 
 
 		} else { /* chipnum == 1 */
-			esp->irq = IRQ_MAC_SCSI;
-			request_irq(esp->irq, esp_intr, 0, "Mac ESP SCSI 2", esp);
+
+			esp->irq = IRQ_MAC_SCSIDRQ;
+#if 0	/* conflicts with IOP ADB */
+			request_irq(IRQ_MAC_SCSIDRQ, esp_intr, 0, "Mac ESP SCSI 2", esp);
+#endif
 
 			esp->cfreq = 25000000;
 
@@ -606,13 +618,13 @@ static void dma_init_write(struct NCR_ESP * esp, char * vaddress, int length)
 
 static void dma_ints_off(struct NCR_ESP * esp)
 {
-	mac_disable_irq(esp->irq);
+	mac_turnoff_irq(esp->irq);
 }
 
 
 static void dma_ints_on(struct NCR_ESP * esp)
 {
-	mac_enable_irq(esp->irq);
+	mac_turnon_irq(esp->irq);
 }
 
 /*

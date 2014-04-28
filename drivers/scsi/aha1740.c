@@ -44,11 +44,6 @@
 #include "aha1740.h"
 #include<linux/stat.h>
 
-struct proc_dir_entry proc_scsi_aha1740 = {
-    PROC_SCSI_AHA1740, 7, "aha1740",
-    S_IFDIR | S_IRUGO | S_IXUGO, 2
-};
-
 /* IF YOU ARE HAVING PROBLEMS WITH THIS DRIVER, AND WANT TO WATCH
    IT WORK, THEN:
 #define DEBUG
@@ -324,13 +319,11 @@ int aha1740_queuecommand(Scsi_Cmnd * SCpnt, void (*done)(Scsi_Cmnd *))
 
     if(*cmd == REQUEST_SENSE)
     {
-#if 0
 	if (bufflen != sizeof(SCpnt->sense_buffer))
 	{
 	    printk("Wrong buffer length supplied for request sense (%d)\n",
 		   bufflen);
 	}
-#endif	
 	SCpnt->result = 0;
 	done(SCpnt); 
 	return 0;

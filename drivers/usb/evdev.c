@@ -1,7 +1,7 @@
 /*
- * $Id: evdev.c,v 1.10 2000/06/23 09:23:00 vojtech Exp $
+ *  evdev.c  Version 0.1
  *
- *  Copyright (c) 1999-2000 Vojtech Pavlik
+ *  Copyright (c) 1999 Vojtech Pavlik
  *
  *  Event char devices, giving access to raw input device events.
  *
@@ -37,11 +37,9 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/input.h>
-#include <linux/smp_lock.h>
-#include <linux/kcomp.h>
 
 struct evdev {
-	int exist;
+	int used;
 	int open;
 	int minor;
 	struct input_handle handle;
@@ -74,7 +72,8 @@ static void evdev_event(struct input_handle *handle, unsigned int type, unsigned
 		list->buffer[list->head].value = value;
 		list->head = (list->head + 1) & (EVDEV_BUFFER_SIZE - 1);
 		
-		kill_fasync(list->fasync, SIGIO);
+		if (list->fasync)
+			kill_fasync(list->fasync, SIGIO, POLL_IN);
 
 		list = list->next;
 	}
@@ -93,29 +92,26 @@ static int evdev_fasync(int fd, struct file *file, int on)
 static int evdev_release(struct inode * inode, struct file * file)
 {
 	struct evdev_list *list = file->private_data;
-	struct evdev_list **listptr;
+	struct evdev_list **listptr = &list->evdev->list;
 
-	lock_kernel();
-	listptr = &list->evdev->list;
 	evdev_fasync(-1, file, 0);
 
 	while (*listptr && (*listptr != list))
 		listptr = &((*listptr)->next);
 	*listptr = (*listptr)->next;
 
-	if (!--list->evdev->open) {
-		if (list->evdev->exist) {
-			input_close_device(&list->evdev->handle);	
-		} else {
-			input_unregister_minor(list->evdev->devfs);
-			evdev_table[list->evdev->minor] = NULL;
-			kfree(list->evdev);
-		}
+	if (!--list->evdev->open)
+		input_close_device(&list->evdev->handle);	
+	
+	if (!--list->evdev->used) {
+		input_unregister_minor(list->evdev->devfs);
+		evdev_table[list->evdev->minor] = NULL;
+		kfree(list->evdev);
 	}
 
 	kfree(list);
-	unlock_kernel();
 
+	MOD_DEC_USE_COUNT;
 	return 0;
 }
 
@@ -127,8 +123,12 @@ static int evdev_open(struct inode * inode, struct file * file)
 	if (i > EVDEV_MINORS || !evdev_table[i])
 		return -ENODEV;
 
-	if (!(list = kmalloc(sizeof(struct evdev_list), GFP_KERNEL)))
+	MOD_INC_USE_COUNT;
+
+	if (!(list = kmalloc(sizeof(struct evdev_list), GFP_KERNEL))) {
+		MOD_DEC_USE_COUNT;
 		return -ENOMEM;
+	}
 	memset(list, 0, sizeof(struct evdev_list));
 
 	list->evdev = evdev_table[i];
@@ -137,9 +137,10 @@ static int evdev_open(struct inode * inode, struct file * file)
 
 	file->private_data = list;
 
+	list->evdev->used++;
+
 	if (!list->evdev->open++)
-		if (list->evdev->exist)
-			input_open_device(&list->evdev->handle);	
+		input_open_device(&list->evdev->handle);	
 
 	return 0;
 }
@@ -206,20 +207,14 @@ static int evdev_ioctl(struct inode *inode, struct file *file, unsigned int cmd,
 	struct evdev_list *list = file->private_data;
 	struct evdev *evdev = list->evdev;
 	struct input_dev *dev = evdev->handle.dev;
-	int retval;
 
 	switch (cmd) {
 
 		case EVIOCGVERSION:
-			return put_user(EV_VERSION, (int *) arg);
-
+			return put_user(EV_VERSION, (__u32 *) arg);
 		case EVIOCGID:
-			if ((retval = put_user(dev->idbus,     ((short *) arg) + 0))) return retval;
-			if ((retval = put_user(dev->idvendor,  ((short *) arg) + 1))) return retval;
-			if ((retval = put_user(dev->idproduct, ((short *) arg) + 2))) return retval;
-			if ((retval = put_user(dev->idversion, ((short *) arg) + 3))) return retval;
-			return 0;
-
+			return copy_to_user(&dev->id, (void *) arg,
+						sizeof(struct input_id)) ? -EFAULT : 0;
 		default:
 
 			if (_IOC_TYPE(cmd) != 'E' || _IOC_DIR(cmd) != _IOC_READ)
@@ -227,8 +222,8 @@ static int evdev_ioctl(struct inode *inode, struct file *file, unsigned int cmd,
 
 			if ((_IOC_NR(cmd) & ~EV_MAX) == _IOC_NR(EVIOCGBIT(0,0))) {
 
-				long *bits;
-				int len;
+				long *bits = NULL;
+				int len = 0;
 
 				switch (_IOC_NR(cmd) & EV_MAX) {
 					case      0: bits = dev->evbit;  len = EV_MAX;  break;
@@ -240,33 +235,14 @@ static int evdev_ioctl(struct inode *inode, struct file *file, unsigned int cmd,
 					default: return -EINVAL;
 				}
 				len = NBITS(len) * sizeof(long);
-				if (len > _IOC_SIZE(cmd)) {
-					printk(KERN_WARNING "evdev.c: Truncating bitfield length from %d to %d\n",
-						len, _IOC_SIZE(cmd));
-					len = _IOC_SIZE(cmd);
-				}
-				return copy_to_user((char *) arg, bits, len) ? -EFAULT : len;
+				if (len > _IOC_SIZE(cmd)) len = _IOC_SIZE(cmd);
+				return copy_to_user((void *) arg, bits, len) ? -EFAULT : len;
 			}
 
 			if (_IOC_NR(cmd) == _IOC_NR(EVIOCGNAME(0))) {
-				int len;
-				if (!dev->name) return 0;
-				len = strlen(dev->name) + 1;
+				int len = strlen(dev->name) + 1;
 				if (len > _IOC_SIZE(cmd)) len = _IOC_SIZE(cmd);
 				return copy_to_user((char *) arg, dev->name, len) ? -EFAULT : len;
-			}
-
-			if ((_IOC_NR(cmd) & ~ABS_MAX) == _IOC_NR(EVIOCGABS(0))) {
-
-				int t = _IOC_NR(cmd) & ABS_MAX;
-
-				if ((retval = put_user(dev->abs[t],     ((int *) arg) + 0))) return retval;
-				if ((retval = put_user(dev->absmin[t],  ((int *) arg) + 1))) return retval;
-				if ((retval = put_user(dev->absmax[t],  ((int *) arg) + 2))) return retval;
-				if ((retval = put_user(dev->absfuzz[t], ((int *) arg) + 3))) return retval;
-				if ((retval = put_user(dev->absflat[t], ((int *) arg) + 4))) return retval;
-
-				return 0;
 			}
 	}
 	return -EINVAL;
@@ -306,11 +282,11 @@ static struct input_handle *evdev_connect(struct input_handler *handler, struct 
 	evdev->handle.handler = handler;
 	evdev->handle.private = evdev;
 
-	evdev->exist = 1;
+	evdev->used = 1;
 
 	evdev->devfs = input_register_minor("event%d", minor, EVDEV_MINOR_BASE);
 
-	printk(KERN_INFO "event%d: Event device for input%d\n", minor, dev->number);
+	printk("event%d: Event device for input%d\n", minor, dev->number);
 
 	return &evdev->handle;
 }
@@ -319,11 +295,10 @@ static void evdev_disconnect(struct input_handle *handle)
 {
 	struct evdev *evdev = handle->private;
 
-	evdev->exist = 0;
-
-	if (evdev->open) {
+	if (evdev->open)
 		input_close_device(handle);
-	} else {
+
+	if (!--evdev->used) {
 		input_unregister_minor(evdev->devfs);
 		evdev_table[evdev->minor] = NULL;
 		kfree(evdev);
@@ -351,6 +326,3 @@ static void __exit evdev_exit(void)
 
 module_init(evdev_init);
 module_exit(evdev_exit);
-
-MODULE_AUTHOR("Vojtech Pavlik <vojtech@suse.cz>");
-MODULE_DESCRIPTION("Event character device driver");

@@ -1,49 +1,9 @@
-Wed Jul 26 23:30 2000 Gerard Roudier (groudier@club-internet.fr)
-	* version sym53c8xx-1.7.1
-	- Provide OpenFirmare path through the proc FS on PPC.
-	- Download of on-chip SRAM using memcpy_toio() doesn't work 
-	  on PPC. Restore previous method (MEMORY MOVE from SCRIPTS).
-	- Remove trailing argument #2 from a couple of #undefs.
-
-Sun Jul 09 16:30 2000 Gerard Roudier (groudier@club-internet.fr)
-	* version sym53c8xx-1.7.0
-	- Remove the PROFILE C and SCRIPTS code.
-	  This facility was not this useful and thus was not longer 
-	  desirable given the increasing complexity of the driver code.
-	- Merges from FreeBSD sym-1.6.2 driver:
-	  * Clarify memory barriers needed by the driver for architectures 
-	    that implement a weak memory ordering.
-	  * Simpler handling of illegal phases and data overrun from 
-	    SCRIPTS. These errors are now immediately reported to 
-	    the C code by an interrupt.
-	  * Sync the residual handling code with sym-1.6.2 and now 
-	    report `resid' to user for linux version >= 2.3.99 
-	- General cleanup:
-	  Move definitions for barriers and IO/MMIO operations to the 
-	  sym53c8xx_defs.h header files. They are now shared by the 
-	  both drivers.
-	  Remove unused options that claimed to optimize for the 896.
-	  If fact, they were not this clever. :)
-	  Use SCSI_NCR_IOMAPPED instead of NCR_IOMAPPED.
-	  Remove a couple of unused fields from data structures.
-
-Thu May 11 12:40 2000 Pam Delaney (pam.delaney@lsil.com)
-	* version sym53c8xx-1.6b
-	- Merged version.
-
 Mon Apr 24 12:00 2000 Gerard Roudier (groudier@club-internet.fr)
 	* version sym53c8xx-1.5m
 	- Return value 1 (instead of 0) from the driver setup routine.
 	- Donnot enable PCI DAC cycles. This just broke support for 
 	  SYM534C896 on sparc64. Problem fixed by David S. Miller.
 
-Fri Apr 14 9:00 2000 Pam Delaney (pam.delaney@lsil.com)
-	* version sym53c8xx-1.6b-9
-	- Added 53C1010_66 support.
-	- Small fix to integrity checking code.
-	- Removed requirement for integrity checking if want to run
-	  at ultra 3.
- 
 Sat Apr 1  12:00 2000 Gerard Roudier (groudier@club-internet.fr)
 	* version sym53c8xx-1.5l
 	- Tiny change for __sparc__ appeared in 2.3.99-pre4.1 that 
@@ -51,16 +11,6 @@ Sat Apr 1  12:00 2000 Gerard Roudier (groudier@club-internet.fr)
 	- Make sure no data transfer will happen for Scsi_Cmnd requests 
 	  that supply SCSI_DATA_NONE direction (this avoids some BUG() 
 	  statement in the PCI code when a data buffer is also supplied).
-
-Sat Mar 11 12:00 2000 Gerard Roudier (groudier@club-internet.fr)
-	* version sym53c8xx-1.6b-5
-	- Test against expected data transfer direction from SCRIPTS.
-	- Add support for the new dynamic dma mapping kernel interface.
-	  Requires Linux-2.3.47 (tested with pre-2.3.47-6).
-	  Many thanks to David S. Miller for his preliminary changes 
-	  that have been useful guidelines.
-	- Get data transfer direction from the scsi command structure 
-	  (Scsi_Cmnd) with kernels that provide this information.
 
 Mon Mar  6 23:30 2000 Gerard Roudier (groudier@club-internet.fr)
 	* version sym53c8xx-1.5k
@@ -70,16 +20,6 @@ Mon Mar  6 23:30 2000 Gerard Roudier (groudier@club-internet.fr)
 	  list.
 	- Miscellaneous (minor) fixes in the code added in driver 
 	  version 1.5j.
-
-Mon Feb 14 4:00 2000 Pam Delaney (pam.delaney@lsil.com)
- 	* version sym53c8xx-pre-1.6b-2.
-	- Updated the SCRIPTS error handling of the SWIDE
-	  condition - to remove any reads of the sbdl
-	  register. Changes needed because the 896 and 1010
-	  chips will check parity in some special circumstances.
-	  This will cause a parity error interrupt if not in
-	  data phase.  Changes based on those made in the
-	  FreeBSD driver version 1.3.2.
 
 Sun Feb 20 11:00 2000 Gerard Roudier (groudier@club-internet.fr)
 	* version sym53c8xx-1.5j
@@ -94,26 +34,6 @@ Sun Feb 20 11:00 2000 Gerard Roudier (groudier@club-internet.fr)
 	  (Scsi_Cmnd) with kernels that provide this information.
 	- Fix an old bug that only affected 896 rev. 1 when driver 
 	  profile support option was set in kernel configuration.
-
-Fri Jan 14 14:00 2000 Pam Delaney (pam.delaney@lsil.com)
- 	* version sym53c8xx-pre-1.6b-1.
-	- Merge parallel driver series 1.61 and 1.5e 
-
-Tue Jan 11 14:00 2000 Pam Delaney (pam.delaney@lsil.com)
-	* version sym53c8xx-1.61
-	- Added support for mounting disks on wide-narrow-wide
-	  scsi configurations. 
-	- Modified offset to be a maximum of 31 in ST mode, 
-	  62 in DT mode.
-	- Based off of 1.60
-
-Mon Jan 10 10:00 2000 Pam Delaney (pam.delaney@lsil.com)
-	* version sym53c8xx-1.60
-	- Added capability to use the integrity checking code
-	  in the kernel (optional).
-	-  Added PPR negotiation.
-	- Added support for 53C1010 Ultra 3 part.
-	- Based off of 1.5f
 
 Sat Jan 8  22:00 2000 Gerard Roudier (groudier@club-internet.fr)
 	* version sym53c8xx-1.5h

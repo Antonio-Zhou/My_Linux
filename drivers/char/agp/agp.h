@@ -27,13 +27,10 @@
 #ifndef _AGP_BACKEND_PRIV_H
 #define _AGP_BACKEND_PRIV_H 1
 
-#include <asm/io.h>
-
 enum aper_size_type {
 	U8_APER_SIZE,
 	U16_APER_SIZE,
 	U32_APER_SIZE,
-	LVL2_APER_SIZE,
 	FIXED_APER_SIZE
 };
 
@@ -66,12 +63,6 @@ typedef struct _aper_size_info_32 {
 	u32 size_value;
 } aper_size_info_32;
 
-typedef struct _aper_size_info_lvl2 {
-	int size;
-	int num_entries;
-	u32 size_value;
-} aper_size_info_lvl2;
-
 typedef struct _aper_size_info_fixed {
 	int size;
 	int num_entries;
@@ -94,7 +85,7 @@ struct agp_bridge_data {
 	u32 mode;
 	enum chipset_type type;
 	enum aper_size_type size_type;
-	unsigned long *key_list;
+	u32 *key_list;
 	atomic_t current_memory_agp;
 	atomic_t agp_in_use;
 	int max_memory_agp;	/* in number of pages */
@@ -119,28 +110,24 @@ struct agp_bridge_data {
 	int (*remove_memory) (agp_memory *, off_t, int);
 	agp_memory *(*alloc_by_type) (size_t, int);
 	void (*free_by_type) (agp_memory *);
-	unsigned long (*agp_alloc_page) (void);
-	void (*agp_destroy_page) (unsigned long);
 };
 
-#define OUTREG32(mmap, addr, val)   writel((val),(mmap + (addr)))
-#define OUTREG16(mmap, addr, val)   writew((val),(mmap + (addr)))
-#define OUTREG8(mmap, addr, val)   writeb((val),(mmap + (addr)))
+#define OUTREG32(mmap, addr, val)   __raw_writel((val), (mmap)+(addr))
+#define OUTREG16(mmap, addr, val)   __raw_writew((val), (mmap)+(addr))
+#define OUTREG8 (mmap, addr, val)   __raw_writeb((val), (mmap)+(addr))
 
-#define INREG32(mmap, addr)         readl(mmap + (addr))
-#define INREG16(mmap, addr)         readw(mmap + (addr))
-#define INREG8(mmap, addr)         readb(mmap + (addr))
+#define INREG32(mmap, addr)         __raw_readl((mmap)+(addr))
+#define INREG16(mmap, addr)         __raw_readw((mmap)+(addr))
+#define INREG8 (mmap, addr)         __raw_readb((mmap)+(addr))
 
 #define CACHE_FLUSH	agp_bridge.cache_flush
 #define A_SIZE_8(x)	((aper_size_info_8 *) x)
 #define A_SIZE_16(x)	((aper_size_info_16 *) x)
 #define A_SIZE_32(x)	((aper_size_info_32 *) x)
-#define A_SIZE_LVL2(x)  ((aper_size_info_lvl2 *) x)
 #define A_SIZE_FIX(x)	((aper_size_info_fixed *) x)
 #define A_IDX8()	(A_SIZE_8(agp_bridge.aperture_sizes) + i)
 #define A_IDX16()	(A_SIZE_16(agp_bridge.aperture_sizes) + i)
 #define A_IDX32()	(A_SIZE_32(agp_bridge.aperture_sizes) + i)
-#define A_IDXLVL2()	(A_SIZE_LVL2(agp_bridge.aperture_sizes) + i)
 #define A_IDXFIX()	(A_SIZE_FIX(agp_bridge.aperture_sizes) + i)
 #define MAXKEY		(4096 * 32)
 
@@ -164,9 +151,6 @@ struct agp_bridge_data {
 #ifndef PCI_DEVICE_ID_INTEL_810_0
 #define PCI_DEVICE_ID_INTEL_810_0       0x7120
 #endif
-#ifndef PCI_DEVICE_ID_INTEL_840_0
-#define PCI_DEVICE_ID_INTEL_840_0		0x1a21
-#endif
 #ifndef PCI_DEVICE_ID_INTEL_810_DC100_0
 #define PCI_DEVICE_ID_INTEL_810_DC100_0 0x7122
 #endif
@@ -185,12 +169,6 @@ struct agp_bridge_data {
 #ifndef PCI_DEVICE_ID_INTEL_810_E_1
 #define PCI_DEVICE_ID_INTEL_810_E_1     0x7125
 #endif
-#ifndef PCI_DEVICE_ID_INTEL_815_0
-#define PCI_DEVICE_ID_INTEL_815_0       0x1130
-#endif
-#ifndef PCI_DEVICE_ID_INTEL_815_1
-#define PCI_DEVICE_ID_INTEL_815_1       0x1132
-#endif
 #ifndef PCI_DEVICE_ID_INTEL_82443GX_1
 #define PCI_DEVICE_ID_INTEL_82443GX_1   0x71a1
 #endif
@@ -203,46 +181,6 @@ struct agp_bridge_data {
 #ifndef PCI_DEVICE_ID_AL_M1541_0
 #define PCI_DEVICE_ID_AL_M1541_0	0x1541
 #endif
-#ifndef PCI_DEVICE_ID_SI_630
-#define PCI_DEVICE_ID_SI_630		0x0630
-#endif
-#ifndef PCI_DEVICE_ID_SI_540
-#define PCI_DEVICE_ID_SI_540		0x0540
-#endif
-#ifndef PCI_DEVICE_ID_SI_620
-#define PCI_DEVICE_ID_SI_620		0x0620
-#endif
-#ifndef PCI_DEVICE_ID_SI_530
-#define PCI_DEVICE_ID_SI_530		0x0530
-#endif
-#ifndef PCI_DEVICE_ID_VIA_8501_0
-#define PCI_DEVICE_ID_VIA_8501_0	0x0501
-#endif
-#ifndef PCI_DEVICE_ID_VIA_8371_0
-#define PCI_DEVICE_ID_VIA_8371_0	0x0391
-#endif
-#ifndef PCI_DEVICE_ID_VIA_8363_0
-#define PCI_DEVICE_ID_VIA_8363_0	0x0305
-#endif
-#ifndef PCI_DEVICE_ID_AL_M1621_0
-#define PCI_DEVICE_ID_AL_M1621_0	0x1621
-#endif
-#ifndef PCI_DEVICE_ID_AL_M1631_0
-#define PCI_DEVICE_ID_AL_M1631_0	0x1631
-#endif
-#ifndef PCI_DEVICE_ID_AL_M1632_0
-#define PCI_DEVICE_ID_AL_M1632_0	0x1632
-#endif
-#ifndef PCI_DEVICE_ID_AL_M1641_0
-#define PCI_DEVICE_ID_AL_M1641_0	0x1641
-#endif
-#ifndef PCI_DEVICE_ID_AL_M1647_0
-#define PCI_DEVICE_ID_AL_M1647_0	0x1647
-#endif
-#ifndef PCI_DEVICE_ID_AL_M1651_0
-#define PCI_DEVICE_ID_AL_M1651_0	0x1651
-#endif
-
 
 /* intel register */
 #define INTEL_APBASE    0x10
@@ -251,10 +189,6 @@ struct agp_bridge_data {
 #define INTEL_AGPCTRL   0xb0
 #define INTEL_NBXCFG    0x50
 #define INTEL_ERRSTS    0x91
-
-/* intel i840 registers */
-#define INTEL_I840_MCHCFG   0x50
-#define INTEL_I840_ERRSTS	0xc8
 
 /* intel i810 registers */
 #define I810_GMADDR 0x10
@@ -303,29 +237,5 @@ struct agp_bridge_data {
 #define ALI_AGPCTRL	0xb8
 #define ALI_ATTBASE	0xbc
 #define ALI_TLBCTRL	0xc0
-#define ALI_TAGCTRL	0xc4
-#define ALI_CACHE_FLUSH_CTRL	0xD0
-#define ALI_CACHE_FLUSH_ADDR_MASK	0xFFFFF000
-#define ALI_CACHE_FLUSH_EN	0x100
-
-
-/* Serverworks Registers */
-#define SVWRKS_APSIZE 0x10
-#define SVWRKS_SIZE_MASK 0xfe000000
-
-#define SVWRKS_MMBASE 0x14
-#define SVWRKS_CACHING 0x4b
-#define SVWRKS_FEATURE 0x68
-
-/* func 1 registers */
-#define SVWRKS_AGP_ENABLE 0x60
-#define SVWRKS_COMMAND 0x04
-
-/* Memory mapped registers */
-#define SVWRKS_GART_CACHE 0x02
-#define SVWRKS_GATTBASE   0x04
-#define SVWRKS_TLBFLUSH   0x10
-#define SVWRKS_POSTFLUSH  0x14
-#define SVWRKS_DIRFLUSH   0x0c
 
 #endif				/* _AGP_BACKEND_PRIV_H */

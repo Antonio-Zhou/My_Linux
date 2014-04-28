@@ -6,7 +6,7 @@
  * Status:	  Experimental.
  * Author:	  Dag Brattli <dagb@cs.uit.no>
  * Created at:	  Sun Aug  3 13:49:59 1997
- * Modified at:   Tue Apr 25 21:18:48 2000
+ * Modified at:   Fri Jan 28 20:22:38 2000
  * Modified by:   Dag Brattli <dagb@cs.uit.no>
  * Sources:	  serial.c by Linus Torvalds 
  * 
@@ -47,7 +47,7 @@
 #include <linux/serial_reg.h>
 #include <linux/errno.h>
 #include <linux/init.h>
-#include <asm/spinlock.h>
+#include <linux/spinlock.h>
 #include <linux/rtnetlink.h>
 
 #include <asm/system.h>
@@ -77,14 +77,15 @@ static void irport_write_wakeup(struct irport_cb *self);
 static int  irport_write(int iobase, int fifo_size, __u8 *buf, int len);
 static void irport_receive(struct irport_cb *self);
 
-static int  irport_net_init(struct device *dev);
-static int  irport_net_ioctl(struct device *dev, struct ifreq *rq, 
+static int  irport_net_init(struct net_device *dev);
+static int  irport_net_ioctl(struct net_device *dev, struct ifreq *rq, 
 			     int cmd);
 static int  irport_is_receiving(struct irport_cb *self);
-static int  irport_set_dtr_rts(struct device *dev, int dtr, int rts);
-static int  irport_raw_write(struct device *dev, __u8 *buf, int len);
-static struct net_device_stats *irport_net_get_stats(struct device *dev);
+static int  irport_set_dtr_rts(struct net_device *dev, int dtr, int rts);
+static int  irport_raw_write(struct net_device *dev, __u8 *buf, int len);
+static struct net_device_stats *irport_net_get_stats(struct net_device *dev);
 static int irport_change_speed_complete(struct irda_task *task);
+static void irport_timeout(struct net_device *dev);
 
 EXPORT_SYMBOL(irport_open);
 EXPORT_SYMBOL(irport_close);
@@ -92,6 +93,7 @@ EXPORT_SYMBOL(irport_start);
 EXPORT_SYMBOL(irport_stop);
 EXPORT_SYMBOL(irport_interrupt);
 EXPORT_SYMBOL(irport_hard_xmit);
+EXPORT_SYMBOL(irport_timeout);
 EXPORT_SYMBOL(irport_change_speed);
 EXPORT_SYMBOL(irport_net_open);
 EXPORT_SYMBOL(irport_net_close);
@@ -136,7 +138,7 @@ static void irport_cleanup(void)
 struct irport_cb *
 irport_open(int i, unsigned int iobase, unsigned int irq)
 {
-	struct device *dev;
+	struct net_device *dev;
 	struct irport_cb *self;
 	int ret;
 	int err;
@@ -217,9 +219,6 @@ irport_open(int i, unsigned int iobase, unsigned int irq)
 		ERROR(__FUNCTION__ "(), dev_alloc() failed!\n");
 		return NULL;
 	}
-	/* dev_alloc doesn't clear the struct */
-	memset(((__u8*)dev)+sizeof(char*),0,sizeof(struct device)-sizeof(char*));
-
 	self->netdev = dev;
 
 	/* May be overridden by piggyback drivers */
@@ -230,6 +229,8 @@ irport_open(int i, unsigned int iobase, unsigned int irq)
 	/* Override the network functions we need to use */
 	dev->init            = irport_net_init;
 	dev->hard_start_xmit = irport_hard_xmit;
+	dev->tx_timeout	     = irport_timeout;
+	dev->watchdog_timeo  = HZ/20;
 	dev->open            = irport_net_open;
 	dev->stop            = irport_net_close;
 	dev->get_stats	     = irport_net_get_stats;
@@ -265,8 +266,6 @@ int irport_close(struct irport_cb *self)
 		rtnl_lock();
 		unregister_netdevice(self->netdev);
 		rtnl_unlock();
-		/* Must free the old-style 2.2.x device */
-		kfree(self->netdev);
 	}
 
 	/* Release the IO-port that this driver is using */
@@ -510,15 +509,10 @@ static void irport_write_wakeup(struct irport_cb *self)
 					  NULL, (void *) self->new_speed);
 			self->new_speed = 0;
 		} else {
-			self->netdev->tbusy = 0; /* Unlock */
-		
 			/* Tell network layer that we want more frames */
-			mark_bh(NET_BH);
+			netif_wake_queue(self->netdev);
 		}
 		self->stats.tx_packets++;
-
-		/* Schedule network layer, so we can get some more frames */
-		mark_bh(NET_BH);
 
 		/* 
 		 * Reset Rx FIFO to make sure that all reflected transmit data
@@ -582,22 +576,43 @@ static int irport_change_speed_complete(struct irda_task *task)
 	ASSERT(self->netdev != NULL, return -1;);
 
 	/* Finished changing speed, so we are not busy any longer */
-	self->netdev->tbusy = 0;
-
 	/* Signal network layer so it can try to send the frame */
-	mark_bh(NET_BH);
 
+	netif_wake_queue(self->netdev);
+	
 	return 0;
 }
 
 /*
- * Function irport_xmit (void)
+ * Function irport_timeout (struct net_device *dev)
+ *
+ *    The networking layer thinks we timed out.
+ *
+ */
+
+static void irport_timeout(struct net_device *dev)
+{
+	struct irport_cb *self;
+	int iobase;
+
+	self = (struct irport_cb *) dev->priv;
+	iobase = self->io.sir_base;
+	
+	WARNING("%s: transmit timed out\n", dev->name);
+	irport_start(self);
+	self->change_speed(self->priv, self->io.speed);
+	dev->trans_start = jiffies;
+	netif_wake_queue(dev);
+}
+ 
+/*
+ * Function irport_hard_start_xmit (struct sk_buff *skb, struct net_device *dev)
  *
  *    Transmits the current frame until FIFO is full, then
  *    waits until the next transmitt interrupt, and continues until the
  *    frame is transmited.
  */
-int irport_hard_xmit(struct sk_buff *skb, struct device *dev)
+int irport_hard_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct irport_cb *self;
 	unsigned long flags;
@@ -611,19 +626,8 @@ int irport_hard_xmit(struct sk_buff *skb, struct device *dev)
 
 	iobase = self->io.sir_base;
 
-	/* Lock transmit buffer */
-	if (irda_lock((void *) &dev->tbusy) == FALSE) {
-		int tickssofar = jiffies - dev->trans_start;
-		if ((tickssofar < 5) || !dev->start)
-			return -EBUSY;
-
-		WARNING("%s: transmit timed out\n", dev->name);
-		irport_start(self);
-		self->change_speed(self->priv, self->io.speed);
-
-		dev->trans_start = jiffies;
-	}
-
+	netif_stop_queue(dev);
+	
 	/* Check if we need to change the speed */
 	if ((speed = irda_get_speed(skb)) != self->io.speed)
 		self->new_speed = speed;
@@ -687,7 +691,7 @@ static void irport_receive(struct irport_cb *self)
  */
 void irport_interrupt(int irq, void *dev_id, struct pt_regs *regs) 
 {
-	struct device *dev = (struct device *) dev_id;
+	struct net_device *dev = (struct net_device *) dev_id;
 	struct irport_cb *self;
 	int boguscount = 0;
 	int iobase;
@@ -700,8 +704,6 @@ void irport_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 	self = (struct irport_cb *) dev->priv;
 
 	spin_lock(&self->lock);
-
-	dev->interrupt = 1;
 
 	iobase = self->io.sir_base;
 
@@ -738,12 +740,10 @@ void irport_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 
  	        iir = inb(iobase + UART_IIR) & UART_IIR_ID;
 	}
-	dev->interrupt = 0;
-
 	spin_unlock(&self->lock);
 }
 
-static int irport_net_init(struct device *dev)
+static int irport_net_init(struct net_device *dev)
 {
 	/* Set up to be a normal IrDA network device driver */
 	irda_device_setup(dev);
@@ -759,7 +759,7 @@ static int irport_net_init(struct device *dev)
  *    Network device is taken up. Usually this is done by "ifconfig irda0 up" 
  *   
  */
-int irport_net_open(struct device *dev)
+int irport_net_open(struct net_device *dev)
 {
 	struct irport_cb *self;
 	int iobase;
@@ -775,10 +775,6 @@ int irport_net_open(struct device *dev)
 
 	irport_start(self);
 
-	/* Ready to play! */
-	dev->tbusy = 0;
-	dev->interrupt = 0;
-	dev->start = 1;
 
 	/* 
 	 * Open new IrLAP layer instance, now that everything should be
@@ -787,7 +783,10 @@ int irport_net_open(struct device *dev)
 	self->irlap = irlap_open(dev, &self->qos);
 
 	/* FIXME: change speed of dongle */
+	/* Ready to play! */
 
+	netif_start_queue(dev);
+	
 	MOD_INC_USE_COUNT;
 
 	return 0;
@@ -799,7 +798,7 @@ int irport_net_open(struct device *dev)
  *    Network device is taken down. Usually this is done by 
  *    "ifconfig irda0 down" 
  */
-int irport_net_close(struct device *dev)
+int irport_net_close(struct net_device *dev)
 {
 	struct irport_cb *self;
 	int iobase;
@@ -814,9 +813,8 @@ int irport_net_close(struct device *dev)
 	iobase = self->io.sir_base;
 
 	/* Stop device */
-	dev->tbusy = 1;
-	dev->start = 0;
-
+	netif_stop_queue(dev);
+	
 	/* Stop and remove instance of IrLAP */
 	if (self->irlap)
 		irlap_close(self->irlap);
@@ -870,7 +868,7 @@ static int irport_is_receiving(struct irport_cb *self)
  *    This function can be used by dongles etc. to set or reset the status
  *    of the dtr and rts lines
  */
-static int irport_set_dtr_rts(struct device *dev, int dtr, int rts)
+static int irport_set_dtr_rts(struct net_device *dev, int dtr, int rts)
 {
 	struct irport_cb *self = dev->priv;
 	int iobase;
@@ -889,7 +887,7 @@ static int irport_set_dtr_rts(struct device *dev, int dtr, int rts)
 	return 0;
 }
 
-static int irport_raw_write(struct device *dev, __u8 *buf, int len)
+static int irport_raw_write(struct net_device *dev, __u8 *buf, int len)
 {
 	struct irport_cb *self = (struct irport_cb *) dev->priv;
 	int actual = 0;
@@ -921,7 +919,7 @@ static int irport_raw_write(struct device *dev, __u8 *buf, int len)
  *    Process IOCTL commands for this device
  *
  */
-static int irport_net_ioctl(struct device *dev, struct ifreq *rq, int cmd)
+static int irport_net_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 {
 	struct if_irda_req *irq = (struct if_irda_req *) rq;
 	struct irport_cb *self;
@@ -943,12 +941,7 @@ static int irport_net_ioctl(struct device *dev, struct ifreq *rq, int cmd)
 	
 	switch (cmd) {
 	case SIOCSBANDWIDTH: /* Set bandwidth */
-		/*
-		 * This function will also be used by IrLAP to change the
-		 * speed, so we still must allow for speed change within
-		 * interrupt context.
-		 */
-		if (!in_interrupt() && !capable(CAP_NET_ADMIN))
+		if (!capable(CAP_NET_ADMIN))
 			return -EPERM;
 		irda_task_execute(self, __irport_change_speed, NULL, NULL, 
 				  (void *) irq->ifr_baudrate);
@@ -997,7 +990,7 @@ static int irport_net_ioctl(struct device *dev, struct ifreq *rq, int cmd)
 	return ret;
 }
 
-static struct net_device_stats *irport_net_get_stats(struct device *dev)
+static struct net_device_stats *irport_net_get_stats(struct net_device *dev)
 {
 	struct irport_cb *self = (struct irport_cb *) dev->priv;
 	

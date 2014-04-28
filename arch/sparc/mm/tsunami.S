@@ -1,9 +1,10 @@
-/* $Id: tsunami.S,v 1.1.6.3 1999/10/06 15:36:38 davem Exp $
+/* $Id: tsunami.S,v 1.4 2000/05/09 17:40:13 davem Exp $
  * tsunami.S: High speed MicroSparc-I mmu/cache operations.
  *
  * Copyright (C) 1997 David S. Miller (davem@caip.rutgers.edu)
  */
 
+#include <linux/config.h>
 #include <asm/ptrace.h>
 #include <asm/psr.h>
 #include <asm/asi.h>
@@ -12,7 +13,7 @@
 
 #define WINDOW_FLUSH(tmp1, tmp2)					\
 	mov	0, tmp1;						\
-98:	ld	[%g6 + AOFF_task_tss + AOFF_thread_uwinmask], tmp2;	\
+98:	ld	[%g6 + AOFF_task_thread + AOFF_thread_uwinmask], tmp2;	\
 	orcc	%g0, tmp2, %g0;						\
 	add	tmp1, 1, tmp1;						\
 	bne	98b;							\
@@ -37,7 +38,7 @@ tsunami_flush_cache_page:
 tsunami_flush_cache_mm:
 tsunami_flush_cache_range:
 	ld	[%o0 + AOFF_mm_context], %g2
-#ifndef __SMP__
+#ifndef CONFIG_SMP
 	cmp	%g2, -1
 	be	tsunami_flush_cache_out
 #endif
@@ -60,7 +61,7 @@ tsunami_flush_sig_insns:
 	/* More slick stuff... */
 tsunami_flush_tlb_mm:
 tsunami_flush_tlb_range:
-#ifndef __SMP__
+#ifndef CONFIG_SMP
 	ld	[%o0 + AOFF_mm_context], %g2
 	cmp	%g2, -1
 	be	tsunami_flush_tlb_out
@@ -83,7 +84,7 @@ tsunami_flush_tlb_page:
 	mov	SRMMU_CTX_REG, %g1
 	ld	[%o0 + AOFF_mm_context], %o3
 	andn	%o1, (PAGE_SIZE - 1), %o1
-#ifndef __SMP__
+#ifndef CONFIG_SMP
 	cmp	%o3, -1
 	be	tsunami_flush_tlb_page_out
 #endif

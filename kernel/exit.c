@@ -9,7 +9,6 @@
 #include <linux/interrupt.h>
 #include <linux/smp_lock.h>
 #include <linux/module.h>
-#include <linux/vmalloc.h>
 #ifdef CONFIG_BSD_PROCESS_ACCT
 #include <linux/acct.h>
 #endif
@@ -23,39 +22,41 @@ extern struct task_struct *child_reaper;
 
 int getrusage(struct task_struct *, int, struct rusage *);
 
-void release(struct task_struct * p)
+static void release(struct task_struct * p)
 {
 	if (p != current) {
-#ifdef __SMP__
+#ifdef CONFIG_SMP
+		int has_cpu;
+
 		/*
-		 * Wait to make sure the process isn't active on any
-		 * other CPU
+		 * Wait to make sure the process isn't on the
+		 * runqueue (active on some other CPU still)
 		 */
-		for (;;)  {
-			int has_cpu;
+		do {
 			spin_lock_irq(&runqueue_lock);
 			has_cpu = p->has_cpu;
 			spin_unlock_irq(&runqueue_lock);
-			if (!has_cpu)
-				break;
-			do {
-				barrier();
-			} while (p->has_cpu);
-		}
+		} while (has_cpu);
 #endif
 		free_uid(p);
-		add_free_taskslot(p->tarray_ptr);
-
-		write_lock_irq(&tasklist_lock);
-		nr_tasks--;
-		unhash_pid(p);
-		REMOVE_LINKS(p);
-		write_unlock_irq(&tasklist_lock);
+		unhash_process(p);
 
 		release_thread(p);
 		current->cmin_flt += p->min_flt + p->cmin_flt;
 		current->cmaj_flt += p->maj_flt + p->cmaj_flt;
 		current->cnswap += p->nswap + p->cnswap;
+		/*
+		 * Potentially available timeslices are retrieved
+		 * here - this way the parent does not get penalized
+		 * for creating too many processes.
+		 *
+		 * (this cannot be used to artificially 'generate'
+		 * timeslices, because any timeslice recovered here
+		 * was given away by the parent in the first place.)
+		 */
+		current->counter += p->counter;
+		if (current->counter >= current->priority*2)
+			current->counter = current->priority*2-1;
 		free_task_struct(p);
 	} else {
 		printk("task releasing itself\n");
@@ -169,11 +170,9 @@ static inline void close_files(struct files_struct * files)
 		set = files->open_fds->fds_bits[j++];
 		while (set) {
 			if (set & 1) {
-				struct file * file = files->fd[i];
-				if (file) {
-					files->fd[i] = NULL;
+				struct file * file = xchg(&files->fd[i], NULL);
+				if (file)
 					filp_close(file, files);
-				}
 			}
 			i++;
 			set >>= 1;
@@ -183,25 +182,32 @@ static inline void close_files(struct files_struct * files)
 
 extern kmem_cache_t *files_cachep;  
 
+void put_files_struct(struct files_struct *files)
+{
+	if (atomic_dec_and_test(&files->count)) {
+		close_files(files);
+		/*
+		 * Free the fd and fdset arrays if we expanded them.
+		 */
+		if (files->fd != &files->fd_array[0])
+			free_fd_array(files->fd, files->max_fds);
+		if (files->max_fdset > __FD_SETSIZE) {
+			free_fdset(files->open_fds, files->max_fdset);
+			free_fdset(files->close_on_exec, files->max_fdset);
+		}
+		kmem_cache_free(files_cachep, files);
+	}
+}
+
 static inline void __exit_files(struct task_struct *tsk)
 {
 	struct files_struct * files = tsk->files;
 
 	if (files) {
+		task_lock(tsk);
 		tsk->files = NULL;
-		if (atomic_dec_and_test(&files->count)) {
-			close_files(files);
-			/*
- 			 * Free the fd and fdset arrays if we expanded them.
-			 */
- 			if (files->fd != &files->fd_array[0])
- 				free_fd_array(files->fd, files->max_fds);
- 			if (files->max_fdset > __FD_SETSIZE) {
- 				free_fdset(files->open_fds, files->max_fdset);
- 				free_fdset(files->close_on_exec, files->max_fdset);
- 			}
-			kmem_cache_free(files_cachep, files);
-		}
+		task_unlock(tsk);
+		put_files_struct(files);
 	}
 }
 
@@ -209,18 +215,35 @@ void exit_files(struct task_struct *tsk)
 {
 	__exit_files(tsk);
 }
+static inline void __put_fs_struct(struct fs_struct *fs)
+{
+	if (atomic_dec_and_test(&fs->count)) {
+		dput(fs->root);
+		mntput(fs->rootmnt);
+		dput(fs->pwd);
+		mntput(fs->pwdmnt);
+		if (fs->altroot) {
+			dput(fs->altroot);
+			mntput(fs->altrootmnt);
+		}
+		kfree(fs);
+	}
+}
+
+void put_fs_struct(struct fs_struct *fs)
+{
+	__put_fs_struct(fs);
+}
 
 static inline void __exit_fs(struct task_struct *tsk)
 {
 	struct fs_struct * fs = tsk->fs;
 
 	if (fs) {
+		task_lock(tsk);
 		tsk->fs = NULL;
-		if (atomic_dec_and_test(&fs->count)) {
-			dput(fs->root);
-			dput(fs->pwd);
-			kfree(fs);
-		}
+		task_unlock(tsk);
+		__put_fs_struct(fs);
 	}
 }
 
@@ -232,17 +255,16 @@ void exit_fs(struct task_struct *tsk)
 static inline void __exit_sighand(struct task_struct *tsk)
 {
 	struct signal_struct * sig = tsk->sig;
-	unsigned long flags;
 
-	spin_lock_irqsave(&tsk->sigmask_lock, flags);
 	if (sig) {
+		spin_lock_irq(&tsk->sigmask_lock);
 		tsk->sig = NULL;
+		spin_unlock_irq(&tsk->sigmask_lock);
 		if (atomic_dec_and_test(&sig->count))
 			kfree(sig);
 	}
 
 	flush_signals(tsk);
-	spin_unlock_irqrestore(&tsk->sigmask_lock, flags);
 }
 
 void exit_sighand(struct task_struct *tsk)
@@ -250,19 +272,49 @@ void exit_sighand(struct task_struct *tsk)
 	__exit_sighand(tsk);
 }
 
+/*
+ * We can use these to temporarily drop into
+ * "lazy TLB" mode and back.
+ */
+struct mm_struct * start_lazy_tlb(void)
+{
+	struct mm_struct *mm = current->mm;
+	current->mm = NULL;
+	/* active_mm is still 'mm' */
+	atomic_inc(&mm->mm_count);
+	enter_lazy_tlb(mm, current, smp_processor_id());
+	return mm;
+}
+
+void end_lazy_tlb(struct mm_struct *mm)
+{
+	struct mm_struct *active_mm = current->active_mm;
+
+	current->mm = mm;
+	if (mm != active_mm) {
+		current->active_mm = mm;
+		activate_mm(active_mm, mm);
+	}
+	mmdrop(active_mm);
+}
+
+/*
+ * Turn us into a lazy TLB process if we
+ * aren't already..
+ */
 static inline void __exit_mm(struct task_struct * tsk)
 {
 	struct mm_struct * mm = tsk->mm;
 
-	/* Set us up to use the kernel mm state */
-	if (mm != &init_mm) {
-		flush_cache_mm(mm);
-		flush_tlb_mm(mm);
-		destroy_context(mm);
-		tsk->mm = &init_mm;
-		tsk->swappable = 0;
-		SET_PAGE_DIR(tsk, swapper_pg_dir);
+	if (mm) {
+		atomic_inc(&mm->mm_count);
 		mm_release();
+		if (mm != tsk->active_mm) BUG();
+		/* more a memory barrier than a real lock */
+		task_lock(tsk);
+		tsk->mm = NULL;
+		task_unlock(tsk);
+		enter_lazy_tlb(mm, current, smp_processor_id());
 		mmput(mm);
 	}
 }
@@ -339,7 +391,7 @@ static void exit_notify(void)
 		p = current->p_cptr;
 		current->p_cptr = p->p_osptr;
 		p->p_ysptr = NULL;
-		p->ptrace &= ~(PT_PTRACED|PT_TRACESYS);
+		p->flags &= ~(PF_PTRACED|PF_TRACESYS);
 
 		p->p_pptr = p->p_opptr;
 		p->p_osptr = p->p_pptr->p_cptr;
@@ -381,9 +433,7 @@ NORET_TYPE void do_exit(long code)
 	if (!tsk->pid)
 		panic("Attempted to kill the idle task!");
 	tsk->flags |= PF_EXITING;
-	start_bh_atomic();
-	del_timer(&tsk->real_timer);
-	end_bh_atomic();
+	del_timer_sync(&tsk->real_timer);
 
 	lock_kernel();
 fake_volatile:
@@ -392,9 +442,6 @@ fake_volatile:
 #endif
 	sem_exit();
 	__exit_mm(tsk);
-#if CONFIG_AP1000
-	exit_msc(tsk);
-#endif
 	__exit_files(tsk);
 	__exit_fs(tsk);
 	__exit_sighand(tsk);
@@ -402,11 +449,7 @@ fake_volatile:
 	tsk->state = TASK_ZOMBIE;
 	tsk->exit_code = code;
 	exit_notify();
-#ifdef DEBUG_PROC_TREE
-	audit_ptree();
-#endif
-	if (tsk->exec_domain && tsk->exec_domain->module)
-		__MOD_DEC_USE_COUNT(tsk->exec_domain->module);
+	put_exec_domain(tsk->exec_domain);
 	if (tsk->binfmt && tsk->binfmt->module)
 		__MOD_DEC_USE_COUNT(tsk->binfmt->module);
 	schedule();
@@ -426,15 +469,15 @@ fake_volatile:
 	goto fake_volatile;
 }
 
-asmlinkage int sys_exit(int error_code)
+asmlinkage long sys_exit(int error_code)
 {
 	do_exit((error_code&0xff)<<8);
 }
 
-asmlinkage int sys_wait4(pid_t pid,unsigned int * stat_addr, int options, struct rusage * ru)
+asmlinkage long sys_wait4(pid_t pid,unsigned int * stat_addr, int options, struct rusage * ru)
 {
 	int flag, retval;
-	struct wait_queue wait = { current, NULL };
+	DECLARE_WAITQUEUE(wait, current);
 	struct task_struct *p;
 
 	if (options & ~(WNOHANG|WUNTRACED|__WCLONE|__WALL))
@@ -443,13 +486,7 @@ asmlinkage int sys_wait4(pid_t pid,unsigned int * stat_addr, int options, struct
 	add_wait_queue(&current->wait_chldexit,&wait);
 repeat:
 	flag = 0;
-
-	/* The interruptible state must be set before looking at the
-	   children. This because we want to catch any racy exit from
-	   the children as do_exit() may run under us. The following
-	   read_lock will enforce SMP ordering at the CPU level. */
 	current->state = TASK_INTERRUPTIBLE;
-
 	read_lock(&tasklist_lock);
  	for (p = current->p_cptr ; p ; p = p->p_osptr) {
 		if (pid>0) {
@@ -475,7 +512,7 @@ repeat:
 			case TASK_STOPPED:
 				if (!p->exit_code)
 					continue;
-				if (!(options & WUNTRACED) && !(p->ptrace & PT_PTRACED))
+				if (!(options & WUNTRACED) && !(p->flags & PF_PTRACED))
 					continue;
 				read_unlock(&tasklist_lock);
 				retval = ru ? getrusage(p, RUSAGE_BOTH, ru) : 0; 
@@ -505,9 +542,6 @@ repeat:
 					notify_parent(p, SIGCHLD);
 				} else
 					release(p);
-#ifdef DEBUG_PROC_TREE
-				audit_ptree();
-#endif
 				goto end_wait4;
 			default:
 				continue;
@@ -526,18 +560,18 @@ repeat:
 	}
 	retval = -ECHILD;
 end_wait4:
-	remove_wait_queue(&current->wait_chldexit,&wait);
 	current->state = TASK_RUNNING;
+	remove_wait_queue(&current->wait_chldexit,&wait);
 	return retval;
 }
 
-#ifndef __alpha__
+#if !defined(__alpha__) && !defined(__ia64__)
 
 /*
  * sys_waitpid() remains for compatibility. waitpid() should be
  * implemented by calling sys_wait4() from libc.a.
  */
-asmlinkage int sys_waitpid(pid_t pid,unsigned int * stat_addr, int options)
+asmlinkage long sys_waitpid(pid_t pid,unsigned int * stat_addr, int options)
 {
 	return sys_wait4(pid, stat_addr, options, NULL);
 }

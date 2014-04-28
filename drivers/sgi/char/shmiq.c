@@ -1,4 +1,4 @@
-/* $Id: shmiq.c,v 1.11.2.2 1999/06/17 12:08:45 ralf Exp $
+/* $Id: shmiq.c,v 1.20 2000/02/24 00:13:10 ralf Exp $
  *
  * shmiq.c: shared memory input queue driver
  * written 1997 Miguel de Icaza (miguel@nuclecu.unam.mx)
@@ -53,6 +53,7 @@
 #include <linux/wait.h>
 #include <linux/major.h>
 #include <linux/smp_lock.h>
+#include <linux/devfs_fs_kernel.h>
 
 #include <asm/shmiq.h>
 #include <asm/mman.h>
@@ -84,7 +85,7 @@ static struct {
 	int    events;
 	int    mapped;
 	
-	struct wait_queue    *proc_list;
+	wait_queue_head_t    proc_list;
 	struct fasync_struct *fasync;
 } shmiqs [MAX_SHMI_QUEUES];
 
@@ -118,7 +119,7 @@ shmiq_push_event (struct shmqevent *e)
 	s->tail = tail_next;
 	shmiqs [device].tail = tail_next;
 	if (shmiqs [device].fasync)
-		kill_fasync (shmiqs [device].fasync, SIGIO);
+		kill_fasync (shmiqs [device].fasync, SIGIO, POLL_IN);
 	wake_up_interruptible (&shmiqs [device].proc_list);
 }
 
@@ -214,6 +215,8 @@ shmiq_ioctl (struct inode *inode, struct file *f, unsigned int cmd, unsigned lon
 			goto bad_file;
 
 		v = shmiq_manage_file (file);
+		if (v<0)
+			fput(file);
 		return v;
 
 		/*
@@ -239,7 +242,7 @@ bad_file:
 	return -EBADF;
 }
 
-extern int sys_munmap(unsigned long addr, size_t len);
+extern long sys_munmap(unsigned long addr, size_t len);
 
 static int
 qcntl_ioctl (struct inode *inode, struct file *filp, unsigned int cmd, unsigned long arg, int minor)
@@ -294,16 +297,7 @@ shmiq_nopage (struct vm_area_struct *vma, unsigned long address, int write_acces
 }
 
 static struct vm_operations_struct qcntl_mmap = {
-	NULL,			/* no special mmap-open */
-	NULL,			/* no special mmap-close */
-	NULL,			/* no special mmap-unmap */
-	NULL,			/* no special mmap-protect */
-	NULL,			/* no special mmap-sync */
-	NULL,			/* no special mmap-advise */
-	shmiq_nopage,		/* our magic no-page fault handler */
-	NULL,			/* no special mmap-wppage */
-	NULL,			/* no special mmap-swapout */
-	NULL			/* no special mmap-swapin */
+	nopage:	shmiq_nopage,		/* our magic no-page fault handler */
 };
 
 static int
@@ -317,7 +311,7 @@ shmiq_qcntl_mmap (struct file *file, struct vm_area_struct *vma)
 	if (minor-- == 0)
 		return -EINVAL;
 
-	if (vma->vm_offset != 0)
+	if (vma->vm_pgoff != 0)
 		return -EINVAL;
 
 	size  = vma->vm_end - vma->vm_start;
@@ -436,28 +430,26 @@ shmiq_qcntl_close (struct inode *inode, struct file *filp)
 }
 
 
-static struct
-file_operations shmiq_fops =
+static struct file_operations shmiq_fops =
 {
-        NULL,                   /* seek */
-        NULL,                   /* read */
-        NULL,                   /* write */
-        NULL,                   /* readdir */
-        shmiq_qcntl_poll,       /* poll */
-        shmiq_qcntl_ioctl,      /* ioctl */
-        shmiq_qcntl_mmap,       /* mmap */
-        shmiq_qcntl_open,       /* open */
-	NULL,			/* flush */
-        shmiq_qcntl_close,      /* close */
-        NULL,                   /* fsync */
-        shmiq_qcntl_fasync,     /* fasync */
-        NULL,                   /* check_media_change */
-        NULL,                   /* revalidate */
+	poll:		shmiq_qcntl_poll,
+	ioctl:		shmiq_qcntl_ioctl,
+	mmap:		shmiq_qcntl_mmap,
+	open:		shmiq_qcntl_open,
+	release:	shmiq_qcntl_close,
+	fasync:		shmiq_qcntl_fasync,
 };
 
 void
 shmiq_init (void)
 {
 	printk ("SHMIQ setup\n");
-	register_chrdev (SHMIQ_MAJOR, "shmiq", &shmiq_fops);
+	devfs_register_chrdev(SHMIQ_MAJOR, "shmiq", &shmiq_fops);
+	devfs_register (NULL, "shmiq", 0, DEVFS_FL_DEFAULT,
+			SHMIQ_MAJOR, 0, S_IFCHR | S_IRUSR | S_IWUSR, 0, 0,
+			&shmiq_fops, NULL);
+	devfs_register_series (NULL, "qcntl%u", 2, DEVFS_FL_DEFAULT,
+			       SHMIQ_MAJOR, 1,
+			       S_IFCHR | S_IRUSR | S_IWUSR, 0, 0,
+			       &shmiq_fops, NULL);
 }

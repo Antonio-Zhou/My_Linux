@@ -224,7 +224,7 @@ struct cdrom_tocentry
 struct cdrom_read      
 {
 	int	cdread_lba;
-	caddr_t	cdread_bufaddr;
+	char 	*cdread_bufaddr;
 	int	cdread_buflen;
 };
 
@@ -266,10 +266,6 @@ struct cdrom_blk
 
 #define CDROM_PACKET_SIZE	12
 
-/*
- * These are for 2.3/4 only, but lets have them in 2.2 as well so that
- * apps don't need to check for versions.
- */
 #define CGC_DATA_UNKNOWN	0
 #define CGC_DATA_WRITE		1
 #define CGC_DATA_READ		2
@@ -438,12 +434,9 @@ struct cdrom_generic_command
 #define GPCMD_MECHANISM_STATUS		    0xbd
 #define GPCMD_MODE_SELECT_10		    0x55
 #define GPCMD_MODE_SENSE_10		    0x5a
-#define GPCMD_MODE_SELECT_6		    0x15
-#define GPCMD_MODE_SENSE_6		    0x1a
 #define GPCMD_PAUSE_RESUME		    0x4b
 #define GPCMD_PLAY_AUDIO_10		    0x45
 #define GPCMD_PLAY_AUDIO_MSF		    0x47
-#define GPCMD_PLAY_AUDIO_TI		    0x48
 #define GPCMD_PLAY_CD			    0xbc
 #define GPCMD_PREVENT_ALLOW_MEDIUM_REMOVAL  0x1e
 #define GPCMD_READ_10			    0x28
@@ -484,11 +477,16 @@ struct cdrom_generic_command
 /* This seems to be a SCSI specific CD-ROM opcode 
  * to play data at track/index */
 #define GPCMD_PLAYAUDIO_TI		    0x48
-/*
- * From MS Media Status Notification Support Specification. For
- * older drives only.
- */
-#define GPCMD_GET_MEDIA_STATUS		    0xda
+
+/* Is this really used by anything?  I couldn't find these...*/
+#if 0
+/* MMC2/MTFuji Opcodes */
+#define ERASE			0x2c
+#define READ_BUFFER		0x3c
+#endif
+
+
+
 
 /* Mode page codes for mode sense/set */
 #define GPMODE_R_W_ERROR_PAGE		0x01
@@ -528,12 +526,10 @@ struct dvd_layer {
 	__u32 end_sector_l0;
 };
 
-#define DVD_LAYERS	4
-
 struct dvd_physical {
 	__u8 type;
 	__u8 layer_num;
-	struct dvd_layer layer[DVD_LAYERS];
+	struct dvd_layer layer[4];
 };
 
 struct dvd_copyright {
@@ -714,6 +710,7 @@ struct request_sense {
 };
 
 #ifdef __KERNEL__
+#include <linux/devfs_fs_kernel.h>
 
 struct cdrom_write_settings {
 	unsigned char fpacket;		/* fixed/variable packets */
@@ -727,6 +724,7 @@ struct cdrom_device_info {
 	struct cdrom_device_ops  *ops;  /* link to device_ops */
 	struct cdrom_device_info *next; /* next device_info for this major */
 	void *handle;		        /* driver-dependent data */
+	devfs_handle_t de;		/* real driver creates this  */
 /* specifications */
         kdev_t dev;	                /* device number */
 	int mask;                       /* mask of capability: disables them */
@@ -739,8 +737,8 @@ struct cdrom_device_info {
     	char name[20];                  /* name of the device type */
 /* per-device flags */
         __u8 sanyo_slot		: 2;	/* Sanyo 3 CD changer support */
-        __u8 scsi_2		: 1;	/* strict SCSI-II device */
-        __u8 reserved		: 5;	/* not used yet */
+        __u8 reserved		: 6;	/* not used yet */
+	struct cdrom_write_settings write;
 };
 
 struct cdrom_device_ops {
@@ -772,8 +770,8 @@ struct cdrom_device_ops {
 			       struct cdrom_generic_command *);
 };
 
-/* the general file operations structure: */
-extern struct file_operations cdrom_fops;
+/* the general block_device operations structure: */
+extern struct block_device_operations cdrom_fops;
 
 extern int register_cdrom(struct cdrom_device_info *cdi);
 extern int unregister_cdrom(struct cdrom_device_info *cdi);
@@ -797,8 +795,8 @@ extern int cdrom_mode_sense(struct cdrom_device_info *cdi,
 			    struct cdrom_generic_command *cgc,
 			    int page_code, int page_control);
 extern void init_cdrom_command(struct cdrom_generic_command *cgc,
-			       void *buffer, int len);
-
+			       void *buffer, int len, int type);
+extern struct cdrom_device_info *cdrom_find_device(kdev_t dev);
 
 typedef struct {
 	__u16 disc_information_length;
@@ -806,9 +804,9 @@ typedef struct {
 	__u8 reserved1			: 3;
         __u8 erasable			: 1;
         __u8 border_status		: 2;
-        __u8 disc_border		: 2;
+        __u8 disc_status		: 2;
 #elif defined(__LITTLE_ENDIAN_BITFIELD)
-        __u8 disc_border		: 2;
+        __u8 disc_status		: 2;
         __u8 border_status		: 2;
         __u8 erasable			: 1;
 	__u8 reserved1			: 3;
@@ -882,6 +880,10 @@ typedef struct {
 	__u32 last_rec_address;
 } track_information;
 
+extern int cdrom_get_disc_info(kdev_t dev, disc_information *di);
+extern int cdrom_get_track_info(kdev_t dev, __u16 track, __u8 type,
+				track_information *ti);
+
 /* The SCSI spec says there could be 256 slots. */
 #define CDROM_MAX_SLOTS	256
 
@@ -901,8 +903,8 @@ struct cdrom_mechstat_header {
 	__u8 door_open     : 1;
 	__u8 mech_state    : 3;
 #endif
-	__u8 curlba[3];
-	__u8 nslots;
+	__u8     curlba[3];
+	__u8     nslots;
 	__u16 slot_tablelen;
 };
 
@@ -942,7 +944,6 @@ struct mode_page_header {
 };
 
 typedef struct {
-	struct mode_page_header header;
 #if defined(__BIG_ENDIAN_BITFIELD)
 	__u8 ps			: 1;
 	__u8 reserved1		: 1;
@@ -996,40 +997,6 @@ typedef struct {
 	__u8 subhdr2;
 	__u8 subhdr3;
 } __attribute__((packed)) write_param_page;
-
-struct modesel_head
-{
-	__u8	reserved1;
-	__u8	medium;
-	__u8	reserved2;
-	__u8	block_desc_length;
-	__u8	density;
-	__u8	number_of_blocks_hi;
-	__u8	number_of_blocks_med;
-	__u8	number_of_blocks_lo;
-	__u8	reserved3;
-	__u8	block_length_hi;
-	__u8	block_length_med;
-	__u8	block_length_lo;
-};
-
-typedef struct {
-	__u16 report_key_length;
-	__u8 reserved1;
-	__u8 reserved2;
-#if defined(__BIG_ENDIAN_BITFIELD)
-	__u8 type_code			: 2;
-	__u8 vra			: 3;
-	__u8 ucca			: 3;
-#elif defined(__LITTLE_ENDIAN_BITFIELD)
-	__u8 ucca			: 3;
-	__u8 vra			: 3;
-	__u8 type_code			: 2;
-#endif
-	__u8 region_mask;
-	__u8 rpc_scheme;
-	__u8 reserved3;
-} rpc_state_t;
 
 #endif  /* End of kernel only stuff */ 
 

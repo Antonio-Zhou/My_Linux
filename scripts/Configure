@@ -321,9 +321,6 @@ function dep_mbool () {
 	      define_bool "$var" "n"
 	      return
 	      ;;
-	    m)
-	      eval "$var=y"
-	      ;;
 	  esac
 	  shift
 	done
@@ -422,18 +419,7 @@ function define_string () {
 function string () {
 	old=$(eval echo "\${$2}")
 	def=${old:-$3}
-	while :; do
-          if [ "$old" = "?" ]; then
-             readln "$1 ($2) [$def] " "$def" ""
-          else
-	     readln "$1 ($2) [$def] " "$def" "$old"
-          fi
-	  if [ "$ans" = "?" ]; then
-	    help "$2"
-	  else
-	    break
-	  fi
-	done
+	readln "$1 ($2) [$def] " "$def" "$old"
 	define_string "$2" "$ans"
 }
 #
@@ -553,7 +539,7 @@ if [ -f $DEFAULTS ]; then
   echo "# Using defaults found in" $DEFAULTS
   echo "#"
   . $DEFAULTS
-  sed -e 's/# \(CONFIG_[^ ]*\) is not.*/\1=n/' <$DEFAULTS >.config-is-not.$$
+  sed -e 's/# \(.*\) is not.*/\1=n/' < $DEFAULTS > .config-is-not.$$
   . .config-is-not.$$
   rm .config-is-not.$$
 else

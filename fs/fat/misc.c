@@ -2,8 +2,6 @@
  *  linux/fs/fat/misc.c
  *
  *  Written 1992,1993 by Werner Almesberger
- *  22/11/2000 - Fixed fat_date_unix2dos for dates earlier than 01/01/1980
- *		 and date_dos2unix for date==0 by Igor Zhbanov(bsg@uniyar.ac.ru)
  */
 
 #include <linux/fs.h>
@@ -81,35 +79,29 @@ int fat_is_binary(char conversion,char *extension)
 /* File creation lock. This is system-wide to avoid deadlocks in rename. */
 /* (rename might deadlock before detecting cross-FS moves.) */
 
-static struct wait_queue *creation_wait = NULL;
-static int creation_lock = 0;
-
+static DECLARE_MUTEX(creation_lock);
 
 void fat_lock_creation(void)
 {
-	while (creation_lock) sleep_on(&creation_wait);
-	creation_lock = 1;
+	down(&creation_lock);
 }
 
 
 void fat_unlock_creation(void)
 {
-	creation_lock = 0;
-	wake_up(&creation_wait);
+	up(&creation_lock);
 }
 
 
 void lock_fat(struct super_block *sb)
 {
-	while (MSDOS_SB(sb)->fat_lock) sleep_on(&MSDOS_SB(sb)->fat_wait);
-	MSDOS_SB(sb)->fat_lock = 1;
+	down(&(MSDOS_SB(sb)->fat_lock));
 }
 
 
 void unlock_fat(struct super_block *sb)
 {
-	MSDOS_SB(sb)->fat_lock = 0;
-	wake_up(&MSDOS_SB(sb)->fat_wait);
+	up(&(MSDOS_SB(sb)->fat_lock));
 }
 
 /* Flushes the number of free clusters on FAT32 */
@@ -146,7 +138,70 @@ void fat_clusters_flush(struct super_block *sb)
  * represented by inode. The cluster is zero-initialized.
  */
 
-struct buffer_head *fat_add_cluster1(struct inode *inode)
+/* not a directory */
+
+int fat_add_cluster(struct inode *inode)
+{
+	struct super_block *sb = inode->i_sb;
+	int count,nr,limit,last,curr,file_cluster;
+	int res = -ENOSPC;
+	int cluster_size = MSDOS_SB(sb)->cluster_size;
+
+	if (!MSDOS_SB(sb)->free_clusters) return res;
+	lock_fat(sb);
+	limit = MSDOS_SB(sb)->clusters;
+	nr = limit; /* to keep GCC happy */
+	for (count = 0; count < limit; count++) {
+		nr = ((count+MSDOS_SB(sb)->prev_free) % limit)+2;
+		if (fat_access(sb,nr,-1) == 0) break;
+	}
+	MSDOS_SB(sb)->prev_free = (count+MSDOS_SB(sb)->prev_free+1) % limit;
+	if (count >= limit) {
+		MSDOS_SB(sb)->free_clusters = 0;
+		unlock_fat(sb);
+		return res;
+	}
+	fat_access(sb,nr,EOF_FAT(sb));
+	if (MSDOS_SB(sb)->free_clusters != -1)
+		MSDOS_SB(sb)->free_clusters--;
+	if (MSDOS_SB(sb)->fat_bits == 32)
+		fat_clusters_flush(sb);
+	unlock_fat(sb);
+	last = 0;
+	/* We must locate the last cluster of the file to add this
+	   new one (nr) to the end of the link list (the FAT).
+	   
+	   Here file_cluster will be the number of the last cluster of the
+	   file (before we add nr).
+	   
+	   last is the corresponding cluster number on the disk. We will
+	   use last to plug the nr cluster. We will use file_cluster to
+	   update the cache.
+	*/
+	file_cluster = 0;
+	if ((curr = MSDOS_I(inode)->i_start) != 0) {
+		fat_cache_lookup(inode,INT_MAX,&last,&curr);
+		file_cluster = last;
+		while (curr && curr != -1){
+			file_cluster++;
+			if (!(curr = fat_access(sb, last = curr,-1))) {
+				fat_fs_panic(sb,"File without EOF");
+				return res;
+			}
+		}
+	}
+	if (last) fat_access(sb,last,nr);
+	else {
+		MSDOS_I(inode)->i_start = nr;
+		MSDOS_I(inode)->i_logstart = nr;
+		mark_inode_dirty(inode);
+	}
+	fat_cache_add(inode,file_cluster,nr);
+	inode->i_blocks += cluster_size;
+	return 0;
+}
+
+struct buffer_head *fat_extend_dir(struct inode *inode)
 {
 	struct super_block *sb = inode->i_sb;
 	int count,nr,limit,last,curr,sector,last_sector,file_cluster;
@@ -224,10 +279,9 @@ if (last) printk("next set to %d\n",fat_access(sb,last,-1));
 	sector = MSDOS_SB(sb)->data_start+(nr-2)*cluster_size;
 	last_sector = sector + cluster_size;
 	if (MSDOS_SB(sb)->cvf_format &&
-	    MSDOS_SB(sb)->cvf_format->zero_out_cluster) {
+	    MSDOS_SB(sb)->cvf_format->zero_out_cluster)
 		MSDOS_SB(sb)->cvf_format->zero_out_cluster(inode,nr);
-		res=fat_bread(sb,fat_smap(inode,inode->i_blocks));
-	}else
+	else
 	for ( ; sector < last_sector; sector++) {
 		#ifdef DEBUG
 			printk("zeroing sector %d\n",sector);
@@ -251,28 +305,15 @@ if (last) printk("next set to %d\n",fat_access(sb,last,-1));
 		fat_cache_add(inode,file_cluster,nr);
 	}
 	inode->i_blocks += cluster_size;
-	if (S_ISDIR(inode->i_mode)) {
-		if (inode->i_size & (SECTOR_SIZE-1)) {
-			fat_fs_panic(sb,"Odd directory size");
-			inode->i_size = (inode->i_size+SECTOR_SIZE) &
-			    ~(SECTOR_SIZE-1);
-		}
-		inode->i_size += SECTOR_SIZE*cluster_size;
-#ifdef DEBUG
-printk("size is %d now (%x)\n",inode->i_size,inode);
-#endif
-		mark_inode_dirty(inode);
+	if (inode->i_size & (SECTOR_SIZE-1)) {
+		fat_fs_panic(sb,"Odd directory size");
+		inode->i_size = (inode->i_size+SECTOR_SIZE) &
+		    ~(SECTOR_SIZE-1);
 	}
+	inode->i_size += SECTOR_SIZE*cluster_size;
+	MSDOS_I(inode)->mmu_private += SECTOR_SIZE*cluster_size;
+	mark_inode_dirty(inode);
 	return res;
-}
-
-int fat_add_cluster(struct inode *inode)
-{
-	struct buffer_head *bh = fat_add_cluster1(inode);
-	if (!bh)
-		return -ENOSPC;
-	fat_brelse(inode->i_sb, bh);
-	return 0;
 }
 
 /* Linear day numbers of the respective 1sts in non-leap years. */
@@ -290,16 +331,13 @@ int date_dos2unix(unsigned short time,unsigned short date)
 {
 	int month,year,secs;
 
-	/* first subtract and mask after that... Otherwise, if
-	   date == 0, bad things happen */
-	month = ((date >> 5) - 1) & 15;
+	month = ((date >> 5) & 15)-1;
 	year = date >> 9;
 	secs = (time & 31)*2+60*((time >> 5) & 63)+(time >> 11)*3600+86400*
 	    ((date & 31)-1+day_n[month]+(year/4)+year*365-((year & 3) == 0 &&
 	    month < 2 ? 1 : 0)+3653);
 			/* days since 1.1.70 plus 80's leap day */
 	secs += sys_tz.tz_minuteswest*60;
-	if (sys_tz.tz_dsttime) secs -= 3600;
 	return secs;
 }
 
@@ -313,10 +351,6 @@ void fat_date_unix2dos(int unix_date,unsigned short *time,
 
 	unix_date -= sys_tz.tz_minuteswest*60;
 	if (sys_tz.tz_dsttime) unix_date += 3600;
-
-	/* Jan 1 GMT 00:00:00 1980. But what about another time zone? */
-	if (unix_date < 315532800)
-		unix_date = 315532800;
 
 	*time = (unix_date % 60)/2+(((unix_date/60) % 60) << 5)+
 	    (((unix_date/3600) % 24) << 11);
@@ -349,10 +383,10 @@ void fat_date_unix2dos(int unix_date,unsigned short *time,
  */
 
 int fat__get_entry(struct inode *dir, loff_t *pos,struct buffer_head **bh,
-    struct msdos_dir_entry **de, loff_t *ino)
+    struct msdos_dir_entry **de, int *ino)
 {
 	struct super_block *sb = dir->i_sb;
-	long long sector, offset;
+	int sector, offset;
 
 	while (1) {
 		offset = *pos;
@@ -360,22 +394,24 @@ int fat__get_entry(struct inode *dir, loff_t *pos,struct buffer_head **bh,
 		if (*bh)
 			fat_brelse(sb, *bh);
 		*bh = NULL;
-		if ((sector = fat_smap(dir,offset >> SECTOR_BITS)) == -1)
+		if ((sector = fat_bmap(dir,offset >> SECTOR_BITS)) == -1)
 			return -1;
+		PRINTK (("get_entry sector %d %p\n",sector,*bh));
+		PRINTK (("get_entry sector apres brelse\n"));
 		if (!sector)
 			return -1; /* beyond EOF */
 		*pos += sizeof(struct msdos_dir_entry);
 		if (!(*bh = fat_bread(sb, sector))) {
-			printk("Directory sread (sector 0x%lx) failed\n",
-				(unsigned long)sector);
+			printk("Directory sread (sector 0x%x) failed\n",sector);
 			continue;
 		}
-		break;
-	}
-	*de = (struct msdos_dir_entry*)((*bh)->b_data+(offset&(SECTOR_SIZE-1)));
-	*ino = (sector << MSDOS_DPS_BITS)+((offset & (SECTOR_SIZE-1)) >>
+		PRINTK (("get_entry apres sread\n"));
+		*de = (struct msdos_dir_entry *) ((*bh)->b_data+(offset &
+		    (SECTOR_SIZE-1)));
+		*ino = (sector << MSDOS_DPS_BITS)+((offset & (SECTOR_SIZE-1)) >>
 		    MSDOS_DIR_BITS);
-	return 0;
+		return 0;
+	}
 }
 
 
@@ -429,8 +465,8 @@ int fat__get_entry(struct inode *dir, loff_t *pos,struct buffer_head **bh,
 	    (*number)++; \
     }
 
-static int raw_scan_sector(struct super_block *sb,long long sector,
-    const char *name, int *number,loff_t *ino,struct buffer_head **res_bh,
+static int raw_scan_sector(struct super_block *sb,int sector,const char *name,
+    int *number,int *ino,struct buffer_head **res_bh,
     struct msdos_dir_entry **res_de)
 {
 	struct buffer_head *bh;
@@ -476,7 +512,7 @@ static int raw_scan_sector(struct super_block *sb,long long sector,
  * requested entry is found or the end of the directory is reached.
  */
 
-static int raw_scan_root(struct super_block *sb,const char *name,int *number,loff_t *ino,
+static int raw_scan_root(struct super_block *sb,const char *name,int *number,int *ino,
     struct buffer_head **res_bh,struct msdos_dir_entry **res_de)
 {
 	int count,cluster;
@@ -495,7 +531,7 @@ static int raw_scan_root(struct super_block *sb,const char *name,int *number,lof
  */
 
 static int raw_scan_nonroot(struct super_block *sb,int start,const char *name,
-    int *number,loff_t *ino,struct buffer_head **res_bh,struct msdos_dir_entry
+    int *number,int *ino,struct buffer_head **res_bh,struct msdos_dir_entry
     **res_de)
 {
 	int count,cluster;
@@ -531,7 +567,7 @@ static int raw_scan_nonroot(struct super_block *sb,int start,const char *name,
  */
 
 static int raw_scan(struct super_block *sb, int start, const char *name,
-    int *number, loff_t *ino, struct buffer_head **res_bh,
+    int *number, int *ino, struct buffer_head **res_bh,
     struct msdos_dir_entry **res_de)
 {
 	if (start) return raw_scan_nonroot
@@ -555,8 +591,7 @@ static int raw_scan(struct super_block *sb, int start, const char *name,
 int fat_parent_ino(struct inode *dir,int locked)
 {
 	static int zero = 0;
-	int error,curr,prev;
-	loff_t nr;
+	int error,curr,prev,nr;
 
 	PRINTK(("fat_parent_ino: Debug 0\n"));
 	if (!S_ISDIR(dir->i_mode)) panic("Non-directory fed to m_p_i");
@@ -587,7 +622,7 @@ int fat_parent_ino(struct inode *dir,int locked)
 			if (!locked) fat_unlock_creation();
 			return error;
 		}
-		PRINTK(("fat_parent_ino: Debug 6 nr=%ld\n", (long)nr));
+		PRINTK(("fat_parent_ino: Debug 6 nr=%d\n", nr));
 	}
 	if (!locked) fat_unlock_creation();
 	return nr;
@@ -623,7 +658,7 @@ int fat_subdirs(struct inode *dir)
  */
 
 int fat_scan(struct inode *dir,const char *name,struct buffer_head **res_bh,
-    struct msdos_dir_entry **res_de,loff_t *ino)
+    struct msdos_dir_entry **res_de,int *ino)
 {
 	int res;
 

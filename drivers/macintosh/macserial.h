@@ -110,7 +110,6 @@ struct mac_serial {
 	char break_abort;   /* Is serial console in, so process brk/abrt */
 	char kgdb_channel;  /* Kgdb is running on this channel */
 	char is_cons;       /* Is this our console. */
-	char is_internal_modem; /* is connected to an internal modem */
 	char is_cobalt_modem;	/* is a gatwick-based cobalt modem */
 	char is_irda;		/* is connected to an IrDA codec */
 	unsigned char tx_active; /* character is being xmitted */
@@ -162,8 +161,8 @@ struct mac_serial {
 	struct tq_struct	tqueue_hangup;
 	struct termios		normal_termios;
 	struct termios		callout_termios;
-	struct wait_queue	*open_wait;
-	struct wait_queue	*close_wait;
+	wait_queue_head_t	open_wait;
+	wait_queue_head_t	close_wait;
 
 	volatile struct dbdma_regs *tx_dma;
 	int			tx_dma_irq;

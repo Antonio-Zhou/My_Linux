@@ -5,6 +5,7 @@
  *
  * Common directory handling for ADFS
  */
+#include <linux/config.h>
 #include <linux/version.h>
 #include <linux/errno.h>
 #include <linux/fs.h>
@@ -12,7 +13,11 @@
 #include <linux/sched.h>
 #include <linux/stat.h>
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,3,0)
+#include <linux/spinlock.h>
+#else
 #include <asm/spinlock.h>
+#endif
 
 #include "adfs.h"
 
@@ -79,7 +84,7 @@ int
 adfs_dir_update(struct super_block *sb, struct object_info *obj)
 {
 	int ret = -EINVAL;
-#if 0
+#ifdef CONFIG_ADFS_FS_RW
 	struct adfs_dir_ops *ops = sb->u.adfs_sb.s_dir;
 	struct adfs_dir dir;
 
@@ -188,14 +193,8 @@ out:
 	return ret;
 }
 
-static ssize_t
-adfs_dir_no_read(struct file *filp, char *buf, size_t siz, loff_t *ppos)
-{
-	return -EISDIR;
-}
-
 struct file_operations adfs_dir_operations = {
-	read:		adfs_dir_no_read,
+	read:		generic_read_dir,
 	readdir:	adfs_readdir,
 	fsync:		file_fsync,
 };
@@ -292,6 +291,6 @@ struct dentry *adfs_lookup(struct inode *dir, struct dentry *dentry)
  * directories can handle most operations...
  */
 struct inode_operations adfs_dir_inode_operations = {
-	default_file_ops:	&adfs_dir_operations,
 	lookup:		adfs_lookup,
+	setattr:	adfs_notify_change,
 };

@@ -178,9 +178,37 @@
 #define __NR_capset             185
 #define __NR_sigaltstack        186
 #define __NR_sendfile           187
-#define __NR_getpmsg		188
-#define __NR_putpmsg		189
 #define __NR_vfork		190
+#define __NR_ugetrlimit		191	/* SuS compliant getrlimit */
+#define __NR_mmap2		192
+#define __NR_truncate64		193
+#define __NR_ftruncate64	194
+#define __NR_stat64		195
+#define __NR_lstat64		196
+#define __NR_fstat64		197
+#define __NR_lchown32		198
+#define __NR_getuid32		199
+#define __NR_getgid32		200
+#define __NR_geteuid32		201
+#define __NR_getegid32		202
+#define __NR_setreuid32		203
+#define __NR_setregid32		204
+#define __NR_getgroups32	205
+#define __NR_setgroups32	206
+#define __NR_fchown32		207
+#define __NR_setresuid32	208
+#define __NR_getresuid32	209
+#define __NR_setresgid32	210
+#define __NR_getresgid32	211
+#define __NR_chown32		212
+#define __NR_setuid32		213
+#define __NR_setgid32		214
+#define __NR_setfsuid32		215
+#define __NR_setfsgid32		216
+#define __NR_pivot_root         217
+#define __NR_mincore            218
+#define __NR_madvise            219
+
 
 /* user-visible error numbers are in the range -1 - -122: see <asm-s390/errno.h> */
 
@@ -193,7 +221,7 @@ do {                                                         \
         return (type) (res);                                 \
 } while (0)
 
-#define _svc_clobber "2", "cc", "memory"
+#define _svc_clobber "cc", "memory"
 
 #define _syscall0(type,name)                                 \
 type name(void) {                                            \

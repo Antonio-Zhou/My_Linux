@@ -1,33 +1,32 @@
-/******************************************************************************
+/*
+ *              telephony.h
  *
- *		telephony.h
+ *              Basic Linux Telephony Interface
  *
- *		Basic Linux Telephony Interface
+ *              (c) Copyright 1999 Quicknet Technologies, Inc.
  *
- *		(c) Copyright 1999 Quicknet Technologies, Inc.
+ *              This program is free software; you can redistribute it and/or
+ *              modify it under the terms of the GNU General Public License
+ *              as published by the Free Software Foundation; either version
+ *              2 of the License, or (at your option) any later version.
  *
- *		This program is free software; you can redistribute it and/or
- *		modify it under the terms of the GNU General Public License
- *		as published by the Free Software Foundation; either version
- *		2 of the License, or (at your option) any later version.
+ * Authors:       Ed Okerson, <eokerson@quicknet.net>
+ *                Greg Herlein, <gherlein@quicknet.net>
  *
- *    Authors:       Ed Okerson, <eokerson@quicknet.net>
- *                   Greg Herlein, <gherlein@quicknet.net>
- *
- *    Contributors:  Alan Cox, <alan@redhat.com>
- *                   David W. Erhart, <derhart@quicknet.net>
+ * Contributors:  Alan Cox, <acox@redhat.com>
+ *                David Erhart, <derhart@quicknet.net>
  *
  * Version:       0.1.0 - December 19, 1999
  *
  * Fixes:
- * 
- *****************************************************************************/
+ */
 
 #ifndef TELEPHONY_H
 #define TELEPHONY_H
 
+/* vendor identification numbers */
 #define PHONE_VENDOR_IXJ          1
-#define PHONE_VENDOR_QUICKNET	  PHONE_VENDOR_IXJ
+#define PHONE_VENDOR_QUICKNET     PHONE_IXJ
 #define PHONE_VENDOR_VOICETRONIX  2
 #define PHONE_VENDOR_ACULAB       3
 #define PHONE_VENDOR_DIGI         4
@@ -44,6 +43,7 @@
  *
  *****************************************************************************/
 
+ 
 /******************************************************************************
 *
 * The capabilities ioctls can inform you of the capabilities of each phone
@@ -81,23 +81,11 @@ typedef enum {
 #define PHONE_CAPABILITIES_LIST         _IOR ('q', 0x81, struct phone_capability *)
 #define PHONE_CAPABILITIES_CHECK        _IOW ('q', 0x82, struct phone_capability *)
 
-typedef struct {
-        char month[3];
-        char day[3];
-        char hour[3];
-        char min[3];
-        int numlen;
-        char number[11];
-        int namelen;
-        char name[80];
-} PHONE_CID;
-
 #define PHONE_RING			_IO  ('q', 0x83)
 #define PHONE_HOOKSTATE			_IO  ('q', 0x84)
 #define PHONE_MAXRINGS			_IOW ('q', 0x85, char)
 #define PHONE_RING_CADENCE		_IOW ('q', 0x86, short)
-#define OLD_PHONE_RING_START		_IO  ('q', 0x87)
-#define PHONE_RING_START		_IOW ('q', 0x87, PHONE_CID *)
+#define PHONE_RING_START		_IO  ('q', 0x87)
 #define PHONE_RING_STOP			_IO  ('q', 0x88)
 
 #define USA_RING_CADENCE	 0xC0C0
@@ -179,23 +167,6 @@ struct phone_codec_data
 #define PHONE_QUERY_CODEC		_IOWR ('q', 0xA7, struct phone_codec_data *)
 #define PHONE_PSTN_LINETEST		_IO ('q', 0xA8)
 
-/******************************************************************************
-* 
-* This controls the VAD/CNG functionality of G.723.1.  The driver will
-* always pass full size frames, any unused bytes will be padded with zeros,
-* and frames passed to the driver should also be padded with zeros.  The
-* frame type is encoded in the least significant two bits of the first
-* WORD of the frame as follows:
-*
-* bits 1-0	Frame Type	Data Rate		Significant Words
-* 00		0		G.723.1 6.3		12
-* 01		1		G.723.1 5.3		10
-* 10		2		VAD/CNG			 2
-* 11		3		Repeat last CNG		 2 bits
-* 
-******************************************************************************/
-#define PHONE_VAD			_IOW ('q', 0xA9, int)
-
 
 /******************************************************************************
 *
@@ -207,8 +178,8 @@ struct phone_codec_data
 * indicate the current state of the hookswitch.  The pstn_ring bit
 * indicates that the DAA on a LineJACK card has detected ring voltage on
 * the PSTN port.  The caller_id bit indicates that caller_id data has been
-* received and is available.  The pstn_wink bit indicates that the DAA on
-* the LineJACK has received a wink from the telco switch.  The f0, f1, f2
+* recieved and is available.  The pstn_wink bit indicates that the DAA on
+* the LineJACK has recieved a wink from the telco switch.  The f0, f1, f2
 * and f3 bits indicate that the filter has been triggered by detecting the
 * frequency programmed into that filter.
 *
@@ -227,12 +198,7 @@ struct phone_except
 	unsigned int f1:1;
 	unsigned int f2:1;
 	unsigned int f3:1;
-	unsigned int flash:1;
-	unsigned int fc0:1;
-	unsigned int fc1:1;
-	unsigned int fc2:1;
-	unsigned int fc3:1;
-	unsigned int reserved:18;
+	unsigned int reserved:23;
 };
 
 union telephony_exception {

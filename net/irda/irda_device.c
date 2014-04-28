@@ -6,7 +6,7 @@
  * Status:        Experimental.
  * Author:        Dag Brattli <dagb@cs.uit.no>
  * Created at:    Sat Oct  9 09:22:27 1999
- * Modified at:   Wed Mar  1 11:00:34 2000
+ * Modified at:   Sun Jan 23 17:41:24 2000
  * Modified by:   Dag Brattli <dagb@cs.uit.no>
  * 
  *     Copyright (c) 1999-2000 Dag Brattli, All Rights Reserved.
@@ -40,7 +40,7 @@
 #include <linux/tty.h>
 #include <linux/kmod.h>
 #include <linux/wireless.h>
-#include <asm/spinlock.h>
+#include <linux/spinlock.h>
 
 #include <asm/ioctls.h>
 #include <asm/segment.h>
@@ -63,8 +63,6 @@ extern int esi_init(void);
 extern int tekram_init(void);
 extern int actisys_init(void);
 extern int girbil_init(void);
-extern int toshoboe_init(void);
-extern int litelink_init(void);
 
 static void __irda_task_delete(struct irda_task *task);
 
@@ -168,7 +166,7 @@ void irda_device_cleanup(void)
  *    Called when we have detected that another station is transmiting
  *    in contention mode.
  */
-void irda_device_set_media_busy(struct device *dev, int status) 
+void irda_device_set_media_busy(struct net_device *dev, int status) 
 {
 	struct irlap_cb *self;
 
@@ -189,7 +187,7 @@ void irda_device_set_media_busy(struct device *dev, int status)
 	}
 }
 
-int irda_device_set_dtr_rts(struct device *dev, int dtr, int rts)
+int irda_device_set_dtr_rts(struct net_device *dev, int dtr, int rts)
 {	
 	struct if_irda_req req;
 	int ret;
@@ -210,7 +208,7 @@ int irda_device_set_dtr_rts(struct device *dev, int dtr, int rts)
 	return ret;
 }
 
-int irda_device_change_speed(struct device *dev, __u32 speed)
+int irda_device_change_speed(struct net_device *dev, __u32 speed)
 {	
 	struct if_irda_req req;
 	int ret;
@@ -236,7 +234,7 @@ int irda_device_change_speed(struct device *dev, __u32 speed)
  *    Check if the device driver is currently receiving data
  *
  */
-int irda_device_is_receiving(struct device *dev)
+int irda_device_is_receiving(struct net_device *dev)
 {
 	struct if_irda_req req;
 	int ret;
@@ -256,7 +254,7 @@ int irda_device_is_receiving(struct device *dev)
 	return req.ifr_receiving;
 }
 
-void irda_task_next_state(struct irda_task *task, TASK_STATE state)
+void irda_task_next_state(struct irda_task *task, IRDA_TASK_STATE state)
 {
 	IRDA_DEBUG(2, __FUNCTION__ "(), state = %s\n", task_state[state]);
 
@@ -356,8 +354,9 @@ int irda_task_kick(struct irda_task *task)
  *    called from interrupt context, so it's not possible to use
  *    schedule_timeout() 
  */
-struct irda_task *irda_task_execute(void *instance, TASK_CALLBACK function, 
-				    TASK_CALLBACK finished, 
+struct irda_task *irda_task_execute(void *instance, 
+				    IRDA_TASK_CALLBACK function, 
+				    IRDA_TASK_CALLBACK finished, 
 				    struct irda_task *parent, void *param)
 {
 	struct irda_task *task;
@@ -413,14 +412,14 @@ static void irda_task_timer_expired(void *data)
  *    This function should be used by low level device drivers in a similar way
  *    as ether_setup() is used by normal network device drivers
  */
-int irda_device_setup(struct device *dev) 
+int irda_device_setup(struct net_device *dev) 
 {
 	ASSERT(dev != NULL, return -1;);
 
         dev->hard_header_len = 0;
         dev->addr_len        = 0;
 
-	/* dev->new_style       = 1; */
+	dev->new_style       = 1;
 	/* dev->destructor      = irda_device_destructor; */
 
         dev->type            = ARPHRD_IRDA;
@@ -429,12 +428,8 @@ int irda_device_setup(struct device *dev)
 	memset(dev->broadcast, 0xff, 4);
 
 	dev->mtu = 2048;
-	dev->tbusy = 1;
-	
 	dev_init_buffers(dev);
-
 	dev->flags = IFF_NOARP;
-	
 	return 0;
 }
 
@@ -445,7 +440,7 @@ int irda_device_setup(struct device *dev)
  *    device. Maybe we should use: q->q.qlen == 0.
  *
  */
-int irda_device_txqueue_empty(struct device *dev)
+int irda_device_txqueue_empty(struct net_device *dev)
 {
 	if (skb_queue_len(&dev->qdisc->q))
 		return FALSE;
@@ -458,7 +453,7 @@ int irda_device_txqueue_empty(struct device *dev)
  *
  *    Initialize attached dongle.
  */
-dongle_t *irda_device_dongle_init(struct device *dev, int type)
+dongle_t *irda_device_dongle_init(struct net_device *dev, int type)
 {
 	struct dongle_reg *reg;
 	char modname[32];
@@ -552,7 +547,7 @@ void irda_device_unregister_dongle(struct dongle_reg *dongle)
  *    data without using IrLAP framing. Check out the particular device
  *    driver to find out which modes it support.
  */
-int irda_device_set_mode(struct device* dev, int mode)
+int irda_device_set_mode(struct net_device* dev, int mode)
 {	
 	struct if_irda_req req;
 	int ret;

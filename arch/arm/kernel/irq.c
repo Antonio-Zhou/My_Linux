@@ -118,10 +118,8 @@ void enable_irq(unsigned int irq)
 	cliIF();
 	irq_desc[irq].probing = 0;
 	irq_desc[irq].triggered = 0;
-	if (!irq_desc[irq].noautoenable) {
-		irq_desc[irq].enabled = 1;
-		irq_desc[irq].unmask(irq);
-	}
+	irq_desc[irq].enabled = 1;
+	irq_desc[irq].unmask(irq);
 	spin_unlock_irqrestore(&irq_controller_lock, flags);
 }
 
@@ -237,16 +235,8 @@ asmlinkage void do_IRQ(int irq, struct pt_regs * regs)
 
 	irq_exit(cpu, irq);
 
-	/*
-	 * This should be conditional: we should really get
-	 * a return code from the irq handler to tell us
-	 * whether the handler wants us to do software bottom
-	 * half handling or not..
-	 */
-	if (1) {
-		if (bh_active & bh_mask)
-			do_bottom_half();
-	}
+	if (softirq_state[cpu].active & softirq_state[cpu].mask)
+		do_softirq();
 }
 
 #if defined(CONFIG_ARCH_ACORN)
@@ -479,7 +469,11 @@ out:
 	return irq_found;
 }
 
-unsigned long  __init init_IRQ(unsigned long memory)
+void __init init_irq_proc(void)
+{
+}
+
+void __init init_IRQ(void)
 {
 	extern void init_dma(void);
 	int irq;
@@ -494,9 +488,5 @@ unsigned long  __init init_IRQ(unsigned long memory)
 	}
 
 	irq_init_irq();
-#ifdef CONFIG_ARCH_ACORN
-	init_FIQ();
-#endif
 	init_dma();
-	return memory;
 }

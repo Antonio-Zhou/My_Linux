@@ -13,6 +13,72 @@
 
 #include <asm/uaccess.h>
 
+int vfs_readdir(struct file *file,
+		int (*filler)(void *,const char *,int,off_t,ino_t),
+		void *buf)
+{
+	struct inode *inode = file->f_dentry->d_inode;
+	int res = -ENOTDIR;
+	if (!file->f_op || !file->f_op->readdir)
+		goto out;
+	down(&inode->i_sem);
+	down(&inode->i_zombie);
+	res = -ENOENT;
+	if (!IS_DEADDIR(inode))
+		res = file->f_op->readdir(file, buf, filler);
+	up(&inode->i_zombie);
+	up(&inode->i_sem);
+out:
+	return res;
+}
+
+int dcache_readdir(struct file * filp, void * dirent, filldir_t filldir)
+{
+	int i;
+	struct dentry *dentry = filp->f_dentry;
+
+	i = filp->f_pos;
+	switch (i) {
+		case 0:
+			if (filldir(dirent, ".", 1, i, dentry->d_inode->i_ino) < 0)
+				break;
+			i++;
+			filp->f_pos++;
+			/* fallthrough */
+		case 1:
+			if (filldir(dirent, "..", 2, i, dentry->d_parent->d_inode->i_ino) < 0)
+				break;
+			i++;
+			filp->f_pos++;
+			/* fallthrough */
+		default: {
+			struct list_head *list = dentry->d_subdirs.next;
+
+			int j = i-2;
+			for (;;) {
+				if (list == &dentry->d_subdirs)
+					return 0;
+				if (!j)
+					break;
+				j--;
+				list = list->next;
+			}
+
+			do {
+				struct dentry *de = list_entry(list, struct dentry, d_child);
+
+				if (!d_unhashed(de) && de->d_inode) {
+					if (filldir(dirent, de->d_name.name, de->d_name.len, filp->f_pos, de->d_inode->i_ino) < 0)
+						break;
+				}
+				filp->f_pos++;
+				list = list->next;
+			} while (list != &dentry->d_subdirs);
+		}
+	}
+	return 0;
+}
+
 /*
  * Traditional linux readdir() handling..
  *
@@ -57,46 +123,24 @@ asmlinkage int old_readdir(unsigned int fd, void * dirent, unsigned int count)
 {
 	int error;
 	struct file * file;
-	struct dentry * dentry;
-	struct inode * inode;
 	struct readdir_callback buf;
 
-	lock_kernel();
 	error = -EBADF;
 	file = fget(fd);
 	if (!file)
 		goto out;
 
-	dentry = file->f_dentry;
-	if (!dentry)
-		goto out_putf;
-
-	inode = dentry->d_inode;
-	if (!inode)
-		goto out_putf;
-
 	buf.count = 0;
 	buf.dirent = dirent;
 
-	error = -ENOTDIR;
-	if (!file->f_op || !file->f_op->readdir)
-		goto out_putf;
+	lock_kernel();
+	error = vfs_readdir(file, fillonedir, &buf);
+	if (error >= 0)
+		error = buf.count;
+	unlock_kernel();
 
-	/*
-	 * Get the inode's semaphore to prevent changes
-	 * to the directory while we read it.
-	 */
-	down(&inode->i_sem);
-	error = file->f_op->readdir(file, &buf, fillonedir);
-	up(&inode->i_sem);
-	if (error < 0)
-		goto out_putf;
-	error = buf.count;
-
-out_putf:
 	fput(file);
 out:
-	unlock_kernel();
 	return error;
 }
 
@@ -142,45 +186,25 @@ static int filldir(void * __buf, const char * name, int namlen, off_t offset, in
 	return 0;
 }
 
-asmlinkage int sys_getdents(unsigned int fd, void * dirent, unsigned int count)
+asmlinkage long sys_getdents(unsigned int fd, void * dirent, unsigned int count)
 {
 	struct file * file;
-	struct dentry * dentry;
-	struct inode * inode;
 	struct linux_dirent * lastdirent;
 	struct getdents_callback buf;
 	int error;
 
-	lock_kernel();
 	error = -EBADF;
 	file = fget(fd);
 	if (!file)
 		goto out;
-
-	dentry = file->f_dentry;
-	if (!dentry)
-		goto out_putf;
-
-	inode = dentry->d_inode;
-	if (!inode)
-		goto out_putf;
 
 	buf.current_dir = (struct linux_dirent *) dirent;
 	buf.previous = NULL;
 	buf.count = count;
 	buf.error = 0;
 
-	error = -ENOTDIR;
-	if (!file->f_op || !file->f_op->readdir)
-		goto out_putf;
-
-	/*
-	 * Get the inode's semaphore to prevent changes
-	 * to the directory while we read it.
-	 */
-	down(&inode->i_sem);
-	error = file->f_op->readdir(file, &buf, filldir);
-	up(&inode->i_sem);
+	lock_kernel();
+	error = vfs_readdir(file, filldir, &buf);
 	if (error < 0)
 		goto out_putf;
 	error = buf.error;
@@ -191,8 +215,8 @@ asmlinkage int sys_getdents(unsigned int fd, void * dirent, unsigned int count)
 	}
 
 out_putf:
+	unlock_kernel();
 	fput(file);
 out:
-	unlock_kernel();
 	return error;
 }

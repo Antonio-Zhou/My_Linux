@@ -34,16 +34,15 @@
 #include <linux/malloc.h>
 #include <linux/miscdevice.h>
 #include <linux/mm.h>
+#include <linux/spinlock.h>
 
-#include <asm/spinlock.h>
 #include <asm/uaccess.h>
 #include <asm/io.h>
 
 static int i2o_cfg_context = -1;
 static void *page_buf;
 static void *i2o_buffer;
-static spinlock_t i2o_queue_lock = SPIN_LOCK_UNLOCKED;
-
+static spinlock_t i2o_config_lock = SPIN_LOCK_UNLOCKED;
 struct wait_queue *i2o_wait_queue;
 
 #define MODINC(x,y) (x = x++ % y)
@@ -86,22 +85,21 @@ static void i2o_cfg_reply(struct i2o_handler *h, struct i2o_controller *c, struc
 {
 	u32 *msg = (u32 *)m;
 
-//	if (msg[0] & (1<<13))
-        if (msg[0] & MSG_FAIL) {
-                u32 *preserved_msg = (u32*)(c->mem_offset + msg[7]);
+	if (msg[0] & MSG_FAIL) {
+		u32 *preserved_msg = (u32*)(c->mem_offset + msg[7]);
 
 		printk(KERN_ERR "i2o_config: IOP failed to process the msg.\n");
-                /* Release the preserved msg frame by resubmitting it as a NOP */
 
-                preserved_msg[0] = THREE_WORD_MSG_SIZE | SGL_OFFSET_0;
-                preserved_msg[1] = I2O_CMD_UTIL_NOP << 24 | HOST_TID << 12 | 0;
-                preserved_msg[2] = 0;
-                i2o_post_message(c, msg[7]);
-        }
+		/* Release the preserved msg frame by resubmitting it as a NOP */
 
-        
-	if (msg[4] >> 24)  // RegStatus != SUCCESS
-		i2o_report_status(KERN_INFO,"i2o_config",msg);
+		preserved_msg[0] = THREE_WORD_MSG_SIZE | SGL_OFFSET_0;
+		preserved_msg[1] = I2O_CMD_UTIL_NOP << 24 | HOST_TID << 12 | 0;
+		preserved_msg[2] = 0;
+		i2o_post_message(c, msg[7]);
+	}
+
+	if (msg[4] >> 24)  // ReqStatus != SUCCESS
+		i2o_report_status(KERN_INFO,"i2o_config", msg);
 
 	if(m->function == I2O_CMD_UTIL_EVT_REGISTER)
 	{
@@ -145,7 +143,7 @@ static void i2o_cfg_reply(struct i2o_handler *h, struct i2o_controller *c, struc
 				(unsigned char *)(msg + 5),
 				inf->event_q[inf->q_in].data_size);
 
-		spin_lock(&i2o_queue_lock);
+		spin_lock(&i2o_config_lock);
 		MODINC(inf->q_in, I2O_EVT_Q_LEN);
 		if(inf->q_len == I2O_EVT_Q_LEN)
 		{
@@ -157,14 +155,14 @@ static void i2o_cfg_reply(struct i2o_handler *h, struct i2o_controller *c, struc
 			// Keep I2OEVTGET on another CPU from touching this
 			inf->q_len++;
 		}
-		spin_unlock(&i2o_queue_lock);
+		spin_unlock(&i2o_config_lock);
 		
 
 //		printk(KERN_INFO "File %p w/id %d has %d events\n",
 //			inf->fp, inf->q_id, inf->q_len);	
 
 		if(inf->fasync)
-			kill_fasync(inf->fasync, SIGIO);
+			kill_fasync(inf->fasync, SIGIO, POLL_IN);
 	}
 
 	return;
@@ -424,14 +422,13 @@ static int ioctl_parms(unsigned long arg, unsigned int type)
 		return -ENOMEM;
 	}
 
-        len = i2o_issue_params(i2o_cmd, c, kcmd.tid, 
-       			ops, kcmd.oplen, res, 65536);
-        i2o_unlock_controller(c);
+	len = i2o_issue_params(i2o_cmd, c, kcmd.tid, 
+				ops, kcmd.oplen, res, 65536);
+	i2o_unlock_controller(c);
 	kfree(ops);
         
 	if (len < 0) {
 		kfree(res);
-		//return len; /* -DetailedStatus */
 		return -EAGAIN;
 	}
 
@@ -518,7 +515,7 @@ int ioctl_html(unsigned long arg)
 		msg[0] = NINE_WORD_MSG_SIZE|SGL_OFFSET_5;
 		msg[5] = 0x50000000|65536;
 		msg[7] = 0xD4000000|(kcmd.qlen);
-		msg[8] = virt_to_phys(query);
+		msg[8] = virt_to_bus(query);
 	}
 
 	token = i2o_post_wait(c, msg, 9*4, 10);
@@ -595,7 +592,7 @@ int ioctl_swdl(unsigned long arg)
 	msg[5]= swlen;
 	msg[6]= kxfer.sw_id;
 	msg[7]= (0xD0000000 | fragsize);
-	msg[8]= virt_to_phys(buffer);
+	msg[8]= virt_to_bus(buffer);
 
 //	printk("i2o_config: swdl frag %d/%d (size %d)\n", curfrag, maxfrag, fragsize);
 	status = i2o_post_wait(c, msg, sizeof(msg), 60);
@@ -809,12 +806,11 @@ static int ioctl_evt_get(unsigned long arg, struct file *fp)
 
 	memcpy(&kget.info, &p->event_q[p->q_out], sizeof(struct i2o_evt_info));
 	MODINC(p->q_out, I2O_EVT_Q_LEN);
-	spin_lock_irqsave(&i2o_queue_lock, flags);
-	/* FIXME - ought to lock the q_ values here!! */
+	spin_lock_irqsave(&i2o_config_lock, flags);
 	p->q_len--;
 	kget.pending = p->q_len;
 	kget.lost = p->q_lost;
-	spin_unlock_irqrestore(&i2o_queue_lock, flags);
+	spin_unlock_irqrestore(&i2o_config_lock, flags);
 
 	__copy_to_user(uget, &kget, sizeof(struct i2o_evt_get));
 
@@ -840,9 +836,9 @@ static int cfg_open(struct inode *inode, struct file *file)
 	tmp->q_lost = 0;
 	tmp->next = open_files;
 
-	spin_lock_irqsave(&i2o_queue_lock, flags);
+	spin_lock_irqsave(&i2o_config_lock, flags);
 	open_files = tmp;
-	spin_unlock_irqrestore(&i2o_queue_lock, flags);
+	spin_unlock_irqrestore(&i2o_config_lock, flags);
 	
 	MOD_INC_USE_COUNT;
 	return 0;
@@ -856,7 +852,7 @@ static int cfg_release(struct inode *inode, struct file *file)
 
 	p1 = p2 = NULL;
 
-	spin_lock_irqsave(&i2o_queue_lock, flags);
+	spin_lock_irqsave(&i2o_config_lock, flags);
 	for(p1 = open_files; p1; )
 	{
 		if(p1->q_id == id)
@@ -875,7 +871,7 @@ static int cfg_release(struct inode *inode, struct file *file)
 		p2 = p1;
 		p1 = p1->next;
 	}
-	spin_unlock_irqrestore(&i2o_queue_lock, flags);
+	spin_unlock_irqrestore(&i2o_config_lock, flags);
 
 	MOD_DEC_USE_COUNT;
 	return 0;
@@ -919,8 +915,8 @@ int init_module(void)
 int __init i2o_config_init(void)
 #endif
 {
-	printk(KERN_INFO "I2O configuration manager v 0.04\n");
-	printk(KERN_INFO "(C) Copyright 1999 Red Hat Software\n");
+	printk(KERN_INFO "I2O configuration manager v 0.04.\n");
+	printk(KERN_INFO "  (C) Copyright 1999 Red Hat Software\n");
 	
 	if((page_buf = kmalloc(4096, GFP_KERNEL))==NULL)
 	{

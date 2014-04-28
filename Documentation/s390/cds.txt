@@ -10,7 +10,7 @@ Copyright, IBM Corp. 1999
 Introduction
 
 This document describes the common device support routines for Linux/390.
-Different than other hardware architectures, ESA/390 has defined a unified
+Different than other hardware architectures, ESA/390 hasdefined a unified
 I/O access method. This gives relief to the device drivers as they don't
 have to deal with different bus types, polling versus interrupt
 processing, shared versus non-shared interrupt processing, DMA versus port
@@ -241,7 +241,7 @@ The device driver may use these commands as appropriate.
 
 The get_dev_info_by_irq() / get_dev_info_by_devno() functions return:
 
-      0 - successful completion
+      0 - sucessful completion
 -ENODEV - irq or devno don't specify a known subchannel or device
           number.
 -EINVAL - invalid devinfo value.
@@ -317,7 +317,7 @@ The read_dev_chars() function returns :
       0 - successful completion
 -ENODEV - irq doesn't specify a valid subchannel number
 -EINVAL - an invalid parameter was detected
--EBUSY  - an irrecoverable I/O error occurred or the device is not
+-EBUSY  - an irrecoverable I/O error occured or the device is not
           operational.
 
 Usage Notes :
@@ -549,7 +549,7 @@ The cpa parameter points to the first format 1 CCW of a channel program :
 
 typedef struct {
    char            cmd_code; /* command code */
-   char            flags;    /* flags, like IDA addressing, etc. */
+   char            flags;    /* flags, like IDA adressing, etc. */
    unsigned short  count;    /* byte count */
    void           *cda;      /* data address */
 } ccw1_t __attribute__ ((aligned(8)));
@@ -778,7 +778,7 @@ flag    : 0 (zero) or DOIO_WAIT_FOR_INTERRUPT
 The halt_IO() function returns :
 
       0 - successful completion or request successfuly initiated
--EBUSY  - the device is currently performing a synchronous I/O
+-EBUSY  - the device is currently performing a sysnchonous I/O
           operation : do_IO() with flag DOIO_WAIT_FOR_INTERRUPT
           or an error was encountered and the device is currently
           be sensed

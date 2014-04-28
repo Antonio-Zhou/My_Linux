@@ -36,14 +36,9 @@ static int tty_drivers_read_proc(char *page, char **start, off_t off,
 {
 	int	len = 0;
 	off_t	begin = 0;
-	off_t	end;
 	struct tty_driver *p;
 	char	range[20], deftype[20];
 	char	*type;
-
-	end = off + count;	/* XXX: undefined on overflow per ISO C99 */
-	if (end < off)
-		return -EINVAL;
 
 	for (p = tty_drivers; p; p = p->next) {
 		if (p->num > 1)
@@ -87,7 +82,7 @@ static int tty_drivers_read_proc(char *page, char **start, off_t off,
 		len += sprintf(page+len, "%-20s /dev/%-8s %3d %7s %s\n",
 			       p->driver_name ? p->driver_name : "unknown",
 			       p->name, p->major, range, type);
-		if (len+begin > end)
+		if (len+begin > off+count)
 			break;
 		if (len+begin < off) {
 			begin += len;
@@ -111,18 +106,13 @@ static int tty_ldiscs_read_proc(char *page, char **start, off_t off,
 	int	i;
 	int	len = 0;
 	off_t	begin = 0;
-	off_t	end;
-
-	end = off + count;	/* XXX: undefined on overflow per ISO C99 */
-	if (end < off)
-		return -EINVAL;
 
 	for (i=0; i < NR_LDISCS; i++) {
 		if (!(ldiscs[i].flags & LDISC_FLAG_DEFINED))
 			continue;
 		len += sprintf(page+len, "%-10s %2d\n",
 			       ldiscs[i].name ? ldiscs[i].name : "???", i);
-		if (len+begin > end)
+		if (len+begin > off+count)
 			break;
 		if (len+begin < off) {
 			begin += len;
@@ -138,7 +128,7 @@ static int tty_ldiscs_read_proc(char *page, char **start, off_t off,
 }
 
 /*
- * This function is called by tty_register_driver() to handle
+ * Thsi function is called by register_tty_driver() to handle
  * registering the driver's /proc handler into /proc/tty/driver/<foo>
  */
 void proc_tty_register_driver(struct tty_driver *driver)
@@ -161,7 +151,7 @@ void proc_tty_register_driver(struct tty_driver *driver)
 }
 
 /*
- * This function is called by tty_unregister_driver()
+ * This function is called by unregister_tty_driver()
  */
 void proc_tty_unregister_driver(struct tty_driver *driver)
 {
@@ -171,36 +161,21 @@ void proc_tty_unregister_driver(struct tty_driver *driver)
 	if (!ent)
 		return;
 		
-	proc_unregister(proc_tty_driver, ent->low_ino);
+	remove_proc_entry(driver->driver_name, proc_tty_driver);
 	
 	driver->proc_entry = 0;
-	kfree(ent);
 }
 
 /*
  * Called by proc_root_init() to initialize the /proc/tty subtree
  */
-__initfunc(void proc_tty_init(void))
+void __init proc_tty_init(void)
 {
-	struct proc_dir_entry *ent;
-	
-	ent = create_proc_entry("tty", S_IFDIR, 0);
-	if (!ent)
+	if (!proc_mkdir("tty", 0))
 		return;
-	proc_tty_ldisc = create_proc_entry("tty/ldisc", S_IFDIR, 0);
-	/*
-	 * /proc/tty/driver/serial reveals the exact character counts for
-	 * serial links which is just too easy to abuse for inferring
-	 * password lengths and inter-keystroke timings during password
-	 * entry.
-	 */
-	proc_tty_driver = create_proc_entry("tty/driver",
-		S_IFDIR | S_IRUSR | S_IXUSR, 0);
+	proc_tty_ldisc = proc_mkdir("tty/ldisc", 0);
+	proc_tty_driver = proc_mkdir("tty/driver", 0);
 
-	ent = create_proc_entry("tty/ldiscs", 0, 0);
-	ent->read_proc = tty_ldiscs_read_proc;
-
-	ent = create_proc_entry("tty/drivers", 0, 0);
-	ent->read_proc = tty_drivers_read_proc;
+	create_proc_read_entry("tty/ldiscs", 0, 0, tty_ldiscs_read_proc,NULL);
+	create_proc_read_entry("tty/drivers", 0, 0, tty_drivers_read_proc,NULL);
 }
-

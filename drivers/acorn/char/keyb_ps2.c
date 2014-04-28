@@ -28,10 +28,9 @@
 #include <asm/iomd.h>
 #include <asm/system.h>
 
+extern struct tasklet_struct keyboard_tasklet;
 extern void kbd_reset_kdown(void);
 int kbd_read_mask;
-
-#define IRQ_KEYBOARDRX 15
 
 #define VERSION 100
 
@@ -318,16 +317,20 @@ static void ps2kbd_rx(int irq, void *dev_id, struct pt_regs *regs)
 
 	while (inb(IOMD_KCTRL) & (1 << 5))
 		handle_rawcode(inb(IOMD_KARTRX));
-	mark_bh(KEYBOARD_BH);
+	tasklet_schedule(&keyboard_tasklet);
 }
 
 static void ps2kbd_tx(int irq, void *dev_id, struct pt_regs *regs)
 {
 }
 
-__initfunc(int ps2kbd_init_hw(void))
+int __init ps2kbd_init_hw(void)
 {
 	unsigned long flags;
+
+	/* Reset the keyboard state machine. */
+	outb(0, IOMD_KCTRL);
+	outb(8, IOMD_KCTRL);
 
 	save_flags_cli (flags);
 	if (request_irq (IRQ_KEYBOARDRX, ps2kbd_rx, 0, "keyboard", NULL) != 0)
@@ -341,4 +344,3 @@ __initfunc(int ps2kbd_init_hw(void))
 	printk (KERN_INFO "PS/2 keyboard driver v%d.%02d\n", VERSION/100, VERSION%100);
 	return 0;
 }
-

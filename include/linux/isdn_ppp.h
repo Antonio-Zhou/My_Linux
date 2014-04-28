@@ -1,14 +1,9 @@
-/*
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
- *
- */
-
+/* -*- mode: c; c-basic-offset: 2 -*- */
 
 #ifndef _LINUX_ISDN_PPP_H
 #define _LINUX_ISDN_PPP_H
 
-#include <linux/isdn_compat.h>
+#include <linux/config.h>
 
 #define CALLTYPE_INCOMING 0x1
 #define CALLTYPE_OUTGOING 0x2
@@ -34,9 +29,6 @@ struct pppcallinfo
 #define PPPIOCSCOMPRESSOR _IOW('t',135,int)
 #define PPPIOCGIFNAME      _IOR('t',136, char [IFNAMSIZ] )
 
-#define PPP_MP          0x003d
-#define PPP_COMPFRAG    0x00fb
-#define PPP_CCPFRAG     0x80fb
 
 #define SC_MP_PROT       0x00000200
 #define SC_REJ_MP_PROT   0x00000400
@@ -52,6 +44,11 @@ struct pppcallinfo
 #define SC_LINK_DECOMP_DISCARD	0x40
 #define SC_LINK_COMP_DISCARD	0x80
 
+#define DECOMP_ERR_NOMEM	(-10)
+
+#define MP_END_FRAG    0x40
+#define MP_BEGIN_FRAG  0x80
+
 #define ISDN_PPP_COMP_MAX_OPTIONS 16
 
 #define IPPP_COMP_FLAG_XMIT 0x1
@@ -66,17 +63,6 @@ struct isdn_ppp_comp_data {
 
 #ifdef __KERNEL__
 
-
-#include <linux/config.h>
-
-
-#define DECOMP_ERR_NOMEM	(-10)
-
-#define MP_END_FRAG    0x40
-#define MP_BEGIN_FRAG  0x80
-
-#define MP_MAX_QUEUE_LEN	16
-
 /*
  * We need a way for the decompressor to influence the generation of CCP
  * Reset-Requests in a variety of ways. The decompressor is already returning
@@ -88,7 +74,7 @@ struct isdn_ppp_comp_data {
  *
  * We use this same struct for the reset entry of the compressor to commu-
  * nicate to its caller how to deal with sending of a Reset Ack. In this
- * case, expra is not used, but other options still apply (suppressing
+ * case, expra is not used, but other options still apply (supressing
  * sending with rsend, appending arbitrary data, etc).
  */
 
@@ -145,27 +131,34 @@ extern int isdn_ppp_unregister_compressor(struct isdn_ppp_compressor *);
 extern int isdn_ppp_dial_slave(char *);
 extern int isdn_ppp_hangup_slave(char *);
 
-typedef struct {
-  unsigned long seqerrs;
-  unsigned long frame_drops;
-  unsigned long overflows;
-  unsigned long max_queue_len;
-} isdn_mppp_stats;
-
-typedef struct {
+struct ippp_bundle {
   int mp_mrru;                        /* unused                             */
-  struct sk_buff * frags;	/* fragments sl list -- use skb->next */
-  long frames;			/* number of frames in the frame list */
-  unsigned int seq;		/* last processed packet seq #: any packets
-  				 * with smaller seq # will be dropped
-				 * unconditionally */
-  spinlock_t lock;
-  int ref_ct;				 
-  /* statistics */
-  isdn_mppp_stats stats;
-} ippp_bundle;
+  struct mpqueue *last;               /* currently defined in isdn_net_dev  */
+  int min;                            /* currently calculated 'on the fly'  */
+  long next_num;                      /* we wanna see this seq.-number next */
+  struct sqqueue *sq;
+  int modify:1;                       /* set to 1 while modifying sqqueue   */
+  int bundled:1;                      /* bundle active ?                    */
+};
 
 #define NUM_RCV_BUFFS     64
+
+struct sqqueue {
+  struct sqqueue *next;
+  long sqno_start;
+  long sqno_end;
+  struct sk_buff *skb;
+  long timer;
+};
+
+struct mpqueue {
+  struct mpqueue *next;
+  struct mpqueue *last;
+  long sqno;
+  struct sk_buff *skb;
+  int BEbyte;
+  unsigned long time;
+};
 
 struct ippp_buf_queue {
   struct ippp_buf_queue *next;
@@ -221,8 +214,9 @@ struct ippp_struct {
   struct isdn_net_local_s *lp;
   int unit;
   int minor;
-  unsigned int last_link_seqno;
+  long last_link_seqno;
   long mp_seqno;
+  long range;
 #ifdef CONFIG_ISDN_PPP_VJ
   unsigned char *cbuf;
   struct slcompress *slcomp;

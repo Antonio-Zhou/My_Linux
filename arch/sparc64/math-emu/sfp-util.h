@@ -1,4 +1,4 @@
-/* $Id: sfp-util.h,v 1.3.2.1 1999/09/20 12:06:23 jj Exp $
+/* $Id: sfp-util.h,v 1.4 1999/09/20 12:14:19 jj Exp $
  * arch/sparc64/math-emu/sfp-util.h
  *
  * Copyright (C) 1999 Jakub Jelinek (jj@ultra.linux.cz)

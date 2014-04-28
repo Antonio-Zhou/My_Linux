@@ -14,6 +14,10 @@
 #ifndef _LINUX_CONSOLE_H_
 #define _LINUX_CONSOLE_H_ 1
 
+#include <linux/types.h>
+#include <linux/kdev_t.h>
+#include <linux/spinlock.h>
+
 struct vc_data;
 struct console_font_op;
 
@@ -86,6 +90,8 @@ extern struct console_cmdline console_list[MAX_CMDLINECONSOLES];
 #define CON_PRINTBUFFER	(1)
 #define CON_CONSDEV	(2) /* Last on the command line */
 #define CON_ENABLED	(4)
+
+extern spinlock_t console_lock;
 
 struct console
 {

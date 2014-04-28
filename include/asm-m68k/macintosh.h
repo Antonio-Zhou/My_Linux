@@ -14,6 +14,7 @@ extern int mac_request_irq (unsigned int, void (*)(int, void *,
 extern void mac_free_irq(unsigned int, void *);
 extern void mac_enable_irq(unsigned int);
 extern void mac_disable_irq(unsigned int);
+extern int mac_irq_pending(unsigned int);
 extern int mac_get_irq_list(char *);
 #if 0
 extern void mac_default_handler(int irq);
@@ -73,6 +74,7 @@ struct mac_model
 #define MAC_IDE_NONE		0
 #define MAC_IDE_QUADRA		1
 #define MAC_IDE_PB		2
+#define MAC_IDE_BABOON		3
 
 #define MAC_SCC_II		1
 #define MAC_SCC_QUADRA		2
@@ -138,7 +140,6 @@ struct mac_model
 #define MAC_MODEL_P475F		90	/* aka: P475 w/ FPU (no LC040) */
 #define MAC_MODEL_P575		92	/* aka: LC575, P577/P578 */
 #define MAC_MODEL_Q605		94
-#define MAC_MODEL_Q605_ACC	95	/* Quadra 605 accelerated to 33MHz  */
 #define MAC_MODEL_Q630		98	/* aka: LC630, P630/631/635/636/637/638/640 */
 #define MAC_MODEL_P588		99	/* aka: LC580, P580 */
 #define MAC_MODEL_PB280		102

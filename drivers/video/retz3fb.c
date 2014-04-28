@@ -170,7 +170,10 @@ under "programs/Xserver/hw/xfree86/doc/modeDB.txt".
  *    Predefined Video Modes
  */
 
-static struct fb_videomode retz3fb_predefined[] __initdata = {
+static struct {
+    const char *name;
+    struct fb_var_screeninfo var;
+} retz3fb_predefined[] __initdata = {
     /*
      * NB: it is very important to adjust the pixel-clock to the color-depth.
      */
@@ -262,7 +265,7 @@ static int z3fb_mode __initdata = 0;
  *    Interface used by the world
  */
 
-void retz3fb_setup(char *options, int *ints);
+int retz3fb_setup(char *options);
 
 static int retz3fb_open(struct fb_info *info, int user);
 static int retz3fb_release(struct fb_info *info, int user);
@@ -287,7 +290,7 @@ static int retz3fb_ioctl(struct inode *inode, struct file *file,
  *    Interface to the low level console driver
  */
 
-void retz3fb_init(void);
+int retz3fb_init(void);
 static int z3fb_switch(int con, struct fb_info *info);
 static int z3fb_updatevar(int con, struct fb_info *info);
 static void z3fb_blank(int blank, struct fb_info *info);
@@ -487,7 +490,7 @@ static int retz3_set_video(struct fb_info *info,
 #endif
 
 	if (data.v_total >= 1024)
-		printk("MAYDAY: v_total >= 1024; bailing out!\n");
+		printk(KERN_ERR "MAYDAY: v_total >= 1024; bailing out!\n");
 
 	reg_w(regs, GREG_MISC_OUTPUT_W, 0xe3 | ((clocksel & 3) * 0x04));
 	reg_w(regs, GREG_FEATURE_CONTROL_W, 0x00);
@@ -767,7 +770,7 @@ static int retz3_set_video(struct fb_info *info,
 		reg_w(regs, 0x83c6, 0xe0);
 		break;
 	default:
-		printk("Illegal color-depth: %i\n", bpp);
+		printk(KERN_INFO "Illegal color-depth: %i\n", bpp);
 	}
 
 	reg_w(regs, VDAC_ADDRESS, 0x00);
@@ -791,9 +794,9 @@ static int retz3_encode_fix(struct fb_info *info,
 
 	memset(fix, 0, sizeof(struct fb_fix_screeninfo));
 	strcpy(fix->id, retz3fb_name);
-	fix->smem_start = (char *)(zinfo->physfbmem);
+	fix->smem_start = zinfo->physfbmem;
 	fix->smem_len = zinfo->fbsize;
-	fix->mmio_start = (char *)(zinfo->physregs);
+	fix->mmio_start = zinfo->physregs;
 	fix->mmio_len = 0x00c00000;
 
 	fix->type = FB_TYPE_PACKED_PIXELS;
@@ -1391,12 +1394,12 @@ static struct fb_ops retz3fb_ops = {
 };
 
 
-__initfunc(void retz3fb_setup(char *options, int *ints))
+int __init retz3fb_setup(char *options)
 {
 	char *this_opt;
 
 	if (!options || !*options)
-		return;
+		return 0;
 
 	for (this_opt = strtok(options, ","); this_opt;
 	     this_opt = strtok(NULL, ",")){
@@ -1406,9 +1409,10 @@ __initfunc(void retz3fb_setup(char *options, int *ints))
 		} else if (!strncmp(this_opt, "font:", 5)) {
 			strncpy(fontname, this_opt+5, 39);
 			fontname[39] = '\0';
-		}else
+		} else
 			z3fb_mode = get_video_mode(this_opt);
 	}
+	return 0;
 }
 
 
@@ -1416,86 +1420,96 @@ __initfunc(void retz3fb_setup(char *options, int *ints))
  *    Initialization
  */
 
-__initfunc(void retz3fb_init(void))
+int __init retz3fb_init(void)
 {
 	unsigned long board_addr, board_size;
-	unsigned int key;
-	const struct ConfigDev *cd;
+	struct zorro_dev *z = NULL;
 	volatile unsigned char *regs;
 	struct retz3fb_par par;
 	struct retz3_fb_info *zinfo;
 	struct fb_info *fb_info;
 	short i;
+	int res = -ENXIO;
 
-	if (!(key = zorro_find(ZORRO_PROD_MACROSYSTEMS_RETINA_Z3, 0, 0)))
-		return;
-
-	if (!(zinfo = kmalloc(sizeof(struct retz3_fb_info), GFP_KERNEL)))
-		return;
-	memset(zinfo, 0, sizeof(struct retz3_fb_info));
-
-	cd = zorro_get_board (key);
-	zorro_config_board (key, 0);
-	board_addr = (unsigned long)cd->cd_BoardAddr;
-	board_size = (unsigned long)cd->cd_BoardSize;
-
-	zinfo->base = ioremap(board_addr, board_size);
-	zinfo->regs = zinfo->base;
-	zinfo->fbmem = zinfo->base + VIDEO_MEM_OFFSET;
-	/* Get memory size - for now we asume its a 4MB board */
-	zinfo->fbsize = 0x00400000; /* 4 MB */
-	zinfo->physregs = board_addr;
-	zinfo->physfbmem = board_addr + VIDEO_MEM_OFFSET;
-
-	fb_info = fbinfo(zinfo);
-
-	for (i = 0; i < 256; i++){
-		for (i = 0; i < 256; i++){
-			zinfo->color_table[i][0] = i;
-			zinfo->color_table[i][1] = i;
-			zinfo->color_table[i][2] = i;
+	while ((z = zorro_find_device(ZORRO_PROD_MACROSYSTEMS_RETINA_Z3, z))) {
+		board_addr = z->resource.start;
+		board_size = z->resource.end-z->resource.start+1;
+		if (!request_mem_region(board_addr, 0x0c00000,
+			    		"ncr77c32blt")) {
+			continue;
+		if (!request_mem_region(board_addr+VIDEO_MEM_OFFSET,
+			    		0x00400000, "RAM"))
+			release_mem_region(board_addr, 0x00c00000);
+			continue;
 		}
+		strcpy(z->name, "Retina Z3 Graphics ");
+		if (!(zinfo = kmalloc(sizeof(struct retz3_fb_info),
+				      GFP_KERNEL)))
+			return -ENOMEM;
+		memset(zinfo, 0, sizeof(struct retz3_fb_info));
+
+		zinfo->base = ioremap(board_addr, board_size);
+		zinfo->regs = zinfo->base;
+		zinfo->fbmem = zinfo->base + VIDEO_MEM_OFFSET;
+		/* Get memory size - for now we asume its a 4MB board */
+		zinfo->fbsize = 0x00400000; /* 4 MB */
+		zinfo->physregs = board_addr;
+		zinfo->physfbmem = board_addr + VIDEO_MEM_OFFSET;
+
+		fb_info = fbinfo(zinfo);
+
+		for (i = 0; i < 256; i++){
+			for (i = 0; i < 256; i++){
+				zinfo->color_table[i][0] = i;
+				zinfo->color_table[i][1] = i;
+				zinfo->color_table[i][2] = i;
+			}
+		}
+
+		regs = zinfo->regs;
+		/* Disable hardware cursor */
+		seq_w(regs, SEQ_CURSOR_Y_INDEX, 0x00);
+
+		retz3_setcolreg (255, 56<<8, 100<<8, 160<<8, 0, fb_info);
+		retz3_setcolreg (254, 0, 0, 0, 0, fb_info);
+
+		strcpy(fb_info->modename, retz3fb_name);
+		fb_info->changevar = NULL;
+		fb_info->node = -1;
+		fb_info->fbops = &retz3fb_ops;
+		fb_info->disp = &zinfo->disp;
+		fb_info->switch_con = &z3fb_switch;
+		fb_info->updatevar = &z3fb_updatevar;
+		fb_info->blank = &z3fb_blank;
+		fb_info->flags = FBINFO_FLAG_DEFAULT;
+		strncpy(fb_info->fontname, fontname, 40);
+
+		if (z3fb_mode == -1)
+			retz3fb_default = retz3fb_predefined[0].var;
+
+		retz3_decode_var(&retz3fb_default, &par);
+		retz3_encode_var(&retz3fb_default, &par);
+
+		do_fb_set_var(fb_info, &retz3fb_default, 0);
+		retz3fb_get_var(&zinfo->disp.var, -1, fb_info);
+
+		retz3fb_set_disp(-1, fb_info);
+
+		do_install_cmap(0, fb_info);
+
+		if (register_framebuffer(fb_info) < 0)
+			return -EINVAL;
+
+		printk(KERN_INFO "fb%d: %s frame buffer device, using %ldK of "
+		       "video memory\n", GET_FB_IDX(fb_info->node),
+		       fb_info->modename, zinfo->fbsize>>10);
+
+		/* TODO: This driver cannot be unloaded yet */
+		MOD_INC_USE_COUNT;
+
+		res = 0;
 	}
-
-	regs = zinfo->regs;
-	/* Disable hardware cursor */
-	seq_w(regs, SEQ_CURSOR_Y_INDEX, 0x00);
-
-	retz3_setcolreg (255, 56<<8, 100<<8, 160<<8, 0, fb_info);
-	retz3_setcolreg (254, 0, 0, 0, 0, fb_info);
-
-	strcpy(fb_info->modename, retz3fb_name);
-	fb_info->changevar = NULL;
-	fb_info->node = -1;
-	fb_info->fbops = &retz3fb_ops;
-	fb_info->disp = &zinfo->disp;
-	fb_info->switch_con = &z3fb_switch;
-	fb_info->updatevar = &z3fb_updatevar;
-	fb_info->blank = &z3fb_blank;
-	fb_info->flags = FBINFO_FLAG_DEFAULT;
-	strncpy(fb_info->fontname, fontname, 40);
-
-	if (z3fb_mode == -1)
-		retz3fb_default = retz3fb_predefined[0].var;
-
-	retz3_decode_var(&retz3fb_default, &par);
-	retz3_encode_var(&retz3fb_default, &par);
-
-	do_fb_set_var(fb_info, &retz3fb_default, 0);
-	retz3fb_get_var(&zinfo->disp.var, -1, fb_info);
-
-	retz3fb_set_disp(-1, fb_info);
-
-	do_install_cmap(0, fb_info);
-
-	if (register_framebuffer(fb_info) < 0)
-		return;
-
-	printk("fb%d: %s frame buffer device, using %ldK of video memory\n",
-	       GET_FB_IDX(fb_info->node), fb_info->modename,zinfo->fbsize>>10);
-
-	/* TODO: This driver cannot be unloaded yet */
-	MOD_INC_USE_COUNT;
+	return res;
 }
 
 
@@ -1560,11 +1574,11 @@ static void z3fb_blank(int blank, struct fb_info *info)
  *    Get a Video Mode
  */
 
-__initfunc(static int get_video_mode(const char *name))
+static int __init get_video_mode(const char *name)
 {
 	short i;
 
-	for (i = 0; i <= NUM_TOTAL_MODES; i++)
+	for (i = 0; i < NUM_TOTAL_MODES; i++)
 		if (!strcmp(name, retz3fb_predefined[i].name)){
 			retz3fb_default = retz3fb_predefined[i].var;
 			return i;
@@ -1576,8 +1590,7 @@ __initfunc(static int get_video_mode(const char *name))
 #ifdef MODULE
 int init_module(void)
 {
-	retz3fb_init();
-	return 0;
+	return retz3fb_init();
 }
 
 void cleanup_module(void)

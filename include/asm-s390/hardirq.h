@@ -2,7 +2,7 @@
  *  include/asm-s390/hardirq.h
  *
  *  S390 version
- *    Copyright (C) 1999 IBM Deutschland Entwicklung GmbH, IBM Corporation
+ *    Copyright (C) 1999,2000 IBM Deutschland Entwicklung GmbH, IBM Corporation
  *    Author(s): Martin Schwidefsky (schwidefsky@de.ibm.com),
  *               Denis Joseph Barrow (djbarrow@de.ibm.com,barrow_dj@yahoo.com)
  *
@@ -12,7 +12,8 @@
 #ifndef __ASM_HARDIRQ_H
 #define __ASM_HARDIRQ_H
 
-#include <linux/tasks.h>
+#include <linux/config.h>
+#include <linux/threads.h>
 #include <asm/lowcore.h>
 #include <linux/sched.h>
 /*
@@ -21,7 +22,9 @@
  */
 #define in_interrupt() ((atomic_read(&S390_lowcore.local_irq_count) + atomic_read(&S390_lowcore.local_bh_count)) != 0)
 
-#ifndef __SMP__
+#define in_irq() (atomic_read(&S390_lowcore.local_irq_count) != 0)
+
+#ifndef CONFIG_SMP
 
 #define hardirq_trylock(cpu)	(atomic_read(&S390_lowcore.local_irq_count) == 0)
 #define hardirq_endlock(cpu)	do { } while (0)
@@ -70,6 +73,6 @@ static inline int hardirq_trylock(int cpu)
 
 extern void synchronize_irq(void);
 
-#endif /* __SMP__ */
+#endif /* CONFIG_SMP */
 
 #endif /* __ASM_HARDIRQ_H */

@@ -12,11 +12,11 @@
 #ifndef __ASM_ARM_ATOMIC_H
 #define __ASM_ARM_ATOMIC_H
 
-#ifdef __SMP__
+#include <linux/config.h>
+
+#ifdef CONFIG_SMP
 #error SMP not supported
 #endif
-
-#include <linux/config.h>
 
 #ifdef CONFIG_ARCH_CO285
 typedef struct { volatile int counter; } atomic_t;
@@ -27,7 +27,7 @@ typedef struct { int counter; } atomic_t;
 #define ATOMIC_INIT(i)	{ (i) }
 
 #ifdef __KERNEL__
-#include <asm/system.h>
+#include <asm/proc/system.h>
 
 #define atomic_read(v)	((v)->counter)
 #define atomic_set(v,i)	(((v)->counter) = (i))
@@ -77,6 +77,19 @@ static __inline__ int atomic_dec_and_test(volatile atomic_t *v)
 	v->counter -= 1;
 	result = (v->counter == 0);
 	restore_flags (flags);
+
+	return result;
+}
+
+extern __inline__ int atomic_add_negative(int i, volatile atomic_t *v)
+{
+	unsigned long flags;
+	int result;
+
+	save_flags_cli(flags);
+	v->counter += i;
+	result = (v->counter < 0);
+	restore_flags(flags);
 
 	return result;
 }

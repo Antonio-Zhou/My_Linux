@@ -1,17 +1,49 @@
-/* $Id: hfc_2bds0.c,v 1.1.2.1 2001/12/31 13:26:45 kai Exp $
+/* $Id: hfc_2bds0.c,v 1.12 2000/02/26 00:35:12 keil Exp $
  *
- * specific routines for CCD's HFC 2BDS0
+ *  specific routines for CCD's HFC 2BDS0
  *
- * Author       Karsten Keil
- * Copyright    by Karsten Keil      <keil@isdn4linux.de>
- * 
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
+ * Author       Karsten Keil (keil@isdn4linux.de)
+ *
+ *
+ * $Log: hfc_2bds0.c,v $
+ * Revision 1.12  2000/02/26 00:35:12  keil
+ * Fix skb freeing in interrupt context
+ *
+ * Revision 1.11  1999/12/23 15:09:32  keil
+ * change email
+ *
+ * Revision 1.10  1999/10/14 20:25:28  keil
+ * add a statistic for error monitoring
+ *
+ * Revision 1.9  1999/07/01 08:11:35  keil
+ * Common HiSax version for 2.0, 2.1, 2.2 and 2.3 kernel
+ *
+ * Revision 1.8  1998/11/15 23:54:40  keil
+ * changes from 2.0
+ *
+ * Revision 1.7  1998/09/30 22:24:45  keil
+ * Fix missing line in setstack*
+ *
+ * Revision 1.6  1998/08/13 23:36:26  keil
+ * HiSax 3.1 - don't work stable with current LinkLevel
+ *
+ * Revision 1.5  1998/06/27 22:52:58  keil
+ * make 16.3c working with 3.0
+ *
+ * Revision 1.4  1998/05/25 12:57:52  keil
+ * HiSax golden code from certification, Don't use !!!
+ * No leased lines, no X75, but many changes.
+ *
+ * Revision 1.3  1998/02/12 23:07:22  keil
+ * change for 2.1.86 (removing FREE_READ/FREE_WRITE from [dev]_kfree_skb()
+ *
+ * Revision 1.2  1998/02/02 13:26:13  keil
+ * New
+ *
+ *
  *
  */
-
 #define __NO_VERSION__
-#include <linux/init.h>
 #include "hisax.h"
 #include "hfc_2bds0.h"
 #include "isdnl1.h"
@@ -264,7 +296,7 @@ static struct sk_buff
 			sti();
 			debugl1(cs, "RFIFO BUSY error");
 			printk(KERN_WARNING "HFC FIFO channel %d BUSY Error\n", bcs->channel);
-			dev_kfree_skb(skb);
+			dev_kfree_skb_irq(skb);
 			skb = NULL;
 		} else {
 			cli();
@@ -280,7 +312,7 @@ static struct sk_buff
 					bcs->channel, chksum, stat);
 			if (stat) {
 				debugl1(cs, "FIFO CRC error");
-				dev_kfree_skb(skb);
+				dev_kfree_skb_irq(skb);
 				skb = NULL;
 #ifdef ERROR_STATISTIC
 				bcs->err_crc++;
@@ -372,7 +404,7 @@ hfc_fill_fifo(struct BCState *bcs)
 		if (bcs->st->lli.l1writewakeup &&
 			(PACKET_NOACK != bcs->tx_skb->pkt_type))
 			bcs->st->lli.l1writewakeup(bcs->st, bcs->tx_skb->len);
-		dev_kfree_skb(bcs->tx_skb);
+		dev_kfree_skb_any(bcs->tx_skb);
 		bcs->tx_skb = NULL;
 	}
 	WaitForBusy(cs);
@@ -571,10 +603,10 @@ close_2bs0(struct BCState *bcs)
 {
 	mode_2bs0(bcs, 0, bcs->channel);
 	if (test_and_clear_bit(BC_FLG_INIT, &bcs->Flag)) {
-		skb_queue_purge(&bcs->rqueue);
-		skb_queue_purge(&bcs->squeue);
+		discard_queue(&bcs->rqueue);
+		discard_queue(&bcs->squeue);
 		if (bcs->tx_skb) {
-			dev_kfree_skb(bcs->tx_skb);
+			dev_kfree_skb_any(bcs->tx_skb);
 			bcs->tx_skb = NULL;
 			test_and_clear_bit(BC_FLG_BUSY, &bcs->Flag);
 		}
@@ -722,7 +754,7 @@ int receive_dmsg(struct IsdnCardState *cs)
 				sti();
 				debugl1(cs, "RFIFO D BUSY error");
 				printk(KERN_WARNING "HFC DFIFO channel BUSY Error\n");
-				dev_kfree_skb(skb);
+				dev_kfree_skb_irq(skb);
 				skb = NULL;
 #ifdef ERROR_STATISTIC
 				cs->err_rx++;
@@ -741,7 +773,7 @@ int receive_dmsg(struct IsdnCardState *cs)
 						chksum, stat);
 				if (stat) {
 					debugl1(cs, "FIFO CRC error");
-					dev_kfree_skb(skb);
+					dev_kfree_skb_irq(skb);
 					skb = NULL;
 #ifdef ERROR_STATISTIC
 					cs->err_crc++;
@@ -841,7 +873,7 @@ hfc_fill_dfifo(struct IsdnCardState *cs)
 	cli();
 	WaitNoBusy(cs);
 	ReadReg(cs, HFCD_DATA, HFCD_FIFO | HFCD_F1_INC | HFCD_SEND);
-	dev_kfree_skb(cs->tx_skb);
+	dev_kfree_skb_any(cs->tx_skb);
 	cs->tx_skb = NULL;
 	sti();
 	WaitForBusy(cs);
@@ -975,7 +1007,7 @@ hfc2bds0_interrupt(struct IsdnCardState *cs, u_char val)
 					}
 					goto afterXPR;
 				} else {
-					dev_kfree_skb(cs->tx_skb);
+					dev_kfree_skb_irq(cs->tx_skb);
 					cs->tx_cnt = 0;
 					cs->tx_skb = NULL;
 				}
@@ -1108,8 +1140,8 @@ hfc_dbusy_timer(struct IsdnCardState *cs)
 {
 }
 
-unsigned int __init
-*init_send_hfcd(int cnt)
+__initfunc(unsigned int
+*init_send_hfcd(int cnt))
 {
 	int i, *send;
 
@@ -1123,8 +1155,8 @@ unsigned int __init
 	return(send);
 }
 
-void __init
-init2bds0(struct IsdnCardState *cs)
+__initfunc(void
+init2bds0(struct IsdnCardState *cs))
 {
 	cs->setstack_d = setstack_hfcd;
 	cs->dbusytimer.function = (void *) hfc_dbusy_timer;

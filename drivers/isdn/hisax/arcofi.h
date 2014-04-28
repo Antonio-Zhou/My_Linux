@@ -1,12 +1,27 @@
-/* $Id: arcofi.h,v 1.1.2.1 2001/12/31 13:26:45 kai Exp $
+/* $Id: arcofi.h,v 1.5 1999/12/23 15:09:32 keil Exp $
+
+ * arcofi.h   Ansteuerung ARCOFI 2165
  *
- * Ansteuerung ARCOFI 2165
+ * Author     Karsten Keil (keil@isdn4linux.de)
  *
- * Author       Karsten Keil
- * Copyright    by Karsten Keil      <keil@isdn4linux.de>
  *
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
+ *
+ * $Log: arcofi.h,v $
+ * Revision 1.5  1999/12/23 15:09:32  keil
+ * change email
+ *
+ * Revision 1.4  1999/07/01 08:11:18  keil
+ * Common HiSax version for 2.0, 2.1, 2.2 and 2.3 kernel
+ *
+ * Revision 1.3  1998/05/25 12:57:39  keil
+ * HiSax golden code from certification, Don't use !!!
+ * No leased lines, no X75, but many changes.
+ *
+ * Revision 1.2  1998/04/15 16:47:17  keil
+ * new interface
+ *
+ * Revision 1.1  1997/10/29 18:51:20  keil
+ * New files
  *
  */
  

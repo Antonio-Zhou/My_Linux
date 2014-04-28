@@ -22,8 +22,6 @@
  *	"A Kernel Model for Precision Timekeeping" by Dave Mills
  *	Allow time_constant larger than MAXTC(6) for NTP v4 (MAXTC == 10)
  *	(Even though the technical memorandum forbids it)
- * 1999-09-17    Andrea Arcangeli <andrea@suse.de>
- *	Fixed adjtimex/settimeofday/stime SMP races.
  */
 
 #include <linux/mm.h>
@@ -57,21 +55,20 @@ void get_fast_time(struct timeval * t)
 }
 
 /* The xtime_lock is not only serializing the xtime read/writes but it's also
-   serializing all accesses to the global NTP variables.
-   NOTE NOTE: We really need a spinlock here as the global irq locking
-   only protect us against the timer irq and not against other time-related
-   syscall running under us. */
+   serializing all accesses to the global NTP variables now. */
 extern rwlock_t xtime_lock;
 
-#ifndef __alpha__
+#if !defined(__alpha__) && !defined(__ia64__)
 
 /*
  * sys_time() can be implemented in user-level using
  * sys_gettimeofday().  Is this for backwards compatibility?  If so,
  * why not move it into the appropriate arch directory (for those
  * architectures that need it).
+ *
+ * XXX This function is NOT 64-bit clean!
  */
-asmlinkage int sys_time(int * tloc)
+asmlinkage long sys_time(int * tloc)
 {
 	int i;
 
@@ -92,7 +89,7 @@ asmlinkage int sys_time(int * tloc)
  * architectures that need it).
  */
  
-asmlinkage int sys_stime(int * tptr)
+asmlinkage long sys_stime(int * tptr)
 {
 	int value;
 
@@ -113,7 +110,7 @@ asmlinkage int sys_stime(int * tptr)
 
 #endif
 
-asmlinkage int sys_gettimeofday(struct timeval *tv, struct timezone *tz)
+asmlinkage long sys_gettimeofday(struct timeval *tv, struct timezone *tz)
 {
 	if (tv) {
 		struct timeval ktv;
@@ -188,7 +185,7 @@ int do_sys_settimeofday(struct timeval *tv, struct timezone *tz)
 	return 0;
 }
 
-asmlinkage int sys_settimeofday(struct timeval *tv, struct timezone *tz)
+asmlinkage long sys_settimeofday(struct timeval *tv, struct timezone *tz)
 {
 	struct timeval	new_tv;
 	struct timezone new_tz;
@@ -205,20 +202,20 @@ asmlinkage int sys_settimeofday(struct timeval *tv, struct timezone *tz)
 	return do_sys_settimeofday(tv ? &new_tv : NULL, tz ? &new_tz : NULL);
 }
 
-long pps_offset = 0;		/* pps time offset (us) */
+long pps_offset;		/* pps time offset (us) */
 long pps_jitter = MAXTIME;	/* time dispersion (jitter) (us) */
 
-long pps_freq = 0;		/* frequency offset (scaled ppm) */
+long pps_freq;			/* frequency offset (scaled ppm) */
 long pps_stabil = MAXFREQ;	/* frequency dispersion (scaled ppm) */
 
 long pps_valid = PPS_VALID;	/* pps signal watchdog counter */
 
 int pps_shift = PPS_SHIFT;	/* interval duration (s) (shift) */
 
-long pps_jitcnt = 0;		/* jitter limit exceeded */
-long pps_calcnt = 0;		/* calibration intervals */
-long pps_errcnt = 0;		/* calibration errors */
-long pps_stbcnt = 0;		/* stability limit exceeded */
+long pps_jitcnt;		/* jitter limit exceeded */
+long pps_calcnt;		/* calibration intervals */
+long pps_errcnt;		/* calibration errors */
+long pps_stbcnt;		/* stability limit exceeded */
 
 /* hook for a loadable hardpps kernel module */
 void (*hardpps_ptr)(struct timeval *) = (void (*)(struct timeval *))0;
@@ -407,7 +404,7 @@ leave:	if ((time_status & (STA_UNSYNC|STA_CLOCKERR)) != 0
 	return(result);
 }
 
-asmlinkage int sys_adjtimex(struct timex *txc_p)
+asmlinkage long sys_adjtimex(struct timex *txc_p)
 {
 	struct timex txc;		/* Local copy of parameter */
 	int ret;

@@ -106,10 +106,9 @@ struct hdlcdrv_ioctl {
 
 #include <linux/netdevice.h>
 #include <linux/if.h>
-#include <asm/spinlock.h>
+#include <linux/spinlock.h>
 
 #define HDLCDRV_MAGIC      0x5ac6e778
-#define HDLCDRV_IFNAMELEN    6
 #define HDLCDRV_HDLCBUFFER  32 /* should be a power of 2 for speed reasons */
 #define HDLCDRV_BITBUFFER  256 /* should be a power of 2 for speed reasons */
 #undef HDLCDRV_LOOPBACK  /* define for HDLC debugging purposes */
@@ -173,16 +172,14 @@ struct hdlcdrv_ops {
 	/*
 	 * the routines called by the hdlcdrv routines
 	 */
-	int (*open)(struct device *);
-	int (*close)(struct device *);
-	int (*ioctl)(struct device *, struct ifreq *, 
+	int (*open)(struct net_device *);
+	int (*close)(struct net_device *);
+	int (*ioctl)(struct net_device *, struct ifreq *, 
 		     struct hdlcdrv_ioctl *, int);
 };
 
 struct hdlcdrv_state {
 	int magic;
-
-	char ifname[HDLCDRV_IFNAMELEN];
 
 	const struct hdlcdrv_ops *ops;
 
@@ -250,7 +247,8 @@ struct hdlcdrv_state {
 #endif
 	int ptt_keyed;
 
-	struct sk_buff_head send_queue;  /* Packets awaiting transmission */
+	/* queued skb for transmission */
+	struct sk_buff *skb;
 };
 
 
@@ -361,14 +359,14 @@ extern inline int hdlcdrv_ptt(struct hdlcdrv_state *s)
 
 /* -------------------------------------------------------------------- */
 
-void hdlcdrv_receiver(struct device *, struct hdlcdrv_state *);
-void hdlcdrv_transmitter(struct device *, struct hdlcdrv_state *);
-void hdlcdrv_arbitrate(struct device *, struct hdlcdrv_state *);
-int hdlcdrv_register_hdlcdrv(struct device *dev, const struct hdlcdrv_ops *ops,
+void hdlcdrv_receiver(struct net_device *, struct hdlcdrv_state *);
+void hdlcdrv_transmitter(struct net_device *, struct hdlcdrv_state *);
+void hdlcdrv_arbitrate(struct net_device *, struct hdlcdrv_state *);
+int hdlcdrv_register_hdlcdrv(struct net_device *dev, const struct hdlcdrv_ops *ops,
 			     unsigned int privsize, char *ifname,
 			     unsigned int baseaddr, unsigned int irq, 
 			     unsigned int dma);
-int hdlcdrv_unregister_hdlcdrv(struct device *dev);
+int hdlcdrv_unregister_hdlcdrv(struct net_device *dev);
 
 /* -------------------------------------------------------------------- */
 

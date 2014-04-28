@@ -11,6 +11,7 @@
  *    Copyright (C) 1991, 1992, 1995  Linus Torvalds
  */
 
+#include <linux/config.h>
 #include <linux/errno.h>
 #include <linux/sched.h>
 #include <linux/kernel.h>
@@ -26,12 +27,11 @@
 
 #include <asm/uaccess.h>
 #include <asm/delay.h>
-#include <asm/irq.h>
-#include <asm/s390_ext.h>
 
 #include <linux/mc146818rtc.h>
 #include <linux/timex.h>
-#include <linux/config.h>
+
+#include <asm/irq.h>
 
 
 extern volatile unsigned long lost_ticks;
@@ -149,7 +149,7 @@ void do_settimeofday(struct timeval *tv)
 extern __u16 boot_cpu_addr;
 #endif
 
-void do_timer_interrupt(struct pt_regs *regs, __u16 error_code)
+void do_timer_interrupt(struct pt_regs *regs,int error_code)
 {
         unsigned long flags;
 
@@ -221,7 +221,7 @@ void init_100hz_timer(void)
  * Initialize the TOD clock and the CPU timer of
  * the boot cpu.
  */
-__initfunc(void time_init(void))
+void __init time_init(void)
 {
 	int cc;
 
@@ -242,9 +242,6 @@ __initfunc(void time_init(void))
                 printk("time_init: TOD clock stopped/non-operational\n");
                 break;
         }
-        /* request the 0x1004 external interrupt */
-        if (register_external_interrupt(0x1004, do_timer_interrupt) != 0)
-                panic("Couldn't request external interrupts 0x1004");
         init_100hz_timer();
         init_timer_cc = S390_lowcore.jiffy_timer_cc;
         init_timer_cc -= 0x8126d60e46000000LL -

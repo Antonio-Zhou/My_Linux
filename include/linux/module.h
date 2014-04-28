@@ -8,6 +8,7 @@
 #define _LINUX_MODULE_H
 
 #include <linux/config.h>
+#include <linux/spinlock.h>
 
 #ifdef __GENKSYMS__
 #  define _set_ver(sym) sym
@@ -136,18 +137,16 @@ struct module_info
 	(mod_member_present((mod), can_unload) && (mod)->can_unload	\
 	 ? (mod)->can_unload() : atomic_read(&(mod)->uc.usecount))
 
-extern int try_inc_mod_count(struct module *mod);
 /* Indirect stringification.  */
 
 #define __MODULE_STRING_1(x)	#x
 #define __MODULE_STRING(x)	__MODULE_STRING_1(x)
 
 /* Find a symbol exported by the kernel or another module */
-#ifndef CONFIG_MODULES
-static inline unsigned long get_module_symbol(char *A, char *B) { return 0; };
-#else
 extern unsigned long get_module_symbol(char *, char *);
-#endif
+
+extern int try_inc_mod_count(struct module *mod);
+
 #if defined(MODULE) && !defined(__GENKSYMS__)
 
 /* Embedded module documentation macros.  */
@@ -181,9 +180,6 @@ const char __module_device[] __attribute__((section(".modinfo"))) = 	   \
 	s	string
 */
 
-/* Dummy macro for 2.2/2.4 compatibility */
-#define MODULE_LICENSE(var)
-
 #define MODULE_PARM(var,type)			\
 const char __module_parm_##var[]		\
 __attribute__((section(".modinfo"))) =		\
@@ -194,6 +190,21 @@ const char __module_parm_desc_##var[]		\
 __attribute__((section(".modinfo"))) =		\
 "parm_desc_" __MODULE_STRING(var) "=" desc
 
+/*
+ * MODULE_DEVICE_TABLE exports information about devices
+ * currently supported by this module.  A device type, such as PCI,
+ * is a C-like identifier passed as the first arg to this macro.
+ * The second macro arg is the variable containing the device
+ * information being made public.
+ *
+ * The following is a list of known device types (arg 1),
+ * and the C types which are to be passed as arg 2.
+ * pci - struct pci_device_id - List of PCI ids supported by this module
+ */
+#define MODULE_DEVICE_TABLE(type,name)	\
+const struct type##_device_id * __module_##type##_device_table = name
+/* not put to .modinfo section to avoid section type conflicts */
+
 /* The attributes of a section are set the first time the section is
    seen; we want .modinfo to not be allocated.  */
 
@@ -203,18 +214,16 @@ __asm__(".section .modinfo\n\t.previous");
 extern struct module __this_module;
 
 #define THIS_MODULE		(&__this_module)
-#define MOD_INC_USE_COUNT	__MOD_INC_USE_COUNT(&__this_module)
-#define MOD_DEC_USE_COUNT	__MOD_DEC_USE_COUNT(&__this_module)
-#define MOD_IN_USE		__MOD_IN_USE(&__this_module)
+#define MOD_INC_USE_COUNT	__MOD_INC_USE_COUNT(THIS_MODULE)
+#define MOD_DEC_USE_COUNT	__MOD_DEC_USE_COUNT(THIS_MODULE)
+#define MOD_IN_USE		__MOD_IN_USE(THIS_MODULE)
 
-#ifndef __NO_VERSION__
 #include <linux/version.h>
-const char __module_kernel_version[] __attribute__((section(".modinfo"))) =
+static const char __module_kernel_version[] __attribute__((section(".modinfo"))) =
 "kernel_version=" UTS_RELEASE;
 #ifdef MODVERSIONS
-const char __module_using_checksums[] __attribute__((section(".modinfo"))) =
+static const char __module_using_checksums[] __attribute__((section(".modinfo"))) =
 "using_checksums=1";
-#endif
 #endif
 
 #else /* MODULE */
@@ -222,13 +231,13 @@ const char __module_using_checksums[] __attribute__((section(".modinfo"))) =
 #define MODULE_AUTHOR(name)
 #define MODULE_DESCRIPTION(desc)
 #define MODULE_SUPPORTED_DEVICE(name)
-#define MODULE_LICENSE(var)
 #define MODULE_PARM(var,type)
 #define MODULE_PARM_DESC(var,desc)
-#define THIS_MODULE		NULL
+#define MODULE_DEVICE_TABLE(type,name)
 
 #ifndef __GENKSYMS__
 
+#define THIS_MODULE		NULL
 #define MOD_INC_USE_COUNT	do { } while (0)
 #define MOD_DEC_USE_COUNT	do { } while (0)
 #define MOD_IN_USE		1

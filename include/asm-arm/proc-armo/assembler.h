@@ -60,5 +60,3 @@
 #define SVCMODE(tmpreg)\
 	teqp	pc, $0x00000003;\
 	mov	r0, r0
-
-#endif

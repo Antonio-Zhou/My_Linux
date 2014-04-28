@@ -54,7 +54,6 @@ nul_create_cred(int flags)
 		return NULL;
 	cred->cr_count = 0;
 	cred->cr_flags = RPCAUTH_CRED_UPTODATE;
-	cred->cr_uid = current->uid;
 
 	return cred;
 }
@@ -109,12 +108,10 @@ nul_validate(struct rpc_task *task, u32 *p)
 		printk("RPC: bad verf flavor: %ld\n", (unsigned long) n);
 		return NULL;
 	}
-	if ((n = ntohl(*p++)) > 400) {
+	if ((n = ntohl(*p++)) != 0) {
 		printk("RPC: bad verf size: %ld\n", (unsigned long) n);
 		return NULL;
 	}
-	if (n)
-		p += XDR_QUADLEN(n);
 
 	return p;
 }

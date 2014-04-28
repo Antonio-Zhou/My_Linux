@@ -42,37 +42,48 @@ static struct vm_area_struct init_mmap = INIT_MMAP;
 static struct fs_struct init_fs = INIT_FS;
 static struct files_struct init_files = INIT_FILES;
 static struct signal_struct init_signals = INIT_SIGNALS;
-struct mm_struct init_mm = INIT_MM;
+struct mm_struct init_mm = INIT_MM(init_mm);
 
 union task_union init_task_union
-	__attribute__((section("init_task"), aligned(2*PAGE_SIZE)))
-	= { task: INIT_TASK };
+__attribute__((section("init_task"), aligned(KTHREAD_SIZE)))
+	= { task: INIT_TASK(init_task_union.task) };
 
-asmlinkage void ret_from_exception(void);
+asmlinkage void ret_from_fork(void);
+
 
 /*
  * The idle loop on an m68k..
  */
-asmlinkage int sys_idle(void)
+static void default_idle(void)
 {
-	if (current->pid != 0)
-		return -EPERM;
-
-	/* endless idle loop with no priority at all */
-	current->priority = 0;
-	current->counter = -100;
-	init_idle();
-	for (;;) {
+	while(1) {
 		if (!current->need_resched)
-#if defined(CONFIG_ATARI) && !defined(CONFIG_AMIGA) && !defined(CONFIG_MAC)
+#if defined(MACH_ATARI_ONLY) && !defined(CONFIG_HADES)
 			/* block out HSYNC on the atari (falcon) */
 			__asm__("stop #0x2200" : : : "cc");
-#else /* portable version */
+#else
 			__asm__("stop #0x2000" : : : "cc");
-#endif /* machine compilation types */ 
+#endif
 		schedule();
 		check_pgt_cache();
 	}
+}
+
+void (*idle)(void) = default_idle;
+
+/*
+ * The idle thread. There's no useful work to be
+ * done, so just try to conserve power and have a
+ * low exit latency (ie sit in a loop waiting for
+ * somebody to say that they'd like to reschedule)
+ */
+void cpu_idle(void)
+{
+	/* endless idle loop with no priority at all */
+	init_idle();
+	current->priority = 0;
+	current->counter = -100;
+	idle();
 }
 
 void machine_restart(char * __unused)
@@ -131,7 +142,7 @@ int kernel_thread(int (*fn)(void *), void * arg, unsigned long flags)
 	   "trap #0\n\t"		/* Linux/m68k system call */
 	   "tstl %0\n\t"		/* child or parent */
 	   "jne 1f\n\t"			/* parent - jump */
-	   "lea %%sp@(-8192),%6\n\t"	/* reload current */
+	   "lea %%sp@(%c7),%6\n\t"	/* reload current */
 	   "movel %3,%%sp@-\n\t"	/* push argument */
 	   "jsr %4@\n\t"		/* call fn */
 	   "movel %0,%%d1\n\t"		/* pass exit value */
@@ -140,7 +151,8 @@ int kernel_thread(int (*fn)(void *), void * arg, unsigned long flags)
 	   "1:"
 	   : "=d" (retval)
 	   : "0" (__NR_clone), "i" (__NR_exit),
-	     "r" (arg), "a" (fn), "d" (clone_arg), "r" (current)
+	     "r" (arg), "a" (fn), "d" (clone_arg), "r" (current),
+	     "i" (-KTHREAD_SIZE)
 	   : "d0", "d2");
 	pid = retval;
 	}
@@ -153,11 +165,11 @@ void flush_thread(void)
 {
 	unsigned long zero = 0;
 	set_fs(USER_DS);
-	current->tss.fs = __USER_DS;
+	current->thread.fs = __USER_DS;
 	if (!FPU_IS_EMU)
 		asm volatile (".chip 68k/68881\n\t"
-			      "frestore %0\n\t"
-			      ".chip 68k" : : "m" (zero));
+			      "frestore %0@\n\t"
+			      ".chip 68k" : : "a" (&zero));
 }
 
 /*
@@ -197,7 +209,7 @@ int copy_thread(int nr, unsigned long clone_flags, unsigned long usp,
 	struct switch_stack * childstack, *stack;
 	unsigned long stack_offset, *retp;
 
-	stack_offset = 2*PAGE_SIZE - sizeof(struct pt_regs);
+	stack_offset = KTHREAD_SIZE - sizeof(struct pt_regs);
 	childregs = (struct pt_regs *) ((unsigned long) p + stack_offset);
 
 	*childregs = *regs;
@@ -208,27 +220,27 @@ int copy_thread(int nr, unsigned long clone_flags, unsigned long usp,
 
 	childstack = ((struct switch_stack *) childregs) - 1;
 	*childstack = *stack;
-	childstack->retpc = (unsigned long) ret_from_exception;
+	childstack->retpc = (unsigned long)ret_from_fork;
 
-	p->tss.usp = usp;
-	p->tss.ksp = (unsigned long)childstack;
+	p->thread.usp = usp;
+	p->thread.ksp = (unsigned long)childstack;
 	/*
 	 * Must save the current SFC/DFC value, NOT the value when
 	 * the parent was last descheduled - RGH  10-08-96
 	 */
-	p->tss.fs = get_fs().seg;
+	p->thread.fs = get_fs().seg;
 
 	if (!FPU_IS_EMU) {
 		/* Copy the current fpu state */
-		asm volatile ("fsave %0" : : "m" (p->tss.fpstate[0]) : "memory");
+		asm volatile ("fsave %0" : : "m" (p->thread.fpstate[0]) : "memory");
 
-		if (!CPU_IS_060 ? p->tss.fpstate[0] : p->tss.fpstate[2])
+		if (!CPU_IS_060 ? p->thread.fpstate[0] : p->thread.fpstate[2])
 		  asm volatile ("fmovemx %/fp0-%/fp7,%0\n\t"
 				"fmoveml %/fpiar/%/fpcr/%/fpsr,%1"
-				: : "m" (p->tss.fp[0]), "m" (p->tss.fpcntl[0])
+				: : "m" (p->thread.fp[0]), "m" (p->thread.fpcntl[0])
 				: "memory");
 		/* Restore the state in case the fpu was busy */
-		asm volatile ("frestore %0" : : "m" (p->tss.fpstate[0]));
+		asm volatile ("frestore %0" : : "m" (p->thread.fpstate[0]));
 	}
 
 	return 0;
@@ -243,8 +255,8 @@ int dump_fpu (struct pt_regs *regs, struct user_m68kfp_struct *fpu)
 	if (FPU_IS_EMU) {
 		int i;
 
-		memcpy(fpu->fpcntl, current->tss.fpcntl, 12);
-		memcpy(fpu->fpregs, current->tss.fp, 96);
+		memcpy(fpu->fpcntl, current->thread.fpcntl, 12);
+		memcpy(fpu->fpregs, current->thread.fp, 96);
 		/* Convert internal fpu reg representation
 		 * into long double format
 		 */
@@ -333,4 +345,35 @@ asmlinkage int sys_execve(char *name, char **argv, char **envp)
 out:
 	unlock_kernel();
 	return error;
+}
+
+/*
+ * These bracket the sleeping functions..
+ */
+extern void scheduling_functions_start_here(void);
+extern void scheduling_functions_end_here(void);
+#define first_sched	((unsigned long) scheduling_functions_start_here)
+#define last_sched	((unsigned long) scheduling_functions_end_here)
+
+unsigned long get_wchan(struct task_struct *p)
+{
+	unsigned long fp, pc;
+	unsigned long stack_page;
+	int count = 0;
+	if (!p || p == current || p->state == TASK_RUNNING)
+		return 0;
+
+	stack_page = (unsigned long)p;
+	fp = ((struct switch_stack *)p->thread.ksp)->a6;
+	do {
+		if (fp < stack_page+sizeof(struct task_struct) ||
+		    fp >= 8184+stack_page)
+			return 0;
+		pc = ((unsigned long *)fp)[1];
+		/* FIXME: This depends on the order of these functions. */
+		if (pc < first_sched || pc >= last_sched)
+			return pc;
+		fp = *(unsigned long *) fp;
+	} while (count++ < 16);
+	return 0;
 }

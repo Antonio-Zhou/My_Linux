@@ -47,6 +47,7 @@
 //----------------------
 // Mandatory Includes:
 //----------------------
+#include <linux/config.h>
 #include "ip2types.h"
 #include "i2hw.h"       // The hardware definitions
 
@@ -398,12 +399,6 @@ typedef struct _i2eBordStr
 	
 	spinlock_t	read_fifo_spinlock;
 	spinlock_t	write_fifo_spinlock;
-
-//	For queuing interupt bottom half handlers.	/\/\|=mhw=|\/\/
-	struct tq_struct	tqueue_interrupt;
-
-	struct timer_list  SendPendingTimer;   // Used by iiSendPending
-	unsigned int	SendPendingRetry;
 
 #ifdef	CONFIG_DEVFS_FS
 	/* Device handles into devfs */

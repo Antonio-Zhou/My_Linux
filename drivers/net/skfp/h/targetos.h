@@ -122,16 +122,17 @@ struct s_skfp_ioctl {
 
 // The per-adapter driver structure
 struct s_smt_os {
-	struct device	*dev;
-	struct device	*next_module;
-	u32		bus_type;/* bus type (0 == PCI, 1 == EISA) */
-	struct pci_dev	pdev;	/* PCI device structure */
+	struct net_device *dev;
+	struct net_device *next_module;
+	u32	bus_type;		/* bus type (0 == PCI, 1 == EISA) */
+	struct pci_dev 	pdev;		/* PCI device structure */
 	
 	unsigned long base_addr;
 	unsigned char factory_mac_addr[8];
 	ulong	SharedMemSize;
 	ulong	SharedMemHeap;
 	void*	SharedMemAddr;
+	dma_addr_t SharedMemDMA;
 
 	ulong	QueueSkb;
 	struct	sk_buff_head SendSkbQueue;
@@ -147,6 +148,7 @@ struct s_smt_os {
 	// point here at the same time, it must be at least
 	// MAX_FRAME_SIZE bytes in size
 	unsigned char *LocalRxBuffer;
+	dma_addr_t LocalRxBufferDMA;
 	
 	// Version (required by SMT module).
 	u_long smc_version ;

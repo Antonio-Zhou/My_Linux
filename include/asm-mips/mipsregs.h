@@ -1,4 +1,4 @@
-/* $Id: mipsregs.h,v 1.5 1999/04/11 17:13:57 harald Exp $
+/* $Id: mipsregs.h,v 1.6 1999/07/26 19:42:43 harald Exp $
  *
  * This file is subject to the terms and conditions of the GNU General Public
  * License.  See the file "COPYING" in the main directory of this archive
@@ -30,6 +30,7 @@
 #define CP0_RANDOM $1
 #define CP0_ENTRYLO0 $2
 #define CP0_ENTRYLO1 $3
+#define CP0_CONF $3
 #define CP0_CONTEXT $4
 #define CP0_PAGEMASK $5
 #define CP0_WIRED $6
@@ -103,7 +104,10 @@
 #define read_32bit_cp0_register(source)                         \
 ({ int __res;                                                   \
         __asm__ __volatile__(                                   \
-        "mfc0\t%0,"STR(source)                                  \
+	".set\tpush\n\t"					\
+	".set\treorder\n\t"					\
+        "mfc0\t%0,"STR(source)"\n\t"                            \
+	".set\tpop"						\
         : "=r" (__res));                                        \
         __res;})
 
@@ -121,7 +125,8 @@
 
 #define write_32bit_cp0_register(register,value)                \
         __asm__ __volatile__(                                   \
-        "mtc0\t%0,"STR(register)                                \
+        "mtc0\t%0,"STR(register)"\n\t"				\
+	"nop"							\
         : : "r" (value));
 
 #define write_64bit_cp0_register(register,value)                \
@@ -329,6 +334,8 @@ __BUILD_SET_CP0(config,CP0_CONFIG)
 #define CONF_DB				(1 <<  4)
 #define CONF_IB				(1 <<  5)
 #define CONF_SC				(1 << 17)
+#define CONF_AC                         (1 << 23)
+#define CONF_HALT                       (1 << 25)
 
 /*
  * R10000 performance counter definitions.

@@ -1,11 +1,23 @@
-/* $Id: b1dma.c,v 1.1.2.1 2001/12/31 13:26:39 kai Exp $
+/*
+ * $Id: b1dma.c,v 1.4 2000/04/03 16:38:05 calle Exp $
  * 
  * Common module for AVM B1 cards that support dma with AMCC
  * 
- * Copyright 2000 by Carsten Paeth <calle@calle.de>
+ * (c) Copyright 2000 by Carsten Paeth (calle@calle.in-berlin.de)
  * 
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
+ * $Log: b1dma.c,v $
+ * Revision 1.4  2000/04/03 16:38:05  calle
+ * made suppress_pollack static.
+ *
+ * Revision 1.3  2000/02/26 01:00:53  keil
+ * changes from 2.3.47
+ *
+ * Revision 1.2  2000/01/25 14:44:47  calle
+ * typo in b1pciv4_detect().
+ *
+ * Revision 1.1  2000/01/25 14:36:43  calle
+ * common function for  T1 PCI and B1 PCI V4.
+ *
  *
  */
 
@@ -18,28 +30,18 @@
 #include <linux/interrupt.h>
 #include <linux/ioport.h>
 #include <linux/capi.h>
-#include <linux/kernelcapi.h>
 #include <asm/io.h>
-#include <linux/init.h>
-#include <linux/isdn_compat.h>
 #include <asm/uaccess.h>
-#include <linux/netdevice.h>
 #include "capilli.h"
 #include "avmcard.h"
 #include "capicmd.h"
 #include "capiutil.h"
 
-#if BITS_PER_LONG != 32
-#error FIXME: driver requires 32-bit platform
-#endif
-
-static char *revision = "$Revision: 1.1.2.1 $";
+static char *revision = "$Revision: 1.4 $";
 
 /* ------------------------------------------------------------- */
 
-MODULE_DESCRIPTION("CAPI4Linux: DMA support for active AVM cards");
-MODULE_AUTHOR("Carsten Paeth");
-MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Carsten Paeth <calle@calle.in-berlin.de>");
 
 static int suppress_pollack = 0;
 MODULE_PARM(suppress_pollack, "0-1i");
@@ -231,14 +233,14 @@ void b1dma_reset(avmcard *card)
 	restore_flags(flags);
 
 	b1dmaoutmeml(card->mbase+AMCC_MCSR, 0);
-	mdelay(10);
+	udelay(10 * 1000);
 	b1dmaoutmeml(card->mbase+AMCC_MCSR, 0x0f000000); /* reset all */
-	mdelay(10);
+	udelay(10 * 1000);
 	b1dmaoutmeml(card->mbase+AMCC_MCSR, 0);
 	if (card->cardtype == avm_t1pci)
-		mdelay(42);
+		udelay(42 * 1000);
 	else
-		mdelay(10);
+		udelay(10 * 1000);
 }
 
 /* ------------------------------------------------------------- */
@@ -246,11 +248,11 @@ void b1dma_reset(avmcard *card)
 int b1dma_detect(avmcard *card)
 {
 	b1dmaoutmeml(card->mbase+AMCC_MCSR, 0);
-	mdelay(10);
+	udelay(10 * 1000);
 	b1dmaoutmeml(card->mbase+AMCC_MCSR, 0x0f000000); /* reset all */
-	mdelay(10);
+	udelay(10 * 1000);
 	b1dmaoutmeml(card->mbase+AMCC_MCSR, 0);
-	mdelay(42);
+	udelay(42 * 1000);
 
 	b1dmaoutmeml(card->mbase+AMCC_RXLEN, 0);
 	b1dmaoutmeml(card->mbase+AMCC_TXLEN, 0);
@@ -552,26 +554,22 @@ static void b1dma_handle_rx(avmcard *card)
 	case RECEIVE_TASK_READY:
 		ApplId = (unsigned) _get_word(&p);
 		MsgLen = _get_slice(&p, card->msgbuf);
-		card->msgbuf[MsgLen] = 0;
-		while (    MsgLen > 0
-		       && (   card->msgbuf[MsgLen-1] == '\n'
-			   || card->msgbuf[MsgLen-1] == '\r')) {
-			card->msgbuf[MsgLen-1] = 0;
-			MsgLen--;
-		}
+		card->msgbuf[MsgLen--] = 0;
+		while (    MsgLen >= 0
+		       && (   card->msgbuf[MsgLen] == '\n'
+			   || card->msgbuf[MsgLen] == '\r'))
+			card->msgbuf[MsgLen--] = 0;
 		printk(KERN_INFO "%s: task %d \"%s\" ready.\n",
 				card->name, ApplId, card->msgbuf);
 		break;
 
 	case RECEIVE_DEBUGMSG:
 		MsgLen = _get_slice(&p, card->msgbuf);
-		card->msgbuf[MsgLen] = 0;
-		while (    MsgLen > 0
-		       && (   card->msgbuf[MsgLen-1] == '\n'
-			   || card->msgbuf[MsgLen-1] == '\r')) {
-			card->msgbuf[MsgLen-1] = 0;
-			MsgLen--;
-		}
+		card->msgbuf[MsgLen--] = 0;
+		while (    MsgLen >= 0
+		       && (   card->msgbuf[MsgLen] == '\n'
+			   || card->msgbuf[MsgLen] == '\r'))
+			card->msgbuf[MsgLen--] = 0;
 		printk(KERN_INFO "%s: DEBUG: %s\n", card->name, card->msgbuf);
 		break;
 
@@ -617,6 +615,11 @@ static void b1dma_handle_interrupt(avmcard *card)
 	if ((status & TX_TC_INT) != 0) {
 		card->csr &= ~EN_TX_TC_INT;
 	        b1dma_dispatch_tx(card);
+	} else if (card->csr & EN_TX_TC_INT) {
+		if (b1dmainmeml(card->mbase+AMCC_TXLEN) == 0) {
+			card->csr &= ~EN_TX_TC_INT;
+			b1dma_dispatch_tx(card);
+		}
 	}
 	b1dmaoutmeml(card->mbase+AMCC_INTCSR, card->csr);
 }
@@ -692,7 +695,7 @@ static void b1dma_send_init(avmcard *card)
 	_put_byte(&p, 0);
 	_put_byte(&p, 0);
 	_put_byte(&p, SEND_INIT);
-	_put_word(&p, CAPI_MAXAPPL);
+	_put_word(&p, AVM_NAPPS);
 	_put_word(&p, AVM_NCCI_PER_CHANNEL*30);
 	_put_word(&p, card->cardnr - 1);
 	skb_put(skb, (__u8 *)p - (__u8 *)skb->data);
@@ -871,7 +874,6 @@ int b1dmactl_read_proc(char *page, char **start, off_t off,
 	case avm_t1isa: s = "T1 ISA (HEMA)"; break;
 	case avm_t1pci: s = "T1 PCI"; break;
 	case avm_c4: s = "C4"; break;
-	case avm_c2: s = "C2"; break;
 	default: s = "???"; break;
 	}
 	len += sprintf(page+len, "%-16s %s\n", "type", s);
@@ -959,16 +961,20 @@ EXPORT_SYMBOL(b1dma_release_appl);
 EXPORT_SYMBOL(b1dma_send_message);
 EXPORT_SYMBOL(b1dmactl_read_proc);
 
+#ifdef MODULE
+#define b1dma_init init_module
+void cleanup_module(void);
+#endif
+
 int b1dma_init(void)
 {
 	char *p;
-	char rev[32];
+	char rev[10];
 
-	if ((p = strchr(revision, ':')) != 0 && p[1]) {
-		strncpy(rev, p + 2, sizeof(rev));
-		rev[sizeof(rev)-1] = 0;
-		if ((p = strchr(rev, '$')) != 0 && p > rev)
-		   *(p-1) = 0;
+	if ((p = strchr(revision, ':'))) {
+		strncpy(rev, p + 1, sizeof(rev));
+		p = strchr(rev, '$');
+		*p = 0;
 	} else
 		strcpy(rev, "1.0");
 
@@ -977,9 +983,8 @@ int b1dma_init(void)
 	return 0;
 }
 
-void b1dma_exit(void)
+#ifdef MODULE
+void cleanup_module(void)
 {
 }
-
-module_init(b1dma_init);
-module_exit(b1dma_exit);
+#endif

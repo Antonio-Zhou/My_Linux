@@ -25,9 +25,9 @@
 #define WDT_COUNT1		(io+1)
 #define WDT_COUNT2		(io+2)
 #define WDT_CR			(io+3)
-#define WDT_SR			(io+4)		/* Buzzer start PCI */
-#define WDT_RT			(io+5)		/* Buzzer stop PCI */
-#define WDT_BUZZER		(io+6)		/* PCI only */
+#define WDT_SR			(io+4)	/* Start buzzer on PCI write */
+#define WDT_RT			(io+5)	/* Stop buzzer on PCI write */
+#define WDT_BUZZER		(io+6)	/* PCI only: rd=disable, wr=enable */
 #define WDT_DC			(io+7)
 
 /* The following are only on the PCI card, they're outside of I/O space on

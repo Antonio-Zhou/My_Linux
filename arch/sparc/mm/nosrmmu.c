@@ -1,4 +1,4 @@
-/* $Id: nosrmmu.c,v 1.2.2.1 1999/10/06 10:52:37 anton Exp $
+/* $Id: nosrmmu.c,v 1.5 1999/11/19 04:11:54 davem Exp $
  * nosrmmu.c: This file is a bunch of dummies for sun4 compiles, 
  *         so that it does not need srmmu and avoid ifdefs.
  *
@@ -16,24 +16,24 @@ enum mbus_module srmmu_modtype;
 
 int vac_cache_size = 0;
 
-__initfunc(static void should_not_happen(void))
+static void __init should_not_happen(void)
 {
 	prom_printf(shouldnothappen);
 	prom_halt();
 }
 
-__initfunc(void srmmu_frob_mem_map(unsigned long start_mem))
+void __init srmmu_frob_mem_map(unsigned long start_mem)
 {
 	should_not_happen();
 }
 
-__initfunc(unsigned long srmmu_paging_init(unsigned long start_mem, unsigned long end_mem))
+unsigned long __init srmmu_paging_init(unsigned long start_mem, unsigned long end_mem)
 {
 	should_not_happen();
 	return 0;
 }
 
-__initfunc(void ld_mmu_srmmu(void))
+void __init ld_mmu_srmmu(void)
 {
 	should_not_happen();
 }
@@ -46,17 +46,17 @@ void srmmu_unmapioaddr(unsigned long virt_addr)
 {
 }
 
-__initfunc(void srmmu_end_memory(unsigned long memory_size, unsigned long *mem_end_p))
+void __init srmmu_end_memory(unsigned long memory_size, unsigned long *mem_end_p)
 {
 	return 0;
 }
 
-__u32 iounit_map_dma_init(struct linux_sbus *sbus, int size)
+__u32 iounit_map_dma_init(struct sbus_bus *sbus, int size)
 {
 	return 0;
 }
 
-__u32 iounit_map_dma_page(__u32 vaddr, void *addr, struct linux_sbus *sbus)
+__u32 iounit_map_dma_page(__u32 vaddr, void *addr, struct sbus_bus *sbus)
 {
 	return 0;
 }

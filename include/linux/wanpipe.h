@@ -35,7 +35,9 @@
 #ifndef	_WANPIPE_H
 #define	_WANPIPE_H
 
-#ifdef __SMP__
+#include <linux/config.h>
+
+#ifdef CONFIG_SMP
 #include <asm/spinlock.h>       /* Support for SMP Locking */
 #endif
 
@@ -251,7 +253,7 @@ typedef struct sdla
 	unsigned short force_enable_irq;
 	char TracingEnabled;		/* flag for enabling trace */
 	global_stats_t statistics;	/* global statistics */
-#ifdef __SMP__
+#ifdef CONFIG_SMP
 	spinlock_t lock;                /* Support for SMP Locking */
 #endif
 	void* mbox;			/* -> mailbox */
@@ -279,7 +281,7 @@ typedef struct sdla
 			unsigned rx_top;	/* S508 receive buffer end */
 			unsigned short node_dlci[100];
 			unsigned short dlci_num;
-                        struct device *dlci_to_dev_map[991 + 1];
+                        struct net_device *dlci_to_dev_map[991 + 1];
                         unsigned tx_interrupts_pending;
                         unsigned short timer_int_enabled;
                         unsigned short udp_pkt_lgth;

@@ -1,12 +1,32 @@
-/* $Id: isar.h,v 1.1.2.1 2001/12/31 13:26:45 kai Exp $
+/* $Id: isar.h,v 1.7 2000/01/20 19:47:45 keil Exp $
+ * isar.h   ISAR (Siemens PSB 7110) specific defines
  *
- * ISAR (Siemens PSB 7110) specific defines
+ * Author Karsten Keil (keil@isdn4linux.de)
  *
- * Author       Karsten Keil
- * Copyright    by Karsten Keil      <keil@isdn4linux.de>
- * 
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
+ *
+ * $Log: isar.h,v $
+ * Revision 1.7  2000/01/20 19:47:45  keil
+ * Add Fax Class 1 support
+ *
+ * Revision 1.6  1999/10/14 20:25:29  keil
+ * add a statistic for error monitoring
+ *
+ * Revision 1.5  1999/08/25 16:59:59  keil
+ * Make ISAR V32bis modem running
+ * Make LL->HL interface open for additional commands
+ *
+ * Revision 1.4  1999/08/05 20:43:20  keil
+ * ISAR analog modem support
+ *
+ * Revision 1.3  1999/07/01 08:11:46  keil
+ * Common HiSax version for 2.0, 2.1, 2.2 and 2.3 kernel
+ *
+ * Revision 1.2  1998/11/15 23:54:54  keil
+ * changes from 2.0
+ *
+ * Revision 1.1  1998/08/13 23:33:48  keil
+ * First version, only init
+ *
  *
  */
  
@@ -188,7 +208,7 @@
 #define HDLC_ERROR	0x1c
 #define HDLC_ERR_FAD	0x10
 #define HDLC_ERR_RER	0x08
-#define HDLC_ERR_CER	0x04
+#define HDLC_ERR_CER	0x01
 #define SART_NMD	0x01
 
 #define BSTAT_RDM0	0x1

@@ -1,6 +1,6 @@
 /*
  *
- *	Trident 4D-Wave/SiS 7018/ALi 5451 OSS driver for Linux 2.2.x
+ *	Trident 4D-Wave/SiS 7018 OSS driver for Linux 2.2.x
  *
  *	Driver: Alan Cox <alan@redhat.com>
  *
@@ -12,7 +12,6 @@
  *  Hacked up by:
  *	Aaron Holtzman <aholtzma@ess.engr.uvic.ca>
  *	Ollie Lho <ollie@sis.com.tw> SiS 7018 Audio Core Support
- *	Ching Ling Lee <cling-li@ali.com.tw> ALi 5451 Audio Core Support 
  *
  *
  *	This program is free software; you can redistribute it and/or modify
@@ -30,19 +29,10 @@
  *	Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
  *  History
- *  v0.14.5c Oct 28 2000 Alan Cox
- *      Merged Ching-Ling Lee's ADC/DAC fix from the newer ALI work
- *  v0.14.5b Sept 17 2000 Eric Brombaugh
- *      Fix hang when trying ALi MIDI init on Trident
- *  v0.14.5 June 3 2000 Ollie Lho
- *  	Misc bug fix from the Net
- *	Backported from 2.4.0-test1 to 2.2.16 (Eric Brombaugh)
- *  v0.14.4 May 20 2000 Aaron Holtzman
- *  	Fix kfree'd memory access in release
- *  	Fix race in open while looking for a free virtual channel slot
- *  	remove open_wait wq (which appears to be unused)
- *  v0.14.3 May 10 2000 Ollie Lho
- *	fixed a small bug in trident_update_ptr, xmms 1.0.1 no longer uses 100% CPU
+ *  v0.14.3 May 20 2000 Aaron Holtzman
+ *  Fix kfree'd memory access in release
+ *  Fix race in open while looking for a free virtual channel slot
+ *  remove open_wait wq (which appears to be unused)
  *  v0.14.2 Mar 29 2000 Ching Ling Lee
  *	Add clear to silence advance in trident_update_ptr 
  *	fix invalid data of the end of the sound
@@ -111,27 +101,21 @@
 #include <asm/dma.h>
 #include <linux/init.h>
 #include <linux/poll.h>
-#include <asm/spinlock.h>
+#include <linux/spinlock.h>
 #include <linux/ac97_codec.h>
 #include <asm/uaccess.h>
 #include <asm/hardirq.h>
 #include <linux/bitops.h>
 
-#if defined CONFIG_ALPHA_NAUTILUS || CONFIG_ALPHA_GENERIC
-#include <asm/hwrpb.h>
-#endif
-
-#include "dm.h"
-
 #include "trident.h"
 
-#define DRIVER_VERSION "0.14.6a"
+#define DRIVER_VERSION "0.14"
 
 /* magic numbers to protect our data structures */
 #define TRIDENT_CARD_MAGIC	0x5072696E /* "Prin" */
 #define TRIDENT_STATE_MAGIC	0x63657373 /* "cess" */
 
-#define TRIDENT_DMA_MASK	0x3fffffff /* DMA buffer mask for pci_alloc_consist */
+#define TRIDENT_DMA_MASK		0x3fffffff /* DMA buffer mask for pci_alloc_consist */
 
 #define NR_HW_CH		32
 
@@ -148,36 +132,38 @@
 /* minor number of /dev/swmodem (temporary, experimental) */
 #define SND_DEV_SWMODEM	7
 
-/* Size of the MIDI buffer */
-#define MIDIINBUF	256
-#define MIDIOUTBUF	256
-
 static const unsigned sample_size[] = { 1, 2, 2, 4 };
 static const unsigned sample_shift[] = { 0, 1, 1, 2 };
 
 static const char invalid_magic[] = KERN_CRIT "trident: invalid magic value in %s\n";
 
-struct pci_audio_info {
-	u16 vendor;
-	u16 device;
-	char *name;
+enum {
+	TRIDENT_4D_DX = 0,
+	TRIDENT_4D_NX,
+	SIS_7018,
+	ALI_5451
 };
 
-static struct pci_audio_info pci_audio_devices[] = {
-	{PCI_VENDOR_ID_TRIDENT, PCI_DEVICE_ID_TRIDENT_4DWAVE_DX, "Trident 4DWave DX"},
-	{PCI_VENDOR_ID_TRIDENT, PCI_DEVICE_ID_TRIDENT_4DWAVE_NX, "Trident 4DWave NX"},
-	{PCI_VENDOR_ID_SI, PCI_DEVICE_ID_SI_7018, "SiS 7018 PCI Audio"},
-	{PCI_VENDOR_ID_ALI, PCI_DEVICE_ID_ALI_5451, "ALi Audio Accelerator"}
+static char * card_names[] = {
+	"Trident 4DWave DX",
+	"Trident 4DWave NX",
+	"SiS 7018 PCI Audio",
+	"ALi Audio Accelerator"
 };
 
-struct midi_stuff{
-	unsigned ird, iwr, icnt;
-	unsigned ord, owr, ocnt;
-	struct wait_queue *iwait;
-	struct wait_queue *owait;
-	unsigned char ibuf[MIDIINBUF];
-	unsigned char obuf[MIDIOUTBUF];
+static struct pci_device_id trident_pci_tbl [] __initdata = {
+	{PCI_VENDOR_ID_TRIDENT, PCI_DEVICE_ID_TRIDENT_4DWAVE_DX,
+	 PCI_ANY_ID, PCI_ANY_ID, 0, 0, TRIDENT_4D_DX},
+	{PCI_VENDOR_ID_TRIDENT, PCI_DEVICE_ID_TRIDENT_4DWAVE_NX,
+	 PCI_ANY_ID, PCI_ANY_ID, 0, 0, TRIDENT_4D_NX},
+	{PCI_VENDOR_ID_SI, PCI_DEVICE_ID_SI_7018,
+	 PCI_ANY_ID, PCI_ANY_ID, 0, 0, SIS_7018},
+	{PCI_VENDOR_ID_ALI, PCI_DEVICE_ID_ALI_5451,
+	 PCI_ANY_ID, PCI_ANY_ID, 0, 0, ALI_5451},
+	{0,}
 };
+
+MODULE_DEVICE_TABLE (pci, trident_pci_tbl);
 
 /* "software" or virtual channel, an instance of opened /dev/dsp */
 struct trident_state {
@@ -200,7 +186,7 @@ struct trident_state {
 
 		/* OSS buffer management stuff */
 		void *rawbuf;
-
+		dma_addr_t dma_handle;
 		unsigned buforder;
 		unsigned numfrag;
 		unsigned fragshift;
@@ -212,7 +198,7 @@ struct trident_state {
 		unsigned total_bytes;	/* total bytes dmaed by hardware */
 
 		unsigned error;		/* number of over/underruns */
-		struct wait_queue *wait;	/* put process on wait queue when no more space in buffer */
+		wait_queue_head_t wait;	/* put process on wait queue when no more space in buffer */
 
 		/* redundant, but makes calculations easier */
 		unsigned fragsize;
@@ -283,37 +269,40 @@ struct trident_card {
 	spinlock_t lock;
 
 	/* PCI device stuff */
-	struct pci_audio_info *pci_info;
 	struct pci_dev * pci_dev;
 	u16 pci_id;
 	u8 revision;
 
 	/* soundcore stuff */
 	int dev_audio;
-	int dev_midi;
-	int dev_dmfm;
-	
-	/* Device locks */
-	int midi_on;
-	int dmfm_on;
-	
+
 	/* structures for abstraction of hardware facilities, codecs, banks and channels*/
 	struct ac97_codec *ac97_codec[NR_AC97];
 	struct trident_pcm_bank banks[NR_BANKS];
 	struct trident_state *states[NR_HW_CH];
-	struct midi_stuff midi;
 
 	/* hardware resources */
 	unsigned long iobase;
 	u32 irq;
-	unsigned long midi_io;
-	unsigned long synth_io;
 	
 	/* Function support */
 	struct trident_channel *(*alloc_pcm_channel)(struct trident_card *);
 	struct trident_channel *(*alloc_rec_pcm_channel)(struct trident_card *);
-	void (*free_pcm_channel)(struct trident_card *, int chan);
+	void (*free_pcm_channel)(struct trident_card *, unsigned int chan);
 	void (*address_interrupt)(struct trident_card *);
+};
+
+/* table to map from CHANNELMASK to channel attribute for SiS 7018 */
+static u16 mask2attr [] =
+{
+	PCM_LR, PCM_LR, SURR_LR, CENTER_LFE,
+	HSET, MIC, MODEM_LINE1, MODEM_LINE2,
+	I2S_LR, SPDIF_LR
+};
+/* table to map from channel attribute to CHANNELMASK for SiS 7018 */
+static int attr2mask [] = {
+	DSP_BIND_MODEM1, DSP_BIND_MODEM2, DSP_BIND_FRONT, DSP_BIND_HANDSET,
+	DSP_BIND_I2S, DSP_BIND_CENTER_LFE, DSP_BIND_SURR, DSP_BIND_SPDIF
 };
 
 static struct trident_card *devs = NULL;
@@ -449,14 +438,16 @@ static void trident_stop_voice(struct trident_card * card, unsigned int channel)
 #endif
 }
 
-static u32 trident_get_interrupt_mask (struct trident_card * card, unsigned int channel)
+static u32 trident_get_interrupt_mask (struct trident_card * card,
+				       unsigned int b)
 {
-	struct trident_pcm_bank *bank = &card->banks[channel];
+	struct trident_pcm_bank *bank = &card->banks[b];
 	u32 addr = bank->addresses->aint;
 	return inl(TRID_REG(card, addr));
 }
 
-static int trident_check_channel_interrupt(struct trident_card * card, unsigned int channel)
+static int trident_check_channel_interrupt(struct trident_card * card,
+					   unsigned int channel)
 {
 	unsigned int mask = 1 << (channel & 0x1f);
 	u32 reg = trident_get_interrupt_mask (card, channel >> 5);
@@ -469,7 +460,8 @@ static int trident_check_channel_interrupt(struct trident_card * card, unsigned 
 	return (reg & mask) ? TRUE : FALSE;
 }
 
-static void trident_ack_channel_interrupt(struct trident_card * card, unsigned int channel)
+static void trident_ack_channel_interrupt(struct trident_card * card,
+					  unsigned int channel)
 {
 	unsigned int mask = 1 << (channel & 0x1f);
 	struct trident_pcm_bank *bank = &card->banks[channel >> 5];
@@ -545,7 +537,8 @@ static struct trident_channel *ali_alloc_rec_pcm_channel(struct trident_card *ca
 }
 
 
-static void trident_free_pcm_channel(struct trident_card *card, int channel)
+static void trident_free_pcm_channel(struct trident_card *card,
+				     unsigned int channel)
 {
 	int bank;
 
@@ -558,7 +551,7 @@ static void trident_free_pcm_channel(struct trident_card *card, int channel)
 	card->banks[bank].bitmap &= ~(1 << (channel));
 }
 
-static void ali_free_pcm_channel(struct trident_card *card, int channel)
+static void ali_free_pcm_channel(struct trident_card *card, unsigned int channel)
 {
 	int bank;
 
@@ -581,16 +574,18 @@ static int trident_load_channel_registers(struct trident_card *card, u32 *data, 
 	if (channel > 63)
 		return FALSE;
 
-	/* select hardware channel to write */
+       /* select hardware channel to write */
 	outb(channel, TRID_REG(card, T4D_LFO_GC_CIR));
 
 	/* Output the channel registers, but don't write register
 	   three to an ALI chip. */
+
 	for (i = 0; i < CHANNEL_REGS; i++) {
 		if (i == 3 && card->pci_id == PCI_DEVICE_ID_ALI_5451)
 			continue;
 		outl(data[i], TRID_REG(card, CHANNEL_START + 4*i));
 	}
+
 	return TRUE;
 }
 
@@ -935,7 +930,9 @@ static int alloc_dmabuf(struct trident_state *state)
 
 	/* alloc as big a chunk as we can, FIXME: is this necessary ?? */
 	for (order = DMABUF_DEFAULTORDER; order >= DMABUF_MINORDER; order--)
-		if ((rawbuf = (void *)__get_free_pages(GFP_KERNEL, order)))
+		if ((rawbuf = pci_alloc_consistent(state->card->pci_dev,
+						   PAGE_SIZE << order,
+						   &dmabuf->dma_handle)))
 			break;
 	if (!rawbuf)
 		return -ENOMEM;
@@ -945,15 +942,6 @@ static int alloc_dmabuf(struct trident_state *state)
 	       PAGE_SIZE << order, order, rawbuf);
 #endif
 
-	/* for 4DWave and 7018, there are only 30 (31) siginifcan bits for Loop Begin Address
-	   (LBA) which limits the address space to 1 (2) GB, bad T^2 design */
-	if ((virt_to_bus(rawbuf) + (PAGE_SIZE << order) - 1) & ~0x3fffffff) {
-		printk(KERN_ERR "trident: DMA buffer beyond 1 GB; "
-		       "bus address = 0x%lx, size = %ld\n",
-		       virt_to_bus(rawbuf), PAGE_SIZE << order);
-		free_pages((unsigned long)rawbuf, order);
-		return -ENOMEM;
-	}
 	dmabuf->ready  = dmabuf->mapped = 0;
 	dmabuf->rawbuf = rawbuf;
 	dmabuf->buforder = order;
@@ -977,7 +965,8 @@ static void dealloc_dmabuf(struct trident_state *state)
 		mapend = MAP_NR(dmabuf->rawbuf + (PAGE_SIZE << dmabuf->buforder) - 1);
 		for (map = MAP_NR(dmabuf->rawbuf); map <= mapend; map++)
 			clear_bit(PG_reserved, &mem_map[map].flags);
-		free_pages((unsigned long)dmabuf->rawbuf, dmabuf->buforder);
+		pci_free_consistent(state->card->pci_dev, PAGE_SIZE << dmabuf->buforder,
+				    dmabuf->rawbuf, dmabuf->dma_handle);
 	}
 	dmabuf->rawbuf = NULL;
 	dmabuf->mapped = dmabuf->ready = 0;
@@ -1088,7 +1077,7 @@ static void trident_clear_tail(struct trident_state *state)
 
 static int drain_dac(struct trident_state *state, int nonblock)
 {
-	struct wait_queue wait = {current, NULL};
+	DECLARE_WAITQUEUE(wait, current);
 	struct dmabuf *dmabuf = &state->dmabuf;
 	unsigned long flags;
 	unsigned long tmo;
@@ -1152,7 +1141,7 @@ static void trident_update_ptr(struct trident_state *state)
 	dmabuf->hwptr = hwptr;
 	dmabuf->total_bytes += diff;
 
-	/* error handling and process wake up for ADC */
+	/* error handling and process wake up for DAC */
 	if (dmabuf->enable == ADC_RUNNING) {
 		if (dmabuf->mapped) {
 			dmabuf->count -= diff;
@@ -1166,27 +1155,6 @@ static void trident_update_ptr(struct trident_state *state)
 				   it here, just stop the machine and let the process force hwptr
 				   and swptr to sync */
 				__stop_adc(state);
-				dmabuf->error++;
-			}
-			if (dmabuf->count < (signed)dmabuf->dmasize/2)
-				wake_up(&dmabuf->wait);
-		}
-	}
-
-	/* error handling and process wake up for DAC */
-	if (dmabuf->enable == DAC_RUNNING) {
-		if (dmabuf->mapped) {
-			dmabuf->count += diff;
-			if (dmabuf->count >= (signed)dmabuf->fragsize)
-				wake_up(&dmabuf->wait);
-		} else {
-			dmabuf->count -= diff;
-
-			if (dmabuf->count < 0 || dmabuf->count > dmabuf->dmasize) {
-				/* buffer underrun or buffer overrun, we have no way to recover
-				   it here, just stop the machine and let the process force hwptr
-				   and swptr to sync */
-				__stop_dac(state);
 				dmabuf->error++;
 			}
 			else if (!dmabuf->endcleared) {
@@ -1203,9 +1171,7 @@ static void trident_update_ptr(struct trident_state *state)
 						//there is invalid data in the end of half buffer
 						if ((clear_cnt = half_dmasize - swptr) < 0)
 							clear_cnt += half_dmasize;
-						//clear the invalid data
-						memset (dmabuf->rawbuf + swptr,
-							silence, clear_cnt);
+						memset (dmabuf->rawbuf + swptr, silence, clear_cnt);	//clear the invalid data
 						dmabuf->endcleared = 1;
 					}
 				} else if (dmabuf->count < (signed) dmabuf->fragsize) {
@@ -1215,12 +1181,31 @@ static void trident_update_ptr(struct trident_state *state)
 					memset (dmabuf->rawbuf + swptr, silence, clear_cnt);
 					dmabuf->endcleared = 1;
 				}
-			}
-			/* trident_update_ptr is called by interrupt handler or by process via
-			   ioctl/poll, we only wake up the waiting process when we have more
-			   than 1/2 buffer free (always true for interrupt handler) */
-			if (dmabuf->count < (signed)dmabuf->dmasize/2)
+			}			
+			/* since dma machine only interrupts at ESO and ESO/2, we sure have at
+			   least half of dma buffer free, so wake up the process unconditionally */
+			wake_up(&dmabuf->wait);
+		}
+	}
+	/* error handling and process wake up for DAC */
+	if (dmabuf->enable == DAC_RUNNING) {
+		if (dmabuf->mapped) {
+			dmabuf->count += diff;
+			if (dmabuf->count >= (signed)dmabuf->fragsize)
 				wake_up(&dmabuf->wait);
+		} else {
+			dmabuf->count -= diff;
+
+			if (dmabuf->count < 0 || dmabuf->count > dmabuf->dmasize) {
+				/* buffer underrun or buffer overrun, we have no way to recover
+				   it here, just stop the machine and let the process force hwptr
+				   and swptr to sync */
+				__stop_dac(state);
+				dmabuf->error++;
+			}
+			/* since dma machine only interrupts at ESO and ESO/2, we sure have at
+			   least half of dma buffer free, so wake up the process unconditionally */
+			wake_up(&dmabuf->wait);
 		}
 	}
 	dmabuf->update_flag &= ~ALI_ADDRESS_INT_UPDATE;
@@ -1297,35 +1282,6 @@ static void ali_address_interrupt(struct trident_card *card)
 
 }
 
-static void trident_handle_midi(struct trident_card *card)
-{
-	unsigned char ch;
-	int wake = 0;
-
-	while (!(inb(card->iobase + ALI_MPUR1) & 0x80)) {	
-		ch = inb(card->iobase + ALI_MPUR0);
-		if (card->midi.icnt < MIDIINBUF) {
-			card->midi.ibuf[card->midi.iwr] = ch;
-			card->midi.iwr = (card->midi.iwr + 1) % MIDIINBUF;
-			card->midi.icnt++;
-		}
-		wake = 1;
-	}
-	if (wake)
-		wake_up(&card->midi.iwait);
-	wake = 0;
-	while (!(inb(card->iobase + ALI_MPUR1) & 0x40) && card->midi.ocnt > 0) {
-		inb(card->iobase + ALI_MPUR0);
-		outb(card->midi.obuf[card->midi.ord], card->iobase + ALI_MPUR0);
-		card->midi.ord = (card->midi.ord + 1) % MIDIOUTBUF;
-		card->midi.ocnt--;
-		if (card->midi.ocnt < MIDIOUTBUF-16)
-			wake = 1;
-	}
-	if (wake)
-		wake_up(&card->midi.owait);
-}
-
 static void trident_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 {
 	struct trident_card *card = (struct trident_card *)dev_id;
@@ -1341,11 +1297,7 @@ static void trident_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 	if (event & ADDRESS_IRQ) {
 		card->address_interrupt(card);
 	}
-	
-	if(event & MPU401_IRQ) {
-		if(card->midi_on)
-			trident_handle_midi(card);
-	}
+
 	/* manually clear interrupt status, bad hardware design, blame T^2 */
 	outl((ST_TARGET_REACHED | MIXER_OVERFLOW | MIXER_UNDERFLOW),
 	     TRID_REG(card, T4D_MISCINT));
@@ -1384,8 +1336,7 @@ static ssize_t trident_read(struct file *file, char *buffer, size_t count, loff_
 	ret = 0;
 
 	if (state->card->pci_id == PCI_DEVICE_ID_ALI_5451)
-		outl(inl(TRID_REG (state->card, ALI_GLOBAL_CONTROL)) | ALI_PCM_IN_ENABLE,
-		     TRID_REG (state->card, ALI_GLOBAL_CONTROL));
+		outl ( inl (TRID_REG (state->card, ALI_GLOBAL_CONTROL)) | ALI_PCM_IN_ENABLE, TRID_REG (state->card, ALI_GLOBAL_CONTROL));
 
 	while (count > 0) {
 		spin_lock_irqsave(&state->card->lock, flags);
@@ -1488,8 +1439,7 @@ static ssize_t trident_write(struct file *file, const char *buffer, size_t count
 
 	if (state->card->pci_id == PCI_DEVICE_ID_ALI_5451)
 		if (dmabuf->channel->num == ALI_PCM_IN_CHANNEL)
-			outl ( inl (TRID_REG (state->card, ALI_GLOBAL_CONTROL)) &
-			       ALI_PCM_IN_DISABLE, TRID_REG (state->card, ALI_GLOBAL_CONTROL));
+			outl ( inl (TRID_REG (state->card, ALI_GLOBAL_CONTROL)) & ALI_PCM_IN_DISABLE, TRID_REG (state->card, ALI_GLOBAL_CONTROL));
 
 	while (count > 0) {
 		spin_lock_irqsave(&state->card->lock, flags);
@@ -1615,8 +1565,7 @@ static int trident_mmap(struct file *file, struct vm_area_struct *vma)
 	} else 
 		return -EINVAL;
 
-
-	if (vma->vm_offset != 0)
+	if (vma->vm_pgoff != 0)
 		return -EINVAL;
 	size = vma->vm_end - vma->vm_start;
 	if (size > (PAGE_SIZE << dmabuf->buforder))
@@ -1835,7 +1784,7 @@ static int trident_ioctl(struct inode *inode, struct file *file, unsigned int cm
 		return 0;
 
 	case SNDCTL_DSP_GETCAPS:
-	    return put_user(DSP_CAP_REALTIME|DSP_CAP_TRIGGER|DSP_CAP_MMAP, 
+	    return put_user(DSP_CAP_REALTIME|DSP_CAP_TRIGGER|DSP_CAP_MMAP|DSP_CAP_BIND,
 			    (int *)arg);
 
 	case SNDCTL_DSP_GETTRIGGER:
@@ -1915,6 +1864,28 @@ static int trident_ioctl(struct inode *inode, struct file *file, unsigned int cm
 		return put_user((dmabuf->fmt & TRIDENT_FMT_16BIT) ?
 				AFMT_S16_LE : AFMT_U8, (int *)arg);
 
+	case SNDCTL_DSP_GETCHANNELMASK:
+		return put_user(DSP_BIND_FRONT|DSP_BIND_SURR|DSP_BIND_CENTER_LFE,
+				(int *)arg);
+
+	case SNDCTL_DSP_BIND_CHANNEL:
+		if (state->card->pci_id != PCI_DEVICE_ID_SI_7018)
+			return -EINVAL;
+
+		get_user_ret(val, (int *)arg, -EFAULT);
+		if (val == DSP_BIND_QUERY) {
+			val = dmabuf->channel->attribute | 0x3c00;
+			val = attr2mask[val >> 8];
+		} else {
+			dmabuf->ready = 0;
+			if (file->f_mode & FMODE_READ)
+				dmabuf->channel->attribute = (CHANNEL_REC|SRC_ENABLE);
+			if (file->f_mode & FMODE_WRITE)
+				dmabuf->channel->attribute = (CHANNEL_SPC_PB|SRC_ENABLE);
+			dmabuf->channel->attribute |= mask2attr[ffs(val)];
+		}
+		return put_user(val, (int *)arg);
+
 	case SNDCTL_DSP_MAPINBUF:
 	case SNDCTL_DSP_MAPOUTBUF:
 	case SNDCTL_DSP_SETSYNCRO:
@@ -1934,7 +1905,6 @@ static int trident_open(struct inode *inode, struct file *file)
 	struct trident_state *state = NULL;
 	struct dmabuf *dmabuf = NULL;
 
-	MOD_INC_USE_COUNT;
 	/* find an avaiable virtual channel (instance of /dev/dsp) */
 	while (card != NULL) {
 		down(&card->open_sem);
@@ -1942,10 +1912,8 @@ static int trident_open(struct inode *inode, struct file *file)
 			if (card->states[i] == NULL) {
 				state = card->states[i] = (struct trident_state *)
 					kmalloc(sizeof(struct trident_state), GFP_KERNEL);
-				if (state == NULL) {
-					MOD_DEC_USE_COUNT;
+				if (state == NULL)
 					return -ENOMEM;
-				}
 				memset(state, 0, sizeof(struct trident_state));
 				dmabuf = &state->dmabuf;
 				goto found_virt;
@@ -1955,10 +1923,9 @@ static int trident_open(struct inode *inode, struct file *file)
 		card = card->next;
 	}
 	/* no more virtual channel avaiable */
-	if (!state) {
-		MOD_DEC_USE_COUNT;
+	if (!state)
 		return -ENODEV;
-	}
+
  found_virt:
 	/* found a free virtual channel, allocate hardware channels */
 	if(file->f_mode & FMODE_READ)
@@ -1969,7 +1936,6 @@ static int trident_open(struct inode *inode, struct file *file)
 	if (dmabuf->channel == NULL) {
 		kfree (card->states[i]);
 		card->states[i] = NULL;
-		MOD_DEC_USE_COUNT;
 		return -ENODEV;
 	}
 
@@ -1977,8 +1943,9 @@ static int trident_open(struct inode *inode, struct file *file)
 	state->virt = i;
 	state->card = card;
 	state->magic = TRIDENT_STATE_MAGIC;
-	init_waitqueue(&dmabuf->wait);
+	init_waitqueue_head(&dmabuf->wait);
 	file->private_data = state;
+
 
 	/* set default sample format. According to OSS Programmer's Guide  /dev/dsp
 	   should be default to unsigned 8-bits, mono, with sample rate 8kHz and
@@ -2024,10 +1991,11 @@ static int trident_open(struct inode *inode, struct file *file)
 	up(&card->open_sem);
 
 #ifdef DEBUG
-       printk(KERN_ERR "trident: open virtual channel %d, hard channel %d\n", 
-              state->virt, dmabuf->channel->num);
+	printk(KERN_ERR "trident: open virtual channel %d, hard channel %d\n", 
+	       state->virt,
+	       dmabuf->channel->num);
 #endif
-
+	MOD_INC_USE_COUNT;
 	return 0;
 }
 
@@ -2052,6 +2020,7 @@ static int trident_release(struct inode *inode, struct file *file)
 		dealloc_dmabuf(state);
 		state->card->free_pcm_channel(state->card, dmabuf->channel->num);
 	}
+
 	if (file->f_mode & FMODE_READ) {
 		stop_adc(state);
 		dealloc_dmabuf(state);
@@ -2078,383 +2047,6 @@ static /*const*/ struct file_operations trident_audio_fops = {
 	open:		trident_open,
 	release:	trident_release,
 };
-
-/* --------------------------------------------------------------------- */
-
-/*
- *	MIDI and direct synth support for the ALI 5451. These functions
- *	are taken directly from Ching Ling Lee's original ALI only
- *	driver.
- */
- 
-static ssize_t trident_midi_read(struct file *file, char *buffer, size_t count, loff_t *ppos)
-{
-	struct trident_card *card = (struct trident_card *)file->private_data;
-	ssize_t ret;
-	unsigned long flags;
-	unsigned ptr;
-	int cnt;
-	struct midi_stuff *midi;
-
-	if (ppos != &file->f_pos)
-		return -ESPIPE;
-	if (!access_ok(VERIFY_WRITE, buffer, count))
-		return -EFAULT;
-		
-	midi = &card->midi;
-	
-	ret = 0;
-	while (count > 0) {
-		spin_lock_irqsave(&card->lock, flags);
-		ptr = midi->ird;
-		cnt = MIDIINBUF - ptr;
-		if (midi->icnt < cnt)
-			cnt = midi->icnt;
-		spin_unlock_irqrestore(&card->lock, flags);
-		if (cnt > count)
-			cnt = count;
-		if (cnt <= 0) {
-			if (file->f_flags & O_NONBLOCK)
-				return ret ? ret : EAGAIN;
-			interruptible_sleep_on(&midi->iwait);
-			if (signal_pending(current))
-				return ret ? ret : -ERESTARTSYS;
-			continue;
-		}
-		if (copy_to_user(buffer, midi->ibuf + ptr, cnt))
-			return ret ? ret : -EFAULT;
-		ptr = (ptr + cnt) % MIDIINBUF;
-		spin_lock_irqsave(&card->lock, flags);
-		midi->ird = ptr;
-		midi->icnt -= cnt;
-		spin_unlock_irqrestore(&card->lock, flags);
-		count -= cnt;
-		buffer += cnt;
-		ret += cnt;
-	}
-	return ret;
-}
-
-static ssize_t trident_midi_write(struct file *file, const char *buffer, size_t count, loff_t *ppos)
-{
-	struct trident_card *card = (struct trident_card *)file->private_data;
-	ssize_t ret;
-	unsigned long flags;
-	unsigned ptr;
-	int cnt;
-	struct midi_stuff *midi;
-
-	if (ppos != &file->f_pos)
-		return -ESPIPE;
-	if (!access_ok(VERIFY_READ, buffer, count))
-		return -EFAULT;
-		
-	midi = &card->midi;
-	
-	ret = 0;
-	while (count > 0) {
-		spin_lock_irqsave(&card->lock, flags);
-		ptr = midi->owr;
-		cnt = MIDIOUTBUF - ptr;
-		if (midi->ocnt + cnt > MIDIOUTBUF)
-			cnt = MIDIOUTBUF - midi->ocnt;
-		if (cnt <= 0)
-			trident_handle_midi(card);
-		spin_unlock_irqrestore(&card->lock, flags);
-		if (cnt > count)
-			cnt = count;
-		if (cnt <= 0) {
-			if (file->f_flags & O_NONBLOCK)
-				return ret ? ret : -EAGAIN;
-			interruptible_sleep_on(&midi->owait);
-			if (signal_pending(current))
-				return ret ? ret : -ERESTARTSYS;
-			continue;
-		}
-		if (copy_from_user(midi->obuf + ptr, buffer, cnt))
-			return ret ? ret : -EFAULT;
-		ptr = (ptr + cnt) % MIDIOUTBUF;
-		spin_lock_irqsave(&card->lock, flags);
-		midi->owr = ptr;
-		midi->ocnt += cnt;
-		spin_unlock_irqrestore(&card->lock, flags);
-		count -= cnt;
-		buffer += cnt;
-		ret += cnt;
-		spin_lock_irqsave(&card->lock, flags);
-		trident_handle_midi(card);
-		spin_unlock_irqrestore(&card->lock, flags);
-	}
-	return ret;
-}
-
-
-static unsigned int trident_midi_poll(struct file *file, struct poll_table_struct *wait)
-{
-	struct trident_card *card = (struct trident_card *)file->private_data;
-	unsigned long flags;
-	unsigned int mask = 0;
-
-	if (file->f_flags & FMODE_WRITE)
-		poll_wait(file, &card->midi.owait, wait);
-	if (file->f_flags & FMODE_READ)
-		poll_wait(file, &card->midi.iwait, wait);
-	spin_lock_irqsave(&card->lock, flags);
-	if (file->f_flags & FMODE_READ) {
-		if (card->midi.icnt > 0)
-			mask |= POLLIN | POLLRDNORM;
-	}
-	if (file->f_flags & FMODE_WRITE) {
-		if (card->midi.ocnt < MIDIOUTBUF)
-			mask |= POLLOUT | POLLWRNORM;
-	}
-	spin_unlock_irqrestore(&card->lock, flags);
-	return mask;
-}
-
-static int trident_midi_open(struct inode *inode, struct file *file)
-{
-	struct trident_card *card = devs;
-	struct midi_stuff *midi;
-	unsigned long flags;
-
-	while(card!=NULL)
-	{
-		if(card->midi_on == 0 && card->dev_midi!=-1)
-			break;
-		card=card->next;
-	}
-	if(card==NULL)
-		return -EBUSY;
-		
-	spin_lock_irqsave(&card->lock, flags);
-	card->midi_on = 1;
-	midi = &card->midi;
-	file->private_data = card;
-	if (file->f_mode & FMODE_READ) {
-		midi->ird = midi->iwr = midi->icnt = 0;
-	}
-	if (file->f_mode & FMODE_WRITE) {
-		midi->ord = midi->owr = midi->ocnt = 0;
-	}
-	spin_unlock_irqrestore(&card->lock, flags);
-	return 0;
-}
-
-static int trident_midi_release(struct inode *inode, struct file *file)
-{
-	struct trident_card *card = (struct trident_card *)file->private_data;
-        struct wait_queue wait = { current, NULL };
-	unsigned long flags;
-	unsigned count, tmo;
-
-	if (file->f_mode & FMODE_WRITE) {
-		current->state = TASK_INTERRUPTIBLE;
-		add_wait_queue(&card->midi.owait, &wait);
-		for (;;) {
-			spin_lock_irqsave(&card->lock, flags);
-			count = card->midi.ocnt;
-			spin_unlock_irqrestore(&card->lock, flags);
-			if (count <= 0)
-				break;
-			if (signal_pending(current))
-				break;
-			if (file->f_flags & O_NONBLOCK) {
-				break;
-			}
-			tmo = (count * HZ) / 3100;
-			if (!schedule_timeout(tmo ? : 1) && tmo)
-				printk(KERN_DEBUG "trident: midi timed out??\n");
-		}
-		remove_wait_queue(&card->midi.owait, &wait);
-		current->state = TASK_RUNNING;
-	}
-	spin_lock_irqsave(&card->lock, flags);
-	outb(0xff, card->iobase + ALI_MPUR1);
-	card->midi_on = 0;
-	spin_unlock_irqrestore(&card->lock, flags);
-	MOD_DEC_USE_COUNT;
-	return 0;
-}
-
-static /*const*/ struct file_operations trident_midi_fops = {
-	&trident_llseek,
-	&trident_midi_read,
-	&trident_midi_write,
-	NULL,  /* readdir */
-	&trident_midi_poll,
-	NULL,  /* ioctl */
-	NULL,  /* mmap */
-	&trident_midi_open,
-	NULL,	/* flush */
-	&trident_midi_release,
-	NULL,  /* fsync */
-	NULL,  /* fasync */
-	NULL,  /* check_media_change */
-	NULL,  /* revalidate */
-	NULL,  /* lock */
-};
-
-/* --------------------------------------------------------------------- */
-
-static int trident_dmfm_ioctl(struct inode *inode, struct file *file, unsigned int cmd, unsigned long arg)
-{
-	static const unsigned char op_offset[18] = {
-		0x00, 0x01, 0x02, 0x03, 0x04, 0x05,
-		0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D,
-		0x10, 0x11, 0x12, 0x13, 0x14, 0x15
-	};
-	struct trident_card *card = (struct trident_card *)file->private_data;
-	struct dm_fm_voice v;
-	struct dm_fm_note n;
-	struct dm_fm_params p;
-	unsigned int io;
-	unsigned int regb;
-
-	switch (cmd) {		
-	case FM_IOCTL_RESET:
-		for (regb = 0xb0; regb < 0xb9; regb++) {
-			outb(regb, card->synth_io);
-			outb(0, card->synth_io+1);
-			outb(regb, card->synth_io+2);
-			outb(0, card->synth_io+3);
-		}
-		return 0;
-
-	case FM_IOCTL_PLAY_NOTE:
-		if (copy_from_user(&n, (void *)arg, sizeof(n)))
-			return -EFAULT;
-		if (n.voice >= 18)
-			return -EINVAL;
-		if (n.voice >= 9) {
-			regb = n.voice - 9;
-			io = card->synth_io+2;
-		} else {
-			regb = n.voice;
-			io = card->synth_io;
-		}
-		outb(0xa0 + regb, io);
-		outb(n.fnum & 0xff, io+1);
-		outb(0xb0 + regb, io);
-		outb(((n.fnum >> 8) & 3) | ((n.octave & 7) << 2) | ((n.key_on & 1) << 5), io+1);
-		return 0;
-
-	case FM_IOCTL_SET_VOICE:
-		if (copy_from_user(&v, (void *)arg, sizeof(v)))
-			return -EFAULT;
-		if (v.voice >= 18)
-			return -EINVAL;
-		regb = op_offset[v.voice];
-		io = card->synth_io + ((v.op & 1) << 1);
-		outb(0x20 + regb, io);
-		outb(((v.am & 1) << 7) | ((v.vibrato & 1) << 6) | ((v.do_sustain & 1) << 5) | 
-		     ((v.kbd_scale & 1) << 4) | (v.harmonic & 0xf), io+1);
-		outb(0x40 + regb, io);
-		outb(((v.scale_level & 0x3) << 6) | (v.volume & 0x3f), io+1);
-		outb(0x60 + regb, io);
-		outb(((v.attack & 0xf) << 4) | (v.decay & 0xf), io+1);
-		outb(0x80 + regb, io);
-		outb(((v.sustain & 0xf) << 4) | (v.release & 0xf), io+1);
-		outb(0xe0 + regb, io);
-		outb(v.waveform & 0x7, io+1);
-		if (n.voice >= 9) {
-			regb = n.voice - 9;
-			io = card->synth_io+2;
-		} else {
-			regb = n.voice;
-			io = card->synth_io;
-		}
-		outb(0xc0 + regb, io);
-		outb(((v.right & 1) << 5) | ((v.left & 1) << 4) | ((v.feedback & 7) << 1) |
-		     (v.connection & 1), io+1);
-		return 0;
-		
-	case FM_IOCTL_SET_PARAMS:
-		if (copy_from_user(&p, (void *)arg, sizeof(p)))
-			return -EFAULT;
-		outb(0x08, card->synth_io);
-		outb((p.kbd_split & 1) << 6, card->synth_io+1);
-		outb(0xbd, card->synth_io);
-		outb(((p.am_depth & 1) << 7) | ((p.vib_depth & 1) << 6) | ((p.rhythm & 1) << 5) | ((p.bass & 1) << 4) |
-		     ((p.snare & 1) << 3) | ((p.tomtom & 1) << 2) | ((p.cymbal & 1) << 1) | (p.hihat & 1), card->synth_io+1);
-		return 0;
-
-	case FM_IOCTL_SET_OPL:
-		outb(4, card->synth_io+2);
-		outb(arg, card->synth_io+3);
-		return 0;
-
-	case FM_IOCTL_SET_MODE:
-		outb(5, card->synth_io+2);
-		outb(arg & 1, card->synth_io+3);
-		return 0;
-
-	default:
-		return -EINVAL;
-	}
-}
-
-static int trident_dmfm_open(struct inode *inode, struct file *file)
-{
-	struct trident_card *card = devs;
-
-	file->private_data = card;
-	while(card!=NULL)
-	{
-		if(card->midi_on == 0 && card->dev_midi!=-1)
-			break;
-		card=card->next;
-	}
-	if(card==NULL)
-		return -EBUSY;
-	MOD_INC_USE_COUNT;		
-	card->dmfm_on = 1;
-
-	/* init the stuff */
-	outb(1, card->synth_io);
-	outb(0x20, card->synth_io+1); /* enable waveforms */
-	outb(4, card->synth_io+2);
-	outb(0, card->synth_io+3);  /* no 4op enabled */
-	outb(5, card->synth_io+2);
-	outb(1, card->synth_io+3);  /* enable OPL3 */
-	return 0;
-}
-
-static int trident_dmfm_release(struct inode *inode, struct file *file)
-{
-	struct trident_card *card = (struct trident_card *)file->private_data;
-	unsigned int regb;
-
-	for (regb = 0xb0; regb < 0xb9; regb++) {
-		outb(regb, card->synth_io);
-		outb(0, card->synth_io+1);
-		outb(regb, card->synth_io+2);
-		outb(0, card->synth_io+3);
-	}
-	card->dmfm_on = 0;
-	MOD_DEC_USE_COUNT;
-	return 0;
-}
-
-static /*const*/ struct file_operations trident_dmfm_fops = {
-	&trident_llseek,
-	NULL,  /* read */
-	NULL,  /* write */
-	NULL,  /* readdir */
-	NULL,  /* poll */
-	&trident_dmfm_ioctl,
-	NULL,  /* mmap */
-	&trident_dmfm_open,
-	NULL,	/* fl600
-	ush */
-	&trident_dmfm_release,
-	NULL,  /* fsync */
-	NULL,  /* fasync */
-	NULL,  /* check_media_change */
-	NULL,  /* revalidate */
-	NULL,  /* lock */
-};
-
 
 /* trident specific AC97 functions */
 /* Write AC97 codec registers */
@@ -2663,21 +2255,19 @@ static int trident_open_mixdev(struct inode *inode, struct file *file)
 	int minor = MINOR(inode->i_rdev);
 	struct trident_card *card = devs;
 
-	MOD_INC_USE_COUNT;
 	for (card = devs; card != NULL; card = card->next)
 		for (i = 0; i < NR_AC97; i++)
 			if (card->ac97_codec[i] != NULL &&
 			    card->ac97_codec[i]->dev_mixer == minor)
 				goto match;
 
-	if (!card) {
-		MOD_DEC_USE_COUNT;
+	if (!card)
 		return -ENODEV;
-	}
+
  match:
 	file->private_data = card->ac97_codec[i];
 
-
+	MOD_INC_USE_COUNT;
 	return 0;
 }
 
@@ -2782,25 +2372,28 @@ static int __init trident_ac97_init(struct trident_card *card)
 
 /* install the driver, we do not allocate hardware channel nor DMA buffer now, they are defered 
    untill "ACCESS" time (in prog_dmabuf called by open/read/write/ioctl/mmap) */
-static int __init trident_install(struct pci_dev *pci_dev, struct pci_audio_info *pci_info)
+static int __init trident_probe(struct pci_dev *pci_dev, const struct pci_device_id *pci_id)
 {
-	u16 w;
 	unsigned long iobase;
 	struct trident_card *card;
-	unsigned long flags;
+	u8 revision;
 
-	iobase = pci_dev->base_address[0] & PCI_BASE_ADDRESS_IO_MASK;
+	if (!pci_dma_supported(pci_dev, TRIDENT_DMA_MASK)) {
+		printk(KERN_ERR "trident: architecture does not support"
+		       " 30bit PCI busmaster DMA\n");
+		return -ENODEV;
+	}
+	pci_read_config_byte(pci_dev, PCI_CLASS_REVISION, &revision);
+
+	iobase = pci_resource_start (pci_dev, 0);
 	if (check_region(iobase, 256)) {
 		printk(KERN_ERR "trident: can't allocate I/O space at 0x%4.4lx\n",
 		       iobase);
 		return -ENODEV;
 	}
 
-	/* just to be sure that IO space and bus master is on */
-	pci_set_master(pci_dev);
-	pci_read_config_word(pci_dev, PCI_COMMAND, &w);
-	w |= PCI_COMMAND_IO|PCI_COMMAND_MASTER;
-	pci_write_config_word(pci_dev, PCI_COMMAND, w);
+	if (pci_enable_device(pci_dev))
+		return -ENODEV;
 
 	if ((card = kmalloc(sizeof(struct trident_card), GFP_KERNEL)) == NULL) {
 		printk(KERN_ERR "trident: out of memory\n");
@@ -2809,10 +2402,9 @@ static int __init trident_install(struct pci_dev *pci_dev, struct pci_audio_info
 	memset(card, 0, sizeof(*card));
 
 	card->iobase = iobase;
-	card->midi_io = iobase + 0x20;
-	card->synth_io = iobase + 0x10;
-	card->pci_info = pci_info;
-	card->pci_id = pci_info->device;
+	card->pci_dev = pci_dev;
+	card->pci_id = pci_id->device;
+	card->revision = revision;
 	card->irq = pci_dev->irq;
 	card->next = devs;
 	card->magic = TRIDENT_CARD_MAGIC;
@@ -2820,29 +2412,33 @@ static int __init trident_install(struct pci_dev *pci_dev, struct pci_audio_info
 	card->banks[BANK_A].bitmap = 0UL;
 	card->banks[BANK_B].addresses = &bank_b_addrs;
 	card->banks[BANK_B].bitmap = 0UL;
-	card->open_sem = MUTEX;
+	init_MUTEX(&card->open_sem);
 	spin_lock_init(&card->lock);
 	devs = card;
 
-	printk(KERN_INFO "trident: %s found at IO 0x%04lx, IRQ %d\n",
-	       card->pci_info->name, card->iobase, card->irq);
+	pci_set_master(pci_dev);
 
-	if(card->pci_id == PCI_DEVICE_ID_ALI_5451) {
+	printk(KERN_INFO "trident: %s found at IO 0x%04lx, IRQ %d\n",
+	       card_names[pci_id->driver_data], card->iobase, card->irq);
+
+	if(card->pci_id == PCI_DEVICE_ID_ALI_5451)
+	{
 		card->alloc_pcm_channel = ali_alloc_pcm_channel;
 		card->alloc_rec_pcm_channel = ali_alloc_rec_pcm_channel;
 		card->free_pcm_channel = ali_free_pcm_channel;
 		card->address_interrupt = ali_address_interrupt;
 	}
-	else {
+	else
+	{
 		card->alloc_pcm_channel = trident_alloc_pcm_channel;
 		card->alloc_rec_pcm_channel = trident_alloc_pcm_channel;
 		card->free_pcm_channel = trident_free_pcm_channel;
 		card->address_interrupt = trident_address_interrupt;
 	}
-
 	/* claim our iospace and irq */
-	request_region(card->iobase, 256, card->pci_info->name);
-	if (request_irq(card->irq, &trident_interrupt, SA_SHIRQ, card->pci_info->name, card)) {
+	request_region(card->iobase, 256, card_names[pci_id->driver_data]);
+	if (request_irq(card->irq, &trident_interrupt, SA_SHIRQ,
+			card_names[pci_id->driver_data], card)) {
 		printk(KERN_ERR "trident: unable to allocate irq %d\n", card->irq);
 		release_region(card->iobase, 256);
 		kfree(card);
@@ -2864,135 +2460,81 @@ static int __init trident_install(struct pci_dev *pci_dev, struct pci_audio_info
 		kfree(card);
 		return -ENODEV;
 	}
-	
-	if(card->pci_id == PCI_DEVICE_ID_ALI_5451) {
-		/* ALi 5451 has special MIDI regs and FM emulation */
-		if ((card->dev_midi = register_sound_midi(&trident_midi_fops, -1))<0)
-			printk(KERN_WARNING "trident: Unable to register midi.\n");
-		else
-		{
-			struct midi_stuff *midi = &card->midi;
-			init_waitqueue(&midi->iwait);
-			init_waitqueue(&midi->owait);
-			midi->ird = midi->iwr = midi->icnt = 0;
-			midi->ord = midi->owr = midi->ocnt = 0;
-			outb(0xbc, card->iobase+ALI_MPUR2);
-		
-			/* reset command */
-			while (inb(card->iobase + ALI_MPUR1) & 0x40);
-			
-			/* After the out the chip goes into irq jammed on
-			   mode. We have to keep irqs off until it shuts up 
-			   again */
-			save_flags(flags);
-			cli();
-			outb(0xff, card->iobase + ALI_MPUR1);
-			while (inb(card->iobase + ALI_MPUR1) & 0x80);
-			while ((inb(card->iobase + ALI_MPUR0) != 0xfe) && (inb(card->iobase+ALI_MPUR1) != 0x10)) 
-				while (inb(card->iobase + ALI_MPUR1) & 0x80);
-			restore_flags(flags);
-			
-			midi->ird = midi->iwr = midi->icnt = 0;
-		}
-	
-		if ((card->dev_dmfm = register_sound_special(&trident_dmfm_fops, 15))<0)
-			printk(KERN_WARNING "trident: Unable to register FM.\n");
-	} else {
-		/* don't try to enable MIDI and FM on other chips */
-		card->dev_midi = -1;
-		card->dev_dmfm = -1;
-	}
-
 	outl(0x00, TRID_REG(card, T4D_MUSICVOL_WAVEVOL));
 
-	if (card->pci_id == PCI_DEVICE_ID_ALI_5451) {
-               /* edited by HMSEO for GT sound
-               09-20-00 changed by Rich Payne (rdp@alphalinux.org) to take into account
-		generic kernels running on Nautilus */
-
-#if defined CONFIG_ALPHA_NAUTILUS || CONFIG_ALPHA_GENERIC
-		u16 ac97_data;
-		extern struct hwrpb_struct *hwrpb;
-
-		if ((hwrpb->sys_type) == 201) {
-			printk(KERN_INFO "trident: Running on Alpha system type Nautilus\n");
-                	ac97_data = trident_ac97_get (card->ac97_codec[0], AC97_POWER_CONTROL);
-                	trident_ac97_set (card->ac97_codec[0], AC97_POWER_CONTROL,
-                                  ac97_data | ALI_EAPD_POWER_DOWN);
-       		}
-#endif                
-	/* edited by HMSEO for GT sound*/
-
+	if (card->pci_id == PCI_DEVICE_ID_ALI_5451) 
+	{
+		/* edited by HMSEO for GT sound */
+#ifdef CONFIG_ALPHA_NAUTILUS
+		ac97_data = trident_ac97_get (card->ac97_codec[0], AC97_POWER_CONTROL);
+		trident_ac97_set (card->ac97_codec[0], AC97_POWER_CONTROL, ac97_data | ALI_EAPD_POWER_DOWN);
+#endif
+		/* edited by HMSEO for GT sound*/
 	}
+
+	pci_dev->driver_data = card;
+	pci_dev->dma_mask = TRIDENT_DMA_MASK;
 
 	/* Enable Address Engine Interrupts */
 	trident_enable_loop_interrupts(card);
 
-	return 1;
-}
-
-#ifdef MODULE
-int init_module(void)
-#else
-int init_trident(void)
-#endif
- {
-	struct pci_dev *pcidev = NULL;
-	int foundone = 0;
- 	int i;
- 
-	if (!pci_present())   /* No PCI bus in this machine! */
-		return -ENODEV;
- 
-	printk(KERN_INFO "Trident 4DWave/SiS 7018/Ali 5451 PCI Audio, version "
-	       DRIVER_VERSION ", " __TIME__ " " __DATE__ "\n");
- 
-	for (i = 0; i < sizeof (pci_audio_devices); i++) {
-		pcidev = NULL;
-		while ((pcidev = pci_find_device(pci_audio_devices[i].vendor,
-						 pci_audio_devices[i].device,
-						 pcidev)) != NULL) {
-			foundone += trident_install(pcidev, pci_audio_devices + i);
- 		}
-	}
- 
-	if (!foundone)
-		return -ENODEV;
 	return 0;
 }
 
-#ifdef MODULE
+static void __exit trident_remove(struct pci_dev *pci_dev)
+{
+	int i;
+	struct trident_card *card = pci_dev->driver_data;
+
+	/* Kill interrupts, and SP/DIF */
+	trident_disable_loop_interrupts(card);
+
+	/* free hardware resources */
+	free_irq(card->irq, card);
+	release_region(card->iobase, 256);
+
+	/* unregister audio devices */
+	for (i = 0; i < NR_AC97; i++)
+		if (card->ac97_codec[i] != NULL) {
+			unregister_sound_mixer(card->ac97_codec[i]->dev_mixer);
+			kfree (card->ac97_codec[i]);
+		}
+	unregister_sound_dsp(card->dev_audio);
+
+	kfree(card);
+}
+
 MODULE_AUTHOR("Alan Cox, Aaron Holtzman, Ollie Lho, Ching Ling Lee");
 MODULE_DESCRIPTION("Trident 4DWave/SiS 7018/ALi 5451 PCI Audio Driver");
 
-void cleanup_module(void)
-#else
-void cleanup_trident(void)
-#endif
+#define TRIDENT_MODULE_NAME "trident"
+
+static struct pci_driver trident_pci_driver = {
+	name:		TRIDENT_MODULE_NAME,
+	id_table:	trident_pci_tbl,
+	probe:		trident_probe,
+	remove:		trident_remove,
+};
+
+static int __init trident_init_module (void)
 {
-	while (devs != NULL) {
-		int i;
-		/* Kill interrupts, and SP/DIF */
-		trident_disable_loop_interrupts(devs);
- 
-		/* free hardware resources */
-		free_irq(devs->irq, devs);
-		release_region(devs->iobase, 256);
- 
-		/* unregister audio devices */
-		for (i = 0; i < NR_AC97; i++)
-			if (devs->ac97_codec[i] != NULL) {
-				unregister_sound_mixer(devs->ac97_codec[i]->dev_mixer);
-				kfree (devs->ac97_codec[i]);
-			}
-		unregister_sound_dsp(devs->dev_audio);
-		if(devs->dev_midi!=-1)
-			unregister_sound_midi(devs->dev_midi);
-		if(devs->dev_dmfm!=-1)
-			unregister_sound_special(devs->dev_dmfm);
- 
-		kfree(devs);
-		devs = devs->next;
+	if (!pci_present())   /* No PCI bus in this machine! */
+		return -ENODEV;
+
+	printk(KERN_INFO "Trident 4DWave/SiS 7018/ALi 5451 PCI Audio, version "
+	       DRIVER_VERSION ", " __TIME__ " " __DATE__ "\n");
+
+	if (!pci_register_driver(&trident_pci_driver)) {
+		pci_unregister_driver(&trident_pci_driver);
+                return -ENODEV;
 	}
+	return 0;
 }
 
+static void __exit trident_cleanup_module (void)
+{
+	pci_unregister_driver(&trident_pci_driver);
+}
+
+module_init(trident_init_module);
+module_exit(trident_cleanup_module);

@@ -1,21 +1,101 @@
-/* $Id: isdn_audio.c,v 1.1.2.1 2001/12/31 13:26:34 kai Exp $
- *
+/* $Id: isdn_audio.c,v 1.17 1999/08/17 11:10:52 paul Exp $
+
  * Linux ISDN subsystem, audio conversion and compression (linklevel).
  *
  * Copyright 1994-1999 by Fritz Elfert (fritz@isdn4linux.de)
  * DTMF code (c) 1996 by Christian Mock (cm@kukuruz.ping.at)
  * Silence detection (c) 1998 by Armin Schindler (mac@gismo.telekom.de)
  *
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2, or (at your option)
+ * any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ *
+ * $Log: isdn_audio.c,v $
+ * Revision 1.17  1999/08/17 11:10:52  paul
+ * don't try to use x86 assembler on non-x86!
+ *
+ * Revision 1.16  1999/08/06 12:47:35  calle
+ * Using __GNUC__ == 2 && __GNUC_MINOR__ < 95 how to define
+ *   ISDN_AUDIO_OPTIMIZE_ON_X386_WITH_ASM_IF_GCC_ALLOW_IT
+ *
+ * Revision 1.15  1999/08/06 12:02:52  calle
+ * egcs 2.95 complain about invalid asm statement:
+ *    "fixed or forbidden register 2 (cx) was spilled for class CREG."
+ * Using ISDN_AUDIO_OPTIMIZE_ON_X386_WITH_ASM_IF_GCC_ALLOW_IT and not
+ * define it at the moment.
+ *
+ * Revision 1.14  1999/07/11 17:14:06  armin
+ * Added new layer 2 and 3 protocols for Fax and DSP functions.
+ * Moved "Add CPN to RING message" to new register S23,
+ * "Display message" is now correct on register S13 bit 7.
+ * New audio command AT+VDD implemented (deactivate DTMF decoder and
+ * activate possible existing hardware/DSP decoder).
+ * Moved some tty defines to .h file.
+ * Made whitespace possible in AT command line.
+ * Some AT-emulator output bugfixes.
+ * First Fax G3 implementations.
+ *
+ * Revision 1.13  1999/04/12 12:33:09  fritz
+ * Changes from 2.0 tree.
+ *
+ * Revision 1.12  1998/07/26 18:48:43  armin
+ * Added silence detection in voice receive mode.
+ *
+ * Revision 1.11  1998/04/10 10:35:10  paul
+ * fixed (silly?) warnings from egcs on Alpha.
+ *
+ * Revision 1.10  1998/02/20 17:09:40  fritz
+ * Changes for recent kernels.
+ *
+ * Revision 1.9  1997/10/01 09:20:25  fritz
+ * Removed old compatibility stuff for 2.0.X kernels.
+ * From now on, this code is for 2.1.X ONLY!
+ * Old stuff is still in the separate branch.
+ *
+ * Revision 1.8  1997/03/02 14:29:16  fritz
+ * More ttyI related cleanup.
+ *
+ * Revision 1.7  1997/02/03 22:44:11  fritz
+ * Reformatted according CodingStyle
+ *
+ * Revision 1.6  1996/06/06 14:43:31  fritz
+ * Changed to support DTMF decoding on audio playback also.
+ *
+ * Revision 1.5  1996/06/05 02:24:08  fritz
+ * Added DTMF decoder for audio mode.
+ *
+ * Revision 1.4  1996/05/17 03:48:01  fritz
+ * Removed some test statements.
+ * Added revision string.
+ *
+ * Revision 1.3  1996/05/10 08:48:11  fritz
+ * Corrected adpcm bugs.
+ *
+ * Revision 1.2  1996/04/30 09:31:17  fritz
+ * General rewrite.
+ *
+ * Revision 1.1.1.1  1996/04/28 12:25:40  fritz
+ * Taken under CVS control
  *
  */
 
+#define __NO_VERSION__
+#include <linux/module.h>
 #include <linux/isdn.h>
 #include "isdn_audio.h"
 #include "isdn_common.h"
 
-char *isdn_audio_revision = "$Revision: 1.1.2.1 $";
+char *isdn_audio_revision = "$Revision: 1.17 $";
 
 /*
  * Misc. lookup-tables.
@@ -170,9 +250,9 @@ static char isdn_audio_ulaw_to_alaw[] =
 };
 
 #define NCOEFF           16     /* number of frequencies to be analyzed       */
-#define DTMF_TRESH    25000     /* above this is dtmf                         */
-#define SILENCE_TRESH   200     /* below this is silence                      */
-#define H2_TRESH      20000     /* 2nd harmonic                               */
+#define DTMF_TRESH    50000     /* above this is dtmf                         */
+#define SILENCE_TRESH   100     /* below this is silence                      */
+#define H2_TRESH      10000     /* 2nd harmonic                               */
 #define AMP_BITS          9     /* bits per sample, reduced to avoid overflow */
 #define LOGRP             0
 #define HIGRP             1
@@ -213,7 +293,7 @@ static char dtmf_matrix[4][4] =
 };
 
 static inline void
-isdn_audio_tlookup(const u_char *table, u_char *buff, unsigned long n)
+isdn_audio_tlookup(const void *table, void *buff, unsigned long n)
 {
 #ifdef __i386__
 	unsigned long d0, d1, d2, d3;

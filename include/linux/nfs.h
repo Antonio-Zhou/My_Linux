@@ -9,7 +9,26 @@
 
 #include <linux/sunrpc/msg_prot.h>
 
-#define NFS_PROGRAM		100003
+#define NFS_PROGRAM	100003
+#define NFS_PORT	2049
+#define NFS_MAXDATA	8192
+#define NFS_MAXPATHLEN	1024
+#define NFS_MAXNAMLEN	255
+#define NFS_MAXGROUPS	16
+#define NFS_FHSIZE	32
+#define NFS_COOKIESIZE	4
+#define NFS_FIFO_DEV	(-1)
+#define NFSMODE_FMT	0170000
+#define NFSMODE_DIR	0040000
+#define NFSMODE_CHR	0020000
+#define NFSMODE_BLK	0060000
+#define NFSMODE_REG	0100000
+#define NFSMODE_LNK	0120000
+#define NFSMODE_SOCK	0140000
+#define NFSMODE_FIFO	0010000
+
+#define NFS_MNT_PROGRAM	100005
+#define NFS_MNT_PORT	627
 
 /*
  * NFS stats. The good thing with these values is that NFSv3 errors are
@@ -19,7 +38,7 @@
  * Error codes that have a `--' in the v2 column are not part of the
  * standard, but seem to be widely used nevertheless.
  */
-enum nfs_stat {
+ enum nfs_stat {
 	NFS_OK = 0,			/* v2 v3 */
 	NFSERR_PERM = 1,		/* v2 v3 */
 	NFSERR_NOENT = 2,		/* v2 v3 */
@@ -52,9 +71,10 @@ enum nfs_stat {
 	NFSERR_SERVERFAULT = 10006,	/*    v3 */
 	NFSERR_BADTYPE = 10007,		/*    v3 */
 	NFSERR_JUKEBOX = 10008		/*    v3 */
-};
-
+ };
+ 
 /* NFSv2 file types - beware, these are not the same in NFSv3 */
+
 enum nfs_ftype {
 	NFNON = 0,
 	NFREG = 1,
@@ -67,42 +87,27 @@ enum nfs_ftype {
 	NFFIFO = 8
 };
 
-
-#if defined(__KERNEL__) || defined(NFS_NEED_KERNEL_TYPES)
-/* 
- * Mount support for NFSroot
- */
-#define NFS_MNT_PROGRAM		100005
-#define NFS_MNT_VERSION		1
-#define NFS_MNT_PORT		627
-#define NFS_MNTPROC_MNT		1
-#define NFS_MNTPROC_UMNT	3
-
-/*
- * This is really a general kernel constant, but since nothing like
- * this is defined in the kernel headers, I have to do it here.
- */
-#define NFS_OFFSET_MAX		LONG_MAX
-
-/*
- * These data types are used exlusively by the NFS client implementation.
- * They support both NFSv2 and NFSv3.
- */
-
+#if defined(__KERNEL__)
 /*
  * This is the kernel NFS client file handle representation
  */
 #define NFS_MAXFHSIZE		64
 struct nfs_fh {
-	unsigned int		size;
-	unsigned int		data[NFS_MAXFHSIZE / sizeof(unsigned int)];
+	unsigned short		size;
+	unsigned char		data[NFS_MAXFHSIZE];
 };
+
+/*
+ * This is really a general kernel constant, but since nothing like
+ * this is defined in the kernel headers, I have to do it here.
+ */
+#define NFS_OFFSET_MAX		((__s64)((~(__u64)0) >> 1))
+
 
 enum nfs3_stable_how {
 	NFS_UNSTABLE = 0,
 	NFS_DATA_SYNC = 1,
 	NFS_FILE_SYNC = 2
 };
-
 #endif /* __KERNEL__ */
 #endif /* _LINUX_NFS_H */

@@ -3,7 +3,7 @@
  *    VM minidisk device driver.
  *
  *  S390 version
- *    Copyright (C) 1999,2000 IBM Deutschland Entwicklung GmbH, IBM Corporation
+ *    Copyright (C) 1999 IBM Deutschland Entwicklung GmbH, IBM Corporation
  *    Author(s): Hartmut Penner (hp@de.ibm.com)
  */
 
@@ -13,6 +13,7 @@
 #endif
 
 #define __NO_VERSION__
+#include <linux/config.h>
 #include <linux/version.h>
 
 char kernel_version [] = UTS_RELEASE;
@@ -38,7 +39,6 @@ char kernel_version [] = UTS_RELEASE;
 
 	 /* Added statement HSM 12/03/99 */
 #include <asm/irq.h>
-#include <asm/s390_ext.h>
 
 #define MAJOR_NR MDISK_MAJOR /* force definitions on in blk.h */
 
@@ -105,122 +105,6 @@ struct {
 } mdisk_setup_data;
 
 /*
- * The 'low level' IO function
- */
-
-static __inline__ int
-dia250(void* iob,int cmd)
-{
-	int rc;
-	
-	iob = (void*) virt_to_phys(iob);
-
-	asm volatile ("    lr    2,%1\n"
-		      "    lr    3,%2\n"
-		      "    .long 0x83230250\n"
-		      "    lr    %0,3"
-		      : "=d" (rc)
-		      : "d" (iob) , "d" (cmd)
-		      : "2", "3" );
-	return rc;
-}
-
-/*
- * The device characteristics function
- */
-
-static __inline__ int
-dia210(void* devchar)
-{
-	int rc;
-
-	devchar = (void*) virt_to_phys(devchar);
-
-	asm volatile ("    lr    2,%1\n"
-		      "    .long 0x83200210\n"
-		      "    ipm   %0\n"
-		      "    srl   %0,28"
-		      : "=d" (rc)
-		      : "d" (devchar)
-		      : "2" );
-	return rc;
-}
-
-
-/*
- * release of minidisk device
- */
-
-static __inline__ int
-mdisk_term_io(mdisk_Dev *dev)
-{
-	mdisk_init_io_t *iob = (mdisk_init_io_t*) dev->iob;
-	
-	memset(iob,0,sizeof(mdisk_init_io_t));
-	
-	iob->dev_nr = dev->vdev;
-	
-	return dia250(iob,TERM_BIO);
-}
-
-
-/*
- * Init of minidisk device
- */
-
-static __inline__ int
-mdisk_init_io(mdisk_Dev *dev,int blocksize,int offset,int size)
-{
-	mdisk_init_io_t *iob = (mdisk_init_io_t*) dev->iob;
-	int rc;
-
-	memset(iob,0,sizeof(mdisk_init_io_t));
-	
-	iob->dev_nr = dev->vdev;
-	iob->block_size = blocksize;
-	iob->offset     = offset;
-	iob->start_block= 0;
-	iob->end_block  = size;
-	
-	rc = dia250(iob,INIT_BIO);
-	
-	/*
-	 * clear for following io once
-	 */
-	
-	memset(iob,0,sizeof(mdisk_rw_io_t));
-	
-	return rc;
-}
-
-
-/*
- * setup and start of minidisk io request
- */
-
-static __inline__ int
-mdisk_rw_io_clustered (mdisk_Dev *dev,
-                       mdisk_bio_t* bio_array,
-                       int length,
-                       int req,
-                       int sync)
-{
-	int rc;
-	mdisk_rw_io_t *iob = dev->iob;
-	
-	iob->dev_nr      = dev->vdev;
-	iob->key         = 0;
-	iob->flags       = sync;
-	
-	iob->block_count = length;
-	iob->interrupt_params = req;
-	iob->bio_list     = virt_to_phys(bio_array);
-	
-	rc = dia250(iob,RW_BIO);
-	return rc;
-}
-
-/*
  * Parameter parsing function, called from init/main.c
  * vdev    : virtual device number
  * size    : size in kbyte
@@ -229,13 +113,13 @@ mdisk_rw_io_clustered (mdisk_Dev *dev,
  * Format is: mdisk=<vdev>:<size>:<offset>:<blksize>,<vdev>:<size>:<offset>...
  * <vdev>:<size>:<offset>:<blksize> can be shortened to <vdev>:<size> with offset=0,blksize=512
  */
-__initfunc(void mdisk_setup(char *str,int *ints))
+int __init mdisk_setup(char *str)
 {
 	char *cur = str;
 	int vdev, size, offset=0,blksize;
-static	int i = 0;
+	static int i = 0;
 	if (!i)
-	  memset(&mdisk_setup_data,0,sizeof(mdisk_setup_data));
+	        memset(&mdisk_setup_data,0,sizeof(mdisk_setup_data));
 
         while (*cur != 0) {
 	        blksize=MDISK_HARDSECT;
@@ -261,7 +145,7 @@ static	int i = 0;
 		if (*cur == ',') cur++;
 		if (i >= MDISK_DEVS) {
 			printk(KERN_WARNING "mnd: too many devices\n");
-			return;
+			return 1;
 		}
 		mdisk_setup_data.vdev[i] = vdev;
 		mdisk_setup_data.size[i] = size;
@@ -271,14 +155,14 @@ static	int i = 0;
 		i++;
 	}
 	
-	return;
+	return 1;
 
 syntax_error:
         printk(KERN_WARNING "mnd: syntax error in parameter string: %s\n", str);
-	return;
+	return 0;
 }
 
-
+__setup("mdisk=", mdisk_setup);
 
 /*
  * Open and close
@@ -354,8 +238,6 @@ static int mdisk_ioctl (struct inode *inode, struct file *filp,
 	case BLKRRPART: /* re-read partition table: can't do it */
 		return -EINVAL;
 		
-		RO_IOCTLS(inode->i_rdev, arg); /* the default RO operations */
-		
 	case HDIO_GETGEO:
 		/*
 		 * get geometry of device -> linear
@@ -378,25 +260,126 @@ static int mdisk_ioctl (struct inode *inode, struct file *filp,
  * The file operations
  */
 
-static struct file_operations mdisk_fops = {
-	NULL,          /* lseek: default */
-	block_read,
-	block_write,
-	NULL,          /* mdisk_readdir */
-	NULL,          /* mdisk_select */
-	mdisk_ioctl,
-	NULL,          /* mdisk_mmap */
-	mdisk_open,
-	NULL,          /* mdisk_flush */
-	mdisk_release,
-	block_fsync,
-	NULL,          /* mdisk_fasync */
-	NULL,          /* mdisk_check_change */
-	NULL,          /* mdisk_revalidate */
-	NULL,          /* mdisk_lock */
+static struct block_device_operations mdisk_fops = {
+	ioctl:        mdisk_ioctl,
+	open:         mdisk_open,
+        release:      mdisk_release,
 };
 
+/*
+ * The 'low level' IO function
+ */
 
+
+static __inline__ int
+dia250(void* iob,int cmd)
+{
+	int rc;
+	
+	iob = (void*) virt_to_phys(iob);
+
+	asm volatile ("    lr    2,%1\n"
+		      "    lr    3,%2\n"
+		      "    .long 0x83230250\n"
+		      "    lr    %0,3"
+		      : "=d" (rc)
+		      : "d" (iob) , "d" (cmd)
+		      : "2", "3" );
+	return rc;
+}
+/*
+ * Init of minidisk device
+ */
+
+static __inline__ int
+mdisk_init_io(mdisk_Dev *dev,int blocksize,int offset,int size)
+{
+	mdisk_init_io_t *iob = (mdisk_init_io_t*) dev->iob;
+	int rc;
+
+	memset(iob,0,sizeof(mdisk_init_io_t));
+	
+	iob->dev_nr = dev->vdev;
+	iob->block_size = blocksize;
+	iob->offset     = offset;
+	iob->start_block= 0;
+	iob->end_block  = size;
+	
+	rc = dia250(iob,INIT_BIO);
+	
+	/*
+	 * clear for following io once
+	 */
+	
+	memset(iob,0,sizeof(mdisk_rw_io_t));
+	
+	return rc;
+}
+
+/*
+ * release of minidisk device
+ */
+
+static __inline__ int
+mdisk_term_io(mdisk_Dev *dev)
+{
+	mdisk_init_io_t *iob = (mdisk_init_io_t*) dev->iob;
+	
+	memset(iob,0,sizeof(mdisk_init_io_t));
+	
+	iob->dev_nr = dev->vdev;
+	
+	return dia250(iob,TERM_BIO);
+}
+
+/*
+ * setup and start of minidisk io request
+ */
+
+static __inline__ int
+mdisk_rw_io_clustered (mdisk_Dev *dev,
+                       mdisk_bio_t* bio_array,
+                       int length,
+                       int req,
+                       int sync)
+{
+	int rc;
+	mdisk_rw_io_t *iob = dev->iob;
+	
+	iob->dev_nr      = dev->vdev;
+	iob->key         = 0;
+	iob->flags       = sync;
+	
+	iob->block_count = length;
+	iob->interrupt_params = req;
+	iob->bio_list     = virt_to_phys(bio_array);
+	
+	rc = dia250(iob,RW_BIO);
+	return rc;
+}
+
+
+
+/*
+ * The device characteristics function
+ */
+
+static __inline__ int
+dia210(void* devchar)
+{
+	int rc;
+
+	devchar = (void*) virt_to_phys(devchar);
+
+	asm volatile ("    lr    2,%1\n"
+		      "    .long 0x83200210\n"
+		      "    ipm   %0\n"
+		      "    srl   %0,28"
+		      : "=d" (rc)
+		      : "d" (devchar)
+		      : "2" );
+	return rc;
+}
 /*
  * read the label of a minidisk and extract its characteristics
  */
@@ -421,7 +404,6 @@ mdisk_read_label (mdisk_Dev *dev, int i)
 			block = 3;
 		}
 		bio = dev->bio;
-		rc = mdisk_term_io(dev);
 		for (b=512;b<4097;b=b*2) {
 			rc = mdisk_init_io(dev, b, 0, 64);
 			if (rc > 4) {
@@ -471,6 +453,9 @@ mdisk_read_label (mdisk_Dev *dev, int i)
 }
 
 
+
+
+
 /*
  * this handles a clustered request in success case
  * all buffers are detach and marked uptodate to the kernel
@@ -485,11 +470,11 @@ mdisk_end_request(int nr_bhs)
 	struct buffer_head *bh;
 	struct request *req;
 
-	if (nr_bhs != 1) {
+	if (nr_bhs > 1) {
 		req = CURRENT;
 		bh  = req->bh;
 		
-		for (i=0;i<nr_bhs-1;i++) {
+		for (i=0; i < nr_bhs-1; i++) {
 			req->bh = bh->b_reqnext;
 			bh->b_reqnext = NULL;
 			bh->b_end_io(bh,1);
@@ -512,7 +497,7 @@ mdisk_end_request(int nr_bhs)
  * Block-driver specific functions
  */
 
-void mdisk_request(void)
+void mdisk_request(request_queue_t *queue)
 {
 	mdisk_Dev *dev;
 	mdisk_bio_t *bio;
@@ -639,10 +624,13 @@ void mdisk_request(void)
  * queues and marks a bottom half.
  *
  */
-void do_mdisk_interrupt(struct pt_regs *regs, __u16 code)
+void do_mdisk_interrupt(void)
 {
+        u16 code;
 	mdisk_Dev *dev;
 	
+	code = S390_lowcore.cpu_addr;
+
 	if ((code >> 8) != 0x03) {
 	  printk("mnd: wrong sub-interruption code %d",code>>8);
 	  return;
@@ -682,6 +670,7 @@ do_mdisk_bh(void *data)
 		/*
 		 * end request for clustered requests
 		 */
+	  if (CURRENT)
 		mdisk_end_request(dev->nr_bhs);
 	}
 
@@ -689,7 +678,7 @@ do_mdisk_bh(void *data)
 	 * if more to do, call mdisk_request
 	 */
 	if (CURRENT)
-		mdisk_request();
+		mdisk_request(NULL);
 	spin_unlock_irqrestore(&io_request_lock, flags);
 }
 
@@ -699,11 +688,12 @@ mdisk_handler (int cpu, void *ds, struct pt_regs *regs)
 	printk (KERN_ERR "mnd: received I/O interrupt... shouldn't happen\n");
 }
 
-__initfunc(int mdisk_init(void))
+int __init mdisk_init(void)
 {
         int rc,i;
         mdisk_Dev *dev;
-	
+	request_queue_t *q;
+
 	/*
 	 * register block device
 	 */
@@ -712,12 +702,10 @@ __initfunc(int mdisk_init(void))
 		       ,MAJOR_NR);
 		return MAJOR_NR;
 	}
-	register_external_interrupt(0x2603,do_mdisk_interrupt);
-	/*
-	 * setup global major dependend structures
-	 */
-	blk_dev[MAJOR_NR].request_fn = DEVICE_REQUEST;
-
+        q = BLK_DEFAULT_QUEUE(MAJOR_NR);
+        blk_init_queue(q, mdisk_request);
+        blk_queue_headactive(BLK_DEFAULT_QUEUE(major), 0);
+	
 	/*
 	 * setup sizes for available devices
 	 */
@@ -726,6 +714,7 @@ __initfunc(int mdisk_init(void))
 	blksize_size[MAJOR_NR] = mdisk_blksizes;   /* blksize of device      */
 	hardsect_size[MAJOR_NR] = mdisk_hardsects;
 	max_sectors[MAJOR_NR]   = mdisk_maxsectors;
+	blk_init_queue(BLK_DEFAULT_QUEUE(MAJOR_NR), DEVICE_REQUEST);
 	
 	for (i=0;i<MDISK_DEVS;i++) {
 		if (mdisk_setup_data.vdev[i] == 0) {
@@ -749,7 +738,7 @@ __initfunc(int mdisk_init(void))
 		dev->vdev = mdisk_setup_data.vdev[i];
 
 		if ( mdisk_setup_data.size[i] == 0 )
-	 		rc = mdisk_read_label(dev, i);
+		        rc = mdisk_read_label(dev, i);
 		dev->size = mdisk_setup_data.size[i] * 2; /* buffer 512 b */
 		dev->blksize = mdisk_setup_data.blksize[i]; 
 		dev->tqueue.routine = do_mdisk_bh;

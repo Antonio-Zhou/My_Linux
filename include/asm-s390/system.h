@@ -11,11 +11,20 @@
 #ifndef __ASM_SYSTEM_H
 #define __ASM_SYSTEM_H
 
+#include <linux/config.h>
 #ifdef __KERNEL__
 #include <asm/lowcore.h>
 #endif
 #include <linux/kernel.h>
 
+#define prepare_to_switch()	do { } while(0)
+#define switch_to(prev,next,last) do {                                       \
+        if (prev == next)                                                    \
+                break;                                                       \
+	save_fp_regs1(&prev->thread.fp_regs);                                \
+	restore_fp_regs1(&next->thread.fp_regs);              		     \
+	last = resume(&prev->thread,&next->thread);                          \
+} while (0)
 
 struct task_struct;
 
@@ -31,49 +40,48 @@ static inline unsigned long __xchg(unsigned long x, void * ptr, int size)
                         asm volatile (
                                 "   lhi   1,3\n"
                                 "   nr    1,%0\n"     /* isolate last 2 bits */
-                                "   xr    %0,1\n"     /* align ptr */
+                                "   xr    1,%0\n"     /* align ptr */
                                 "   bras  2,0f\n"
-                                "   icm   1,8,3(%1)\n"   /* for ptr&3 == 0 */
-                                "   stcm  0,8,3(%1)\n"
-                                "   icm   1,4,3(%1)\n"   /* for ptr&3 == 1 */
-                                "   stcm  0,4,3(%1)\n"
-                                "   icm   1,2,3(%1)\n"   /* for ptr&3 == 2 */
-                                "   stcm  0,2,3(%1)\n"
-                                "   icm   1,1,3(%1)\n"   /* for ptr&3 == 3 */
-                                "   stcm  0,1,3(%1)\n"
+                                "   icm   1,8,%1\n"   /* for ptr&3 == 0 */
+                                "   stcm  0,8,%1\n"
+                                "   icm   1,4,%1\n"   /* for ptr&3 == 1 */
+                                "   stcm  0,4,%1\n"
+                                "   icm   1,2,%1\n"   /* for ptr&3 == 2 */
+                                "   stcm  0,2,%1\n"
+                                "   icm   1,1,%1\n"   /* for ptr&3 == 3 */
+                                "   stcm  0,1,%1\n"
                                 "0: sll   1,3\n"
                                 "   la    2,0(1,2)\n" /* r2 points to an icm */
-                                "   l     0,0(%0)\n"  /* get fullword */
+                                "   l     0,%1\n"     /* get fullword */
                                 "1: lr    1,0\n"      /* cs loop */
                                 "   ex    0,0(2)\n"   /* insert x */
-                                "   cs    0,1,0(%0)\n"
+                                "   cs    0,1,%1\n"
                                 "   jl    1b\n"
                                 "   ex    0,4(2)"     /* store *ptr to x */
-                                : "+a&" (ptr) : "a" (&x)
-                                : "memory", "cc", "0", "1", "2");
-			break;
+                                : "+a&" (ptr) : "m" (x)
+                                : "memory", "0", "1", "2");
                 case 2:
                         if(((__u32)ptr)&1)
                                 panic("misaligned (__u16 *) in __xchg\n");
                         asm volatile (
                                 "   lhi   1,2\n"
                                 "   nr    1,%0\n"     /* isolate bit 2^1 */
-                                "   xr    %0,1\n"     /* align ptr */
+                                "   xr    1,%0\n"     /* align ptr */
                                 "   bras  2,0f\n"
-                                "   icm   1,12,2(%1)\n"   /* for ptr&2 == 0 */
-                                "   stcm  0,12,2(%1)\n"
-                                "   icm   1,3,2(%1)\n"    /* for ptr&2 == 1 */
-                                "   stcm  0,3,2(%1)\n"
+                                "   icm   1,12,%1\n"   /* for ptr&2 == 0 */
+                                "   stcm  0,12,%1\n"
+                                "   icm   1,3,%1\n"    /* for ptr&2 == 1 */
+                                "   stcm  0,3,%1\n"
                                 "0: sll   1,2\n"
                                 "   la    2,0(1,2)\n" /* r2 points to an icm */
-                                "   l     0,0(%0)\n"  /* get fullword */
+                                "   l     0,%1\n"     /* get fullword */
                                 "1: lr    1,0\n"      /* cs loop */
                                 "   ex    0,0(2)\n"   /* insert x */
-                                "   cs    0,1,0(%0)\n"
+                                "   cs    0,1,%1\n"
                                 "   jl    1b\n"
                                 "   ex    0,4(2)"     /* store *ptr to x */
-                                : "+a&" (ptr) : "a" (&x)
-                                : "memory", "cc", "0", "1", "2");
+                                : "+a&" (ptr) : "m" (x)
+                                : "memory", "0", "1", "2");
                         break;
                 case 4:
                         if(((__u32)ptr)&3)
@@ -84,7 +92,7 @@ static inline unsigned long __xchg(unsigned long x, void * ptr, int size)
                                 "    jl  0b\n"
                                 "    lr  %0,0\n"
                                 : "+d&" (x) : "a" (ptr)
-                                : "memory", "cc", "0" );
+                                : "memory", "0" );
                         break;
                default:
                         abort();
@@ -96,16 +104,23 @@ static inline unsigned long __xchg(unsigned long x, void * ptr, int size)
  * Force strict CPU ordering.
  * And yes, this is required on UP too when we're talking
  * to devices.
- */
-/* This is very similar to the ppc eieio/sync instruction in that is
+ *
+ * This is very similar to the ppc eieio/sync instruction in that is
  * does a checkpoint syncronisation & makes sure that 
  * all memory ops have completed wrt other CPU's ( see 7-15 POP  DJB ).
  */
+
 #define eieio()  __asm__ __volatile__ ("BCR 15,0") 
 # define SYNC_OTHER_CORES(x)   eieio() 
 #define mb()    eieio()
+#define rmb()   eieio()
 #define wmb()   eieio()
 
+#define set_mb(var, value)      do { var = value; mb(); } while (0)
+#define set_rmb(var, value)     do { var = value; rmb(); } while (0)
+#define set_wmb(var, value)     do { var = value; wmb(); } while (0)
+
+/* interrupt control.. */
 #define __sti() ({ \
         __u8 dummy; \
         __asm__ __volatile__ ( \
@@ -113,9 +128,10 @@ static inline unsigned long __xchg(unsigned long x, void * ptr, int size)
         })
 
 #define __cli() ({ \
-        __u8 dummy; \
+        __u32 flags; \
         __asm__ __volatile__ ( \
-                "stnsm %0,0xFC" : "=m" (dummy) : : "memory"); \
+                "stnsm %0,0xFC" : "=m" (flags) : : "memory"); \
+        flags; \
         })
 
 #define __save_flags(x) \
@@ -140,7 +156,7 @@ static inline unsigned long __xchg(unsigned long x, void * ptr, int size)
                 "    st    0,0(1)\n" \
                 "1:  ex    %1,4(2)"      /* execute lctl */ \
                 : "=m" (dummy) : "a" (cr*17), "a" (1<<(bit)) \
-                : "cc", "0", "1", "2"); \
+                : "0", "1", "2"); \
         })
 
 #define __ctl_clear_bit(cr, bit) ({ \
@@ -159,10 +175,16 @@ static inline unsigned long __xchg(unsigned long x, void * ptr, int size)
                 "    st    0,0(1)\n" \
                 "1:  ex    %1,4(2)"      /* execute lctl */ \
                 : "=m" (dummy) : "a" (cr*17), "a" (~(1<<(bit))) \
-                : "cc", "0", "1", "2"); \
+                : "0", "1", "2"); \
         })
 
-#ifdef __SMP__
+/* For spinlocks etc */
+#define local_irq_save(x)	((x) = __cli())
+#define local_irq_restore(x)	__restore_flags(x)
+#define local_irq_disable()	__cli()
+#define local_irq_enable()	__sti()
+
+#ifdef CONFIG_SMP
 
 extern void __global_cli(void);
 extern void __global_sti(void);
@@ -199,16 +221,9 @@ extern int save_fp_regs1(s390_fp_regs *fpregs);
 extern void save_fp_regs(s390_fp_regs *fpregs);
 extern int restore_fp_regs1(s390_fp_regs *fpregs);
 extern void restore_fp_regs(s390_fp_regs *fpregs);
+extern void show_crashed_task_info(void);
 #endif
 
-#define switch_to(prev,next,last) do {                                       \
-        if (prev == next)                                                    \
-                break;                                                       \
-	save_fp_regs1(&prev->tss.fp_regs);                                   \
-	restore_fp_regs1(&next->tss.fp_regs);              		     \
-	(next)->mm->cpu_vm_mask |= (1UL << smp_processor_id());		     \
-	last = resume(&prev->tss,&next->tss);                                \
-} while (0)
 #endif
 
 

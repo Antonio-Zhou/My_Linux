@@ -28,8 +28,8 @@
 #include <asm/feature.h>
 #include <asm/mediabay.h>
 #include <asm/init.h>
-#include <asm/adb.h>
-#include <asm/pmu.h>
+#include <linux/adb.h>
+#include <linux/pmu.h>
 
 #ifdef CONFIG_PMAC_PBOOK
 static int mb_notify_sleep(struct pmu_sleep_notifier *self, int when);
@@ -185,14 +185,12 @@ static void media_bay_intr(int irq, void *devid, struct pt_regs *regs);
  * Therefore we do it all by polling the media bay once each tick.
  */
 
-__pmac /* I don't know of any chrp with a mediabay -- Cort */
-
-void
+void __pmac
 media_bay_init(void)
 {
 	struct device_node *np;
 	int		n,i;
-
+	
 	for (i=0; i<MAX_BAYS; i++) {
 		memset((char *)&media_bays[i], 0, sizeof(struct media_bay_info));
 		media_bays[i].content_id	= -1;
@@ -200,7 +198,7 @@ media_bay_init(void)
 		media_bays[i].cd_index		= -1;
 #endif
 	}
-
+	
 	np = find_devices("media-bay");
 	n = 0;
 	while(np && (n<MAX_BAYS)) {
@@ -230,9 +228,9 @@ media_bay_init(void)
 				np->intrs[0].line, n);
 			continue;
 		}
-#endif
+#endif	
 		media_bay_count++;
-
+	
 		media_bays[n].dev_node		= np;
 
 		/* Force an immediate detect */
@@ -269,13 +267,13 @@ media_bay_init(void)
 }
 
 #ifdef MB_USE_INTERRUPTS
-static void
+static void __pmac
 media_bay_intr(int irq, void *devid, struct pt_regs *regs)
 {
 }
 #endif
 
-static void
+static void __pmac
 set_mb_power(int which, int onoff)
 {
 	volatile struct media_bay_info*	mb = &media_bays[which];
@@ -303,13 +301,13 @@ set_mb_power(int which, int onoff)
 	mb->timer = MS_TO_HZ(MB_POWER_DELAY);
 }
 
-static void
+static void __pmac
 set_media_bay(int which, int id)
 {
 	volatile struct media_bay_info* bay;
 
 	bay = &media_bays[which];
-
+	
 	switch (id) {
 	case MB_CD:
 		if (bay->pismo) {
@@ -340,7 +338,7 @@ set_media_bay(int which, int id)
 	}
 }
 
-int
+int __pmac
 check_media_bay(struct device_node *which_bay, int what)
 {
 #ifdef CONFIG_BLK_DEV_IDE
@@ -358,7 +356,7 @@ check_media_bay(struct device_node *which_bay, int what)
 	return -ENODEV;
 }
 
-int
+int __pmac
 check_media_bay_by_base(unsigned long base, int what)
 {
 #ifdef CONFIG_BLK_DEV_IDE
@@ -373,11 +371,11 @@ check_media_bay_by_base(unsigned long base, int what)
 			return -EINVAL;
 		} 
 #endif
-
+	
 	return -ENODEV;
 }
 
-int
+int __pmac
 media_bay_set_ide_infos(struct device_node* which_bay, unsigned long base,
 	int irq, int index)
 {
@@ -388,7 +386,7 @@ media_bay_set_ide_infos(struct device_node* which_bay, unsigned long base,
 		if (which_bay == media_bays[i].dev_node)
 		{
 			int timeout = 5000;
-
+			
  			media_bays[i].cd_base	= base;
 			media_bays[i].cd_irq	= irq;
 
@@ -407,11 +405,11 @@ media_bay_set_ide_infos(struct device_node* which_bay, unsigned long base,
 			return -ENODEV;
 		} 
 #endif
-
+	
 	return -ENODEV;
 }
 
-static void
+static void __pmac
 media_bay_step(int i)
 {
 	volatile struct media_bay_info* bay = &media_bays[i];
@@ -474,11 +472,8 @@ media_bay_step(int i)
 	    	} else if (MB_IDE_READY(i)) {
 			bay->timer = 0;
 			bay->state = mb_up;
-			if (bay->cd_index < 0) { 
-				pmu_suspend();
+			if (bay->cd_index < 0)
 				bay->cd_index = ide_register(bay->cd_base, 0, bay->cd_irq);
-				pmu_resume();
-			}
 			if (bay->cd_index == -1) {
 				/* We eventually do a retry */
 				bay->cd_retry++;
@@ -528,10 +523,10 @@ media_bay_step(int i)
  * with the IDE driver.  It needs to be a thread because
  * ide_register can't be called from interrupt context.
  */
-int
+int __pmac
 media_bay_task(void *x)
 {
-	int	i = 0;
+	int	i;
 
 	strcpy(current->comm, "media-bay");
 #ifdef MB_IGNORE_SIGNALS
@@ -539,19 +534,17 @@ media_bay_task(void *x)
 #endif
 
 	for (;;) {
-	    media_bay_step(i);
+		for (i = 0; i < media_bay_count; ++i)
+			media_bay_step(i);
 
-	    if (++i >= media_bay_count) {
-		i = 0;
 		current->state = TASK_INTERRUPTIBLE;
 		schedule_timeout(1);
 		if (signal_pending(current))
-		    return 0;
-	    }
+			return 0;
 	}
 }
 
-void
+void __pmac
 poll_media_bay(int which)
 {
 	volatile struct media_bay_info* bay = &media_bays[which];
@@ -585,25 +578,24 @@ poll_media_bay(int which)
 
 #ifdef CONFIG_PMAC_PBOOK
 /*
- * notify ents before sleep and reset bus afterwards
+ * notify clients before sleep and reset bus afterwards
  */
-int
+int __pmac
 mb_notify_sleep(struct pmu_sleep_notifier *self, int when)
 {
 	volatile struct media_bay_info* bay;
 	int i;
-
+	
 	switch (when) {
 	case PBOOK_SLEEP_REQUEST:
 	case PBOOK_SLEEP_REJECT:
 		break;
-
+		
 	case PBOOK_SLEEP_NOW:
 		for (i=0; i<media_bay_count; i++) {
 			bay = &media_bays[i];
 			set_mb_power(i, 0);
 			mdelay(10);
-			feature_clear(bay->dev_node, FEATURE_IOBUS_enable);
 		}
 		break;
 	case PBOOK_WAKE:
@@ -613,10 +605,7 @@ mb_notify_sleep(struct pmu_sleep_notifier *self, int when)
 			   only if it did not change. Note those bozo timings,
 			   they seem to help the 3400 get it right.
 			 */
-			feature_set(bay->dev_node, FEATURE_IOBUS_enable);
-			/* Force MB power to 0 */
-			set_mb_power(i, 0);
-			mdelay(MB_POWER_DELAY);
+			mdelay(MB_STABLE_DELAY);
 			if (!bay->pismo)
 				out_8(&bay->addr->contents, 0x70);
 			mdelay(MB_STABLE_DELAY);
@@ -626,9 +615,7 @@ mb_notify_sleep(struct pmu_sleep_notifier *self, int when)
 			bay->last_value = bay->content_id;
 			bay->value_count = MS_TO_HZ(MB_STABLE_DELAY);
 			bay->timer = MS_TO_HZ(MB_POWER_DELAY);
-#ifdef CONFIG_BLK_DEV_IDE
 			bay->cd_retry = 0;
-#endif			
 			do {
 				mdelay(1000/HZ);
 				media_bay_step(i);
@@ -640,3 +627,4 @@ mb_notify_sleep(struct pmu_sleep_notifier *self, int when)
 	return PBOOK_SLEEP_OK;
 }
 #endif /* CONFIG_PMAC_PBOOK */
+

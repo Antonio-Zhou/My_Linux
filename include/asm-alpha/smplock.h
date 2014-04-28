@@ -6,9 +6,11 @@
 
 #include <linux/sched.h>
 #include <linux/interrupt.h>
-#include <asm/spinlock.h>
+#include <linux/spinlock.h>
 
 extern spinlock_t kernel_flag;
+
+#define kernel_locked()		spin_is_locked(&kernel_flag)
 
 /*
  * Release global kernel lock and global interrupt lock
@@ -17,6 +19,8 @@ static __inline__ void release_kernel_lock(struct task_struct *task, int cpu)
 {
 	if (task->lock_depth >= 0)
 		spin_unlock(&kernel_flag);
+	release_irqlock(cpu);
+	__sti();
 }
 
 /*

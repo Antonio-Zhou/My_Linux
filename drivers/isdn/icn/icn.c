@@ -1,34 +1,240 @@
-/* $Id: icn.c,v 1.1.2.1 2001/12/31 13:26:47 kai Exp $
- *
+/* $Id: icn.c,v 1.62 1999/09/06 07:29:35 fritz Exp $
+
  * ISDN low-level module for the ICN active ISDN-Card.
  *
  * Copyright 1994,95,96 by Fritz Elfert (fritz@isdn4linux.de)
  *
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2, or (at your option)
+ * any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ *
+ * $Log: icn.c,v $
+ * Revision 1.62  1999/09/06 07:29:35  fritz
+ * Changed my mail-address.
+ *
+ * Revision 1.61  1999/09/03 14:06:58  fritz
+ * Fixed a memory leak.
+ *
+ * Revision 1.60  1999/08/31 11:20:32  paul
+ * various spelling corrections (new checksums may be needed, Karsten!)
+ *
+ * Revision 1.59  1999/08/28 22:10:55  keil
+ * __setup function should be static
+ *
+ * Revision 1.58  1999/08/25 16:44:17  keil
+ * Support for new __setup function
+ *
+ * Revision 1.57  1999/07/06 16:15:30  detabc
+ * remove unused messages
+ *
+ * Revision 1.56  1999/04/12 13:15:07  fritz
+ * Fixed a cast.
+ *
+ * Revision 1.55  1999/04/12 12:34:02  fritz
+ * Changes from 2.0 tree.
+ *
+ * Revision 1.54  1999/01/05 18:29:39  he
+ * merged remaining schedule_timeout() changes from 2.1.127
+ *
+ * Revision 1.53  1998/06/17 19:51:28  he
+ * merged with 2.1.10[34] (cosmetics and udelay() -> mdelay())
+ * brute force fix to avoid Ugh's in isdn_tty_write()
+ * cleaned up some dead code
+ *
+ * Revision 1.52  1998/05/20 19:29:58  tsbogend
+ * fixed bug introduced by changes for new BSENT callback
+ *
+ * Revision 1.51  1998/03/07 22:29:55  fritz
+ * Adapted Detlef's chenges for 2.1.
+ *
+ * Revision 1.49  1998/02/13 11:14:15  keil
+ * change for 2.1.86 (removing FREE_READ/FREE_WRITE from [dev]_kfree_skb()
+ *
+ * Revision 1.48  1997/10/10 15:56:14  fritz
+ * New HL<->LL interface:
+ *   New BSENT callback with nr. of bytes included.
+ *   Sending without ACK.
+ *
+ * Revision 1.47  1997/10/01 09:21:51  fritz
+ * Removed old compatibility stuff for 2.0.X kernels.
+ * From now on, this code is for 2.1.X ONLY!
+ * Old stuff is still in the separate branch.
+ *
+ * Revision 1.46  1997/08/21 22:38:33  fritz
+ * Fixed a typo.
+ *
+ * Revision 1.45  1997/06/21 10:42:06  fritz
+ * Added availability to select leased mode on only one channel.
+ *
+ * Revision 1.44  1997/03/30 16:51:26  calle
+ * changed calls to copy_from_user/copy_to_user and removed verify_area
+ * were possible.
+ *
+ * Revision 1.43  1997/03/21 18:27:04  fritz
+ * Corrected parsing of incoming setup.
+ *
+ * Revision 1.42  1997/03/05 21:13:18  fritz
+ * Bugfix: sndcount was not reset on hangup.
+ *
+ * Revision 1.41  1997/02/24 23:34:29  fritz
+ * Bugfix in Layer1 error-recovery.
+ *
+ * Revision 1.40  1997/02/23 23:34:45  fritz
+ * Minor bugfixes in debugging code.
+ *
+ * Revision 1.39  1997/02/23 16:21:56  fritz
+ * Bugfix: Check for NULL pointer in icn_parse_status().
+ *
+ * Revision 1.38  1997/02/11 18:29:31  fritz
+ * Bugfix in D64S initialization.
+ *
+ * Revision 1.37  1997/02/10 22:43:20  fritz
+ * Added plan and screen elements on ISDN_STAT_ICALL
+ *
+ * Revision 1.36  1997/02/10 21:31:20  fritz
+ * Changed setup-interface (incoming and outgoing).
+ *
+ * Revision 1.35  1997/02/10 10:10:28  fritz
+ * Changes for Kernel 2.1.X compatibility.
+ * Enhanced initialization, can recover from
+ * misconfiguration by other autoprobing drivers.
+ *
+ * Revision 1.34  1997/01/29 22:34:44  fritz
+ * Cleanup, Corrected D64S setup of 2nd channel.
+ *
+ * Revision 1.33  1996/12/05 20:31:48  tsbogend
+ * added handling of L2: DATA LINK LOST messages
+ *
+ * Revision 1.32  1996/11/14 23:49:18  fritz
+ * Bugfix: copy_to_user/copy_from_user mismatch in debugging-ioctl.
+ *
+ * Revision 1.31  1996/11/13 02:36:25  fritz
+ * Fixed a race condition in writecmd.
+ * Some optimizations and cleanup.
+ *
+ * Revision 1.30  1996/10/22 23:14:09  fritz
+ * Changes for compatibility to 2.0.X and 2.1.X kernels.
+ *
+ * Revision 1.29  1996/08/29 20:34:54  fritz
+ * Bugfix in send queue management:
+ * sndcount was not updated correctly.
+ * Minor Bugfixes.
+ *
+ * Revision 1.28  1996/06/28 17:02:53  fritz
+ * replaced memcpy_fromfs_toio.
+ *
+ * Revision 1.27  1996/06/25 18:38:59  fritz
+ * Fixed function name in error message.
+ *
+ * Revision 1.26  1996/06/24 17:20:35  fritz
+ * Bugfixes in pollbchan_send():
+ *   - Using lock field of skbuff breaks networking.
+ *   - Added channel locking
+ *   - changed dequeuing scheme.
+ * Eliminated misc. compiler warnings.
+ *
+ * Revision 1.25  1996/06/11 22:53:35  tsbogend
+ * fixed problem with large array on stack
+ * made the driver working on Linux/alpha
+ *
+ * Revision 1.24  1996/06/06 13:58:33  fritz
+ * Changed code to be architecture independent
+ *
+ * Revision 1.23  1996/06/03 19:59:00  fritz
+ * Fixed typos.
+ *
+ * Revision 1.22  1996/05/17 15:46:41  fritz
+ * Removed own queue management.
+ * Changed queue management to use sk_buffs.
+ *
+ * Revision 1.21  1996/05/02 04:01:20  fritz
+ * Bugfix:
+ *  - icn_addcard() evaluated wrong driverId.
+ *
+ * Revision 1.20  1996/05/02 00:40:27  fritz
+ * Major rewrite to support more than one card
+ * with a single module.
+ * Support for new firmware.
+ *
+ * Revision 1.19  1996/04/21 17:43:32  fritz
+ * Changes for Support of new Firmware BRV3.02
+ *
+ * Revision 1.18  1996/04/20 16:50:26  fritz
+ * Fixed status-buffer overrun.
+ * Misc. typos
+ *
+ * Revision 1.17  1996/02/11 02:39:04  fritz
+ * Increased Buffer for status-messages.
+ * Removed conditionals for HDLC-firmware.
+ *
+ * Revision 1.16  1996/01/22 05:01:55  fritz
+ * Revert to GPL.
+ *
+ * Revision 1.15  1996/01/10 20:57:39  fritz
+ * Bugfix: Loading firmware twice caused the device stop working.
+ *
+ * Revision 1.14  1995/12/18  18:23:37  fritz
+ * Support for ICN-2B Cards.
+ * Change for supporting user-settable service-octet.
+ *
+ * Revision 1.13  1995/10/29  21:41:07  fritz
+ * Added support for DriverId's, added Jan's patches for Kernel versions.
+ *
+ * Revision 1.12  1995/04/29  13:07:35  fritz
+ * Added support for new Euro-ISDN-firmware
+ *
+ * Revision 1.11  1995/04/23  13:40:45  fritz
+ * Added support for SPV's.
+ * Changed Dial-Command to support MSN's on DSS1-Lines.
+ *
+ * Revision 1.10  1995/03/25  23:23:24  fritz
+ * Changed configurable Ports, to allow settings for DIP-Switch Cardversions.
+ *
+ * Revision 1.9  1995/03/25  23:17:30  fritz
+ * Fixed race-condition in pollbchan_send
+ *
+ * Revision 1.8  1995/03/15  12:49:44  fritz
+ * Added support for SPV's
+ * Split pollbchan_work for calling send-routine directly
+ *
+ * Revision 1.7  1995/02/20  03:48:03  fritz
+ * Added support of new request_region-function.
+ * Minor bugfixes.
+ *
+ * Revision 1.6  1995/01/31  15:48:45  fritz
+ * Added Cause-Messages to be signaled to upper layers.
+ * Added Revision-Info on load.
+ *
+ * Revision 1.5  1995/01/29  23:34:59  fritz
+ * Added stopdriver() and appropriate calls.
+ * Changed printk-statements to support loglevels.
+ *
+ * Revision 1.4  1995/01/09  07:40:46  fritz
+ * Added GPL-Notice
+ *
+ * Revision 1.3  1995/01/04  05:15:18  fritz
+ * Added undocumented "bootload-finished"-command in download-code
+ * to satisfy some brain-damaged icn card-versions.
+ *
+ * Revision 1.2  1995/01/02  02:14:45  fritz
+ * Misc Bugfixes
+ *
+ * Revision 1.1  1994/12/14  17:56:06  fritz
+ * Initial revision
  *
  */
 
 #include "icn.h"
-#include <linux/module.h>
-#include <linux/init.h>
-
-static int portbase = ICN_BASEADDR;
-static unsigned long membase = ICN_MEMADDR;
-static char *icn_id = "\0";
-static char *icn_id2 = "\0";
-
-MODULE_DESCRIPTION("ISDN4Linux: Driver for ICN active ISDN card");
-MODULE_AUTHOR("Fritz Elfert");
-MODULE_LICENSE("GPL");
-MODULE_PARM(portbase, "i");
-MODULE_PARM_DESC(portbase, "Port address of first card");
-MODULE_PARM(membase, "l");
-MODULE_PARM_DESC(membase, "Shared memory address of all cards");
-MODULE_PARM(icn_id, "s");
-MODULE_PARM_DESC(icn_id, "ID-String of first card");
-MODULE_PARM(icn_id2, "s");
-MODULE_PARM_DESC(icn_id2, "ID-String of first card, second S0 (4B only)");
 
 /*
  * Verbose bootcode- and protocol-downloading.
@@ -41,7 +247,7 @@ MODULE_PARM_DESC(icn_id2, "ID-String of first card, second S0 (4B only)");
 #undef MAP_DEBUG
 
 static char
-*revision = "$Revision: 1.1.2.1 $";
+*revision = "$Revision: 1.62 $";
 
 static int icn_addcard(int, char *, char *);
 
@@ -58,7 +264,8 @@ icn_free_queue(icn_card * card, int channel)
 	struct sk_buff *skb;
 	unsigned long flags;
 
-	skb_queue_purge(queue);
+	while ((skb = skb_dequeue(queue)))
+		dev_kfree_skb(skb);
 	save_flags(flags);
 	cli();
 	card->xlen[channel] = 0;
@@ -844,23 +1051,23 @@ icn_loadboot(u_char * buffer, icn_card * card)
 			card->other->rvalid = 1;
 	}
 	if (!dev.mvalid) {
-		if (check_mem_region(dev.memaddr, 0x4000)) {
+		if (check_shmem((ulong) dev.shmem, 0x4000)) {
 			printk(KERN_WARNING
-			       "icn: memory at 0x%08lx in use.\n", dev.memaddr);
+			       "icn: memory at 0x%08lx in use.\n",
+			       (ulong) dev.shmem);
 			restore_flags(flags);
 			return -EBUSY;
 		}
-		request_mem_region(dev.memaddr, 0x4000, "icn-isdn (all cards)");
-		dev.shmem = ioremap(dev.memaddr, 0x4000);
+		request_shmem((ulong) dev.shmem, 0x4000, "icn");
 		dev.mvalid = 1;
 	}
 	restore_flags(flags);
 	OUTB_P(0, ICN_RUN);     /* Reset Controller */
 	OUTB_P(0, ICN_MAPRAM);  /* Disable RAM      */
 	icn_shiftout(ICN_CFG, 0x0f, 3, 4);	/* Windowsize= 16k  */
-	icn_shiftout(ICN_CFG, dev.memaddr, 23, 10);	/* Set RAM-Addr.    */
+	icn_shiftout(ICN_CFG, (unsigned long) dev.shmem, 23, 10);	/* Set RAM-Addr.    */
 #ifdef BOOT_DEBUG
-	printk(KERN_DEBUG "shmem=%08lx\n", dev.memaddr);
+	printk(KERN_DEBUG "shmem=%08lx\n", (ulong) dev.shmem);
 #endif
 	SLEEP(1);
 #ifdef BOOT_DEBUG
@@ -874,7 +1081,7 @@ icn_loadboot(u_char * buffer, icn_card * card)
 	SLEEP(1);
 	memcpy_toio(dev.shmem, codebuf, ICN_CODE_STAGE1);	/* Copy code        */
 #ifdef BOOT_DEBUG
-	printk(KERN_DEBUG "Bootloader transferred\n");
+	printk(KERN_DEBUG "Bootloader transfered\n");
 #endif
 	if (card->doubleS0) {
 		SLEEP(1);
@@ -890,7 +1097,7 @@ icn_loadboot(u_char * buffer, icn_card * card)
 		SLEEP(1);
 		memcpy_toio(dev.shmem, codebuf, ICN_CODE_STAGE1);	/* Copy code        */
 #ifdef BOOT_DEBUG
-		printk(KERN_DEBUG "Bootloader transferred\n");
+		printk(KERN_DEBUG "Bootloader transfered\n");
 #endif
 	}
 	kfree(codebuf);
@@ -1183,31 +1390,29 @@ icn_command(isdn_ctrl * c, icn_card * card)
 			memcpy(&a, c->parm.num, sizeof(ulong));
 			switch (c->arg) {
 				case ICN_IOCTL_SETMMIO:
-					if (dev.memaddr != (a & 0x0ffc000)) {
-						if (check_mem_region(a & 0x0ffc000, 0x4000)) {
+					if ((unsigned long) dev.shmem != (a & 0x0ffc000)) {
+						if (check_shmem((ulong) (a & 0x0ffc000), 0x4000)) {
 							printk(KERN_WARNING
 							       "icn: memory at 0x%08lx in use.\n",
-							       a & 0x0ffc000);
+							       (ulong) (a & 0x0ffc000));
 							return -EINVAL;
 						}
 						icn_stopallcards();
 						save_flags(flags);
 						cli();
-						if (dev.mvalid) {
-							iounmap(dev.shmem);
-							release_mem_region(dev.memaddr, 0x4000);
-						}
+						if (dev.mvalid)
+							release_shmem((ulong) dev.shmem, 0x4000);
 						dev.mvalid = 0;
-						dev.memaddr = a & 0x0ffc000;
+						dev.shmem = (icn_shmem *) (a & 0x0ffc000);
 						restore_flags(flags);
 						printk(KERN_INFO
 						       "icn: (%s) mmio set to 0x%08lx\n",
 						       CID,
-						       dev.memaddr);
+						       (unsigned long) dev.shmem);
 					}
 					break;
 				case ICN_IOCTL_GETMMIO:
-					return (long) dev.memaddr;
+					return (long) dev.shmem;
 				case ICN_IOCTL_SETPORT:
 					if (a == 0x300 || a == 0x310 || a == 0x320 || a == 0x330
 					    || a == 0x340 || a == 0x350 || a == 0x360 ||
@@ -1647,18 +1852,24 @@ icn_addcard(int port, char *id1, char *id2)
 	return 0;
 }
 
-#ifndef MODULE
-void
-icn_setup(char *str, int *ints)
+#ifdef MODULE
+#define icn_init init_module
+#else
+#include <linux/init.h>
+static int __init
+icn_setup(char *line)
 {
-	char *p;
+	char *p, *str;
+	int	ints[3];
 	static char sid[20];
 	static char sid2[20];
+
+	str = get_options(line, 2, ints);
 	if (ints[0])
 		portbase = ints[1];
 	if (ints[0] > 1)
-		membase = (unsigned long)ints[2];
-	if (str && *str) {
+		membase = ints[2];
+	if (strlen(str)) {
 		strcpy(sid, str);
 		icn_id = sid;
 		if ((p = strchr(sid, ','))) {
@@ -1667,19 +1878,25 @@ icn_setup(char *str, int *ints)
 			icn_id2 = sid2;
 		}
 	}
+	return(1);
 }
-#endif /* MODULE */
+__setup("icn=", icn_setup);
+#endif /* MODULES */
 
-static int __init icn_init(void)
+int
+icn_init(void)
 {
 	char *p;
 	char rev[10];
 
 	memset(&dev, 0, sizeof(icn_dev));
-	dev.memaddr = (membase & 0x0ffc000);
+	dev.shmem = (icn_shmem *) ((unsigned long) membase & 0x0ffc000);
 	dev.channel = -1;
 	dev.mcard = NULL;
 	dev.firstload = 1;
+
+	/* No symbols to export, hide all symbols */
+	EXPORT_NO_SYMBOLS;
 
 	if ((p = strchr(revision, ':'))) {
 		strcpy(rev, p + 1);
@@ -1688,11 +1905,13 @@ static int __init icn_init(void)
 	} else
 		strcpy(rev, " ??? ");
 	printk(KERN_NOTICE "ICN-ISDN-driver Rev%smem=0x%08lx\n", rev,
-	       dev.memaddr);
+	       (ulong) dev.shmem);
 	return (icn_addcard(portbase, icn_id, icn_id2));
 }
 
-static void  icn_exit(void)
+#ifdef MODULE
+void
+cleanup_module(void)
 {
 	isdn_ctrl cmd;
 	icn_card *card = cards;
@@ -1722,12 +1941,8 @@ static void  icn_exit(void)
 		card = card->next;
 		kfree(last);
 	}
-	if (dev.mvalid) {
-		iounmap(dev.shmem);
-		release_mem_region(dev.memaddr, 0x4000);
-	}
+	if (dev.mvalid)
+		release_shmem((ulong) dev.shmem, 0x4000);
 	printk(KERN_NOTICE "ICN-ISDN-driver unloaded\n");
 }
-
-module_init(icn_init);
-module_exit(icn_exit);
+#endif

@@ -3,6 +3,8 @@
  * Written by Mark Hemment, 1996/97.
  * (markhe@nextd.demon.co.uk)
  *
+ * kmem_cache_destroy() + some cleanup - 1999 Andrea Arcangeli
+ *
  * 11 April '97.  Started multi-threading - markhe
  *	The global cache-chain is protected by the semaphore 'cache_chain_sem'.
  *	The sem is only needed when accessing/extending the cache-chain, which
@@ -108,7 +110,7 @@
 /* If there is a different PAGE_SIZE around, and it works with this allocator,
  * then change the following.
  */
-#if	(PAGE_SIZE != 8192 && PAGE_SIZE != 4096)
+#if	(PAGE_SIZE != 8192 && PAGE_SIZE != 4096 && PAGE_SIZE != 16384 && PAGE_SIZE != 32768)
 #error	Your page size is probably not correctly supported - please check
 #endif
 
@@ -125,7 +127,7 @@
  * SLAB_SELFTEST	- 1 to perform a few tests, mainly for development.
  */
 #define		SLAB_MGMT_CHECKS	1
-#define		SLAB_DEBUG_SUPPORT	0
+#define		SLAB_DEBUG_SUPPORT	1
 #define		SLAB_STATS		0
 #define		SLAB_SELFTEST		0
 
@@ -214,6 +216,8 @@ typedef struct kmem_bufctl_s {
 
 #endif	/* SLAB_DEBUG_SUPPORT */
 
+#define SLAB_CACHE_NAME_LEN	20	/* max name length for a slab cache */
+
 /* Cache struct - manages a cache.
  * First four members are commonly referenced during an alloc/free operation.
  */
@@ -239,7 +243,7 @@ struct kmem_cache_s {
 	size_t			  c_colour;	/* cache colouring range */
 	size_t			  c_colour_next;/* cache colouring */
 	unsigned long		  c_failures;
-	const char		 *c_name;
+	char			  c_name[SLAB_CACHE_NAME_LEN];
 	struct kmem_cache_s	 *c_nextp;
 	kmem_cache_t		 *c_index_cachep;
 #if	SLAB_STATS
@@ -315,10 +319,10 @@ static int slab_break_gfp_order = SLAB_BREAK_GFP_ORDER_LO;
  * slab an obj belongs to.  With kmalloc(), and kfree(), these are used
  * to find the cache which an obj belongs to.
  */
-#define	SLAB_SET_PAGE_CACHE(pg, x)	((pg)->next = (struct page *)(x))
-#define	SLAB_GET_PAGE_CACHE(pg)		((kmem_cache_t *)(pg)->next)
-#define	SLAB_SET_PAGE_SLAB(pg, x)	((pg)->prev = (struct page *)(x))
-#define	SLAB_GET_PAGE_SLAB(pg)		((kmem_slab_t *)(pg)->prev)
+#define	SLAB_SET_PAGE_CACHE(pg,x)  ((pg)->list.next = (struct list_head *)(x))
+#define	SLAB_GET_PAGE_CACHE(pg)    ((kmem_cache_t *)(pg)->list.next)
+#define	SLAB_SET_PAGE_SLAB(pg,x)   ((pg)->list.prev = (struct list_head *)(x))
+#define	SLAB_GET_PAGE_SLAB(pg)     ((kmem_slab_t *)(pg)->list.prev)
 
 /* Size description struct for general caches. */
 typedef struct cache_sizes {
@@ -392,15 +396,15 @@ static struct semaphore	cache_chain_sem;
 static	kmem_cache_t	*clock_searchp = &cache_cache;
 
 /* Internal slab management cache, for when slab management is off-slab. */
-static kmem_cache_t	*cache_slabp = NULL;
+static kmem_cache_t	*cache_slabp;
 
 /* Max number of objs-per-slab for caches which use bufctl's.
  * Needed to avoid a possible looping condition in kmem_cache_grow().
  */
-static unsigned long bufctl_limit = 0;
+static unsigned long bufctl_limit;
 
 /* Initialisation - setup the `cache' cache. */
-long __init kmem_cache_init(long start, long end)
+void __init kmem_cache_init(void)
 {
 	size_t size, i;
 
@@ -428,7 +432,7 @@ long __init kmem_cache_init(long start, long end)
 #undef	kmem_slab_offset
 #undef	kmem_slab_diff
 
-	cache_chain_sem = MUTEX;
+	init_MUTEX(&cache_chain_sem);
 
 	size = cache_cache.c_offset + sizeof(kmem_bufctl_t);
 	size += (L1_CACHE_BYTES-1);
@@ -448,7 +452,6 @@ long __init kmem_cache_init(long start, long end)
 	 */
 	if (num_physpages > (32 << 20) >> PAGE_SHIFT)
 		slab_break_gfp_order = SLAB_BREAK_GFP_ORDER_HI;
-	return start;
 }
 
 /* Initialisation - setup remaining internal and general caches.
@@ -502,6 +505,11 @@ kmem_getpages(kmem_cache_t *cachep, unsigned long flags, unsigned int *dma)
 {
 	void	*addr;
 
+	/*
+	 * If we requested dmaable memory, we will get it. Even if we 
+	 * did not request dmaable memory, we might get it, but that
+	 * would be relatively rare and ignorable.
+	 */
 	*dma = flags & SLAB_DMA;
 	addr = (void*) __get_free_pages(flags, cachep->c_gfporder);
 	/* Assume that now we have the pages no one else can legally
@@ -510,18 +518,6 @@ kmem_getpages(kmem_cache_t *cachep, unsigned long flags, unsigned int *dma)
 	 * it is a named-page or buffer-page.  The members it tests are
 	 * of no interest here.....
 	 */
-	if (!*dma && addr) {
-		/* Need to check if can dma. */
-		struct page *page = mem_map + MAP_NR(addr);
-		*dma = 1<<cachep->c_gfporder;
-		while ((*dma)--) {
-			if (!PageDMA(page)) {
-				*dma = 0;
-				break;
-			}
-			page++;
-		}
-	}
 	return addr;
 }
 
@@ -673,7 +669,6 @@ kmem_cache_cal_waste(unsigned long gfporder, size_t size, size_t extra,
 /* Create a cache:
  * Returns a ptr to the cache on success, NULL on failure.
  * Cannot be called within a int, but can be interrupted.
- * NOTE: The 'name' is assumed to be memory that is _not_  going to disappear.
  */
 kmem_cache_t *
 kmem_cache_create(const char *name, size_t size, size_t offset,
@@ -687,10 +682,17 @@ kmem_cache_create(const char *name, size_t size, size_t offset,
 	size_t		left_over;
 	size_t		align;
 
+#if SLAB_DEBUG_SUPPORT
+	flags |= SLAB_POISON;
+#endif
 	/* Sanity checks... */
 #if	SLAB_MGMT_CHECKS
 	if (!name) {
 		printk("%sNULL ptr\n", func_nm);
+		goto opps;
+	}
+	if (strlen(name) >= SLAB_CACHE_NAME_LEN) {
+		printk("%sname too long\n", func_nm);
 		goto opps;
 	}
 	if (in_interrupt()) {
@@ -892,7 +894,7 @@ next:
 		left_over -= slab_align_size;
 	}
 
-	/* Offset must be a factor of the alignment. */
+	/* Offset must be a multiple of the alignment. */
 	offset += (align-1);
 	offset &= ~(align-1);
 
@@ -954,7 +956,8 @@ printk("%s: Left_over:%d Align:%d Size:%d\n", name, left_over, offset, size);
 	cachep->c_ctor = ctor;
 	cachep->c_dtor = dtor;
 	cachep->c_magic = SLAB_C_MAGIC;
-	cachep->c_name = name;		/* Simply point to the name. */
+	/* Copy name over so we don't have problems with unloaded modules */
+	strcpy(cachep->c_name, name);
 	spin_lock_init(&cachep->c_spinlock);
 
 	/* Need the semaphore to access the chain. */
@@ -979,53 +982,39 @@ opps:
 	return cachep;
 }
 
-/* Shrink a cache.  Releases as many slabs as possible for a cache.
- * It is expected this function will be called by a module when it is
- * unloaded.  The cache is _not_ removed, this creates too many problems and
- * the cache-structure does not take up much room.  A module should keep its
- * cache pointer(s) in unloaded memory, so when reloaded it knows the cache
- * is available.  To help debugging, a zero exit status indicates all slabs
- * were released.
+/*
+ * This check if the kmem_cache_t pointer is chained in the cache_cache
+ * list. -arca
  */
-
-static int __kmem_cache_shrink(kmem_cache_t *cachep, int validated)
+static int is_chained_kmem_cache(kmem_cache_t * cachep)
 {
-	kmem_cache_t	*searchp;
+	kmem_cache_t * searchp;
+	int ret = 0;
+
+	/* Find the cache in the chain of caches. */
+	down(&cache_chain_sem);
+	for (searchp = &cache_cache; searchp->c_nextp != &cache_cache;
+	     searchp = searchp->c_nextp) {
+		if (searchp->c_nextp != cachep)
+			continue;
+
+		/* Accessing clock_searchp is safe - we hold the mutex. */
+		if (cachep == clock_searchp)
+			clock_searchp = cachep->c_nextp;
+		ret = 1;
+		break;
+	}
+	up(&cache_chain_sem);
+
+	return ret;
+}
+
+/* returns 0 if every slab is been freed -arca */
+static int __kmem_cache_shrink(kmem_cache_t *cachep)
+{
 	kmem_slab_t	*slabp;
 	int	ret;
 
-	if (!cachep) {
-		printk(KERN_ERR "kmem_shrink: NULL ptr\n");
-		return 2;
-	}
-	if (in_interrupt()) {
-		printk(KERN_ERR "kmem_shrink: Called during int - %s\n", cachep->c_name);
-		return 2;
-	}
-
-	if(validated==0)
-	{
-		/* Find the cache in the chain of caches. */
-		down(&cache_chain_sem);		/* Semaphore is needed. */
-		searchp = &cache_cache;
-		for (;searchp->c_nextp != &cache_cache; searchp = searchp->c_nextp) {
-			if (searchp->c_nextp != cachep)
-				continue;
-
-			/* Accessing clock_searchp is safe - we hold the mutex. */
-			if (cachep == clock_searchp)
-				clock_searchp = cachep->c_nextp;
-			goto found;
-		}
-		up(&cache_chain_sem);
-		printk(KERN_ERR "kmem_shrink: Invalid cache addr %p\n", cachep);
-		return 2;
-found:
-		/* Release the semaphore before getting the cache-lock.  This could
-		 * mean multiple engines are shrinking the cache, but so what.
-		 */
-		up(&cache_chain_sem);
-	}
 	spin_lock_irq(&cachep->c_spinlock);
 
 	/* If the cache is growing, stop shrinking. */
@@ -1033,6 +1022,16 @@ found:
 		slabp = cachep->c_lastp;
 		if (slabp->s_inuse || slabp == kmem_slab_end(cachep))
 			break;
+		/*
+		 * If this slab is the first slab with free objects
+		 * (c_freep), and as we are walking the slab chain
+		 * backwards, it is also the last slab with free
+		 * objects.  After unlinking it, there will be no
+		 * slabs with free objects, so point c_freep into the
+		 * cache structure.
+		 */
+		if (cachep->c_freep == slabp)
+			cachep->c_freep = kmem_slab_end(cachep);
 		kmem_slab_unlink(slabp);
 		spin_unlock_irq(&cachep->c_spinlock);
 		kmem_slab_destroy(cachep, slabp);
@@ -1040,19 +1039,36 @@ found:
 	}
 	ret = 1;
 	if (cachep->c_lastp == kmem_slab_end(cachep))
-		ret--;		/* Cache is empty. */
+		ret = 0;		/* Cache is empty. */
 	spin_unlock_irq(&cachep->c_spinlock);
 	return ret;
 }
 
-int kmem_cache_shrink(kmem_cache_t *cachep)
+/* Shrink a cache.  Releases as many slabs as possible for a cache.
+ * To help debugging, a zero exit status indicates all slabs were released.
+ */
+int
+kmem_cache_shrink(kmem_cache_t *cachep)
 {
-	return __kmem_cache_shrink(cachep,0);
+	if (!cachep)
+		BUG();
+	if (in_interrupt())
+		BUG();
+	if (!is_chained_kmem_cache(cachep))
+		BUG();
+
+	return __kmem_cache_shrink(cachep);
 }
 
 /*
  * Remove a kmem_cache_t object from the slab cache. When returns 0 it
  * completed succesfully. -arca
+ *
+ * It is expected this function will be called by a module when it is
+ * unloaded.  This will remove the cache completely, and avoid a duplicate
+ * cache being allocated each time a module is loaded and unloaded, if the
+ * module doesn't have persistent in-kernel storage across loads and unloads.
+ *
  */
 int kmem_cache_destroy(kmem_cache_t * cachep)
 {
@@ -1095,7 +1111,7 @@ int kmem_cache_destroy(kmem_cache_t * cachep)
 		return 1;
 	}
 
-	if (__kmem_cache_shrink(cachep, 1)) {
+	if (__kmem_cache_shrink(cachep)) {
 		printk(KERN_ERR "kmem_destroy: Can't free all objects %p\n",
 		       cachep);
 		down(&cache_chain_sem);
@@ -1257,7 +1273,7 @@ kmem_cache_grow(kmem_cache_t * cachep, int flags)
 	/* A series of memory allocations for a new slab.
 	 * Neither the cache-chain semaphore, or cache-lock, are
 	 * held, but the incrementing c_growing prevents this
-	 * cache from being reaped or shrunk.
+	 * this cache from being reaped or shrunk.
 	 * Note: The cache could be selected in for reaping in
 	 * kmem_cache_reap(), but when the final test is made the
 	 * growing value will be seen.
@@ -1516,7 +1532,7 @@ nul_ptr:
  * it should be in this state _before_ it is released.
  */
 static inline void
-__kmem_cache_free(kmem_cache_t *cachep, const void *objp)
+__kmem_cache_free(kmem_cache_t *cachep, void *objp)
 {
 	kmem_slab_t	*slabp;
 	kmem_bufctl_t	*bufp;
@@ -1645,7 +1661,7 @@ bad_slab:
 
 #if 1
 /* FORCE A KERNEL DUMP WHEN THIS HAPPENS. SPEAK IN ALL CAPS. GET THE CALL CHAIN. */
-*(int *) 0 = 0;
+	BUG();
 #endif
 
 	return;
@@ -1709,7 +1725,7 @@ kfree(const void *objp)
 		 */
 		cachep = SLAB_GET_PAGE_CACHE(page);
 		if (cachep && (cachep->c_flags & SLAB_CFLGS_GENERAL)) {
-			__kmem_cache_free(cachep, objp);
+			__kmem_cache_free(cachep, (void *)objp);
 			return;
 		}
 	}
@@ -1718,7 +1734,7 @@ bad_ptr:
 
 #if 1
 /* FORCE A KERNEL DUMP WHEN THIS HAPPENS. SPEAK IN ALL CAPS. GET THE CALL CHAIN. */
-*(int *) 0 = 0;
+BUG();
 #endif
 
 null_ptr:
@@ -1744,7 +1760,7 @@ kfree_s(const void *objp, size_t size)
 		cachep = SLAB_GET_PAGE_CACHE(page);
 		if (cachep && cachep->c_flags & SLAB_CFLGS_GENERAL) {
 			if (size <= cachep->c_org_size) {	/* XXX better check */
-				__kmem_cache_free(cachep, objp);
+				__kmem_cache_free(cachep, (void *)objp);
 				return;
 			}
 		}
@@ -1861,11 +1877,10 @@ next:
 	} while (--scan && searchp != clock_searchp);
 
 	clock_searchp = searchp;
-	up(&cache_chain_sem);
 
 	if (!best_cachep) {
 		/* couldn't find anything to reap */
-		return;
+		goto out;
 	}
 
 	spin_lock_irq(&best_cachep->c_spinlock);
@@ -1899,6 +1914,8 @@ good_dma:
 	}
 dma_fail:
 	spin_unlock_irq(&best_cachep->c_spinlock);
+out:
+	up(&cache_chain_sem);
 	return;
 }
 
@@ -1987,14 +2004,14 @@ get_slabinfo(char *buf)
 		unsigned long allocs = cachep->c_num_allocations;
 		errors = (unsigned long) atomic_read(&cachep->c_errors);
 		spin_unlock_irqrestore(&cachep->c_spinlock, save_flags);
-		len += sprintf(buf+len, "%-16s %6lu %6lu %4lu %4lu %4lu %6lu %7lu %5lu %4lu %4lu\n",
-				cachep->c_name, active_objs, num_objs, active_slabs, num_slabs,
+		len += sprintf(buf+len, "%-16s %6lu %6lu %6lu %4lu %4lu %4lu %6lu %7lu %5lu %4lu %4lu\n",
+				cachep->c_name, active_objs, num_objs, cachep->c_offset, active_slabs, num_slabs,
 				(1<<cachep->c_gfporder)*num_slabs,
 				high, allocs, grown, reaped, errors);
 		}
 #else
 		spin_unlock_irqrestore(&cachep->c_spinlock, save_flags);
-		len += sprintf(buf+len, "%-17s %6lu %6lu\n", cachep->c_name, active_objs, num_objs);
+		len += sprintf(buf+len, "%-17s %6lu %6lu %6lu\n", cachep->c_name, active_objs, num_objs, cachep->c_offset);
 #endif	/* SLAB_STATS */
 	} while ((cachep = cachep->c_nextp) != &cache_cache);
 	up(&cache_chain_sem);

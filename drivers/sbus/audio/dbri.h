@@ -1,4 +1,4 @@
-/*
+/* $Id: dbri.h,v 1.12 1999/09/21 14:37:34 davem Exp $
  * drivers/sbus/audio/cs4231.h
  *
  * Copyright (C) 1997 Rudolf Koenig (rfkoenig@immd4.informatik.uni-erlangen.de)
@@ -9,15 +9,13 @@
 
 #include <linux/types.h>
 
-struct dbri_regs {
-  __volatile__ __u32 reg0;		/* Status & Control */
-  __volatile__ __u32 reg1;		/* Mode & Interrupt */
-  __volatile__ __u32 reg2;		/* Parallel IO */
-  __volatile__ __u32 reg3;		/* Test */
-  __volatile__ __u32 unused[4];
-  __volatile__ __u32 reg8;		/* Command Queue Pointer */
-  __volatile__ __u32 reg9;		/* Interrupt Queue Pointer */
-};
+/* DBRI main registers */
+#define REG0	0x00UL		/* Status and Control */
+#define REG1	0x04UL		/* Mode and Interrupt */
+#define REG2	0x08UL		/* Parallel IO */
+#define REG3	0x0cUL		/* Test */
+#define REG8	0x20UL		/* Command Queue Pointer */
+#define REG9	0x24UL		/* Interrupt Queue Pointer */
 
 #define DBRI_NO_CMDS	64
 #define DBRI_NO_INTS	2
@@ -28,10 +26,10 @@ struct dbri_regs {
 #define DBRI_MM_SB	2
 
 struct dbri_mem {
-	__u32	word1;
-	__u32	ba;			/* Transmit/Receive Buffer Address */
-	__u32	nda;			/* Next Descriptor Address */
-	__u32	word4;
+	volatile __u32	word1;
+	volatile __u32	ba;			/* Transmit/Receive Buffer Address */
+	volatile __u32	nda;			/* Next Descriptor Address */
+	volatile __u32	word4;
 };
 
 #include "cs4215.h"
@@ -39,33 +37,36 @@ struct dbri_mem {
 /* This structure is in a DMA region where it can accessed by both
  * the CPU and the DBRI
  */
-
 struct dbri_dma {
-  int cmd[DBRI_NO_CMDS];			/* Place for commands */
-  int intr[DBRI_NO_INTS * DBRI_INT_BLK];	/* Interrupt field */
-  struct dbri_mem desc[DBRI_NO_DESCS];		/* Xmit/receive descriptors */
+	volatile s32 cmd[DBRI_NO_CMDS];			/* Place for commands */
+	volatile s32 intr[DBRI_NO_INTS * DBRI_INT_BLK];	/* Interrupt field */
+	struct dbri_mem desc[DBRI_NO_DESCS];		/* Xmit/receive descriptors */
 };
+
+#define dbri_dma_off(member, elem)	\
+	((u32)(unsigned long)		\
+	 (&(((struct dbri_dma *)0)->member[elem])))
 
 enum in_or_out { PIPEinput, PIPEoutput };
 
 enum direction { in, out };
 
 struct dbri_pipe {
-        spinlock_t spinlock;
         u32 sdp;				/* SDP command word */
-        enum direction direction;
+	enum direction direction;
         int nextpipe;				/* Next pipe in linked list */
-        int prevpipe;
+	int prevpipe;
         int cycle;				/* Offset of timeslot (bits) */
         int length;				/* Length of timeslot (bits) */
         int desc;				/* Index of active descriptor*/
-        volatile __u32 *recv_fixed_ptr;		/* Ptr to receive fixed data */
+	volatile __u32 *recv_fixed_ptr;		/* Ptr to receive fixed data */
 };
 
 struct dbri_desc {
         int inuse;				/* Boolean flag */
         int next;				/* Index of next desc, or -1 */
-        void *buffer;
+        void *buffer;				/* CPU view of buffer */
+	u32 buffer_dvma;			/* Device view */
         unsigned int len;
         void (*output_callback)(void *, int);
         void *output_callback_arg;
@@ -76,41 +77,37 @@ struct dbri_desc {
 /* This structure holds the information for both chips (DBRI & CS4215) */
 
 struct dbri {
-  int regs_size, irq;				/* Needed for unload */
-  struct linux_sbus_device *sdev;
+	int regs_size, irq;		/* Needed for unload */
+	struct sbus_dev *sdev;		/* SBUS device info */
 
-  volatile struct dbri_dma *dma;		/* Pointer to our DMA block */
-  struct dbri_dma *dma_dvma;			/* DBRI visible DMA address */
+	volatile struct dbri_dma *dma;	/* Pointer to our DMA block */
+	u32 dma_dvma;			/* DBRI visible DMA address */
 
-  struct dbri_regs *regs;			/* dbri HW regs */
-  int dbri_version;				/* 'e' and up is OK */
-  int dbri_irqp;				/* intr queue pointer */
+	unsigned long regs;		/* dbri HW regs */
+	int dbri_version;		/* 'e' and up is OK */
+	int dbri_irqp;			/* intr queue pointer */
+	int wait_seen;
 
-  spinlock_t cmd_spinlock;
-  spinlock_t intr_spinlock;
+	struct dbri_pipe pipes[32];	/* DBRI's 32 data pipes */
+	struct dbri_desc descs[DBRI_NO_DESCS];
 
-  struct tq_struct process_interrupt_buffer_task;
+	int chi_in_pipe;
+	int chi_out_pipe;
+	int chi_bpf;
 
-  struct dbri_pipe pipes[32];			/* DBRI's 32 data pipes */
-  struct dbri_desc descs[DBRI_NO_DESCS];
-
-  int chi_in_pipe;
-  int chi_out_pipe;
-  int chi_bpf;
-
-  struct cs4215 mm;				/* mmcodec special info */
+	struct cs4215 mm;		/* mmcodec special info */
 
 #if 0
-  wait_queue_head_t wait, int_wait;		/* Where to sleep if busy */
+	/* Where to sleep if busy */
+	wait_queue_head_t wait, int_wait;
 #endif
-  struct audio_info perchip_info;
+	struct audio_info perchip_info;
 
-  /* Track ISDN LIU and notify changes */
-  int liu_state;
-  void (*liu_callback)(void *);
-  void *liu_callback_arg;
+	/* Track ISDN LIU and notify changes */
+	int liu_state;
+	void (*liu_callback)(void *);
+	void *liu_callback_arg;
 };
-
 
 /* DBRI Reg0 - Status Control Register - defines. (Page 17) */
 #define D_P		(1<<15)	/* Program command & queue pointer valid */

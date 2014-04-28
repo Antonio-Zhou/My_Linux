@@ -16,11 +16,12 @@
 #include <linux/signal.h>
 #include <linux/sched.h>
 #include <linux/mm.h>
+#include <linux/spinlock.h>
+#include <linux/init.h>
 
 #include <asm/system.h>
 #include <asm/uaccess.h>
 #include <asm/io.h>
-#include <asm/spinlock.h>
 #include <asm/atomic.h>
 #include <asm/pgtable.h>
 
@@ -34,7 +35,10 @@ char *processor_modes[]=
   "UK8_32" , "UK9_32" , "UK10_32", "UND_32" , "UK12_32", "UK13_32", "UK14_32", "SYS_32"
 };
 
-static char *handler[]= { "prefetch abort", "data abort", "address exception", "interrupt" };
+/* proc/system.h */
+const char xchg_str[] = "xchg";
+
+static const char *handler[]= { "prefetch abort", "data abort", "address exception", "interrupt" };
 
 static inline void console_verbose(void)
 {
@@ -129,7 +133,7 @@ static void dump_instr(unsigned long pc, int user)
 		printk ("pc not in code space\n");
 }
 
-spinlock_t die_lock;
+spinlock_t die_lock = SPIN_LOCK_UNLOCKED;
 
 /*
  * This function is protected against re-entrancy.
@@ -187,7 +191,7 @@ void die(const char *str, struct pt_regs *regs, int err)
 	do_exit(SIGSEGV);
 }
 
-static void die_if_kernel(const char *str, struct pt_regs *regs, int err)
+void die_if_kernel(const char *str, struct pt_regs *regs, int err)
 {
 	if (user_mode(regs))
     		return;
@@ -199,8 +203,8 @@ void bad_user_access_alignment(const void *ptr)
 {
 	printk(KERN_ERR "bad user access alignment: ptr = %p, pc = %p\n", ptr, 
 		__builtin_return_address(0));
-	current->tss.error_code = 0;
-	current->tss.trap_no = 11;
+	current->thread.error_code = 0;
+	current->thread.trap_no = 11;
 	force_sig(SIGBUS, current);
 /*	die_if_kernel("Oops - bad user access alignment", regs, mode);*/
 }
@@ -211,8 +215,8 @@ asmlinkage void do_undefinstr(int address, struct pt_regs *regs, int mode)
 	printk(KERN_INFO "%s (%d): undefined instruction: pc=%08lx\n",
 		current->comm, current->pid, instruction_pointer(regs));
 #endif
-	current->tss.error_code = 0;
-	current->tss.trap_no = 6;
+	current->thread.error_code = 0;
+	current->thread.trap_no = 6;
 	force_sig(SIGILL, current);
 	die_if_kernel("Oops - undefined instruction", regs, mode);
 }
@@ -223,8 +227,8 @@ asmlinkage void do_excpt(int address, struct pt_regs *regs, int mode)
 	printk(KERN_INFO "%s (%d): address exception: pc=%08lx\n",
 		current->comm, current->pid, instruction_pointer(regs));
 #endif
-	current->tss.error_code = 0;
-	current->tss.trap_no = 11;
+	current->thread.error_code = 0;
+	current->thread.trap_no = 11;
 	force_sig(SIGBUS, current);
 	die_if_kernel("Oops - address exception", regs, mode);
 }
@@ -238,11 +242,10 @@ asmlinkage void do_unexp_fiq (struct pt_regs *regs)
 }
 
 /*
- * bad_mode handles the impossible case in the vectors.
- * If you see one of these, then it's extremely serious,
- * and could mean you have buggy hardware.  It never
- * returns, and never tries to sync.  We hope that we
- * can dump out some state information...
+ * bad_mode handles the impossible case in the vectors.  If you see one of
+ * these, then it's extremely serious, and could mean you have buggy hardware.
+ * It never returns, and never tries to sync.  We hope that we can at least
+ * dump out some state information...
  */
 asmlinkage void bad_mode(struct pt_regs *regs, int reason, int proc_mode)
 {
@@ -252,7 +255,8 @@ asmlinkage void bad_mode(struct pt_regs *regs, int reason, int proc_mode)
 		handler[reason], processor_modes[proc_mode]);
 
 	/*
-	 * Dump out the vectors and stub routines
+	 * Dump out the vectors and stub routines.  Maybe a better solution
+	 * would be to dump them out only if we detect that they are corrupted.
 	 */
 	printk(KERN_CRIT "Vectors:\n");
 	dump_mem(0, 0x40);
@@ -276,6 +280,9 @@ asmlinkage void math_state_restore (void)
 	current->used_math = 1;
 }
 
+/*
+ * Handle some more esoteric system calls
+ */
 asmlinkage int arm_syscall (int no, struct pt_regs *regs)
 {
 	switch (no) {
@@ -292,10 +299,8 @@ asmlinkage int arm_syscall (int no, struct pt_regs *regs)
 
 	case 2:	/* sys_cacheflush */
 #ifdef CONFIG_CPU_32
-		/* r0 = start, r1 = length, r2 = flags */
-		processor.u.armv3v4._flush_cache_area(regs->ARM_r0,
-						      regs->ARM_r1,
-						      1);
+		/* r0 = start, r1 = end, r2 = flags */
+		cpu_flush_cache_area(regs->ARM_r0, regs->ARM_r1, 1);
 #endif
 		break;
 
@@ -307,7 +312,7 @@ asmlinkage int arm_syscall (int no, struct pt_regs *regs)
 		if (no <= 0x7ff)
 			return -ENOSYS;
 #ifdef CONFIG_DEBUG_USER
-		/* experiance shows that these seem to indicate that
+		/* experience shows that these seem to indicate that
 		 * something catastrophic has happened
 		 */
 		printk("[%d] %s: arm syscall %d\n", current->pid, current->comm, no);
@@ -338,10 +343,11 @@ asmlinkage void deferred(int n, struct pt_regs *regs)
 	}
 
 #ifdef CONFIG_DEBUG_USER
-	printk(KERN_ERR "[%d] %s: old system call.\n", current->pid, 
-	       current->comm);
+	printk(KERN_ERR "[%d] %s: obsolete system call %08x.\n", current->pid, 
+	       current->comm, n);
 #endif
 	force_sig(SIGILL, current);
+	die_if_kernel("Oops", regs, n);
 }
 
 asmlinkage void arm_malalignedptr(const char *str, void *pc, volatile void *ptr)
@@ -355,36 +361,93 @@ asmlinkage void arm_invalidptr(const char *function, int size)
 		function, __builtin_return_address(0), size);
 }
 
-#ifdef CONFIG_CPU_26
-asmlinkage void baddataabort(int code, unsigned long instr, struct pt_regs *regs)
+/*
+ * A data abort trap was taken, but the instruction was not an instruction
+ * which should cause the trap to be taken.  Try to abort it.  Note that
+ * the while(1) is there because we cannot currently handle returning from
+ * this function.
+ */
+asmlinkage void
+baddataabort(int code, unsigned long instr, struct pt_regs *regs)
 {
-	unsigned long phys, addr = instruction_pointer(regs);
+	unsigned long addr = instruction_pointer(regs);
 
 #ifdef CONFIG_DEBUG_ERRORS
-	printk("pid=%d\n", current->pid);
-
-	show_regs(regs);
-	dump_instr(instruction_pointer(regs), 1);
+	dump_instr(addr, 1);
 	{
 		pgd_t *pgd;
 
-		printk ("current->tss.memmap = %08lX\n", current->tss.memmap);
 		pgd = pgd_offset(current->mm, addr);
 		printk ("*pgd = %08lx", pgd_val (*pgd));
 		if (!pgd_none (*pgd)) {
 			pmd_t *pmd;
 			pmd = pmd_offset (pgd, addr);
 			printk (", *pmd = %08lx", pmd_val (*pmd));
-			if (!pmd_none (*pmd)) {
-				unsigned long ptr = pte_page(*pte_offset(pmd, addr));
-				printk (", *pte = %08lx", pte_val (*pte_offset (pmd, addr)));
-				phys = ptr + (addr & 0x7fff);
-			}
+			if (!pmd_none (*pmd))
+				printk (", *pte = %08lx", pte_val(*pte_offset (pmd, addr)));
 		}
 		printk ("\n");
 	}
 #endif
-	panic("unknown data abort code %d [pc=%08lx *pc=%08lx lr=%08lx sp=%08lx]",
-		code, regs->ARM_pc, instr, regs->ARM_lr, regs->ARM_sp);
+	force_sig(SIGILL, current);
+	die_if_kernel("unknown data abort code", regs, instr);
+	while (1);
 }
+
+void __bug(const char *file, int line, void *data)
+{
+	printk(KERN_CRIT"kernel BUG at %s:%d!\n", file, line);
+	if (data)
+		printk(KERN_CRIT"extra data = %p\n", data);
+	BUG();
+}
+
+void __readwrite_bug(const char *fn)
+{
+	printk("%s called, but not implemented", fn);
+	BUG();
+}
+
+void __pte_error(const char *file, int line, unsigned long val)
+{
+	printk("%s:%d: bad pte %08lx.\n", file, line, val);
+}
+
+void __pmd_error(const char *file, int line, unsigned long val)
+{
+	printk("%s:%d: bad pmd %08lx.\n", file, line, val);
+}
+
+void __pgd_error(const char *file, int line, unsigned long val)
+{
+	printk("%s:%d: bad pgd %08lx.\n", file, line, val);
+}
+
+asmlinkage void __div0(void)
+{
+	printk("Division by zero in kernel.\n");
+	__backtrace();
+}
+
+void abort(void)
+{
+	void *lr = __builtin_return_address(0);
+
+	printk(KERN_CRIT "abort() called from %p!  (Please "
+	       "report to rmk@arm.linux.org.uk)\n", lr);
+
+	BUG();
+
+	/* if that doesn't kill us, halt */
+	panic("Oops failed to kill thread");
+}
+
+void __init trap_init(void)
+{
+	extern void __trap_init(void);
+
+	__trap_init();
+#ifdef CONFIG_CPU_32
+	modify_domain(DOMAIN_USER, DOMAIN_CLIENT);
 #endif
+}

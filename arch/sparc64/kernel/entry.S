@@ -1,4 +1,4 @@
-/* $Id: entry.S,v 1.103.2.7 2001/06/18 12:26:13 davem Exp $
+/* $Id: entry.S,v 1.115 2000/03/29 09:55:30 davem Exp $
  * arch/sparc64/kernel/entry.S:  Sparc64 trap low-level entry points.
  *
  * Copyright (C) 1995,1997 David S. Miller (davem@caip.rutgers.edu)
@@ -42,13 +42,13 @@ sparc64_vpte_patchme2:
 	/* This is trivial with the new code... */
 	.globl		do_fpdis
 do_fpdis:
-	ldub		[%g6 + AOFF_task_tss + AOFF_thread_fpsaved], %g5	! Load	Group
+	ldub		[%g6 + AOFF_task_thread + AOFF_thread_fpsaved], %g5	! Load	Group
 	sethi		%hi(TSTATE_PEF), %g4					! IEU0
 	wr		%g0, FPRS_FEF, %fprs					! LSU	Group+4bubbles
 	andcc		%g5, FPRS_FEF, %g0					! IEU1	Group
 	be,a,pt		%icc, 1f						! CTI
 	 clr		%g7							! IEU0
-	ldub		[%g6 + AOFF_task_tss + AOFF_thread_gsr], %g7		! Load	Group
+	ldub		[%g6 + AOFF_task_thread + AOFF_thread_gsr], %g7		! Load	Group
 1:	andcc		%g5, FPRS_DL, %g0					! IEU1
 	bne,pn		%icc, 2f						! CTI
 	 fzero		%f0							! FPA
@@ -157,7 +157,7 @@ fpdis_exit:
 	flush		%g6
 fpdis_exit2:
 	wr		%g7, 0, %gsr
-	ldx		[%g6 + AOFF_task_tss + AOFF_thread_xfsr], %fsr
+	ldx		[%g6 + AOFF_task_thread + AOFF_thread_xfsr], %fsr
 	rdpr		%tstate, %g3
 	or		%g3, %g4, %g3		! anal...
 	wrpr		%g3, %tstate
@@ -167,13 +167,13 @@ fpdis_exit2:
 	.globl		do_fptrap
 	.align		32
 do_fptrap:
-	ldub		[%g6 + AOFF_task_tss + AOFF_thread_fpsaved], %g3
-	stx		%fsr, [%g6 + AOFF_task_tss + AOFF_thread_xfsr]
+	ldub		[%g6 + AOFF_task_thread + AOFF_thread_fpsaved], %g3
+	stx		%fsr, [%g6 + AOFF_task_thread + AOFF_thread_xfsr]
 	rd		%fprs, %g1
 	or		%g3, %g1, %g3
-	stb		%g3, [%g6 + AOFF_task_tss + AOFF_thread_fpsaved]
+	stb		%g3, [%g6 + AOFF_task_thread + AOFF_thread_fpsaved]
 	rd		%gsr, %g3
-	stb		%g3, [%g6 + AOFF_task_tss + AOFF_thread_gsr]
+	stb		%g3, [%g6 + AOFF_task_thread + AOFF_thread_gsr]
 	mov		SECONDARY_CONTEXT, %g3
 	add		%g6, AOFF_task_fpregs, %g2
 	ldxa		[%g3] ASI_DMMU, %g5
@@ -386,7 +386,7 @@ floppy_hardint:
 	ldx		[%g5 + %lo(pdma_size)], %g5
 
 next_byte:
-	ldub		[%g3], %g7
+	lduba		[%g3] ASI_PHYS_BYPASS_EC_E, %g7
 	andcc		%g7, 0x80, %g0
 	be,pn		%icc, floppy_fifo_emptied
 	 andcc		%g7, 0x20, %g0
@@ -395,7 +395,9 @@ next_byte:
 	be,pn		%icc, floppy_write
 	 sub		%g5, 1, %g5
 
-	ldub		[%g3 + 1], %g7
+	inc		%g3
+	lduba		[%g3] ASI_PHYS_BYPASS_EC_E, %g7
+	dec		%g3
 	orcc		%g0, %g5, %g0
 	stb		%g7, [%g4]
 	bne,pn		%xcc, next_byte
@@ -407,7 +409,9 @@ next_byte:
 floppy_write:
 	ldub		[%g4], %g7
 	orcc		%g0, %g5, %g0
-	stb		%g7, [%g3 + 1]
+	inc		%g3
+	stba		%g7, [%g3] ASI_PHYS_BYPASS_EC_E
+	dec		%g3
 	bne,pn		%xcc, next_byte
 	 add		%g4, 1, %g4
 
@@ -441,7 +445,7 @@ floppy_fifo_emptied:
 	ldx		[%g1 + (11 << 3)], %g3		! irqaction[floppy_irq]
 	ldx		[%g3 + 0x10], %g4		! action->mask == ino_bucket ptr
 	ldx		[%g4 + 0x10], %g4		! bucket->iclr
-	stw		%g0, [%g4]			! SYSIO_ICLR_IDLE
+	stwa		%g0, [%g4] ASI_PHYS_BYPASS_EC_E	! ICLR_IDLE
 	membar		#Sync				! probably not needed...
 	retry
 
@@ -764,9 +768,9 @@ sunos_getpid:
 	/* SunOS getuid() returns uid in %o0 and euid in %o1 */
 	.globl	sunos_getuid
 sunos_getuid:
-	call	sys_geteuid
+	call	sys32_geteuid16
 	 nop
-	call	sys_getuid
+	call	sys32_getuid16
 	 stx	%o0, [%sp + STACK_BIAS + REGWIN_SZ + PT_V9_I1]
 	b,pt	%xcc, ret_sys_call
 	 stx	%o0, [%sp + STACK_BIAS + REGWIN_SZ + PT_V9_I0]
@@ -774,9 +778,9 @@ sunos_getuid:
 	/* SunOS getgid() returns gid in %o0 and egid in %o1 */
 	.globl	sunos_getgid
 sunos_getgid:
-	call	sys_getegid
+	call	sys32_getegid16
 	 nop
-	call	sys_getgid
+	call	sys32_getgid16
 	 stx	%o0, [%sp + STACK_BIAS + REGWIN_SZ + PT_V9_I1]
 	b,pt	%xcc, ret_sys_call
 	 stx	%o0, [%sp + STACK_BIAS + REGWIN_SZ + PT_V9_I0]
@@ -800,41 +804,28 @@ execve_merge:
 	jmpl		%g1, %g0
 	 add		%sp, STACK_BIAS + REGWIN_SZ, %o0
 
-	.globl	sys_pipe, sys_execve, sys_sigpause, sys_nis_syscall
+	.globl	sys_pipe, sys_sigpause, sys_nis_syscall
 	.globl	sys_sigsuspend, sys_rt_sigsuspend, sys32_rt_sigsuspend
-	.globl	sys_sigreturn, sys_rt_sigreturn
+	.globl	sys_rt_sigreturn
 	.globl	sys32_sigreturn, sys32_rt_sigreturn
 	.globl	sys32_execve, sys_ptrace
 	.globl	sys_sigaltstack, sys32_sigaltstack
 	.globl	sys32_sigstack
 	.align	32
-sys_pipe:	sethi		%hi(sparc_pipe), %g1
-		add		%sp, STACK_BIAS + REGWIN_SZ, %o0
-		jmpl		%g1 + %lo(sparc_pipe), %g0
-		 nop
-sys_nis_syscall:sethi		%hi(c_sys_nis_syscall), %g1
-		add		%sp, STACK_BIAS + REGWIN_SZ, %o0
-		jmpl		%g1 + %lo(c_sys_nis_syscall), %g0
-		 nop
-
+sys_pipe:	ba,pt		%xcc, sparc_pipe
+		 add		%sp, STACK_BIAS + REGWIN_SZ, %o0
+sys_nis_syscall:ba,pt		%xcc, c_sys_nis_syscall
+		 add		%sp, STACK_BIAS + REGWIN_SZ, %o0
 sys_memory_ordering:
-		sethi		%hi(sparc_memory_ordering), %g1
-		add		%sp, STACK_BIAS + REGWIN_SZ, %o1
-		jmpl		%g1 + %lo(sparc_memory_ordering), %g0
-		 nop
-sys_sigaltstack:sethi		%hi(do_sigaltstack), %g1
-		add		%i6, STACK_BIAS, %o2
-		jmpl		%g1 + %lo(do_sigaltstack), %g1
-		 nop
-sys32_sigstack:	sethi		%hi(do_sys32_sigstack), %g1
-		mov		%i6, %o2
-		jmpl		%g1 + %lo(do_sys32_sigstack), %g1
-		 nop
+		ba,pt		%xcc, sparc_memory_ordering
+		 add		%sp, STACK_BIAS + REGWIN_SZ, %o1
+sys_sigaltstack:ba,pt		%xcc, do_sigaltstack
+		 add		%i6, STACK_BIAS, %o2
+sys32_sigstack:	ba,pt		%xcc, do_sys32_sigstack
+		 mov		%i6, %o2
 sys32_sigaltstack:
-		sethi		%hi(do_sys32_sigaltstack), %g1
-		mov		%i6, %o2
-		jmpl		%g1 + %lo(do_sys32_sigaltstack), %g1
-		 nop
+		ba,pt		%xcc, do_sys32_sigaltstack
+		 mov		%i6, %o2
 
 		.align		32
 sys_sigsuspend:	add		%sp, STACK_BIAS + REGWIN_SZ, %o0
@@ -854,10 +845,6 @@ sys32_rt_sigsuspend: /* NOTE: %o0,%o1 have a correct value already */
 		/* NOTE: %o0 has a correct value already */
 sys_sigpause:	add		%sp, STACK_BIAS + REGWIN_SZ, %o1
 		call		do_sigpause
-		 add		%o7, 1f-.-4, %o7
-		nop
-sys_sigreturn:	add		%sp, STACK_BIAS + REGWIN_SZ, %o0
-		call		do_sigreturn
 		 add		%o7, 1f-.-4, %o7
 		nop
 sys32_sigreturn:
@@ -880,8 +867,8 @@ sys_ptrace:	add		%sp, STACK_BIAS + REGWIN_SZ, %o0
 		 add		%o7, 1f-.-4, %o7
 		nop
 		.align		32
-1:		ldx		[%curptr + AOFF_task_ptrace], %l5
-		andcc		%l5, 0x02, %g0
+1:		ldx		[%curptr + AOFF_task_flags], %l5
+		andcc		%l5, 0x20, %g0
 		be,pt		%icc, rtrap
 		 clr		%l6
 		call		syscall_trace
@@ -928,22 +915,17 @@ sys_clone:	flushw
 		ba,pt		%xcc, do_fork
 		 add		%sp, STACK_BIAS + REGWIN_SZ, %o2
 ret_from_syscall:
-		/* Clear SPARC_FLAG_NEWCHILD, switch_to leaves tss.flags in
+		/* Clear SPARC_FLAG_NEWCHILD, switch_to leaves thread.flags in
 		 * %o7 for us.  Check performance counter stuff too.
 		 */
-#ifdef __SMP__
-		andn		%o7, 0x100, %l0
+		andn		%o7, SPARC_FLAG_NEWCHILD, %l0
 		mov		%g5, %o0	/* 'prev' */
 		call		schedule_tail
-		 sth		%l0, [%g6 + AOFF_task_tss + AOFF_thread_flags]
-#else
-		andn		%o7, 0x100, %l0
-		sth		%l0, [%g6 + AOFF_task_tss + AOFF_thread_flags]
-#endif
-		andcc		%l0, 0x200, %g0
+		 stb		%l0, [%g6 + AOFF_task_thread + AOFF_thread_flags]
+		andcc		%l0, SPARC_FLAG_PERFCTR, %g0
 		be,pt		%icc, 1f
 		 nop
-		ldx		[%g6 + AOFF_task_tss + AOFF_thread_pcr_reg], %o7
+		ldx		[%g6 + AOFF_task_thread + AOFF_thread_pcr_reg], %o7
 		wr		%g0, %o7, %pcr
 
 		/* Blackbird errata workaround.  See commentary in
@@ -958,18 +940,15 @@ ret_from_syscall:
 
 1:		b,pt		%xcc, ret_sys_call
 		 ldx		[%sp + STACK_BIAS + REGWIN_SZ + PT_V9_I0], %o0
-sparc_exit:	rdpr		%pstate, %g2
-		wrpr		%g2, PSTATE_IE, %pstate
-		rdpr		%otherwin, %g1
+sparc_exit:	rdpr		%otherwin, %g1
+		wrpr		%g0, (PSTATE_RMO | PSTATE_PEF | PSTATE_PRIV), %pstate
 		rdpr		%cansave, %g3
 		add		%g3, %g1, %g3
 		wrpr		%g3, 0x0, %cansave
 		wrpr		%g0, 0x0, %otherwin
-		wrpr		%g2, 0x0, %pstate
-		mov		%o7, %l5
-		sth		%g0, [%g6 + AOFF_task_tss + AOFF_thread_w_saved]
-		call		sys_exit
-		 mov		%l5, %o7
+		wrpr		%g0, (PSTATE_RMO | PSTATE_PEF | PSTATE_PRIV | PSTATE_IE), %pstate
+		ba,pt		%xcc, sys_exit
+		 stb		%g0, [%g6 + AOFF_task_thread + AOFF_thread_w_saved]
 
 linux_sparc_ni_syscall:
 	sethi		%hi(sys_ni_syscall), %l7
@@ -1015,16 +994,16 @@ linux_sparc_syscall32:
 	mov		%i4, %o4				! IEU1
 	lduw		[%l7 + %l4], %l7			! Load
 	srl		%i1, 0, %o1				! IEU0	Group
-	ldx		[%curptr + AOFF_task_ptrace], %l0	! Load
+	ldx		[%curptr + AOFF_task_flags], %l0	! Load
 
 	mov		%i5, %o5				! IEU1
 	srl		%i2, 0, %o2				! IEU0	Group
-	mov		%i0, %l5				! IEU1
-	andcc		%l0, 0x02, %g0				! IEU1	Group
+	andcc		%l0, 0x20, %g0				! IEU0	Group
 	bne,pn		%icc, linux_syscall_trace32		! CTI
-	 srl		%i3, 0, %o3				! IEU0
+	 mov		%i0, %l5				! IEU1
 	call		%l7					! CTI	Group brk forced
-	 add		%o7, 3f-.-4, %o7			! IEU0
+	 srl		%i3, 0, %o3				! IEU0
+	ba,a,pt		%xcc, 3f
 
 	/* Linux native and SunOS system calls enter here... */
 	.align	32
@@ -1044,39 +1023,40 @@ linux_sparc_syscall:
 	mov		%i1, %o1				! IEU1
 	lduw		[%l7 + %l4], %l7			! Load
 4:	mov		%i2, %o2				! IEU0	Group
-	ldx		[%curptr + AOFF_task_ptrace], %l0	! Load
+	ldx		[%curptr + AOFF_task_flags], %l0	! Load
 
 	mov		%i3, %o3				! IEU1
 	mov		%i4, %o4				! IEU0	Group
-	andcc		%l0, 0x02, %g0				! IEU1	Group+1 bubble
+	andcc		%l0, 0x20, %g0				! IEU1	Group+1 bubble
 	bne,pn		%icc, linux_syscall_trace		! CTI	Group
 	 mov		%i0, %l5				! IEU0
 2:	call		%l7					! CTI	Group brk forced
 	 mov		%i5, %o5				! IEU0
+	nop
+
 3:	stx		%o0, [%sp + STACK_BIAS + REGWIN_SZ + PT_V9_I0]
 ret_sys_call:
 #ifdef SYSCALL_TRACING
 	call		syscall_trace_exit
 	 add		%sp, STACK_BIAS + REGWIN_SZ, %o1
 #endif
-	ldx		[%curptr + AOFF_task_ptrace], %l6
+	ldx		[%sp + STACK_BIAS + REGWIN_SZ + PT_V9_TSTATE], %g3
+	ldx		[%sp + STACK_BIAS + REGWIN_SZ + PT_V9_TNPC], %l1 ! pc = npc
 	sra		%o0, 0, %o0
 	mov		%ulo(TSTATE_XCARRY | TSTATE_ICARRY), %g2
-	ldx		[%sp + STACK_BIAS + REGWIN_SZ + PT_V9_TSTATE], %g3
 	cmp		%o0, -ENOIOCTLCMD
 	sllx		%g2, 32, %g2
 	bgeu,pn		%xcc, 1f
-	 andcc		%l6, 0x02, %l6	
 
-	/* System call success, clear Carry condition code. */
-	andn		%g3, %g2, %g3
+	 andcc		%l0, 0x20, %l6	
+	andn		%g3, %g2, %g3		/* System call success, clear Carry condition code. */
 	stx		%g3, [%sp + STACK_BIAS + REGWIN_SZ + PT_V9_TSTATE]	
 	bne,pn		%icc, linux_syscall_trace2
-	 ldx		[%sp + STACK_BIAS + REGWIN_SZ + PT_V9_TNPC], %l1 ! pc = npc
-	add		%l1, 0x4, %l2				         !npc = npc+4
+	 add		%l1, 0x4, %l2				         ! npc = npc+4
 	stx		%l1, [%sp + STACK_BIAS + REGWIN_SZ + PT_V9_TPC]
-	b,pt		%xcc, rtrap_clr_l6
+	ba,pt		%xcc, rtrap_clr_l6
 	 stx		%l2, [%sp + STACK_BIAS + REGWIN_SZ + PT_V9_TNPC]
+
 1:
 	/* System call failure, set Carry condition code.
 	 * Also, get abs(errno) to return to the process.
@@ -1087,15 +1067,14 @@ ret_sys_call:
 	mov		1, %l6
 	stx		%g3, [%sp + STACK_BIAS + REGWIN_SZ + PT_V9_TSTATE]
 	bne,pn		%icc, linux_syscall_trace2
-	 ldx		[%sp + STACK_BIAS + REGWIN_SZ + PT_V9_TNPC], %l1 ! pc = npc
-	add		%l1, 0x4, %l2				         !npc = npc+4
-
+	 add		%l1, 0x4, %l2				         !npc = npc+4
 	stx		%l1, [%sp + STACK_BIAS + REGWIN_SZ + PT_V9_TPC]
+
 	b,pt		%xcc, rtrap
 	 stx		%l2, [%sp + STACK_BIAS + REGWIN_SZ + PT_V9_TNPC]
 linux_syscall_trace2:
 	call		syscall_trace
-	 add		%l1, 0x4, %l2			/* npc = npc+4 */
+	 nop
 	stx		%l1, [%sp + STACK_BIAS + REGWIN_SZ + PT_V9_TPC]
 	ba,pt		%xcc, rtrap
 	 stx		%l2, [%sp + STACK_BIAS + REGWIN_SZ + PT_V9_TNPC]
@@ -1103,6 +1082,9 @@ linux_syscall_trace2:
 	.align		32
 	.globl		__flushw_user
 __flushw_user:
+	rdpr		%otherwin, %g1
+	brz,pn		%g1, 2f
+	 clr		%g2
 1:	save		%sp, -128, %sp
 	rdpr		%otherwin, %g1
 	brnz,pt		%g1, 1b
@@ -1111,4 +1093,4 @@ __flushw_user:
 	brnz,pt		%g2, 1b
 	 restore	%g0, %g0, %g0
 2:	retl
-	 mov		%g3, %o7
+	 nop

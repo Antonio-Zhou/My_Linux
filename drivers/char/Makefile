@@ -9,9 +9,21 @@
 # parent makes..
 #
 
+O_OBJS		:=
+OX_OBJS		:=
+M_OBJS		:=
+MX_OBJS		:=
+
+# Object file lists.
+
+obj-y		:=
+obj-m		:=
+obj-n		:=
+obj-		:=
+
 SUB_DIRS     := 
 MOD_SUB_DIRS := $(SUB_DIRS)
-ALL_SUB_DIRS := $(SUB_DIRS) rio ftape hfmodem joystick agp drm
+ALL_SUB_DIRS := $(SUB_DIRS) ftape joystick pcmcia rio
 
 #
 # This file contains the font map for the default (hardware) font
@@ -19,240 +31,149 @@ ALL_SUB_DIRS := $(SUB_DIRS) rio ftape hfmodem joystick agp drm
 FONTMAPFILE = cp437.uni
 
 O_TARGET := char.o
-M_OBJS   :=
-O_OBJS   := tty_io.o n_tty.o tty_ioctl.o mem.o random.o
-OX_OBJS  := pty.o misc.o
-obj-y 	 :=
-obj-m	 :=
+obj-y	 += tty_io.o n_tty.o tty_ioctl.o mem.o raw.o pty.o misc.o random.o
 
-ifdef CONFIG_VT
-O_OBJS += vt.o vc_screen.o consolemap.o consolemap_deftbl.o
-OX_OBJS += console.o selection.o
+# All of the (potential) objects that export symbols.
+# This list comes from 'grep -l EXPORT_SYMBOL *.[hc]'.
+
+export-objs     :=	busmouse.o console.o i2c-old.o keyboard.o sysrq.o \
+			misc.o pty.o random.o selection.o serial.o videodev.o \
+			tty_io.o bttv.o cpia.o
+
+KEYMAP   =defkeymap.o
+KEYBD    =pc_keyb.o
+CONSOLE  =console.o
+SERIAL   =serial.o
+
+ifeq ($(ARCH),s390)
+  KEYMAP   =
+  KEYBD    =
+  CONSOLE  =
+  SERIAL   =
 endif
 
-ifeq ($(CONFIG_SERIAL),y)
-  ifeq ($(CONFIG_SUN_SERIAL),)
-    ifeq ($(CONFIG_SGI_SERIAL),)
-      ifeq ($(CONFIG_DECSTATION),)
-	ifeq ($(CONFIG_BAGET_MIPS),)
-      OX_OBJS += serial.o
-    endif
-  endif
-    endif
-  endif
-else
-  ifeq ($(CONFIG_SERIAL),m)
-    ifeq ($(CONFIG_SUN_SERIAL),)
-      ifeq ($(CONFIG_SGI_SERIAL),)
-        ifeq ($(CONFIG_DECSTATION),)
-          ifeq ($(CONFIG_BAGET_MIPS),)
-      MX_OBJS += serial.o
-      endif
-    endif
-  endif
+ifeq ($(ARCH),m68k)
+   ifdef CONFIG_AMIGA
+      KEYBD = amikeyb.o
+   else
+      KEYBD    =
+   endif
+   SERIAL   =
+endif
+
+ifeq ($(ARCH),arm)
+  KEYMAP   =
+  KEYBD    =
+  CONSOLE  =
+  SERIAL   =
+endif
+
+ifeq ($(ARCH),sh)
+  KEYMAP   =
+  KEYBD    =
+  CONSOLE  =
+  SERIAL =
+  ifeq ($(CONFIG_SERIAL),y)
+  SERIAL = generic_serial.o sh-sci.o
+  else
+    ifeq ($(CONFIG_SERIAL),m)
+    SERIAL = sh-sci.o
     endif
   endif
 endif
 
-ifndef CONFIG_DECSTATION
-ifndef CONFIG_BAGET_MIPS
+ifeq ($(CONFIG_DECSTATION),y)
+  KEYBD    =
+  SERIAL   =
+endif
+
+ifeq ($(CONFIG_BAGET_MIPS),y)
+  KEYBD    =
+  SERIAL   =
+endif
+
+ifneq ($(CONFIG_SUN_SERIAL),)
+  SERIAL   =
+endif
+
+
+obj-$(CONFIG_VT) += vt.o vc_screen.o consolemap.o consolemap_deftbl.o $(CONSOLE) selection.o
+obj-$(CONFIG_SERIAL) += $(SERIAL)
+obj-$(CONFIG_SERIAL_21285) += serial_21285.o
+
 ifndef CONFIG_SUN_KEYBOARD
-ifdef CONFIG_VT
-OX_OBJS += keyboard.o
- ifneq ($(ARCH),m68k)
-  ifneq ($(ARCH),s390)
-   O_OBJS += pc_keyb.o defkeymap.o
- endif
- endif
-endif
+  obj-$(CONFIG_VT) += keyboard.o $(KEYMAP) $(KEYBD)
 else
-ifdef CONFIG_PCI
-O_OBJS += defkeymap.o
-OX_OBJS += keyboard.o
-endif
+  obj-$(CONFIG_PCI) += keyboard.o $(KEYMAP)
 endif
 
-ifdef CONFIG_MAGIC_SYSRQ
-OX_OBJS += sysrq.o
-endif
-endif
-endif
+obj-$(CONFIG_MAGIC_SYSRQ) += sysrq.o
 
+obj-$(CONFIG_ATARI_DSP56K) += dsp56k.o
 ifeq ($(CONFIG_ATARI_DSP56K),y)
-O_OBJS += dsp56k.o
 S = y
 else
   ifeq ($(CONFIG_ATARI_DSP56K),m)
-  M_OBJS += dsp56k.o
   SM = y
   endif
 endif
 
-ifeq ($(CONFIG_ROCKETPORT),y)
-O_OBJS += rocket.o
-else
-  ifeq ($(CONFIG_ROCKETPORT),m)
-  M_OBJS += rocket.o
-  endif
+obj-$(CONFIG_ROCKETPORT) += rocket.o
+obj-$(CONFIG_MOXA_SMARTIO) += mxser.o
+obj-$(CONFIG_MOXA_INTELLIO) += moxa.o
+obj-$(CONFIG_DIGI) += pcxx.o
+obj-$(CONFIG_DIGIEPCA) += epca.o
+obj-$(CONFIG_CYCLADES) += cyclades.o
+obj-$(CONFIG_STALLION) += stallion.o
+obj-$(CONFIG_ISTALLION) += istallion.o
+obj-$(CONFIG_COMPUTONE) += ip2.o ip2main.o
+obj-$(CONFIG_RISCOM8) += riscom8.o
+obj-$(CONFIG_ISI) += isicom.o
+obj-$(CONFIG_ESPSERIAL) += esp.o
+obj-$(CONFIG_SYNCLINK) += synclink.o
+obj-$(CONFIG_N_HDLC) += n_hdlc.o
+obj-$(CONFIG_SPECIALIX) += specialix.o
+obj-$(CONFIG_AMIGA_BUILTIN_SERIAL) += amiserial.o
+obj-$(CONFIG_SX) += sx.o
+
+# If either SX or RIO is in the kernel, generic_serial goes in the
+# kernel, and the module is no longer required. The "in kernel" case
+# is last to be able to override the module case....  This is an
+# example of the new "makefile automatically figures out the
+# dependencies"....  -- REW
+
+GS=n
+ifeq ($(CONFIG_RIO),m)
+  M_OBJS += generic_serial.o
+  MOD_SUB_DIRS += rio
+  GS = m
 endif
 
-ifeq ($(CONFIG_MOXA_SMARTIO),y)
-O_OBJS += mxser.o
-else
-  ifeq ($(CONFIG_MOXA_SMARTIO),m)
-  M_OBJS += mxser.o
-  endif
-endif
-
-ifeq ($(CONFIG_MOXA_INTELLIO),y)
-O_OBJS += moxa.o
-else
-  ifeq ($(CONFIG_MOXA_INTELLIO),m)
-  M_OBJS += moxa.o
-  endif
-endif
-
-ifeq ($(CONFIG_DIGI),y)
-O_OBJS += pcxx.o
-else
-  ifeq ($(CONFIG_DIGI),m)
-  M_OBJS += pcxx.o
-  endif
-endif
-
-ifeq ($(CONFIG_DIGIEPCA),y)
-O_OBJS += epca.o
-else
-  ifeq ($(CONFIG_DIGIEPCA),m)
-  M_OBJS += epca.o
-  endif
-endif
-
-ifeq ($(CONFIG_CYCLADES),y)
-O_OBJS += cyclades.o
-else
-  ifeq ($(CONFIG_CYCLADES),m)
-  M_OBJS += cyclades.o
-  endif
-endif
-
-ifeq ($(CONFIG_STALLION),y)
-O_OBJS += stallion.o
-else
-  ifeq ($(CONFIG_STALLION),m)
-  M_OBJS += stallion.o
-  endif
-endif
-
-ifeq ($(CONFIG_ISTALLION),y)
-O_OBJS += istallion.o
-else
-  ifeq ($(CONFIG_ISTALLION),m)
-  M_OBJS += istallion.o
-  endif
-endif
-
-ifeq ($(CONFIG_COMPUTONE),y)
-O_OBJS += ip2.o ip2main.o
-else
-  ifeq ($(CONFIG_COMPUTONE),m)
-  M_OBJS += ip2.o ip2main.o
-  endif
-endif
-
-ifeq ($(CONFIG_RISCOM8),y)
-O_OBJS += riscom8.o
-else
-  ifeq ($(CONFIG_RISCOM8),m)
-  M_OBJS += riscom8.o
-  endif
-endif
-
-ifeq ($(CONFIG_ISI),y)
-O_OBJS += isicom.o
-else
-  ifeq ($(CONFIG_ISI),m)
-  M_OBJS += isicom.o
-  endif
-endif
-
-ifeq ($(CONFIG_ESPSERIAL),y)
-O_OBJS += esp.o
-else
-  ifeq ($(CONFIG_ESPSERIAL),m)
-  M_OBJS += esp.o
-  endif
-endif
-
-ifeq ($(CONFIG_SYNCLINK),y)
-O_OBJS += synclink.o
-else
-  ifeq ($(CONFIG_SYNCLINK),m)
-  M_OBJS += synclink.o
-  endif
-endif
-
-ifeq ($(CONFIG_N_HDLC),y)
-O_OBJS += n_hdlc.o
-else
-  ifeq ($(CONFIG_N_HDLC),m)
-  M_OBJS += n_hdlc.o
-  endif
-endif
-
-ifeq ($(CONFIG_SPECIALIX),y)
-O_OBJS += specialix.o
-else
-  ifeq ($(CONFIG_SPECIALIX),m)
-  M_OBJS += specialix.o
-  endif
-endif
-
-ifeq ($(CONFIG_SX),y)
-O_OBJS += sx.o generic_serial.o
-else
-  ifeq ($(CONFIG_SX),m)
-  M_OBJS += sx.o generic_serial.o
-  endif
+ifeq ($(CONFIG_SX),m)
+  GS = m
+  M_OBJS += sx.o
 endif
 
 ifeq ($(CONFIG_RIO),y)
-O_OBJS += rio/rio.o generic_serial.o
-SUB_DIRS += rio
-MOD_SUB_DIRS += rio
-else
-  ifeq ($(CONFIG_RIO),m)
-  M_OBJS += generic_serial.o
+  L_OBJS += rio/rio.o  generic_serial.o
+  SUB_DIRS += rio
   MOD_SUB_DIRS += rio
-  endif
+  GS = y
 endif
 
-ifeq ($(CONFIG_ATIXL_BUSMOUSE),y)
-O_OBJS += atixlmouse.o
-else
-  ifeq ($(CONFIG_ATIXL_BUSMOUSE),m)
-  M_OBJS += atixlmouse.o
-  endif
+ifeq ($(CONFIG_SX),y)
+  L_OBJS += sx.o
+  GS = y
 endif
 
-ifeq ($(CONFIG_BUSMOUSE),y)
-O_OBJS += busmouse.o
-else
-  ifeq ($(CONFIG_BUSMOUSE),m)
-  M_OBJS += busmouse.o
-  endif
-endif
+obj-$(GS) += generic_serial.o
 
-ifeq ($(CONFIG_PRINTER),y)
-O_OBJS += lp.o
-else
-  ifeq ($(CONFIG_PRINTER),m)
-  M_OBJS += lp.o
-  endif
-endif
+obj-$(CONFIG_ATIXL_BUSMOUSE) += atixlmouse.o
+obj-$(CONFIG_LOGIBUSMOUSE) += logibusmouse.o
+obj-$(CONFIG_PRINTER) += lp.o
 
 ifeq ($(CONFIG_JOYSTICK),y)
-O_OBJS += joystick/js.o
+obj-y += joystick/js.o
 SUB_DIRS += joystick
 MOD_SUB_DIRS += joystick
 else
@@ -261,411 +182,131 @@ else
   endif
 endif
 
-ifeq ($(CONFIG_DTLK),y)
-O_OBJS += dtlk.o
+obj-$(CONFIG_BUSMOUSE) += busmouse.o
+ifeq ($(CONFIG_BUSMOUSE),y)
+M = y
 else
-  ifeq ($(CONFIG_DTLK),m)
-  M_OBJS += dtlk.o
+  ifeq ($(CONFIG_BUSMOUSE),m)
+  MM = m
   endif
 endif
 
-ifeq ($(CONFIG_MS_BUSMOUSE),y)
-O_OBJS += msbusmouse.o
-else
-  ifeq ($(CONFIG_MS_BUSMOUSE),m)
-  M_OBJS += msbusmouse.o
-  endif
+obj-$(CONFIG_DTLK) += dtlk.o
+obj-$(CONFIG_R3964) += n_r3964.o
+obj-$(CONFIG_APPLICOM) += applicom.o
+obj-$(CONFIG_MS_BUSMOUSE) += msbusmouse.o
+obj-$(CONFIG_82C710_MOUSE) += qpmouse.o
+obj-$(CONFIG_SOFT_WATCHDOG) += softdog.o
+obj-$(CONFIG_PCWATCHDOG) += pcwd.o
+obj-$(CONFIG_ACQUIRE_WDT) += acquirewdt.o
+obj-$(CONFIG_MIXCOMWD) += mixcomwd.o
+obj-$(CONFIG_AMIGAMOUSE) += amigamouse.o
+obj-$(CONFIG_ATARIMOUSE) += atarimouse.o
+obj-$(CONFIG_ADBMOUSE) += adbmouse.o
+obj-$(CONFIG_PC110_PAD) += pc110pad.o
+obj-$(CONFIG_WDT) += wdt.o
+obj-$(CONFIG_WDTPCI) += wdt_pci.o
+obj-$(CONFIG_RTC) += rtc.o
+obj-$(CONFIG_EFI_RTC) += efirtc.o
+ifeq ($(CONFIG_PPC),)
+  obj-$(CONFIG_NVRAM) += nvram.o
 endif
 
-ifeq ($(CONFIG_82C710_MOUSE),y)
-O_OBJS += qpmouse.o
-else
-  ifeq ($(CONFIG_82C710_MOUSE),m)
-  M_OBJS += qpmouse.o
-  endif
-endif
+obj-$(CONFIG_VIDEO_DEV) += videodev.o
 
-ifeq ($(CONFIG_SOFT_WATCHDOG),y)
-O_OBJS += softdog.o
-else
-  ifeq ($(CONFIG_SOFT_WATCHDOG),m)
-  M_OBJS += softdog.o
-  endif   
-endif
+obj-$(CONFIG_21285_WATCHDOG) += wdt285.o
+obj-$(CONFIG_977_WATCHDOG) += wdt977.o
+obj-$(CONFIG_DS1620) += ds1620.o
 
-ifeq ($(CONFIG_PCWATCHDOG),y)
-O_OBJS += pcwd.o
-else
-  ifeq ($(CONFIG_PCWATCHDOG),m)
-  M_OBJS += pcwd.o
-  endif
-endif
-
-ifeq ($(CONFIG_ACQUIRE_WDT),y)
-O_OBJS += acquirewdt.o
-else
-  ifeq ($(CONFIG_ACQUIRE_WDT),m)
-  M_OBJS += acquirewdt.o
-  endif
-endif
-
-ifeq ($(CONFIG_ADVANTECH_WDT),y)
-O_OBJS += advantechwdt.o
-else
-  ifeq ($(CONFIG_ADVANTECH_WDT),m)
-  M_OBJS += advantechwdt.o
-  endif
-endif
-
-ifeq ($(CONFIG_60XX_WDT),y)
-O_OBJS += sbc60xxwdt.o
-else
-  ifeq ($(CONFIG_60XX_WDT),m)
-  M_OBJS += sbc60xxwdt.o
-  endif
-endif
-
-ifeq ($(CONFIG_MIXCOMWD),y)
-O_OBJS += mixcomwd.o
-else
-  ifeq ($(CONFIG_MIXCOMWD),m)
-  M_OBJS += mixcomwd.o
-  endif
-endif
-
-ifeq ($(CONFIG_AMIGAMOUSE),y)
-O_OBJS += amigamouse.o
-else
-  ifeq ($(CONFIG_AMIGAMOUSE),m)
-    M_OBJS += amigamouse.o
-  endif
-endif
-
-ifeq ($(CONFIG_ATARIMOUSE),y)
-O_OBJS += atarimouse.o
-else
-  ifeq ($(CONFIG_ATARIMOUSE),m)
-    M_OBJS += atarimouse.o
-  endif
-endif
-
-ifeq ($(CONFIG_ADBMOUSE),y)
-O_OBJS += adbmouse.o
-else
-  ifeq ($(CONFIG_ADBMOUSE),m)
-    M_OBJS += adbmouse.o
-  endif
-endif
-
-ifeq ($(CONFIG_PC110_PAD),y)
-O_OBJS += pc110pad.o
-else
-  ifeq ($(CONFIG_PC110_PAD),m)
-    M_OBJS += pc110pad.o
-  endif
-endif
-
-ifeq ($(CONFIG_WDT),y)
-O_OBJS += wdt.o
-else
-  ifeq ($(CONFIG_WDT),m)
-    M_OBJS += wdt.o
-  endif
-endif
-
-ifeq ($(CONFIG_WDTPCI),y)
-O_OBJS += wdt_pci.o
-else
-  ifeq ($(CONFIG_WDTPCI),m)
-    M_OBJS += wdt_pci.o
-  endif
-endif
-
-ifeq ($(CONFIG_MACHZ_WDT),y)
-O_OBJS += machzwd.o
-else
-  ifeq ($(CONFIG_MACHZ_WDT),m)
-    M_OBJS += machzwd.o
-  endif
-endif
-
-ifeq ($(CONFIG_RTC),y)
-O_OBJS += rtc.o
-endif
-
-ifeq ($(CONFIG_NVRAM),y)
-  ifeq ($(CONFIG_PPC),)
-  O_OBJS += nvram.o
-  endif
-else
-  ifeq ($(CONFIG_NVRAM),m)
-    ifeq ($(CONFIG_PPC),)
-    M_OBJS += nvram.o
-    endif
-  endif
-endif
-
-ifeq ($(CONFIG_AGP),y)
-O_OBJS += agp/agp.o
-SUB_DIRS += agp
-else
-  ifeq ($(CONFIG_AGP),m)
-  MOD_SUB_DIRS += agp
-  endif
-endif
-
-ifeq ($(CONFIG_DRM),y)
-O_OBJS += drm/drm.o
-MOD_SUB_DIRS += drm
-SUB_DIRS += drm
-else
-  ifeq ($(CONFIG_DRM),m)
-  MOD_SUB_DIRS += drm
-  endif
-endif
-
-ifeq ($(CONFIG_INTEL_RNG),y)
-O_OBJS += i810_rng.o
-else
-  ifeq ($(CONFIG_INTEL_RNG),m)
-  M_OBJS += i810_rng.o
-  endif
-endif
-    
-ifeq ($(CONFIG_VIDEO_DEV),y)
-OX_OBJS += videodev.o
-else
-  ifeq ($(CONFIG_VIDEO_DEV),m)
-    MX_OBJS += videodev.o
-  endif
-endif
-
+#
+# for external dependencies in arm/config.in and video/config.in
+#
 ifeq ($(CONFIG_BUS_I2C),y)
 	L_I2C=y
 else
   ifeq ($(CONFIG_BUS_I2C),m)
-	M_I2C=y
+	L_I2C=m
   endif
 endif
 
+obj-$(CONFIG_VIDEO_BT848) += bttv.o msp3400.o \
+	tda7432.o tda8425.o tda985x.o tda9875.o tea6300.o tea6420.o
 ifeq ($(CONFIG_VIDEO_BT848),y)
-O_OBJS += bttv.o tuner.o
-L_I2C=y
+L_TUNERS=y
 else
   ifeq ($(CONFIG_VIDEO_BT848),m)
-    M_OBJS += bttv.o tuner.o
-    M_I2C=y
+    L_TUNERS=m
   endif
 endif
 
-ifeq ($(CONFIG_VIDEO_MSP3400),y)
-O_OBJS += msp3400.o 
+obj-$(CONFIG_VIDEO_ZR36120) += zoran.o
+ifeq ($(CONFIG_VIDEO_ZR36120),y)
 L_I2C=y
+L_TUNERS=y
+L_DECODERS=y
 else
-  ifeq ($(CONFIG_VIDEO_MSP3400),m)
-    M_OBJS += msp3400.o
-    M_I2C=y
+  ifeq ($(CONFIG_VIDEO_ZR36120),m)
+    L_I2C=m
+    L_TUNERS=m
+    L_DECODERS=m
   endif
 endif
 
+obj-$(CONFIG_I2C_PARPORT) += i2c-parport.o
+ifeq ($(CONFIG_I2C_PARPORT),y)
+L_I2C = y
+else
+  ifeq ($(CONFIG_I2C_PARPORT),m)
+    L_I2C = m
+  endif
+endif
+
+obj-$(CONFIG_VIDEO_SAA5249) += saa5249.o
 ifeq ($(CONFIG_VIDEO_SAA5249),y)
-O_OBJS += saa5249.o
 L_I2C=y
 else
   ifeq ($(CONFIG_VIDEO_SAA5249),m)
-    M_OBJS += saa5249.o
-    M_I2C=y
+    L_I2C=m
   endif
 endif
 
-ifeq ($(CONFIG_VIDEO_BWQCAM),y)
-O_OBJS += bw-qcam.o
-else
-  ifeq ($(CONFIG_VIDEO_BWQCAM),m)
-    M_OBJS += bw-qcam.o
-  endif
-endif
-
-ifeq ($(CONFIG_VIDEO_CQCAM),y)
-O_OBJS += c-qcam.o
-else
-  ifeq ($(CONFIG_VIDEO_CQCAM),m)
-    M_OBJS += c-qcam.o
-  endif
-endif
-
+obj-$(CONFIG_VIDEO_CQCAM) += c-qcam.o
+obj-$(CONFIG_VIDEO_BWQCAM) += bw-qcam.o
+obj-$(CONFIG_VIDEO_ZORAN) += buz.o
 ifeq ($(CONFIG_VIDEO_ZORAN),y)
-O_OBJS += buz.o
 L_I2C=y
+L_DECODERS=y
 else
   ifeq ($(CONFIG_VIDEO_ZORAN),m)
-    M_OBJS += buz.o
-    M_I2C=y
+    L_I2C=m
+    L_DECODERS=m
   endif
 endif
 
-ifeq ($(CONFIG_VIDEO_LML33),y)
-O_OBJS += bt856.o bt819.o
-else
-  ifeq ($(CONFIG_VIDEO_LML33),m)
-    M_OBJS += bt856.o bt819.o
-  endif
-endif
-
-ifeq ($(CONFIG_VIDEO_BUZ),y)
-O_OBJS += saa7111.o saa7185.o
-else
-  ifeq ($(CONFIG_VIDEO_BUZ),m)
-    M_OBJS += saa7111.o saa7185.o
-  endif
-endif
-
-ifeq ($(CONFIG_VIDEO_PMS),y)
-O_OBJS += pms.o
-else
-  ifeq ($(CONFIG_VIDEO_PMS),m)
-  M_OBJS += pms.o
-  endif
-endif
-
-ifeq ($(CONFIG_VIDEO_PLANB),y)
-O_OBJS += planb.o
-else
-  ifeq ($(CONFIG_VIDEO_PLANB),m)
-  M_OBJS += planb.o
-  endif
-endif
-
-ifeq ($(CONFIG_VIDEO_VINO),y)
-O_OBJS += vino.o
-else
-  ifeq ($(CONFIG_VIDEO_VINO),m)
-  M_OBJS += vino.o
-  endif
-endif
-
-ifeq ($(CONFIG_VIDEO_CPIA),y)
-OX_OBJS += cpia.o
-else
-  ifeq ($(CONFIG_VIDEO_CPIA),m)
-    MX_OBJS += cpia.o
-  endif
-endif
-
-ifeq ($(CONFIG_VIDEO_CPIA_PP),y)
-O_OBJS += cpia_pp.o
-else
-  ifeq ($(CONFIG_VIDEO_CPIA_PP),m)
-    M_OBJS += cpia_pp.o
-  endif
-endif
-
-ifeq ($(CONFIG_VIDEO_CPIA_USB),y)
-O_OBJS += cpia_usb.o
-else
-  ifeq ($(CONFIG_VIDEO_CPIA_USB),m)
-    M_OBJS += cpia_usb.o
-  endif
-endif
-
-ifeq ($(CONFIG_RADIO_AZTECH),y)
-O_OBJS += radio-aztech.o
-else
-  ifeq ($(CONFIG_RADIO_AZTECH),m)
-  M_OBJS += radio-aztech.o
-  endif
-endif                                             
-
-ifeq ($(CONFIG_RADIO_SF16FMI),y)
-O_OBJS += radio-sf16fmi.o
-else
-  ifeq ($(CONFIG_RADIO_SF16FMI),m)
-  M_OBJS += radio-sf16fmi.o
-  endif
-endif                                             
-
-ifeq ($(CONFIG_RADIO_RTRACK),y)
-O_OBJS += radio-aimslab.o
-else
-  ifeq ($(CONFIG_RADIO_RTRACK),m)
-  M_OBJS += radio-aimslab.o
-  endif
-endif                                             
-
-ifeq ($(CONFIG_RADIO_RTRACK2),y)
-O_OBJS += radio-rtrack2.o
-else
-  ifeq ($(CONFIG_RADIO_RTRACK2),m)
-  M_OBJS += radio-rtrack2.o
-  endif
-endif                                             
-
-ifeq ($(CONFIG_RADIO_TYPHOON),y)
-O_OBJS += radio-typhoon.o
-else
-  ifeq ($(CONFIG_RADIO_TYPHOON),m)
-  M_OBJS += radio-typhoon.o
-  endif
-endif                                             
-
-ifeq ($(CONFIG_RADIO_ZOLTRIX),y)
-O_OBJS += radio-zoltrix.o
-else
-  ifeq ($(CONFIG_RADIO_ZOLTRIX),m)
-  M_OBJS += radio-zoltrix.o
-  endif
-endif                                             
-
-ifeq ($(CONFIG_RADIO_CADET),y)
-O_OBJS += radio-cadet.o
-else
-  ifeq ($(CONFIG_RADIO_CADET),m)
-  M_OBJS += radio-cadet.o
-  endif
-endif                                             
-
-ifeq ($(CONFIG_RADIO_MIROPCM20),y)
-O_OBJS += radio-miropcm20.o
-else
-  ifeq ($(CONFIG_RADIO_MIROPCM20),m)
-  M_OBJS += radio-miropcm20.o
-  endif
-endif
-
-ifeq ($(CONFIG_RADIO_MAESTRO),y)
-O_OBJS += radio-maestro.o
-else
-  ifeq ($(CONFIG_RADIO_MAESTRO),m)
-  M_OBJS += radio-maestro.o
-  endif
-endif
-
-ifeq ($(CONFIG_RADIO_GEMTEK),y)
-O_OBJS += radio-gemtek.o
-else
-  ifeq ($(CONFIG_RADIO_GEMTEK),m)
-  M_OBJS += radio-gemtek.o
-  endif
-endif                                             
-
-ifeq ($(CONFIG_RADIO_TRUST),y)
-O_OBJS += radio-trust.o
-else
-  ifeq ($(CONFIG_RADIO_TRUST),m)
-  M_OBJS += radio-trust.o
-  endif
-endif                                             
-
-ifeq ($(CONFIG_QIC02_TAPE),y)
-O_OBJS += tpqic02.o
-else
-  ifeq ($(CONFIG_QIC02_TAPE),m)
-  M_OBJS += tpqic02.o
-  endif
-endif
+obj-$(CONFIG_VIDEO_LML33) += bt856.o bt819.o
+obj-$(CONFIG_VIDEO_PMS) += pms.o
+obj-$(CONFIG_VIDEO_PLANB) += planb.o
+obj-$(CONFIG_VIDEO_VINO) += vino.o
+obj-$(CONFIG_VIDEO_STRADIS) += stradis.o
+obj-$(CONFIG_VIDEO_CPIA) += cpia.o
+obj-$(CONFIG_VIDEO_CPIA_PP) += cpia_pp.o
+obj-$(CONFIG_VIDEO_CPIA_USB) += cpia_usb.o
+obj-$(CONFIG_RADIO_AZTECH) += radio-aztech.o
+obj-$(CONFIG_RADIO_RTRACK2) += radio-rtrack2.o
+obj-$(CONFIG_RADIO_SF16FMI) += radio-sf16fmi.o
+obj-$(CONFIG_RADIO_CADET) += radio-cadet.o
+obj-$(CONFIG_RADIO_TYPHOON) += radio-typhoon.o
+obj-$(CONFIG_RADIO_TERRATEC) += radio-terratec.o
+obj-$(CONFIG_RADIO_RTRACK) += radio-aimslab.o
+obj-$(CONFIG_RADIO_ZOLTRIX) += radio-zoltrix.o
+obj-$(CONFIG_RADIO_MIROPCM20) += radio-miropcm20.o
+obj-$(CONFIG_RADIO_GEMTEK) += radio-gemtek.o
+obj-$(CONFIG_RADIO_TRUST) += radio-trust.o
+obj-$(CONFIG_TUNER_3036) += tuner-3036.o
+obj-$(CONFIG_QIC02_TAPE) += tpqic02.o
 
 ifeq ($(CONFIG_FTAPE),y)
-O_OBJS       += ftape/ftape.o
+obj-y       += ftape/ftape.o
 SUB_DIRS     += ftape
 ifneq ($(CONFIG_ZFTAPE),n)
 MOD_SUB_DIRS += ftape
@@ -676,58 +317,74 @@ else
   endif
 endif
 
-ifdef CONFIG_H8
-OX_OBJS += h8.o
-endif
+obj-$(CONFIG_H8) += h8.o
+obj-$(CONFIG_PPDEV) += ppdev.o
 
-ifeq ($(L_I2C),y)
-OX_OBJS += i2c.o
-else
-  ifeq ($(M_I2C),y)
-  MX_OBJS += i2c.o
-  endif
-endif
+# set when a framegrabber supports external tuners
+obj-$(L_TUNERS) += tuner.o
 
+# set when a framegrabber supports external decoders
+obj-$(L_DECODERS) += saa7110.o saa7111.o saa7185.o
 
-ifeq ($(CONFIG_HFMODEM),y)
-SUB_DIRS += hfmodem
-O_OBJS += hfmodem/hfmodem.o
-else
-  ifeq ($(CONFIG_HFMODEM),m)
-  MOD_SUB_DIRS += hfmodem
-  endif
-endif
+# set when a framegrabber implements i2c support
+obj-$(L_I2C) += i2c-old.o
 
 ifeq ($(CONFIG_DZ),y)
-  O_OBJS += dz.o
+  L_OBJS += dz.o
 endif
 
+obj-$(CONFIG_NWBUTTON) += nwbutton.o
+obj-$(CONFIG_NWFLASH) += nwflash.o
 
-ifeq ($(CONFIG_TOSHIBA),y)
-O_OBJS += toshiba.o
+ifeq ($(CONFIG_DRM),y)
+  SUB_DIRS += drm
+  ALL_SUB_DIRS += drm
+  MOD_SUB_DIRS += drm
+endif
+
+ifeq ($(CONFIG_PCMCIA),y)
+  SUB_DIRS += pcmcia
+  MOD_IN_SUB_DIRS += pcmcia
 else
-  ifeq ($(CONFIG_TOSHIBA),m)
-  M_OBJS += toshiba.o
+  ifeq ($(CONFIG_PCMCIA),m)
+    MOD_IN_SUB_DIRS += pcmcia
   endif
 endif
 
-ifeq ($(CONFIG_I810_TCO),y)
-O_OBJS += i810-tco.o
+ifeq ($(CONFIG_AGP), y)
+  SUB_DIRS += agp
+  ALL_SUB_DIRS += agp
+  MOD_SUB_DIRS += agp
 else
-  ifeq ($(CONFIG_I810_TCO),m)
-  M_OBJS += i810-tco.o
+  ifeq ($(CONFIG_AGP), m)
+    ALL_SUB_DIRS += agp
+    MOD_SUB_DIRS += agp
   endif
 endif
 
-# remove objects from modular that are also built in
+# Extract lists of the multi-part drivers.
+# The 'int-*' lists are the intermediate files used to build the multi's.
+
+multi-y         := $(filter $(list-multi), $(obj-y))
+multi-m         := $(filter $(list-multi), $(obj-m))
+int-y           := $(sort $(foreach m, $(multi-y), $($(basename $(m))-objs)))
+int-m           := $(sort $(foreach m, $(multi-m), $($(basename $(m))-objs)))
+
+# Files that are both resident and modular: remove from modular.
+
 obj-m           := $(filter-out $(obj-y), $(obj-m))
+int-m           := $(filter-out $(int-y), $(int-m))
+
+# Take multi-part drivers out of obj-y and put components in.
+
+obj-y           := $(filter-out $(list-multi), $(obj-y)) $(int-y)
 
 # Translate to Rules.make lists.
 
-O_OBJS          += $(filter-out $(export-objs), $(obj-y))
-OX_OBJS         += $(filter     $(export-objs), $(obj-y))
-M_OBJS          += $(sort $(filter     $(module-list), $(obj-m)))
-
+O_OBJS          := $(filter-out $(export-objs), $(obj-y))
+OX_OBJS         := $(filter     $(export-objs), $(obj-y))
+M_OBJS          := $(sort $(filter-out $(export-objs), $(obj-m)))
+MX_OBJS         := $(sort $(filter     $(export-objs), $(obj-m)))
 
 include $(TOPDIR)/Rules.make
 
@@ -744,3 +401,5 @@ consolemap_deftbl.o: consolemap_deftbl.c $(TOPDIR)/include/linux/types.h
 defkeymap.c: defkeymap.map
 	loadkeys --mktable defkeymap.map > defkeymap.c
 
+zoran.o: zr36120.o zr36120_i2c.o zr36120_mem.o
+	$(LD) $(LD_RFLAG) -r -o $@ zr36120.o zr36120_i2c.o zr36120_mem.o

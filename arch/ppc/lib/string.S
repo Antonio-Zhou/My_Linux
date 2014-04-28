@@ -75,10 +75,15 @@ strlen:
 	subf	r3,r3,r4
 	blr
 
-	.globl	memset
-memset:
-	rlwimi	r4,r4,8,16,23
-	rlwimi	r4,r4,16,0,15
+/*
+ * Use dcbz on the complete cache lines in the destination
+ * to set them to zero.  This requires that the destination
+ * area is cacheable.  -- paulus
+ */
+	.globl	cacheable_memzero
+cacheable_memzero:
+	mr	r5,r4
+	li	r4,0
 	addi	r6,r3,-4
 	cmplwi	0,r5,4
 	blt	7f
@@ -87,14 +92,6 @@ memset:
 	andi.	r0,r6,3
 	add	r5,r0,r5
 	subf	r6,r0,r6
-#if 0	/* Clever, but breaks fb stuff -- paulus */
-/*
- * Use dcbz on the complete cache lines in the destination if
- * we are setting to zero.  This requires that the destination
- * area is cacheable.  -- paulus
- */
-	cmpwi	0,r4,0
-	bne	2f
 	clrlwi	r7,r6,32-LG_CACHELINE_BYTES
 	add	r8,r7,r5
 	srwi	r9,r8,LG_CACHELINE_BYTES
@@ -113,8 +110,32 @@ memset:
 	bdnz	10b
 	clrlwi	r5,r8,32-LG_CACHELINE_BYTES
 	addi	r5,r5,4
-2:
-#endif
+2:	srwi	r0,r5,2
+	mtctr	r0
+	bdz	6f
+1:	stwu	r4,4(r6)
+	bdnz	1b
+6:	andi.	r5,r5,3
+7:	cmpwi	0,r5,0
+	beqlr
+	mtctr	r5
+	addi	r6,r6,3
+8:	stbu	r4,1(r6)
+	bdnz	8b
+	blr
+
+	.globl	memset
+memset:
+	rlwimi	r4,r4,8,16,23
+	rlwimi	r4,r4,16,0,15
+	addi	r6,r3,-4
+	cmplwi	0,r5,4
+	blt	7f
+	stwu	r4,4(r6)
+	beqlr
+	andi.	r0,r6,3
+	add	r5,r0,r5
+	subf	r6,r0,r6
 	srwi	r0,r5,2
 	mtctr	r0
 	bdz	6f
@@ -136,15 +157,6 @@ bcopy:
 	mr	r4,r6
 	b	memcpy
 
-	.globl	memmove
-memmove:
-	cmplw	0,r3,r4
-	bgt	backwards_memcpy
-	b	forwards_memcpy
-
-	.globl	memcpy
-memcpy:
-#if 0	/* Clever, but will probably break fb stuff -- paulus */
 /*
  * This version uses dcbz on the complete cache lines in the
  * destination area to reduce memory traffic.  This requires that
@@ -152,12 +164,14 @@ memcpy:
  * We only use this version if the source and dest don't overlap.
  * -- paulus.
  */
+	.global	cacheable_memcpy
+cacheable_memcpy:
 	add	r7,r3,r5		/* test if the src & dst overlap */
 	add	r8,r4,r5
 	cmplw	0,r4,r7
 	cmplw	1,r3,r8
 	crand	0,0,4			/* cr0.lt &= cr1.lt */
-	blt	forwards_memcpy		/* if regions overlap */
+	blt	memcpy			/* if regions overlap */
 
 	addi	r4,r4,-4
 	addi	r6,r3,-4
@@ -223,10 +237,15 @@ memcpy:
 	addi	r6,r6,1
 	bdnz	40b
 65:	blr
-#endif
 
-	.global	forwards_memcpy
-forwards_memcpy:
+	.globl	memmove
+memmove:
+	cmplw	0,r3,r4
+	bgt	backwards_memcpy
+	/* fall through */
+
+	.globl	memcpy
+memcpy:
 	srwi.	r7,r5,3
 	addi	r6,r3,-4
 	addi	r4,r4,-4
@@ -556,11 +575,11 @@ __strncpy_from_user:
 	.long	1b,99b
 .text
 
-/* r3 = str, r4 = len (> 0), r5 = top (highest addr + 1) */
+/* r3 = str, r4 = len (> 0), r5 = top (highest addr) */
 	.globl	__strnlen_user
 __strnlen_user:
-	subf	r6,r3,r5	/* top - str */
 	addi	r7,r3,-1
+	subf	r6,r7,r5	/* top+1 - str */
 	cmplw	0,r4,r6
 	bge	0f
 	mr	r6,r4

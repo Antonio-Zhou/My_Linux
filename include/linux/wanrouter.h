@@ -5,6 +5,7 @@
 *
 * Author: 	Nenad Corbic <ncorbic@sangoma.com>
 *		Gideon Hack 	
+* Additions:	Arnaldo Carvalho de Melo <acme@conectiva.com.br>
 *
 * Copyright:	(c) 1995-1999 Sangoma Technologies Inc.
 *
@@ -15,6 +16,8 @@
 * ============================================================================
 * Oct 04, 1999  Nenad Corbic 	Updated for 2.1.0 release
 * Jun 02, 1999  Gideon Hack	Added support for the S514 adapter.
+* May 23, 1999	Arnaldo Melo	Added local_addr to wanif_conf_t
+*				WAN_DISCONNECTING state added
 * Jul 20, 1998	David Fong	Added Inverse ARP options to 'wanif_conf_t'
 * Jun 12, 1998	David Fong	Added Cisco HDLC support.
 * Dec 16, 1997	Jaspreet Singh	Moved 'enable_IPX' and 'network_number' to
@@ -341,7 +344,8 @@ enum wan_states
 	WAN_CONNECTING,		/* connection is in progress */
 	WAN_CONNECTED,		/* link/channel is operational */
 	WAN_LIMIT,		/* for verification only */
-	WAN_DUALPORT		/* for Dual Port cards */
+	WAN_DUALPORT,		/* for Dual Port cards */
+	WAN_DISCONNECTING	/* link/channel is disconnecting */
 };
 
 /* 'modem_status' masks */
@@ -370,6 +374,9 @@ typedef struct wanif_conf
 	unsigned inarp_interval;	/* sec, between InARP requests */
 	unsigned long network_number;	/* Network Number for IPX */
 	char mc;			/* Multicast on or off */
+	char local_addr[WAN_ADDRESS_SZ+1];/* local media address, ASCIIZ */
+	unsigned char port;		/* board port */
+	unsigned char protocol;		/* prococol used in this channel (TCPOX25 or X25) */
 	char pap;			/* PAP enabled or disabled */
 	char chap;			/* CHAP enabled or disabled */
 	unsigned char userid[511];	/* List of User Id */
@@ -446,21 +453,21 @@ typedef struct wan_device
 	int (*update) (struct wan_device *wandev);
 	int (*ioctl) (struct wan_device *wandev, unsigned cmd,
 		unsigned long arg);
-	int (*new_if) (struct wan_device *wandev, struct device *dev,
+	int (*new_if) (struct wan_device *wandev, struct net_device *dev,
 		wanif_conf_t *conf);
-	int (*del_if) (struct wan_device *wandev, struct device *dev);
+	int (*del_if) (struct wan_device *wandev, struct net_device *dev);
 					/****** maintained by the router ****/
 	struct wan_device* next;	/* -> next device */
-	struct device* dev;		/* list of network interfaces */
+	struct net_device* dev;		/* list of network interfaces */
 	unsigned ndev;			/* number of interfaces */
-	struct proc_dir_entry dent;	/* proc filesystem entry */
+	struct proc_dir_entry *dent;	/* proc filesystem entry */
 } wan_device_t;
 
 /* Public functions available for device drivers */
 extern int register_wan_device(wan_device_t *wandev);
 extern int unregister_wan_device(char *name);
-unsigned short wanrouter_type_trans(struct sk_buff *skb, struct device *dev);
-int wanrouter_encapsulate(struct sk_buff *skb, struct device *dev);
+unsigned short wanrouter_type_trans(struct sk_buff *skb, struct net_device *dev);
+int wanrouter_encapsulate(struct sk_buff *skb, struct net_device *dev);
 
 /* Proc interface functions. These must not be called by the drivers! */
 extern int wanrouter_proc_init(void);

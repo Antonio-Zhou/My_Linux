@@ -11,8 +11,9 @@ extern struct coda_sb_info coda_super_info;
 struct coda_sb_info
 {
 	struct inode *      sbi_psdev;     /* /dev/cfs? Venus/kernel device */
+	struct inode *      sbi_ctlcp;     /* control magic file */
 	int                 sbi_refct;
-	struct venus_comm * sbi_vcomm;
+	struct venus_comm *      sbi_vcomm;
 	struct inode *      sbi_root;
 	struct super_block *sbi_sb;
 	struct list_head    sbi_cchead;
@@ -22,10 +23,11 @@ struct coda_sb_info
 /* communication pending/processing queues */
 struct venus_comm {
 	u_long		    vc_seq;
-	struct wait_queue  *vc_waitq; /* Venus wait queue */
+	wait_queue_head_t   vc_waitq; /* Venus wait queue */
 	struct list_head    vc_pending;
 	struct list_head    vc_processing;
 	int                 vc_inuse;
+	pid_t               vc_pid;   /* Venus pid */
 };
 
 
@@ -92,7 +94,7 @@ struct upc_req {
 	u_short	            uc_outSize;
 	u_short	            uc_opcode;  /* copied from data to save lookup */
 	int		    uc_unique;
-	struct wait_queue  *uc_sleep;   /* process' wait queue */
+	wait_queue_head_t   uc_sleep;   /* process' wait queue */
 	unsigned long       uc_posttime;
 };
 

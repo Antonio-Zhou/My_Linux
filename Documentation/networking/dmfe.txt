@@ -16,20 +16,16 @@
 
   A. Compiler command:
 
-     A-1: For normal single processor kernel
+     A-1: For normal single or multiple processor kernel
           "gcc -DMODULE -D__KERNEL__ -I/usr/src/linux/net/inet -Wall 
             -Wstrict-prototypes -O6 -c dmfe.c"
 
-     A-2: For single processor and enable kernel module version function
+     A-2: For single or multiple processor with kernel module version function
           "gcc -DMODULE -DMODVERSIONS -D__KERNEL__ -I/usr/src/linux/net/inet 
             -Wall -Wstrict-prototypes -O6 -c dmfe.c"
 
-     A-3: For multiple processors(SMP) and enable the module version function
-          "gcc -D__SMP__ -DMODULE -DMODVERSIONS -D__KERNEL__ -I/usr/src/linux
-           /net/inet -Wall -Wstrict-prototypes -O6 -c dmfe.c"
 
-
-  B. The following steps teach you how to activate a DM9102 board:
+  B. The following steps teach you how to active DM9102 board:
 
         1. Used the upper compiler command to compile dmfe.c
 
@@ -44,13 +40,13 @@
            "ifconfig eth0 172.22.3.18"
                           ^^^^^^^^^^^ Your IP address
 
-        4. Activate the IP routing table. For some distributions, it is not
+        4. Active the IP routing table. For some distributions, it is not
            necessary. You can type "route" to check.
 
            "route add default eth0"
 
 
-        5. Well done. Your DM9102 adapter is now activated.
+        5. Well done. Your DM9102 adapter actived now.
 
 
    C. Object files description:

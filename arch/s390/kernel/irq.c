@@ -11,7 +11,7 @@
  *  S/390 I/O interrupt processing and I/O request processing is
  *   implemented in arch/s390/kernel/s390io.c
  */
-#include <linux/module.h>
+#include <linux/config.h>
 #include <linux/ptrace.h>
 #include <linux/errno.h>
 #include <linux/kernel_stat.h>
@@ -37,7 +37,7 @@
 #include <asm/delay.h>
 #include <asm/lowcore.h>
 
-unsigned long s390_init_IRQ   ( unsigned long);
+void          s390_init_IRQ   ( void );
 void          s390_free_irq   ( unsigned int irq, void *dev_id);
 int           s390_request_irq( unsigned int irq,
                      void           (*handler)(int, void *, struct pt_regs *),
@@ -46,8 +46,6 @@ int           s390_request_irq( unsigned int irq,
                      void          *dev_id);
 
 atomic_t nmi_counter;
-
-spinlock_t s390_bh_lock = SPIN_LOCK_UNLOCKED;
 
 #if 0
 /*
@@ -124,9 +122,7 @@ int get_irq_list(char *buf)
 atomic_t global_irq_holder = ATOMIC_INIT(NO_PROC_ID);
 atomic_t global_irq_lock;
 atomic_t global_irq_count = ATOMIC_INIT(0);
-
 atomic_t global_bh_count;
-atomic_t global_bh_lock;
 
 /*
  * "global_cli()" is a special case, in that it can hold the
@@ -363,7 +359,7 @@ void __global_restore_flags(unsigned long flags)
  * Note : This fuction should be eliminated as it doesn't comply with the
  *         S/390 irq scheme we have implemented ...
  */
-int handle_IRQ_event(unsigned int irq, int cpu, struct pt_regs * regs)
+int handle_IRQ_event( unsigned int irq, int cpu, struct pt_regs * regs)
 {
 	struct irqaction * action;
 	int                status;
@@ -373,7 +369,7 @@ int handle_IRQ_event(unsigned int irq, int cpu, struct pt_regs * regs)
 	if ( ioinfo[irq] == INVALID_STORAGE_AREA )
 		return( -ENODEV);
 
-	action = (struct irqaction *) ioinfo[irq]->irq_desc.action;
+	action = ioinfo[irq]->irq_desc.action;
 
 	if (action)
 	{
@@ -402,12 +398,9 @@ void enable_nop(int irq)
 {
 }
 
-__initfunc(unsigned long init_IRQ( unsigned long memory))
+void __init init_IRQ(void)
 {
-	int result;
-
-	result=s390_init_IRQ(memory);
-	return result;
+   s390_init_IRQ();
 }
 
 
@@ -427,12 +420,8 @@ int request_irq( unsigned int   irq,
 
 }
 
-#ifdef CONFIG_SMP
-EXPORT_SYMBOL(s390_bh_lock);
-EXPORT_SYMBOL(__global_cli);
-EXPORT_SYMBOL(__global_sti);
-EXPORT_SYMBOL(__global_save_flags);
-EXPORT_SYMBOL(__global_restore_flags);
-EXPORT_SYMBOL(global_bh_lock);
-EXPORT_SYMBOL(synchronize_bh);
-#endif
+void init_irq_proc(void)
+{
+        /* For now, nothing... */
+}
+

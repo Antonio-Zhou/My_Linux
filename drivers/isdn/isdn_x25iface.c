@@ -1,10 +1,4 @@
-/* $Id: isdn_x25iface.c,v 1.1.2.1 2001/12/31 13:26:34 kai Exp $
- *
- * Linux ISDN subsystem, X.25 related functions
- *
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
- *
+/* $Id: isdn_x25iface.c,v 1.7 1999/08/22 20:26:13 calle Exp $
  * stuff needed to support the Linux X.25 PLP code on top of devices that
  * can provide a lab_b service using the concap_proto mechanism.
  * This module supports a network interface wich provides lapb_sematics
@@ -14,6 +8,33 @@
  *
  * Only protocol specific stuff goes here. Device specific stuff
  * goes to another -- device related -- concap_proto support source file.
+ *
+ * $Log: isdn_x25iface.c,v $
+ * Revision 1.7  1999/08/22 20:26:13  calle
+ * backported changes from kernel 2.3.14:
+ * - several #include "config.h" gone, others come.
+ * - "struct device" changed to "struct net_device" in 2.3.14, added a
+ *   define in isdn_compat.h for older kernel versions.
+ *
+ * Revision 1.6  1999/01/27 22:53:19  he
+ * minor updates (spellings, jiffies wrap around in isdn_tty)
+ *
+ * Revision 1.5  1998/10/30 17:55:39  he
+ * dialmode for x25iface and multulink ppp
+ *
+ * Revision 1.4  1998/06/17 19:51:00  he
+ * merged with 2.1.10[34] (cosmetics and udelay() -> mdelay())
+ * brute force fix to avoid Ugh's in isdn_tty_write()
+ * cleaned up some dead code
+ *
+ * Revision 1.3  1998/02/20 17:25:20  fritz
+ * Changes for recent kernels.
+ *
+ * Revision 1.2  1998/01/31 22:49:22  keil
+ * correct comments
+ *
+ * Revision 1.1  1998/01/31 22:27:58  keil
+ * New files from Henner Eisen for X.25 support
  *
  */
 
@@ -42,7 +63,7 @@ typedef struct isdn_x25iface_proto_data {
 void isdn_x25iface_proto_del( struct concap_proto * );
 int isdn_x25iface_proto_close( struct concap_proto * );
 int isdn_x25iface_proto_restart( struct concap_proto *,
-				 struct device *,
+				 struct net_device *,
 				 struct concap_device_ops *);
 int isdn_x25iface_xmit( struct concap_proto *, struct sk_buff * );
 int isdn_x25iface_receive( struct concap_proto *, struct sk_buff * );
@@ -160,7 +181,7 @@ void isdn_x25iface_proto_del(struct concap_proto *cprot){
 /* (re-)initialize the data structures for x25iface encapsulation
  */
 int isdn_x25iface_proto_restart(struct concap_proto *cprot,
-				struct device *ndev, 
+				struct net_device *ndev, 
 				struct concap_device_ops *dops)
 {
 	ix25_pdata_t * pda = cprot -> proto_data ;

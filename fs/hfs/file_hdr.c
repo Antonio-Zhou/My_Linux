@@ -43,50 +43,16 @@
 static hfs_rwret_t hdr_read(struct file *, char *, hfs_rwarg_t, loff_t *);
 static hfs_rwret_t hdr_write(struct file *, const char *,
 			     hfs_rwarg_t, loff_t *);
-static void hdr_truncate(struct inode *);
-
 /*================ Global variables ================*/
 
-static struct file_operations hfs_hdr_operations = {
-	NULL,			/* lseek - default */
-	hdr_read,		/* read */
-	hdr_write,		/* write */
-	NULL,			/* readdir - bad */
-	NULL,			/* select - default */
-	NULL,			/* ioctl - default */
-	NULL,			/* mmap - XXX: not yet */
-	NULL,			/* no special open code */
-	NULL,			/* flush */
-	NULL,			/* no special release code */
-	file_fsync,		/* fsync - default */
-        NULL,			/* fasync - default */
-        NULL,			/* check_media_change - none */
-        NULL,			/* revalidate - none */
-        NULL			/* lock - none */
+struct file_operations hfs_hdr_operations = {
+	read:		hdr_read,
+	write:		hdr_write,
+	fsync:		file_fsync,
 };
 
 struct inode_operations hfs_hdr_inode_operations = {
-	&hfs_hdr_operations,	/* default file operations */
-	NULL,			/* create */
-	NULL,			/* lookup */
-	NULL,			/* link */
-	NULL,			/* unlink */
-	NULL,			/* symlink */
-	NULL,			/* mkdir */
-	NULL,			/* rmdir */
-	NULL,			/* mknod */
-	NULL,			/* rename */
-	NULL,			/* readlink */
-	NULL,			/* follow_link */
-	NULL,			/* readpage */
-	NULL,			/* writepage */
-	NULL,			/* bmap - XXX: not available since
-				   header part has no disk block */
-	hdr_truncate,		/* truncate */
-	NULL,			/* permission */
-	NULL,			/* smap */
-	NULL,			/* updatepage */
-	NULL			/* revalidate */
+	setattr:	hfs_notify_change_hdr,
 };
 
 const struct hfs_hdr_layout hfs_dbl_fil_hdr_layout = {
@@ -164,10 +130,10 @@ const struct hfs_hdr_layout hfs_nat_hdr_layout = {
 	__constant_htonl(HFS_HDR_VERSION_1),	/* version */
 	5,					/* entries */
 	{					/* descr[] */
-		{HFS_HDR_FNAME, offsetof(struct hfs_nat_hdr, real_name),   ~0},
-		{HFS_HDR_COMNT, offsetof(struct hfs_nat_hdr, comment),      0},
-		{HFS_HDR_OLDI,  offsetof(struct hfs_nat_hdr, old_info),    16},
-		{HFS_HDR_FINFO, offsetof(struct hfs_nat_hdr, finderinfo),  32},
+		{HFS_HDR_FNAME, offsetof(struct hfs_dbl_hdr, real_name),   ~0},
+		{HFS_HDR_COMNT, offsetof(struct hfs_dbl_hdr, comment),      0},
+		{HFS_HDR_OLDI,  offsetof(struct hfs_dbl_hdr, create_time), 16},
+		{HFS_HDR_FINFO, offsetof(struct hfs_dbl_hdr, finderinfo),  32},
 		{HFS_HDR_RSRC,  HFS_NAT_HDR_LEN,                           ~0},
 	},
 	{					/* order[] */
@@ -192,7 +158,7 @@ struct hdr_hdr {
         hfs_byte_t	filler[16];
         hfs_word_t	entries;
         hfs_byte_t	descrs[12*HFS_HDR_MAX];
-};
+}  __attribute__((packed));
 
 /*================ File-local functions ================*/
 
@@ -982,13 +948,13 @@ done:
  * header files.  The purpose is to allocate or release blocks as needed
  * to satisfy a change in file length.
  */
-static void hdr_truncate(struct inode *inode)
+void hdr_truncate(struct inode *inode, size_t size)
 {
 	struct hfs_cat_entry *entry = HFS_I(inode)->entry;
 	struct hfs_hdr_layout *layout;
-	size_t size = inode->i_size;
 	int lcv, last;
 
+	inode->i_size = size;
 	if (!HFS_I(inode)->layout) {
 		HFS_I(inode)->layout = dup_layout(HFS_I(inode)->default_layout);
 	}

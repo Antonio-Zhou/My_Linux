@@ -6,7 +6,7 @@
  * Status:        Experimental.
  * Author:        Dag Brattli <dagb@cs.uit.no>
  * Created at:    Sun Jun  6 21:00:56 1999
- * Modified at:   Mon Feb 21 00:37:28 2000
+ * Modified at:   Wed Feb 23 00:09:02 2000
  * Modified by:   Dag Brattli <dagb@cs.uit.no>
  * Sources:       serial.c and previous IrCOMM work by Takahide Higuchi
  * 
@@ -237,7 +237,7 @@ static int ircomm_tty_startup(struct ircomm_tty_cb *self)
 static int ircomm_tty_block_til_ready(struct ircomm_tty_cb *self, 
 				      struct file *filp)
 {
-	struct wait_queue wait = { NULL, NULL };
+	DECLARE_WAITQUEUE(wait, current);
 	int		retval;
 	int		do_clocal = 0, extra_count = 0;
 	unsigned long	flags;
@@ -246,7 +246,6 @@ static int ircomm_tty_block_til_ready(struct ircomm_tty_cb *self,
 	IRDA_DEBUG(2, __FUNCTION__ "()\n");
 
 	tty = self->tty;
-	wait.task = current;
 
 	if (tty->driver.subtype == SERIAL_TYPE_CALLOUT) {
 		/* this is a callout device */
@@ -355,7 +354,7 @@ static int ircomm_tty_block_til_ready(struct ircomm_tty_cb *self,
 		schedule();
 	}
 	
-	current->state = TASK_RUNNING;
+	__set_current_state(TASK_RUNNING);
 	remove_wait_queue(&self->open_wait, &wait);
 	
 	if (extra_count)
@@ -418,8 +417,8 @@ static int ircomm_tty_open(struct tty_struct *tty, struct file *filp)
 
 		/* Init some important stuff */
 		init_timer(&self->watchdog_timer);
-		/* init_waitqueue_head(&self->open_wait); */
-/* 		init_waitqueue_head(&self->close_wait); */
+		init_waitqueue_head(&self->open_wait);
+ 		init_waitqueue_head(&self->close_wait);
 
 		/* 
 		 * Force TTY into raw mode by default which is usually what
@@ -1079,10 +1078,10 @@ void ircomm_tty_check_modem_status(struct ircomm_tty_cb *self)
 				IRDA_DEBUG(2, __FUNCTION__ 
 					   "(), CTS tx start...\n");
 				tty->hw_stopped = 0;
-
+				
 				/* Wake up processes blocked on open */
 				wake_up_interruptible(&self->open_wait);
-				
+
 				queue_task(&self->tqueue, &tq_immediate);
 				mark_bh(IMMEDIATE_BH);
 				return;

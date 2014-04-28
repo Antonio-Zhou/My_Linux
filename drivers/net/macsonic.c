@@ -53,7 +53,6 @@
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
 #include <linux/skbuff.h>
-#include <linux/config.h>
 #include <linux/module.h>
 
 #define SREGS_PAD(n)    u16 n;
@@ -63,9 +62,9 @@
 static int sonic_debug = 0;
 static int sonic_version_printed = 0;
 
-extern int macsonic_probe(struct device* dev);
-extern int mac_onboard_sonic_probe(struct device* dev);
-extern int mac_nubus_sonic_probe(struct device* dev);
+extern int macsonic_probe(struct net_device* dev);
+extern int mac_onboard_sonic_probe(struct net_device* dev);
+extern int mac_nubus_sonic_probe(struct net_device* dev);
 
 /* For onboard SONIC */
 #define ONBOARD_SONIC_REGISTERS	0x50F0A000
@@ -99,7 +98,7 @@ enum macsonic_type {
 
 #define SONIC_READ_PROM(addr) readb(prom_addr+addr)
 
-__initfunc(int macsonic_probe(struct device* dev))
+int __init macsonic_probe(struct net_device* dev)
 {
 	int rv;
 
@@ -125,7 +124,7 @@ static inline void bit_reverse_addr(unsigned char addr[6])
 			   nibbletab[(addr[i] >> 4) &0xf]);
 }
 
-__initfunc(int macsonic_init(struct device* dev))
+int __init macsonic_init(struct net_device* dev)
 {
 	struct sonic_local* lp = (struct sonic_local *)dev->priv;
 	int i;
@@ -182,7 +181,9 @@ __initfunc(int macsonic_init(struct device* dev))
 		kernel_set_cachemode(lp->sonic_desc, ds, IOMAP_NOCACHE_SER);
 	}
 	
+#if 0
 	flush_cache_all();
+#endif
 
 	dev->open = sonic_open;
 	dev->stop = sonic_close;
@@ -202,7 +203,7 @@ __initfunc(int macsonic_init(struct device* dev))
 	return 0;
 }
 
-__initfunc(int mac_onboard_sonic_ethernet_addr(struct device* dev))
+int __init mac_onboard_sonic_ethernet_addr(struct net_device* dev)
 {
 	const int prom_addr = ONBOARD_SONIC_PROM_BASE;
 	int i;
@@ -268,7 +269,7 @@ __initfunc(int mac_onboard_sonic_ethernet_addr(struct device* dev))
 	} else return 0;
 }
 
-__initfunc(int mac_onboard_sonic_probe(struct device* dev))
+int __init mac_onboard_sonic_probe(struct net_device* dev)
 {
 	/* Bwahahaha */
 	static int once_is_more_than_enough = 0;
@@ -381,6 +382,9 @@ __initfunc(int mac_onboard_sonic_probe(struct device* dev))
 	sonic_write(dev, SONIC_DCR, SONIC_DCR_BMS |
 		    SONIC_DCR_RFT1 | SONIC_DCR_TFT0 | SONIC_DCR_EXBUS |
 		    (lp->dma_bitmode ? SONIC_DCR_DW : 0));
+	/* This *must* be written back to in order to restore the
+           extended programmable output bits */
+	sonic_write(dev, SONIC_DCR2, 0);
 
 	/* Clear *and* disable interrupts to be on the safe side */
 	sonic_write(dev, SONIC_ISR,0x7fff);
@@ -403,9 +407,9 @@ __initfunc(int mac_onboard_sonic_probe(struct device* dev))
 	return macsonic_init(dev);
 }
 
-__initfunc(int mac_nubus_sonic_ethernet_addr(struct device* dev,
-					     unsigned long prom_addr,
-					     int id))
+int __init mac_nubus_sonic_ethernet_addr(struct net_device* dev,
+					 unsigned long prom_addr,
+					 int id)
 {
 	int i;
 	for(i = 0; i < 6; i++)
@@ -416,7 +420,7 @@ __initfunc(int mac_nubus_sonic_ethernet_addr(struct device* dev,
 	return 0;
 }
 
-__initfunc(int macsonic_ident(struct nubus_dev* ndev))
+int __init macsonic_ident(struct nubus_dev* ndev)
 {
 	if (ndev->dr_hw == NUBUS_DRHW_ASANTE_LC && 
 	    ndev->dr_sw == NUBUS_DRSW_SONIC_LC)
@@ -429,21 +433,17 @@ __initfunc(int macsonic_ident(struct nubus_dev* ndev))
 		else
 			return MACSONIC_APPLE;
 	}
-	if (ndev->dr_hw == NUBUS_DRHW_APPLE_SONIC_LC &&
-	    ndev->dr_sw == 0) { /* huh? */
-		return MACSONIC_APPLE16;
-	}
 	return -1;
 }
 
-__initfunc(int mac_nubus_sonic_probe(struct device* dev))
+int __init mac_nubus_sonic_probe(struct net_device* dev)
 {
 	static int slots = 0;
 	struct nubus_dev* ndev = NULL;
 	struct sonic_local* lp;
 	unsigned long base_addr, prom_addr;
 	u16 sonic_dcr;
-	int id = -1;
+	int id;
 	int i;
 	int reg_offset, dma_bitmode;
 
@@ -544,9 +544,6 @@ __initfunc(int mac_nubus_sonic_probe(struct device* dev))
 	sonic_write(dev, SONIC_CMD, SONIC_CR_RST);
 	sonic_write(dev, SONIC_DCR, sonic_dcr
 		    | (dma_bitmode ? SONIC_DCR_DW : 0));
-	/* This *must* be written back to in order to restore the
-           extended programmable output bits */
-	sonic_write(dev, SONIC_DCR2, 0);
 
 	/* Clear *and* disable interrupts to be on the safe side */
 	sonic_write(dev, SONIC_ISR,0x7fff);
@@ -570,7 +567,7 @@ __initfunc(int mac_nubus_sonic_probe(struct device* dev))
 
 #ifdef MODULE
 static char namespace[16] = "";
-static struct device dev_macsonic = {
+static struct net_device dev_macsonic = {
         NULL,
         0, 0, 0, 0,
         0, 0,

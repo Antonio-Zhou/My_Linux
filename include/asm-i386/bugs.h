@@ -21,29 +21,34 @@
 #include <asm/processor.h>
 #include <asm/msr.h>
 
-#define CONFIG_BUGi386
-
-__initfunc(static void no_halt(char *s, int *ints))
+static int __init no_halt(char *s)
 {
 	boot_cpu_data.hlt_works_ok = 0;
+	return 1;
 }
 
-#ifdef CONFIG_MCA
-__initfunc(static void mca_pentium(char *s, int *ints))
+__setup("no-hlt", no_halt);
+
+static int __init mca_pentium(char *s)
 {
 	mca_pentium_flag = 1;
+	return 1;
 }
-#endif
 
-__initfunc(static void no_387(char *s, int *ints))
+__setup("mca-pentium", mca_pentium);
+
+static int __init no_387(char *s)
 {
 	boot_cpu_data.hard_math = 0;
 	write_cr0(0xE | read_cr0());
+	return 1;
 }
+
+__setup("no387", no_387);
 
 static char __initdata fpu_error = 0;
 
-__initfunc(static void copro_timeout(void))
+static void __init copro_timeout(void)
 {
 	fpu_error = 1;
 	timer_table[COPRO_TIMER].expires = jiffies+HZ;
@@ -57,7 +62,7 @@ __initfunc(static void copro_timeout(void))
 static double __initdata x = 4195835.0;
 static double __initdata y = 3145727.0;
 
-__initfunc(static void check_fpu(void))
+static void __init check_fpu(void)
 {
 	unsigned short control_word;
 
@@ -136,7 +141,7 @@ __initfunc(static void check_fpu(void))
 		printk("Hmm, FPU using exception 16 error reporting with FDIV bug.\n");
 }
 
-__initfunc(static void check_hlt(void))
+static void __init check_hlt(void)
 {
 	printk(KERN_INFO "Checking 'hlt' instruction... ");
 	if (!boot_cpu_data.hlt_works_ok) {
@@ -152,7 +157,7 @@ __initfunc(static void check_hlt(void))
  *	machine even from user space.
  */
  
-__initfunc(static void check_popad(void))
+static void __init check_popad(void)
 {
 #ifndef CONFIG_X86_POPAD_OK
 	int res, inp = (int) &res;
@@ -185,10 +190,9 @@ __initfunc(static void check_popad(void))
 extern void vide(void);
 __asm__(".align 4\nvide: ret");
 
-__initfunc(static void check_amd_k6(void))
+static void __init check_amd_k6(void)
 {
 	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD &&
-	    boot_cpu_data.x86 == 5 &&
 	    boot_cpu_data.x86_model == 6 &&
 	    boot_cpu_data.x86_mask == 1)
 	{
@@ -230,9 +234,10 @@ __initfunc(static void check_amd_k6(void))
  * have the F0 0F bug, which lets nonpriviledged users lock up the system:
  */
 
+#ifndef CONFIG_M686
 extern void trap_init_f00f_bug(void);
 
-__initfunc(static void check_pentium_f00f(void))
+static void __init check_pentium_f00f(void)
 {
 	/*
 	 * Pentium and Pentium MMX
@@ -244,6 +249,7 @@ __initfunc(static void check_pentium_f00f(void))
 		trap_init_f00f_bug();
 	}
 }
+#endif
 
 /*
  * Perform the Cyrix 5/2 test. A Cyrix won't change
@@ -274,7 +280,7 @@ static inline int test_cyrix_52div(void)
 
 extern unsigned char Cx86_dir0_msb;  /* exported HACK from cyrix_model() */
 
-__initfunc(static void check_cx686_cpuid(void))
+static void __init check_cx686_cpuid(void)
 {
 	if (boot_cpu_data.cpuid_level == -1 &&
 	    ((Cx86_dir0_msb == 5) || (Cx86_dir0_msb == 3))) {
@@ -314,7 +320,7 @@ __initfunc(static void check_cx686_cpuid(void))
 
 extern void calibrate_delay(void) __init;
 
-__initfunc(static void check_cx686_slop(void))
+static void __init check_cx686_slop(void)
 {
 	if (Cx86_dir0_msb == 3) {
 		unsigned char ccr3, ccr5;
@@ -331,7 +337,7 @@ __initfunc(static void check_cx686_slop(void))
 		if (ccr5 & 2) { /* possible wrong calibration done */
 			printk(KERN_INFO "Recalibrating delay loop with SLOP bit reset\n");
 			calibrate_delay();
-			boot_cpu_data.loops_per_jiffy = loops_per_jiffy;
+			boot_cpu_data.loops_per_sec = loops_per_sec;
 		}
 	}
 }
@@ -342,7 +348,7 @@ __initfunc(static void check_cx686_slop(void))
  * PII and PPro exhibit this behavior too, but they have cpuid available.
  */
 
-__initfunc(static void check_cyrix_cpu(void))
+static void __init check_cyrix_cpu(void)
 {
 	if ((boot_cpu_data.cpuid_level == -1) && (boot_cpu_data.x86 == 4)
 	    && test_cyrix_52div()) {
@@ -357,24 +363,26 @@ __initfunc(static void check_cyrix_cpu(void))
  * enable the workaround for it.
  */
 
-__initfunc(static void check_cyrix_coma(void))
+static void __init check_cyrix_coma(void)
 {
 }
  
 /*
- * Check wether we are able to run this kernel safely on SMP.
+ * Check whether we are able to run this kernel safely on SMP.
  *
  * - In order to run on a i386, we need to be compiled for i386
  *   (for due to lack of "invlpg" and working WP on a i386)
  * - In order to run on anything without a TSC, we need to be
  *   compiled for a i486.
- * - In order to work on a Pentium/SMP machine, we need to be
- *   compiled for a Pentium or lower, as a PPro config implies
- *   a properly working local APIC without the need to do extra
- *   reads from the APIC.
+ * - In order to support the local APIC on a buggy Pentium machine,
+ *   we need to be compiled with CONFIG_X86_GOOD_APIC disabled,
+ *   which happens implicitly if compiled for a Pentium or lower
+ *   (unless an advanced selection of CPU features is used) as an
+ *   otherwise config implies a properly working local APIC without
+ *   the need to do extra reads from the APIC.
 */
 
-__initfunc(static void check_config(void))
+static void __init check_config(void)
 {
 /*
  * We'd better not be a i386 if we're configured to use some
@@ -390,26 +398,41 @@ __initfunc(static void check_config(void))
  * If we configured ourselves for a TSC, we'd better have one!
  */
 #ifdef CONFIG_X86_TSC
-	if (!(boot_cpu_data.x86_capability & X86_FEATURE_TSC))
-		panic("Kernel compiled for Pentium+, requires TSC");
+	if (!cpu_has_tsc)
+		panic("Kernel compiled for Pentium+, requires TSC feature!");
 #endif
 
 /*
- * If we were told we had a good APIC for SMP, we'd better be a PPro
+ * If we configured ourselves for PGE, we'd better have it.
  */
-#if defined(CONFIG_X86_GOOD_APIC) && defined(CONFIG_SMP)
-	if (smp_found_config && boot_cpu_data.x86 <= 5)
-		panic("Kernel compiled for PPro+, assumes local APIC without read-before-write bug");
+#ifdef CONFIG_X86_PGE
+	if (!cpu_has_pge)
+		panic("Kernel compiled for PPro+, requires PGE feature!");
+#endif
+
+/*
+ * If we were told we had a good local APIC, check for buggy Pentia,
+ * i.e. all B steppings and the C2 stepping of P54C when using their
+ * integrated APIC (see 11AP erratum in "Pentium Processor
+ * Specification Update").
+ */
+#if defined(CONFIG_X86_LOCAL_APIC) && defined(CONFIG_X86_GOOD_APIC)
+	if (boot_cpu_data.x86_vendor == X86_VENDOR_INTEL
+	    && boot_cpu_data.x86_capability & X86_FEATURE_APIC
+	    && boot_cpu_data.x86 == 5
+	    && boot_cpu_data.x86_model == 2
+	    && (boot_cpu_data.x86_mask < 6 || boot_cpu_data.x86_mask == 11))
+		panic("Kernel compiled for PPro+, assumes a local APIC without the read-before-write bug!");
 #endif
 }
 
-__initfunc(static void check_bugs(void))
+static void __init check_bugs(void)
 {
 	check_cyrix_cpu();
 	identify_cpu(&boot_cpu_data);
 	check_cx686_cpuid();
 	check_cx686_slop();
-#ifndef __SMP__
+#ifndef CONFIG_SMP
 	printk("CPU: ");
 	print_cpu_info(&boot_cpu_data);
 #endif
@@ -418,15 +441,9 @@ __initfunc(static void check_bugs(void))
 	check_hlt();
 	check_popad();
 	check_amd_k6();
+#ifndef CONFIG_M686
 	check_pentium_f00f();
+#endif
 	check_cyrix_coma();
-	/*
-	 *	Catch people using stupid model number data
-	 *	(Pentium IV) and report 686 still. The /proc data
-	 *	however does not lie and reports 15 as will cpuid.
-	 */
-	if(boot_cpu_data.x86 > 9)
-		system_utsname.machine[1] = '6';
-	else
-		system_utsname.machine[1] = '0' + boot_cpu_data.x86;
+	system_utsname.machine[1] = '0' + boot_cpu_data.x86;
 }

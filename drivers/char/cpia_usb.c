@@ -21,7 +21,6 @@
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
-#include <linux/config.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/wait.h>
@@ -30,7 +29,6 @@
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
 #include <linux/usb.h>
-#include <linux/init.h>
 
 #include "cpia.h"
 
@@ -466,11 +464,10 @@ static void *cpia_probe(struct usb_device *udev, unsigned int ifnum)
 	interface = &udev->actconfig->interface[ifnum].altsetting[0];
 
 	/* Is it a CPiA? */
-	if (!((udev->descriptor.idVendor == 0x0553 && 
-	     udev->descriptor.idProduct == 0x0002) ||
-	    (udev->descriptor.idVendor == 0x0813 &&
-	     udev->descriptor.idProduct == 0x0001))) /* GA 04/14/00 */
-	  return NULL;
+	if (udev->descriptor.idVendor != 0x0553)
+		return NULL;
+	if (udev->descriptor.idProduct != 0x0002)
+		return NULL;
 
 	/* We found a CPiA */
 	printk(KERN_INFO "USB CPiA camera found\n");
@@ -626,11 +623,4 @@ void cleanup_module(void)
 {
 	usb_cpia_cleanup();
 }
-
-#else /* !MODULE */
-
-__initfunc(void cpia_usb_setup(char *str, int *ints))
-{
-}
-
 #endif /* !MODULE */

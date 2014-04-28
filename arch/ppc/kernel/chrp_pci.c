@@ -8,6 +8,7 @@
 #include <linux/string.h>
 #include <linux/init.h>
 #include <linux/openpic.h>
+#include <linux/ide.h>
 
 #include <asm/io.h>
 #include <asm/pgtable.h>
@@ -15,11 +16,10 @@
 #include <asm/hydra.h>
 #include <asm/prom.h>
 #include <asm/gg2.h>
-#include <asm/ide.h>
 #include <asm/machdep.h>
+#include <asm/init.h>
 
 #include "pci.h"
-#include "open_pic.h"
 
 /* LongTrail */
 #define pci_config_addr(bus, dev, offset) \
@@ -32,7 +32,7 @@ volatile struct Hydra *Hydra = NULL;
  * limit the bus number to 3 bits
  */
 
-int gg2_pcibios_read_config_byte(unsigned char bus, unsigned char dev_fn,
+int __chrp gg2_pcibios_read_config_byte(unsigned char bus, unsigned char dev_fn,
 				 unsigned char offset, unsigned char *val)
 {
 	if (bus > 7) {
@@ -43,7 +43,7 @@ int gg2_pcibios_read_config_byte(unsigned char bus, unsigned char dev_fn,
 	return PCIBIOS_SUCCESSFUL;
 }
 
-int gg2_pcibios_read_config_word(unsigned char bus, unsigned char dev_fn,
+int __chrp gg2_pcibios_read_config_word(unsigned char bus, unsigned char dev_fn,
 				 unsigned char offset, unsigned short *val)
 {
 	if (bus > 7) {
@@ -55,7 +55,7 @@ int gg2_pcibios_read_config_word(unsigned char bus, unsigned char dev_fn,
 }
 
 
-int gg2_pcibios_read_config_dword(unsigned char bus, unsigned char dev_fn,
+int __chrp gg2_pcibios_read_config_dword(unsigned char bus, unsigned char dev_fn,
 				  unsigned char offset, unsigned int *val)
 {
 	if (bus > 7) {
@@ -66,7 +66,7 @@ int gg2_pcibios_read_config_dword(unsigned char bus, unsigned char dev_fn,
 	return PCIBIOS_SUCCESSFUL;
 }
 
-int gg2_pcibios_write_config_byte(unsigned char bus, unsigned char dev_fn,
+int __chrp gg2_pcibios_write_config_byte(unsigned char bus, unsigned char dev_fn,
 				  unsigned char offset, unsigned char val)
 {
 	if (bus > 7)
@@ -75,7 +75,7 @@ int gg2_pcibios_write_config_byte(unsigned char bus, unsigned char dev_fn,
 	return PCIBIOS_SUCCESSFUL;
 }
 
-int gg2_pcibios_write_config_word(unsigned char bus, unsigned char dev_fn,
+int __chrp gg2_pcibios_write_config_word(unsigned char bus, unsigned char dev_fn,
 				  unsigned char offset, unsigned short val)
 {
 	if (bus > 7)
@@ -84,7 +84,7 @@ int gg2_pcibios_write_config_word(unsigned char bus, unsigned char dev_fn,
 	return PCIBIOS_SUCCESSFUL;
 }
 
-int gg2_pcibios_write_config_dword(unsigned char bus, unsigned char dev_fn,
+int __chrp gg2_pcibios_write_config_dword(unsigned char bus, unsigned char dev_fn,
 				   unsigned char offset, unsigned int val)
 {
 	if (bus > 7)
@@ -99,7 +99,7 @@ int gg2_pcibios_write_config_dword(unsigned char bus, unsigned char dev_fn,
 				 | (((o) & ~3) << 24))
 unsigned int python_busnr = 0;
 
-int python_pcibios_read_config_byte(unsigned char bus, unsigned char dev_fn,
+int __chrp python_pcibios_read_config_byte(unsigned char bus, unsigned char dev_fn,
 				    unsigned char offset, unsigned char *val)
 {
 	if (bus > python_busnr) {
@@ -111,7 +111,7 @@ int python_pcibios_read_config_byte(unsigned char bus, unsigned char dev_fn,
 	return PCIBIOS_SUCCESSFUL;
 }
 
-int python_pcibios_read_config_word(unsigned char bus, unsigned char dev_fn,
+int __chrp python_pcibios_read_config_word(unsigned char bus, unsigned char dev_fn,
 				    unsigned char offset, unsigned short *val)
 {
 	if (bus > python_busnr) {
@@ -124,7 +124,7 @@ int python_pcibios_read_config_word(unsigned char bus, unsigned char dev_fn,
 }
 
 
-int python_pcibios_read_config_dword(unsigned char bus, unsigned char dev_fn,
+int __chrp python_pcibios_read_config_dword(unsigned char bus, unsigned char dev_fn,
 				     unsigned char offset, unsigned int *val)
 {
 	if (bus > python_busnr) {
@@ -136,7 +136,7 @@ int python_pcibios_read_config_dword(unsigned char bus, unsigned char dev_fn,
 	return PCIBIOS_SUCCESSFUL;
 }
 
-int python_pcibios_write_config_byte(unsigned char bus, unsigned char dev_fn,
+int __chrp python_pcibios_write_config_byte(unsigned char bus, unsigned char dev_fn,
 				     unsigned char offset, unsigned char val)
 {
 	if (bus > python_busnr)
@@ -146,7 +146,7 @@ int python_pcibios_write_config_byte(unsigned char bus, unsigned char dev_fn,
 	return PCIBIOS_SUCCESSFUL;
 }
 
-int python_pcibios_write_config_word(unsigned char bus, unsigned char dev_fn,
+int __chrp python_pcibios_write_config_word(unsigned char bus, unsigned char dev_fn,
 				     unsigned char offset, unsigned short val)
 {
 	if (bus > python_busnr)
@@ -157,7 +157,7 @@ int python_pcibios_write_config_word(unsigned char bus, unsigned char dev_fn,
 	return PCIBIOS_SUCCESSFUL;
 }
 
-int python_pcibios_write_config_dword(unsigned char bus, unsigned char dev_fn,
+int __chrp python_pcibios_write_config_dword(unsigned char bus, unsigned char dev_fn,
 				      unsigned char offset, unsigned int val)
 {
 	if (bus > python_busnr)
@@ -168,7 +168,7 @@ int python_pcibios_write_config_dword(unsigned char bus, unsigned char dev_fn,
 }
 
 
-int rtas_pcibios_read_config_byte(unsigned char bus, unsigned char dev_fn,
+int __chrp rtas_pcibios_read_config_byte(unsigned char bus, unsigned char dev_fn,
 				    unsigned char offset, unsigned char *val)
 {
 	unsigned long addr = (offset&0xff) | ((dev_fn&0xff)<<8) | ((bus & 0xff)<<16);
@@ -177,7 +177,7 @@ int rtas_pcibios_read_config_byte(unsigned char bus, unsigned char dev_fn,
 	return PCIBIOS_SUCCESSFUL;
 }
 
-int rtas_pcibios_read_config_word(unsigned char bus, unsigned char dev_fn,
+int __chrp rtas_pcibios_read_config_word(unsigned char bus, unsigned char dev_fn,
 				    unsigned char offset, unsigned short *val)
 {
 	unsigned long addr = (offset&0xff) | ((dev_fn&0xff)<<8) | ((bus & 0xff)<<16);
@@ -187,7 +187,7 @@ int rtas_pcibios_read_config_word(unsigned char bus, unsigned char dev_fn,
 }
 
 
-int rtas_pcibios_read_config_dword(unsigned char bus, unsigned char dev_fn,
+int __chrp rtas_pcibios_read_config_dword(unsigned char bus, unsigned char dev_fn,
 				     unsigned char offset, unsigned int *val)
 {
 	unsigned long addr = (offset&0xff) | ((dev_fn&0xff)<<8) | ((bus & 0xff)<<16);
@@ -196,7 +196,7 @@ int rtas_pcibios_read_config_dword(unsigned char bus, unsigned char dev_fn,
 	return PCIBIOS_SUCCESSFUL;
 }
 
-int rtas_pcibios_write_config_byte(unsigned char bus, unsigned char dev_fn,
+int __chrp rtas_pcibios_write_config_byte(unsigned char bus, unsigned char dev_fn,
 				     unsigned char offset, unsigned char val)
 {
 	unsigned long addr = (offset&0xff) | ((dev_fn&0xff)<<8) | ((bus & 0xff)<<16);
@@ -205,7 +205,7 @@ int rtas_pcibios_write_config_byte(unsigned char bus, unsigned char dev_fn,
 	return PCIBIOS_SUCCESSFUL;
 }
 
-int rtas_pcibios_write_config_word(unsigned char bus, unsigned char dev_fn,
+int __chrp rtas_pcibios_write_config_word(unsigned char bus, unsigned char dev_fn,
 				     unsigned char offset, unsigned short val)
 {
 	unsigned long addr = (offset&0xff) | ((dev_fn&0xff)<<8) | ((bus & 0xff)<<16);
@@ -214,7 +214,7 @@ int rtas_pcibios_write_config_word(unsigned char bus, unsigned char dev_fn,
 	return PCIBIOS_SUCCESSFUL;
 }
 
-int rtas_pcibios_write_config_dword(unsigned char bus, unsigned char dev_fn,
+int __chrp rtas_pcibios_write_config_dword(unsigned char bus, unsigned char dev_fn,
 				      unsigned char offset, unsigned int val)
 {
 	unsigned long addr = (offset&0xff) | ((dev_fn&0xff)<<8) | ((bus & 0xff)<<16);
@@ -274,27 +274,24 @@ void __init
 chrp_pcibios_fixup(void)
 {
 	struct pci_dev *dev;
-	
-	/* some of IBM chrps have > 1 bus */
-	if ( !strncmp("IBM", get_property(find_path_device("/"),
-					 "name", NULL),3) )
-	{
-		pci_scan_peer_bridge(1);
-		pci_scan_peer_bridge(2);
-	}
-	
+	int i;
+	extern struct pci_ops generic_pci_ops;
+
+	/* Some IBM's with the python have >1 bus, this finds them */
+	for ( i = 0; i < python_busnr ; i++ )
+		pci_scan_bus(i+1, &generic_pci_ops, NULL);
+
 	/* PCI interrupts are controlled by the OpenPIC */
-	for( dev=pci_devices ; dev; dev=dev->next )
-	{
+	pci_for_each_dev(dev) {
 		if ( dev->irq )
-			dev->irq = dev->irq + open_pic.irq_offset;
+			dev->irq = openpic_to_irq( dev->irq );
 		/* these need to be absolute addrs for OF and Matrox FB -- Cort */
 		if ( dev->vendor == PCI_VENDOR_ID_MATROX )
 		{
-			if ( dev->base_address[0] < isa_mem_base )
-				dev->base_address[0] += isa_mem_base;
-			if ( dev->base_address[1] < isa_mem_base )
-				dev->base_address[1] += isa_mem_base;
+			if ( dev->resource[0].start < isa_mem_base )
+				dev->resource[0].start += isa_mem_base;
+			if ( dev->resource[1].start < isa_mem_base )
+				dev->resource[1].start += isa_mem_base;
 		}
 		/* the F50 identifies the amd as a trident */
 		if ( (dev->vendor == PCI_VENDOR_ID_TRIDENT) &&
@@ -307,7 +304,7 @@ chrp_pcibios_fixup(void)
 		if ( (dev->bus->number > 0) &&
 		     ((dev->vendor == PCI_VENDOR_ID_NCR) ||
 		      (dev->vendor == PCI_VENDOR_ID_AMD)))
-			dev->base_address[0] += (dev->bus->number*0x08000000);
+			dev->resource[0].start += (dev->bus->number*0x08000000);
 	}
 }
 
@@ -348,7 +345,7 @@ chrp_setup_pci_ptrs(void)
 			} else if ( !strncmp("IBM,7043-260",
 			   get_property(find_path_device("/"), "name", NULL),12) )
 			{
-				pci_dram_offset = 0x80000000;
+				pci_dram_offset = 0x0;
 				isa_mem_base = 0xc0000000;
 				isa_io_base = 0xf8000000;
 			}

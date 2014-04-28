@@ -28,10 +28,10 @@
 #include <linux/malloc.h>	/* kmalloc(), kfree() */
 #include <linux/mm.h>		/* verify_area(), etc. */
 #include <linux/string.h>	/* inline mem*, str* functions */
-#include <linux/init.h>		/* __initfunc et al. */
-#include <asm/uaccess.h>        /* copy_to_user */
+#include <linux/init.h>		/* __init et al. */
 #include <asm/segment.h>	/* kernel <-> user copy */
 #include <asm/byteorder.h>	/* htons(), etc. */
+#include <asm/uaccess.h>	/* copy_to_user */
 #include <asm/io.h>
 #include <linux/wanrouter.h>	/* WAN router API definitions */
 
@@ -66,29 +66,15 @@ typedef struct wan_stat_entry
 
 /* Proc filesystem interface */
 static int router_proc_perms(struct inode *, int);
-static ssize_t router_proc_read(struct file *file, char *buf, size_t count, 					loff_t *ppos);
+static ssize_t router_proc_read(struct file* file, char* buf, size_t count, 					loff_t *ppos);
 
 /* Methods for preparing data for reading proc entries */
-static int config_get_info(char* buf, char** start, off_t offs, int len,
-	int dummy);
-static int status_get_info(char* buf, char** start, off_t offs, int len,
-	int dummy);
-static int wandev_get_info(char* buf, char** start, off_t offs, int len,
-	int dummy);
+
+static int config_get_info(char* buf, char** start, off_t offs, int len);
+static int status_get_info(char* buf, char** start, off_t offs, int len);
+static int wandev_get_info(char* buf, char** start, off_t offs, int len);
 
 /* Miscellaneous */
-
-/*
- *	Global Data
- */
-
-/*
- *	Names of the proc directory entries 
- */
-
-static char name_root[]	= ROUTER_NAME;
-static char name_conf[]	= "config";
-static char name_stat[]	= "status";
 
 /*
  *	Structures for interfacing with the /proc filesystem.
@@ -104,152 +90,29 @@ static char name_stat[]	= "status";
  */
 static struct file_operations router_fops =
 {
-	NULL,			/* lseek   */
-	router_proc_read,	/* read	   */
-	NULL,			/* write   */
-	NULL,			/* readdir */
-	NULL,			/* select  */
-	NULL,			/* ioctl   */
-	NULL,			/* mmap	   */
-	NULL,			/* no special open code	   */
-	NULL,			/* flush */
-	NULL,			/* no special release code */
-	NULL			/* can't fsync */
+	read:		router_proc_read,
 };
 
 static struct inode_operations router_inode =
 {
-	&router_fops,
-	NULL,			/* create */
-	NULL,			/* lookup */
-	NULL,			/* link */
-	NULL,			/* unlink */
-	NULL,			/* symlink */
-	NULL,			/* mkdir */
-	NULL,			/* rmdir */
-	NULL,			/* mknod */
-	NULL,			/* rename */
-	NULL,			/* follow link */
-	NULL,			/* readlink */
-	NULL,			/* readpage */
-	NULL,			/* writepage */
-	NULL,			/* bmap */
-	NULL,			/* truncate */
-	router_proc_perms
+	permission:	router_proc_perms,
 };
 
 /*
- *	/proc/net/router/<device> file and inode operations
+ *	/proc/net/router/<device> file operations
  */
 
 static struct file_operations wandev_fops =
 {
-	NULL,			/* lseek   */
-	router_proc_read,	/* read	   */
-	NULL,			/* write   */
-	NULL,			/* readdir */
-	NULL,			/* select  */
-	wanrouter_ioctl,	/* ioctl   */
-	NULL,			/* mmap	   */
-	NULL,			/* no special open code	   */
-	NULL,			/* flush */
-	NULL,			/* no special release code */
-	NULL			/* can't fsync */
+	read:		router_proc_read,
+	ioctl:		wanrouter_ioctl,
 };
-
-static struct inode_operations wandev_inode =
-{
-	&wandev_fops,
-	NULL,			/* create */
-	NULL,			/* lookup */
-	NULL,			/* link */
-	NULL,			/* unlink */
-	NULL,			/* symlink */
-	NULL,			/* mkdir */
-	NULL,			/* rmdir */
-	NULL,			/* mknod */
-	NULL,			/* rename */
-	NULL,			/* readlink */
-	NULL,			/* follow_link */
-	NULL,			/* readpage */
-	NULL,			/* writepage */
-	NULL,			/* bmap */
-	NULL,			/* truncate */
-	router_proc_perms
-};
-
-/*
- * Proc filesystem derectory entries.
- */
 
 /*
  *	/proc/net/router 
  */
- 
-static struct proc_dir_entry proc_router =
-{
-	0,			/* .low_ino */
-	sizeof(name_root) - 1,	/* .namelen */
-	name_root,		/* .name */
-	0555 | S_IFDIR,		/* .mode */
-	2,			/* .nlink */
-	0,			/* .uid */
-	0,			/* .gid */
-	0,			/* .size */
-	&proc_dir_inode_operations, /* .ops */
-	NULL,			/* .get_info */
-	NULL,			/* .fill_node */
-	NULL,			/* .next */
-	NULL,			/* .parent */
-	NULL,			/* .subdir */
-	NULL,			/* .data */
-};
 
-/*
- *	/proc/net/router/config 
- */
- 
-static struct proc_dir_entry proc_router_conf =
-{
-	0,			/* .low_ino */
-	sizeof(name_conf) - 1,	/* .namelen */
-	name_conf,		/* .name */
-	0444 | S_IFREG,		/* .mode */
-	1,			/* .nlink */
-	0,			/* .uid */
-	0,			/* .gid */
-	0,			/* .size */
-	&router_inode,		/* .ops */
-	&config_get_info,	/* .get_info */
-	NULL,			/* .fill_node */
-	NULL,			/* .next */
-	NULL,			/* .parent */
-	NULL,			/* .subdir */
-	NULL,			/* .data */
-};
-
-/*
- *	/proc/net/router/status 
- */
- 
-static struct proc_dir_entry proc_router_stat =
-{
-	0,			/* .low_ino */
-	sizeof(name_stat) - 1,	/* .namelen */
-	name_stat,		/* .name */
-	0444 | S_IFREG,		/* .mode */
-	1,			/* .nlink */
-	0,			/* .uid */
-	0,			/* .gid */
-	0,			/* .size */
-	&router_inode,		/* .ops */
-	status_get_info,	/* .get_info */
-	NULL,			/* .fill_node */
-	NULL,			/* .next */
-	NULL,			/* .parent */
-	NULL,			/* .subdir */
-	NULL,			/* .data */
-};
+static struct proc_dir_entry *proc_router;
 
 /* Strings */
 static char conf_hdr[] =
@@ -269,15 +132,32 @@ static char stat_hdr[] =
  *	Initialize router proc interface.
  */
 
-__initfunc(int wanrouter_proc_init (void))
+int __init wanrouter_proc_init (void)
 {
-	int err = proc_register(proc_net, &proc_router);
+	struct proc_dir_entry *p;
+	proc_router = proc_mkdir(ROUTER_NAME, proc_net);
+	if (!proc_router)
+		goto fail;
 
-	if (!err) {
-		proc_register(&proc_router, &proc_router_conf);
-		proc_register(&proc_router, &proc_router_stat);
-	}
-	return err;
+	p = create_proc_entry("config",0,proc_router);
+	if (!p)
+		goto fail_config;
+	p->proc_fops = &router_fops;
+	p->proc_iops = &router_inode;
+	p->get_info = config_get_info;
+	p = create_proc_entry("status",0,proc_router);
+	if (!p)
+		goto fail_stat;
+	p->proc_fops = &router_fops;
+	p->proc_iops = &router_inode;
+	p->get_info = status_get_info;
+	return 0;
+fail_stat:
+	remove_proc_entry("config", proc_router);
+fail_config:
+	remove_proc_entry(ROUTER_NAME, proc_net);
+fail:
+	return -ENOMEM;
 }
 
 /*
@@ -286,9 +166,9 @@ __initfunc(int wanrouter_proc_init (void))
 
 void wanrouter_proc_cleanup (void)
 {
-	proc_unregister(&proc_router, proc_router_conf.low_ino);
-	proc_unregister(&proc_router, proc_router_stat.low_ino);
-	proc_unregister(proc_net, proc_router.low_ino);
+	remove_proc_entry("config", proc_router);
+	remove_proc_entry("status", proc_router);
+	remove_proc_entry(ROUTER_NAME,proc_net);
 }
 
 /*
@@ -299,16 +179,15 @@ int wanrouter_proc_add (wan_device_t* wandev)
 {
 	if (wandev->magic != ROUTER_MAGIC)
 		return -EINVAL;
-	
-	memset(&wandev->dent, 0, sizeof(wandev->dent));
-	wandev->dent.namelen	= strlen(wandev->name);
-	wandev->dent.name	= wandev->name;
-	wandev->dent.mode	= 0444 | S_IFREG;
-	wandev->dent.nlink	= 1;
-	wandev->dent.ops	= &wandev_inode;
-	wandev->dent.get_info	= &wandev_get_info;
-	wandev->dent.data	= wandev;
-	return proc_register(&proc_router, &wandev->dent);
+		
+	wandev->dent = create_proc_entry(wandev->name, 0, proc_router);
+	if (!wandev->dent)
+		return -ENOMEM;
+	wandev->dent->proc_fops	= &wandev_fops;
+	wandev->dent->proc_iops	= &router_inode;
+	wandev->dent->get_info	= wandev_get_info;
+	wandev->dent->data	= wandev;
+	return 0;
 }
 
 /*
@@ -319,7 +198,7 @@ int wanrouter_proc_delete(wan_device_t* wandev)
 {
 	if (wandev->magic != ROUTER_MAGIC)
 		return -EINVAL;
-	proc_unregister(&proc_router, wandev->dent.low_ino);
+	remove_proc_entry(wandev->name, proc_router);
 	return 0;
 }
 
@@ -368,7 +247,7 @@ static ssize_t router_proc_read(struct file* file, char* buf, size_t count,
 	if (page == NULL)
 		return -ENOBUFS;
 		
-	pos = dent->get_info(page, dent->data, 0, 0, 0);
+	pos = dent->get_info(page, dent->data, 0, 0);
 	offs = file->f_pos;
 	if (offs < pos) {
 		len = min(pos - offs, count);
@@ -387,8 +266,7 @@ static ssize_t router_proc_read(struct file* file, char* buf, size_t count,
  *	Return length of data.
  */
 
-static int config_get_info(char* buf, char** start, off_t offs, int len, 
-	int dummy)
+static int config_get_info(char* buf, char** start, off_t offs, int len)
 {
 	int cnt = sizeof(conf_hdr) - 1;
 	wan_device_t* wandev;
@@ -418,8 +296,7 @@ static int config_get_info(char* buf, char** start, off_t offs, int len,
  *	Return length of data.
  */
 
-static int status_get_info(char* buf, char** start, off_t offs, int len, 
-			int dummy)
+static int status_get_info(char* buf, char** start, off_t offs, int len)
 {
 	int cnt = 0;
 	wan_device_t* wandev;
@@ -476,8 +353,7 @@ static int status_get_info(char* buf, char** start, off_t offs, int len,
  *	data space.
  */
 
-static int wandev_get_info(char* buf, char** start, off_t offs, int len, 
-			int dummy)
+static int wandev_get_info(char* buf, char** start, off_t offs, int len)
 {
 	wan_device_t* wandev = (void*)start;
 	int cnt = 0;
@@ -486,7 +362,7 @@ static int wandev_get_info(char* buf, char** start, off_t offs, int len,
 	if ((wandev == NULL) || (wandev->magic != ROUTER_MAGIC))
 		return 0;
 	if (!wandev->state)
-		return sprintf(&buf[cnt], "Device is not configured!\n");
+		return sprintf(&buf[cnt], "device is not configured!\n");
 
 	/* Update device statistics */
 	if (wandev->update) {
@@ -538,17 +414,20 @@ static int wandev_get_info(char* buf, char** start, off_t offs, int len,
 		"receiver missed packet", wandev->stats.rx_missed_errors);
 	cnt += sprintf(&buf[cnt], PROC_STATS_FORMAT,
 		"aborted frames transmitted", wandev->stats.tx_aborted_errors);
-
-	return cnt;
+  	return cnt;
 }
 
+/*
+ *	End
+ */
+ 
 #else
 
 /*
  *	No /proc - output stubs
  */
-
-__initfunc(int wanrouter_proc_init(void))
+ 
+int __init wanrouter_proc_init(void)
 {
 	return 0;
 }

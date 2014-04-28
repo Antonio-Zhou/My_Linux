@@ -89,7 +89,6 @@ extern void			 affs_write_inode(struct inode *inode);
 /* super.c */
 
 extern int			 affs_fs(void);
-extern int			 init_affs_fs(void);
 
 /* file.c */
 
@@ -103,13 +102,16 @@ extern void   affs_dir_truncate(struct inode *);
 /* jump tables */
 
 extern struct inode_operations	 affs_file_inode_operations;
-extern struct inode_operations	 affs_file_inode_operations_ofs;
 extern struct inode_operations	 affs_dir_inode_operations;
-extern struct inode_operations	 affs_symlink_inode_operations;
-extern struct inode_operations	 affs_chrdev_inode_operations;
-extern struct inode_operations	 affs_blkdev_inode_operations;
+extern struct inode_operations   affs_symlink_inode_operations;
+extern struct file_operations	 affs_file_operations;
+extern struct file_operations	 affs_file_operations_ofs;
+extern struct file_operations	 affs_dir_operations;
+extern struct address_space_operations	 affs_symlink_aops;
+extern struct address_space_operations	 affs_aops;
 
 extern struct dentry_operations	 affs_dentry_operations;
 extern struct dentry_operations	 affs_dentry_operations_intl;
 
+extern int affs_bmap(struct inode *, int);
 #endif

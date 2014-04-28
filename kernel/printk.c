@@ -34,8 +34,8 @@ static char buf[1024];
 #define MINIMUM_CONSOLE_LOGLEVEL 1 /* Minimum loglevel we let people use */
 #define DEFAULT_CONSOLE_LOGLEVEL 7 /* anything MORE serious than KERN_DEBUG */
 
-unsigned long log_size = 0;
-struct wait_queue * log_wait = NULL;
+unsigned long log_size;
+DECLARE_WAIT_QUEUE_HEAD(log_wait);
 
 /* Keep together for sysctl support */
 int console_loglevel = DEFAULT_CONSOLE_LOGLEVEL;
@@ -47,15 +47,15 @@ spinlock_t console_lock = SPIN_LOCK_UNLOCKED;
 
 struct console *console_drivers = NULL;
 static char log_buf[LOG_BUF_LEN];
-static unsigned long log_start = 0;
-static unsigned long logged_chars = 0;
+static unsigned long log_start;
+static unsigned long logged_chars;
 struct console_cmdline console_cmdline[MAX_CMDLINECONSOLES];
 static int preferred_console = -1;
 
 /*
  *	Setup a list of consoles. Called from init/main.c
  */
-void __init console_setup(char *str, int *ints)
+static int __init console_setup(char *str)
 {
 	struct console_cmdline *c;
 	char name[sizeof(c->name)];
@@ -93,17 +93,19 @@ void __init console_setup(char *str, int *ints)
 		if (strcmp(console_cmdline[i].name, name) == 0 &&
 			  console_cmdline[i].index == idx) {
 				preferred_console = i;
-				return;
+				return 1;
 		}
 	if (i == MAX_CMDLINECONSOLES)
-		return;
+		return 1;
 	preferred_console = i;
 	c = &console_cmdline[i];
 	memcpy(c->name, name, sizeof(c->name));
 	c->options = options;
 	c->index = idx;
+	return 1;
 }
 
+__setup("console=", console_setup);
 
 /*
  * Commands to do_syslog:
@@ -111,8 +113,8 @@ void __init console_setup(char *str, int *ints)
  * 	0 -- Close the log.  Currently a NOP.
  * 	1 -- Open the log. Currently a NOP.
  * 	2 -- Read from the log.
- * 	3 -- Read all messages remaining in the ring buffer.
- * 	4 -- Read and clear all messages remaining in the ring buffer
+ * 	3 -- Read up to the last 4k of messages in the ring buffer.
+ * 	4 -- Read and clear last 4k of messages in the ring buffer
  * 	5 -- Clear ring buffer.
  * 	6 -- Disable printk's to console
  * 	7 -- Enable printk's to console
@@ -172,10 +174,10 @@ int do_syslog(int type, char * buf, int len)
 		error = verify_area(VERIFY_WRITE,buf,len);
 		if (error)
 			goto out;
-		spin_lock_irq(&console_lock);
 		count = len;
 		if (count > LOG_BUF_LEN)
 			count = LOG_BUF_LEN;
+		spin_lock_irq(&console_lock);
 		if (count > logged_chars)
 			count = logged_chars;
 		if (do_clear)
@@ -242,7 +244,7 @@ out:
 	return error;
 }
 
-asmlinkage int sys_syslog(int type, char * buf, int len)
+asmlinkage long sys_syslog(int type, char * buf, int len)
 {
 	if ((type != 3) && !capable(CAP_SYS_ADMIN))
 		return -EPERM;
@@ -260,7 +262,7 @@ asmlinkage int printk(const char *fmt, ...)
 
 	spin_lock_irqsave(&console_lock, flags);
 	va_start(args, fmt);
-	i = _vsnprintf(buf + 3, sizeof(buf) - sizeof(buf) / 8 - 3, fmt, args);
+	i = vsprintf(buf + 3, fmt, args); /* hopefully i < sizeof(buf)-4 */
 	buf_end = buf + 3 + i;
 	va_end(args);
 	for (p = buf + 3; p < buf_end; p++) {
@@ -316,14 +318,14 @@ void console_print(const char *s)
 	unsigned long flags;
 	int len = strlen(s);
 
-	spin_lock_irqsave(&console_lock,flags);
+	spin_lock_irqsave(&console_lock, flags);
 	c = console_drivers;
 	while(c) {
 		if ((c->flags & CON_ENABLED) && c->write)
 			c->write(c, s, len);
 		c = c->next;
 	}
-	spin_unlock_irqrestore(&console_lock,flags);
+	spin_unlock_irqrestore(&console_lock, flags);
 }
 
 void unblank_console(void)
@@ -331,14 +333,14 @@ void unblank_console(void)
 	struct console *c;
 	unsigned long flags;
 	
-	spin_lock_irqsave(&console_lock,flags);
+	spin_lock_irqsave(&console_lock, flags);
 	c = console_drivers;
 	while(c) {
 		if ((c->flags & CON_ENABLED) && c->unblank)
 			c->unblank();
 		c = c->next;
 	}
-	spin_unlock_irqrestore(&console_lock,flags);
+	spin_unlock_irqrestore(&console_lock, flags);
 }
 
 /*
@@ -400,7 +402,7 @@ void register_console(struct console * console)
 	 *	Put this console in the list - keep the
 	 *	preferred driver at the head of the list.
 	 */
-	spin_lock_irqsave(&console_lock,flags);
+	spin_lock_irqsave(&console_lock, flags);
 	if ((console->flags & CON_CONSDEV) || console_drivers == NULL) {
 		console->next = console_drivers;
 		console_drivers = console;
@@ -443,7 +445,7 @@ void register_console(struct console * console)
 		j = 0;
 	}
 done:
-	spin_unlock_irqrestore(&console_lock,flags);
+	spin_unlock_irqrestore(&console_lock, flags);
 }
 
 
@@ -453,7 +455,7 @@ int unregister_console(struct console * console)
 	unsigned long flags;
 	int res = 1;
 
-	spin_lock_irqsave(&console_lock,flags);
+	spin_lock_irqsave(&console_lock, flags);
 	if (console_drivers == console) {
 		console_drivers=console->next;
 		res = 0;
@@ -469,7 +471,7 @@ int unregister_console(struct console * console)
 		}
 	}
 	
-	spin_unlock_irqrestore(&console_lock,flags);
+	spin_unlock_irqrestore(&console_lock, flags);
 	return res;
 }
 	

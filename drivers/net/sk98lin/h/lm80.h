@@ -2,8 +2,8 @@
  *
  * Name:	lm80.h	
  * Project:	GEnesis, PCI Gigabit Ethernet Adapter
- * Version:	$Revision: 1.3 $
- * Date:	$Date: 1999/11/22 13:41:19 $
+ * Version:	$Revision: 1.2 $
+ * Date:	$Date: 1999/03/12 13:26:51 $
  * Purpose:	Contains all defines for the LM80 Chip
  *		(National Semiconductor).
  *
@@ -27,9 +27,6 @@
  *
  * History:
  *	$Log: lm80.h,v $
- *	Revision 1.3  1999/11/22 13:41:19  cgoos
- *	Changed license header to GPL.
- *	
  *	Revision 1.2  1999/03/12 13:26:51  malthoff
  *	remove __STDC__.
  *	
@@ -126,7 +123,7 @@ extern "C" {
 #define LM80_IS_BTI		(1<<1)	/* state of BTI# pin */
 #define LM80_IS_FAN1		(1<<2)	/* count limit exceeded for Fan 1 */
 #define LM80_IS_FAN2		(1<<3)	/* count limit exceeded for Fan 2 */
-#define LM80_IS_CI		(1<<4)	/* Chassis Intrusion occurred */
+#define LM80_IS_CI		(1<<4)	/* Chassis Intrusion occured */
 #define LM80_IS_OS		(1<<5)	/* OS temperature limit exceeded */
 	/* bit 6 and 7 are reserved in LM80_ISRC_2 */
 #define LM80_IS_HT_IRQ_MD	(1<<6)	/* Hot temperature interrupt mode */

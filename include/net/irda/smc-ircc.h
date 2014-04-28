@@ -30,7 +30,8 @@
 #ifndef SMC_IRCC_H
 #define SMC_IRCC_H
 
-#include <asm/spinlock.h>
+#include <linux/spinlock.h>
+#include <linux/pm.h>
 
 #include <net/irda/irport.h>
 
@@ -165,7 +166,7 @@ typedef struct smc_chip smc_chip_t;
 
 /* Private data for each instance */
 struct ircc_cb {
-	struct device *netdev;     /* Yes! we are some kind of netdevice */
+	struct net_device *netdev;     /* Yes! we are some kind of netdevice */
 	struct irlap_cb    *irlap; /* The link layer we are binded to */
 	
 	chipio_t io;               /* IrDA controller information */
@@ -181,6 +182,8 @@ struct ircc_cb {
 
 	int tx_buff_offsets[10];   /* Offsets between frames in tx_buff */
 	int tx_len;                /* Number of frames in tx_buff */
+
+	struct pm_dev *pmdev;
 };
 
 #endif /* SMC_IRCC_H */

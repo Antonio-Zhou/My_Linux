@@ -3,7 +3,7 @@
  *  Author                       : Richard Frowijn
  *  Function                     : qnx4 global filesystem definitions
  *  Version                      : 1.0.2
- *  Last modified                : 2000-02-14
+ *  Last modified                : 2000-01-31
  *
  *  History                      : 23-03-1998 created
  */
@@ -29,9 +29,9 @@
 #define QNX4_VALID_FS		0x0001	/* Clean fs. */
 #define QNX4_ERROR_FS		0x0002	/* fs has errors. */
 #define QNX4_BLOCK_SIZE         0x200	/* blocksize of 512 bytes */
-#define QNX4_BLOCK_SIZE_BITS	9
+#define QNX4_BLOCK_SIZE_BITS    9	/* blocksize shift */
 #define QNX4_DIR_ENTRY_SIZE     0x040	/* dir entry size of 64 bytes */
-#define QNX4_DIR_ENTRY_SIZE_BITS 6
+#define QNX4_DIR_ENTRY_SIZE_BITS 6	/* dir entry size shift */
 #define QNX4_XBLK_ENTRY_SIZE    0x200	/* xblk entry size */
 #define QNX4_INODES_PER_BLOCK   0x08	/* 512 / 64 */
 
@@ -104,11 +104,11 @@ extern unsigned long qnx4_block_map(struct inode *inode, long iblock);
 extern struct buffer_head *qnx4_getblk(struct inode *, int, int);
 extern struct buffer_head *qnx4_bread(struct inode *, int, int);
 
-extern int init_qnx4_fs(void);
 extern int qnx4_create(struct inode *dir, struct dentry *dentry, int mode);
 extern struct inode_operations qnx4_file_inode_operations;
 extern struct inode_operations qnx4_dir_inode_operations;
-extern struct inode_operations qnx4_symlink_inode_operations;
+extern struct file_operations qnx4_file_operations;
+extern struct file_operations qnx4_dir_operations;
 extern int qnx4_is_free(struct super_block *sb, long block);
 extern int qnx4_set_bitmap(struct super_block *sb, long block, int busy);
 extern int qnx4_create(struct inode *inode, struct dentry *dentry, int mode);
@@ -118,7 +118,7 @@ extern int qnx4_unlink(struct inode *dir, struct dentry *dentry);
 extern int qnx4_rmdir(struct inode *dir, struct dentry *dentry);
 extern int qnx4_sync_file(struct file *file, struct dentry *dentry);
 extern int qnx4_sync_inode(struct inode *inode);
-extern int qnx4_bmap(struct inode *inode, int iblock);
+extern int qnx4_get_block(struct inode *inode, long iblock, struct buffer_head *bh, int create);
 
 #endif				/* __KERNEL__ */
 

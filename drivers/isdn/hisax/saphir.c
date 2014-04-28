@@ -1,26 +1,39 @@
-/* $Id: saphir.c,v 1.1.2.1 2001/12/31 13:26:45 kai Exp $
+/* $Id: saphir.c,v 1.5 1999/12/19 13:09:42 keil Exp $
+
+ * saphir.c low level stuff for HST Saphir 1
  *
- * low level stuff for HST Saphir 1
- *
- * Author       Karsten Keil
- * Copyright    by Karsten Keil      <keil@isdn4linux.de>
- * 
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
+ * Author     Karsten Keil (keil@isdn4linux.de)
  *
  * Thanks to    HST High Soft Tech GmbH
  *
+ *
+ * $Log: saphir.c,v $
+ * Revision 1.5  1999/12/19 13:09:42  keil
+ * changed TASK_INTERRUPTIBLE into TASK_UNINTERRUPTIBLE for
+ * signal proof delays
+ *
+ * Revision 1.4  1999/09/04 06:20:06  keil
+ * Changes from kernel set_current_state()
+ *
+ * Revision 1.3  1999/07/12 21:05:26  keil
+ * fix race in IRQ handling
+ * added watchdog for lost IRQs
+ *
+ * Revision 1.2  1999/07/01 08:07:55  keil
+ * Initial version
+ *
+ *
  */
 
+
 #define __NO_VERSION__
-#include <linux/init.h>
 #include "hisax.h"
 #include "isac.h"
 #include "hscx.h"
 #include "isdnl1.h"
 
 extern const char *CardType[];
-static char *saphir_rev = "$Revision: 1.1.2.1 $";
+static char *saphir_rev = "$Revision: 1.5 $";
 
 #define byteout(addr,val) outb(val,addr)
 #define bytein(addr) inb(addr)
@@ -255,8 +268,8 @@ saphir_card_msg(struct IsdnCardState *cs, int mt, void *arg)
 }
 
 
-int __init
-setup_saphir(struct IsdnCard *card)
+__initfunc(int
+setup_saphir(struct IsdnCard *card))
 {
 	struct IsdnCardState *cs = card->cs;
 	char tmp[64];

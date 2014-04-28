@@ -16,10 +16,12 @@
 #include <linux/ptrace.h>
 #include <linux/unistd.h>
 #include <linux/stddef.h>
+#include <linux/binfmts.h>
+#include <linux/tty.h>
 
 #include <asm/ucontext.h>
 #include <asm/uaccess.h>
-#include <asm/pgtable.h>
+#include <asm/pgalloc.h>
 
 #define _BLOCKABLE (~(sigmask(SIGKILL) | sigmask(SIGSTOP)))
 
@@ -273,8 +275,9 @@ setup_sigcontext(struct sigcontext *sc, /*struct _fpstate *fpstate,*/
 	err |= __put_user (regs->ARM_cpsr, &sc->arm_cpsr);
 #endif
 
-	err |= __put_user (current->tss.trap_no, &sc->trap_no);
-	err |= __put_user (current->tss.error_code, &sc->error_code);
+	err |= __put_user (current->thread.trap_no, &sc->trap_no);
+	err |= __put_user (current->thread.error_code, &sc->error_code);
+	err |= __put_user (current->thread.address, &sc->fault_address);
 	err |= __put_user (mask, &sc->oldmask);
 
 	return err;
@@ -474,7 +477,7 @@ asmlinkage int do_signal(sigset_t *oldset, struct pt_regs *regs, int syscall)
 		if (!signr)
 			break;
 
-		if ((current->ptrace & PT_PTRACED) && signr != SIGKILL) {
+		if ((current->flags & PF_PTRACED) && signr != SIGKILL) {
 			/* Let the debugger run.  */
 			current->exit_code = signr;
 			current->state = TASK_STOPPED;
@@ -539,11 +542,11 @@ asmlinkage int do_signal(sigset_t *oldset, struct pt_regs *regs, int syscall)
 				if (!(current->p_pptr->sig->action[SIGCHLD-1].sa.sa_flags & SA_NOCLDSTOP))
 					notify_parent(current, SIGCHLD);
 				schedule();
-				single_stepping |= ptrace_cancel_bpt(current);
 				continue;
 
 			case SIGQUIT: case SIGILL: case SIGTRAP:
 			case SIGABRT: case SIGFPE: case SIGSEGV:
+			case SIGBUS: case SIGSYS: case SIGXCPU: case SIGXFSZ:
 				if (do_coredump(signr, regs))
 					exit_code |= 0x80;
 				/* FALLTHRU */
@@ -551,6 +554,7 @@ asmlinkage int do_signal(sigset_t *oldset, struct pt_regs *regs, int syscall)
 			default:
 				lock_kernel();
 				sigaddset(&current->signal, signr);
+				recalc_sigpending(current);
 				current->flags |= PF_SIGNALED;
 				do_exit(exit_code);
 				/* NOTREACHED */

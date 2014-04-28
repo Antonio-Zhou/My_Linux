@@ -14,11 +14,13 @@ struct _devreg;
 
 typedef  int (* oper_handler_func_t)( int             irq,
                                       struct _devreg *dreg);
+typedef  void (* io_handler_func_t) ( int  irq,
+                                      __u32 intparm );
+typedef  void ( * not_oper_handler_func_t)( int irq,
+                                            int status );
 
 typedef struct _devreg {
 	union {
-      int devno;
-
 		struct _hc {
 			__u16 ctype;
 			__u8  cmode;
@@ -45,11 +47,14 @@ typedef struct _devreg {
 #define DEVREG_MATCH_CU_TYPE    0x00000004
 #define DEVREG_NO_CU_INFO       0x00000008
 
-#define DEVREG_TYPE_DEVNO       0x80000000
-#define DEVREG_TYPE_DEVCHARS    0x40000000
 
-int        s390_device_register  ( devreg_t *drinfo );
-int        s390_device_unregister( devreg_t *dreg );
-devreg_t * s390_search_devreg    ( ioinfo_t *ioinfo );
+int s390_device_register    ( devreg_t *drinfo );
+int s390_device_deregister  ( devreg_t *dreg );
+int s390_request_irq_special( int                      irq,
+                              io_handler_func_t        io_handler,
+                              not_oper_handler_func_t  not_oper_handler,
+                              unsigned long            irqflags,
+                              const char              *devname,
+                              void                    *dev_id);
 
 #endif /* __s390dyn */

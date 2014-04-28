@@ -73,7 +73,11 @@
 #define LOG_SELECT            0x4c
 #define LOG_SENSE             0x4d
 #define MODE_SELECT_10        0x55
+#define RESERVE_10            0x56
+#define RELEASE_10            0x57
 #define MODE_SENSE_10         0x5a
+#define PERSISTENT_RESERVE_IN 0x5e
+#define PERSISTENT_RESERVE_OUT 0x5f
 #define MOVE_MEDIUM           0xa5
 #define READ_12               0xa8
 #define WRITE_12              0xaa
@@ -204,12 +208,6 @@ struct ccs_modesel_head
 
 /* Used to get the bus number for a device */
 #define SCSI_IOCTL_GET_BUS_NUMBER 0x5386
-
-/* Used to get Fibre Channel WWN and port_id from device */
-#define SCSI_IOCTL_FC_TARGET_ADDRESS 0x5387
-
-/* Used to invoke Target Defice Reset for Fibre Channel */
-#define SCSI_IOCTL_FC_TDR 0x5388
 
 /*
  * Overrides for Emacs so that we follow Linus's tabbing style.

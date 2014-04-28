@@ -14,56 +14,41 @@
 #define VT_BUF_HAVE_MEMCPYW
 #define VT_BUF_HAVE_MEMCPYF
 
-extern inline void scr_writew(u16 val, u16 *addr)
+extern inline void scr_writew(u16 val, volatile u16 *addr)
 {
-	if ((long) addr < 0)
-		*addr = val;
+	if (__is_ioaddr((unsigned long) addr))
+		__raw_writew(val, (unsigned long) addr);
 	else
-		writew(val, (unsigned long) addr);
+		*addr = val;
 }
 
-extern inline u16 scr_readw(const u16 *addr)
+extern inline u16 scr_readw(volatile const u16 *addr)
 {
-	if ((long) addr < 0)
-		return *addr;
+	if (__is_ioaddr((unsigned long) addr))
+		return __raw_readw((unsigned long) addr);
 	else
-		return readw((unsigned long) addr);
+		return *addr;
 }
 
 extern inline void scr_memsetw(u16 *s, u16 c, unsigned int count)
 {
-	if ((long)s < 0)
-		memsetw(s, c, count);
-	else
+	if (__is_ioaddr((unsigned long) s))
 		memsetw_io(s, c, count);
+	else
+		memsetw(s, c, count);
 }
 
-/* Try to do this the optimal way for the given destination and source. */
-extern inline void scr_memcpyw(u16 *d, const u16 *s, unsigned int count)
-{
-    if ((long)s < 0) {	/* source is memory */
-	if ((long)d < 0) memcpy(d, s, count);		/* dest is memory */
-        else memcpy_toio(d, s, count);			/* dest is screen */
-    } else {		/* source is screen */
-	if ((long)d < 0) memcpy_fromio(d, s, count);	/* dest is memory */
-	else {						/* dest is screen */
-	    /* Right now, we do this the slow way,
-	       as we cannot handle screen unaligned ops...
-	    */
-	    count /= 2;
-	    while (count--)
-                scr_writew(scr_readw(s++), d++);
-	}
-    }
-}
-
-/* Do not trust that the usage will be correct; analyze the arguments. */
+/* Do not trust that the usage will be correct; analyze the arguments.  */
+extern void scr_memcpyw(u16 *d, const u16 *s, unsigned int count);
 #define scr_memcpyw_from scr_memcpyw
 #define scr_memcpyw_to   scr_memcpyw
 
-#define vga_readb readb
-#define vga_writeb writeb
+/* ??? These are currently only used for downloading character sets.  As
+   such, they don't need memory barriers.  Is this all they are intended
+   to be used for?  */
+#define vga_readb	readb
+#define vga_writeb	writeb
 
-#define VGA_MAP_MEM(x) (x)
+#define VGA_MAP_MEM(x)	((unsigned long) ioremap((x), 0))
 
 #endif

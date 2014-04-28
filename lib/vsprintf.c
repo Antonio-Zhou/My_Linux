@@ -14,6 +14,8 @@
 #include <linux/string.h>
 #include <linux/ctype.h>
 
+#include <asm/div64.h>
+
 unsigned long simple_strtoul(const char *cp,char **endp,unsigned int base)
 {
 	unsigned long result = 0,value;
@@ -66,14 +68,7 @@ static int skip_atoi(const char **s)
 #define SPECIAL	32		/* 0x */
 #define LARGE	64		/* use 'ABCDEF' instead of 'abcdef' */
 
-#define do_div(n,base) ({ \
-int __res; \
-__res = ((unsigned long) n) % (unsigned) base; \
-n = ((unsigned long) n) / (unsigned) base; \
-__res; })
-
-static char * number(char * str, long num, int base, int size, int precision
-	,int type)
+static char * number(char * str, long long num, int base, int size, int precision, int type)
 {
 	char c,sign,tmp[66];
 	const char *digits="0123456789abcdefghijklmnopqrstuvwxyz";
@@ -142,10 +137,10 @@ static char * number(char * str, long num, int base, int size, int precision
 /* Forward decl. needed for IP address printing stuff... */
 int sprintf(char * buf, const char *fmt, ...);
 
-int _vsnprintf(char *buf, int n, const char *fmt, va_list args)
+int vsprintf(char *buf, const char *fmt, va_list args)
 {
 	int len;
-	unsigned long num;
+	unsigned long long num;
 	int i, base;
 	char * str;
 	const char *s;
@@ -156,8 +151,11 @@ int _vsnprintf(char *buf, int n, const char *fmt, va_list args)
 	int precision;		/* min. # of digits for integers; max
 				   number of chars for from string */
 	int qualifier;		/* 'h', 'l', or 'L' for integer fields */
+	                        /* 'z' support added 23/7/1999 S.H.    */
+				/* 'z' changed to 'Z' --davidm 1/25/99 */
 
-	for (str = buf; *fmt && (n == -1 || str - buf < n); ++fmt) {
+	
+	for (str=buf ; *fmt ; ++fmt) {
 		if (*fmt != '%') {
 			*str++ = *fmt;
 			continue;
@@ -206,7 +204,7 @@ int _vsnprintf(char *buf, int n, const char *fmt, va_list args)
 
 		/* get the conversion qualifier */
 		qualifier = -1;
-		if (*fmt == 'h' || *fmt == 'l' || *fmt == 'L') {
+		if (*fmt == 'h' || *fmt == 'l' || *fmt == 'L' || *fmt =='Z') {
 			qualifier = *fmt;
 			++fmt;
 		}
@@ -231,12 +229,6 @@ int _vsnprintf(char *buf, int n, const char *fmt, va_list args)
 
 			len = strnlen(s, precision);
 
-			if (n != -1 && len >= n - (str - buf)) {
-				len = n - 1 - (str - buf);
-				if (len <= 0) break;
-				if (len < field_width) field_width = len;
-			}
-
 			if (!(flags & LEFT))
 				while (len < field_width--)
 					*str++ = ' ';
@@ -260,6 +252,9 @@ int _vsnprintf(char *buf, int n, const char *fmt, va_list args)
 		case 'n':
 			if (qualifier == 'l') {
 				long * ip = va_arg(args, long *);
+				*ip = (str - buf);
+			} else if (qualifier == 'Z') {
+				size_t * ip = va_arg(args, size_t *);
 				*ip = (str - buf);
 			} else {
 				int * ip = va_arg(args, int *);
@@ -296,25 +291,27 @@ int _vsnprintf(char *buf, int n, const char *fmt, va_list args)
 				--fmt;
 			continue;
 		}
-		if (qualifier == 'l')
+		if (qualifier == 'L')
+			num = va_arg(args, long long);
+		else if (qualifier == 'l') {
 			num = va_arg(args, unsigned long);
-		else if (qualifier == 'h') {
+			if (flags & SIGN)
+				num = (signed long) num;
+		} else if (qualifier == 'Z') {
+			num = va_arg(args, size_t);
+		} else if (qualifier == 'h') {
 			num = (unsigned short) va_arg(args, int);
 			if (flags & SIGN)
-				num = (short) num;
-		} else if (flags & SIGN)
-			num = va_arg(args, int);
-		else
+				num = (signed short) num;
+		} else {
 			num = va_arg(args, unsigned int);
+			if (flags & SIGN)
+				num = (signed int) num;
+		}
 		str = number(str, num, base, field_width, precision, flags);
 	}
 	*str = '\0';
 	return str-buf;
-}
-
-int vsprintf(char *buf, const char *fmt, va_list args)
-{
-	return _vsnprintf(buf, -1, fmt, args);
 }
 
 int sprintf(char * buf, const char *fmt, ...)

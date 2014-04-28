@@ -1,56 +1,59 @@
 Documentation/networking/vortex.txt
 Andrew Morton <andrewm@uow.edu.au>
-18 Feb 2001
+30 April 2000
 
 
 This document describes the usage and errata of the 3Com "Vortex" device
 driver for Linux, 3c59x.c.
 
-The driver was written by Donald Becker <becker@scyld.com>
+The driver was written by Donald Becker <becker@cesdis.gsfc.nasa.gov>
 
-Don is no longer the prime maintainer of this version of the driver. 
+Don is no longer the prime maintener of this version of the driver. 
 Please report problems to one or more of:
 
   Andrew Morton <andrewm@uow.edu.au>
   Netdev mailing list <netdev@oss.sgi.com>
-  Linux kernel mailing list <linux-kernel@vger.kernel.org>
+  Linux kernel mailing list <linux-kernel@vger.rutgers.edu>
 
 Please note the 'Reporting and Diagnosing Problems' section at the end
 of this file.
 
+
+Since kernel 2.3.99-pre6, this driver incorporates the support for the
+3c575-series Cardbus cards which used to be handled by 3c575_cb.c.
+
 This driver supports the following hardware:
 
-	3c590 Vortex 10Mbps
-	3c592 EISA 10mbps Demon/Vortex
-	3c597 EISA Fast Demon/Vortex
-	3c595 Vortex 100baseTx
-	3c595 Vortex 100baseT4
-	3c595 Vortex 100base-MII
-	3Com Vortex
-	3c900 Boomerang 10baseT
-	3c900 Boomerang 10Mbps Combo
-	3c900 Cyclone 10Mbps Combo
-	3c900B-FL Cyclone 10base-FL
-	3c900 Cyclone 10Mbps TPO
-	3c900 Cyclone 10Mbps TPC
-	3c905 Boomerang 100baseTx
-	3c905 Boomerang 100baseT4
-	3c905B Cyclone 100baseTx
-	3c905B Cyclone 10/100/BNC
-	3c905B-FX Cyclone 100baseFx
-	3c905C Tornado
-	3c980 Cyclone
-	3cSOHO100-TX Hurricane
-	3c555 Laptop Hurricane
-	3c556 10/100 Mini PCI Adapter
-	3c556B Laptop Hurricane
-	3c575 Boomerang CardBus
-	3CCFE575 Cyclone CardBus
-	3CCFE656 Cyclone CardBus
-	3CCFEM656 Cyclone CardBus
-	3c575 series CardBus (unknown version)
-	3c450 HomePNA Tornado
-	3Com Boomerang (unknown version)
+   3c590 Vortex 10Mbps
+   3c592 EISA 10mbps Demon/Vortex
+   3c597 EISA Fast Demon/Vortex
+   3c595 Vortex 100baseTx
+   3c595 Vortex 100baseT4
+   3c595 Vortex 100base-MII
+   3Com Vortex
+   3c900 Boomerang 10baseT
+   3c900 Boomerang 10Mbps Combo
+   3c900 Cyclone 10Mbps TPO
+   3c900 Cyclone 10Mbps Combo
+   3c900 Cyclone 10Mbps TPC
+   3c900B-FL Cyclone 10base-FL
+   3c905 Boomerang 100baseTx
+   3c905 Boomerang 100baseT4
+   3c905B Cyclone 100baseTx
+   3c905B Cyclone 10/100/BNC
+   3c905B-FX Cyclone 100baseFx
+   3c905C Tornado
+   3c980 Cyclone
+   3cSOHO100-TX Hurricane
+   3c555 Laptop Hurricane
+   3c575 Boomerang CardBus
+   3CCFE575 Cyclone CardBus
+   3CCFE575CT Cyclone CardBus
+   3CCFE656 Cyclone CardBus
+   3CCFEM656 Cyclone CardBus
+   3c450 Cyclone/unknown
+   3Com Boomerang (unknown version)
+
 
 Module parameters
 =================
@@ -60,6 +63,12 @@ its module is loaded.  These are usually placed in /etc/modules.conf
 (used to be conf.modules).  Example:
 
 options 3c59x debug=3 rx_copybreak=300
+
+If you are using the PCMCIA tools (cardmgr) then theoptions may be
+placed in /etc/pcmcia/config.opts:
+
+module "3c59x" opts "debug=3 extra_reset=1"
+
 
 The supported parameters are:
 
@@ -95,8 +104,8 @@ options=N1,N2,N3,...
   When generating a value for the 'options' setting, the above media
   selection values may be OR'ed (or added to) the following:
 
-  512  (0x200)	Force full duplex mode.
-  16   (0x10)	Bus-master enable bit (Old Vortex cards only)
+  512 (0x200)	Force full-duplex
+  16  (0x10)	Bus-master enable bit (Old Vortex cards only)
 
   For example:
 
@@ -108,11 +117,7 @@ options=N1,N2,N3,...
 full_duplex=N1,N2,N3...
 
   Similar to bit 9 of 'options'.  Forces the corresponding card into
-  full-duplex mode.  Please use this in preference to the `options'
-  parameter.
-
-  In fact, please don't use this at all! You're better off getting
-  autonegotiation working properly.
+  full-duplex mode.
 
 rx_copybreak=M
 
@@ -130,11 +135,20 @@ rx_copybreak=M
 max_interrupt_work=N
 
   The driver's interrupt service routine can handle many receive and
-  transmit packets in a single invocation.  It does this in a loop. 
+  transmit packets in a single invokation.  It does this in a loop. 
   The value of max_interrupt_work governs how mnay times the interrupt
   service routine will loop.  The default value is 32 loops.  If this
   is exceeded the interrupt service routine gives up and generates a
   warning message "eth0: Too much work in interrupt".
+
+extra_reset=N
+
+  Where N is 0 or 1 (default 0).
+
+  Some network cards (notably 3CCFE575CT Cardbus) do not initialise
+  correctly and need an extra transmitter reset.  If you find that the
+  card comes up receiving but not transmitting, try giving the module
+  the 'extra_reset=1' option.
 
 compaq_ioaddr=N
 compaq_irq=N
@@ -142,32 +156,6 @@ compaq_device_id=N
 
   "Variables to work-around the Compaq PCI BIOS32 problem"....
 
-enable_wol=N1,N2,N3,...
-
-  Enable Wake-on-LAN support for the relevant interface.  Donald
-  Becker's `ether-wake' application may be used to wake suspended
-  machines.
-
-
-Media selection
----------------
-
-A number of the older NICs such as the 3c590 and 3c900 series have
-10base2 and AUI interfaces.
-
-Prior to January, 2001 this driver would autoeselect the 10base2 or AUI
-port if it didn't detect activity on the 10baseT port.  It would then
-get stuck on the 10base2 port and a driver reload was necessary to
-switch back to 10baseT.  This behaviour could not be prevented with a
-module option override.
-
-Later (current) versions of the driver _do_ support locking of the
-media type.  So if you load the driver module with
-
-	modprobe 3c59x options=0
-
-it will permanently select the 10baseT port.  Automatic selection of
-other media types does not occur.
 
 
 Additional resources
@@ -177,36 +165,31 @@ Details of the device driver implementation are at the top of the source file.
 
 Additional documentation is available at Don Becker's Linux Drivers site:
 
-  http://www.scyld.com/network/vortex.html
+  http://cesdis.gsfc.nasa.gov/linux/drivers/vortex.html
 
 Donald Becker's driver development site:
 
-     http://www.scyld.com/network
+     http://www.scyld.com
+     http://cesdis.gsfc.nasa.gov/linux/
 
-Donald's vortex-diag program is useful for inspecting the NIC's state:
+Don's vortex-diag program is useful for inspecting the NIC's state:
 
      http://www.scyld.com/diag/#pci-diags
+     http://cesdis.gsfc.nasa.gov/linux/diag/vortex-diag.c
 
-Donald's mii-diag program may be used for inspecting and manipulating
-the NIC's Media Independent Interface subsystem:
+Don's mii-diag program may be used for inspecting and manipulating the
+NIC's Media Independent Interface subsystem:
 
      http://www.scyld.com/diag/#mii-diag
-
-Donald's wake-on-LAN page:
-
-     http://www.scyld.com/expert/wake-on-lan.html
+     http://cesdis.gsfc.nasa.gov/linux/diag/#mii-diag
 
 3Com's documentation for many NICs, including the ones supported by
 this driver is available at 
 
      http://support.3com.com/partners/developer/developer_form.html
 
-3Com's DOS-based application for setting up the NICs EEPROMs:
-
-	ftp://ftp.3com.com/pub/nic/3c90x/3c90xx2.exe
-
-Driver updates and a detailed changelog for the modifications which
-were made for the 2.3/2,4 series kernel is available at
+A detailed changelog for the modifications which were made for 2.3
+series kernel is available at
 
      http://www.uow.edu.au/~andrewm/linux/#3c59x-2.3
 
@@ -228,121 +211,33 @@ Autonegotiation notes
   mode.  Otherwise, the negotiation fails.  This has been an issue
   we've noticed for a while but haven't had the time to track down.
 
-  Cisco switches    (Jeff Busch <jbusch@deja.com>)
-
-    My "standard config" for ports to which PC's/servers connect directly:
-
-        interface FastEthernet0/N
-        description machinename
-        load-interval 30
-        spanning-tree portfast
-
-    If autonegotiation is a problem, you may need to specify "speed
-    100" and "duplex full" as well (or "speed 10" and "duplex half").
-
-    WARNING: DO NOT hook up hubs/switches/bridges to these
-    specially-configured ports! The switch will become very confused.
-
 
 Reporting and diagnosing problems
 ---------------------------------
 
-Maintainers find that accurate and complete problem reports are
-invaluable in resolving driver problems.  We are frequently not able to
-reproduce problems and must rely on your patience and efforts to get to
-the bottom of the problem.
+If the driver plays up, there are a number of things you can do analyse
+the problem and to help others do this:
 
-If you believe you have a driver problem here are some of the
-steps you should take:
+- Turn on debugging in the driver
+	Add 'debug=7' to /etc/modules.conf (/etc/conf.modules)
+	Change 'vortex_debug' to 7 in the source code.
 
-- Is it really a driver problem?
+- Send all kernel logs, starting with the first probe of the card.
 
-   Eliminate some variables: try different cards, different
-   computers, different cables, different ports on the switch/hub,
-   different versions of the kernel or ofthe driver, etc.
+- Run 'mii-diag -v' to show the state of the Media Independent
+  Interface.  If the card sometimes works and sometimes doesn't, run
+  'mii-diag -v' in both states.
 
-- OK, it's a driver problem.
+- Please run 'vortex-diag -aaee' in both good and bad states.  This
+  show the NIC's registers and EEPROM contents.
 
-   You need to generate a report.  Typically this is an email to the
-   maintainer and/or linux-net@vger.kernel.org.  The maintainer's
-   email address will be inthe driver source or in the MAINTAINERS file.
+- Describe your setup: 10baseT, 100baseT, full/half duplex, etc.
 
-- The contents of your report will vary a lot depending upon the
-  problem.  If it's a kernel crash then you should refer to the
-  REPORTING-BUGS file.
+- Note any additional module insertion commands you're using.
 
-  But for most problems it is useful to provide the following:
+- Try different media type settings (see above).
 
-   o Kernel version, driver version
+- Try inserting the module with 'extra_reset=1' (or compile this into
+  the driver).
 
-   o A copy of the banner message which the driver generates when
-     it is initialised.  For example:
-
-     eth0: 3Com PCI 3c905C Tornado at 0xa400,  00:50:da:6a:88:f0, IRQ 19
-     8K byte-wide RAM 5:3 Rx:Tx split, autoselect/Autonegotiate interface.
-     MII transceiver found at address 24, status 782d.
-     Enabling bus-master transmits and whole-frame receives.
-
-   o If it is a PCI device, the relevant output from 'lspci -vx', eg:
-
-     00:09.0 Ethernet controller: 3Com Corporation 3c905C-TX [Fast Etherlink] (rev 74)
-             Subsystem: 3Com Corporation: Unknown device 9200
-             Flags: bus master, medium devsel, latency 32, IRQ 19
-             I/O ports at a400 [size=128]
-             Memory at db000000 (32-bit, non-prefetchable) [size=128]
-             Expansion ROM at <unassigned> [disabled] [size=128K]
-             Capabilities: [dc] Power Management version 2
-     00: b7 10 00 92 07 00 10 02 74 00 00 02 08 20 00 00
-     10: 01 a4 00 00 00 00 00 db 00 00 00 00 00 00 00 00
-     20: 00 00 00 00 00 00 00 00 00 00 00 00 b7 10 00 10
-     30: 00 00 00 00 dc 00 00 00 00 00 00 00 05 01 0a 0a
-
-   o A description of the environment: 10baseT? 100baseT?
-     full/half duplex? switched or hubbed?
-
-   o Any additional module parameters which you may be providing to the driver.
-
-   o Any kernel logs which are produced.  The more the merrier. 
-     If this is a large file and you are sending your report to a
-     mailing list, mention that you have the logfile, but don't send
-     it.  If you're reporting direct to the maintainer then just send
-     it.
-
-     To ensure that all kernel logs are available, add the
-     following line to /etc/syslog.conf:
-
-         kern.* /var/log/messages
-
-     Then restart syslogd with:
-
-         /etc/rc.d/init.d/syslog restart
-
-     (The above may vary, depending upon which Linux distribution you use).
-
-    o If your problem is reproducible then that's great.  Try the
-      following:
-
-      1) Increase the debug level.  Usually this is done via:
-
-         a) modprobe driver.o debug=7
-         b) In /etc/conf.modules (or modules.conf):
-            options driver_name debug=7
-
-      2) Recreate the problem with the higher debug level,
-         send all logs to the maintainer.
-
-      3) Download you card's diagnostic tool from Donald
-         Backer's website http://www.scyld.com/diag.  Download
-         mii-diag.c as well.  Build these.
-
-         a) Run 'vortex-diag -aaee' and 'mii-diag -v' when the card is
-            working correctly.  Save the output.
-
-         b) Run the above commands when the card is malfunctioning.  Send
-            both sets of output.
-
-Finally, please be patient and be prepared to do some work.  You may end up working on
-this problem for a week or more as the maintainer asks more questions, asks for more
-tests, asks for patches to be applied, etc.  At the end of it all, the problem may even
-remain unresolved.
 

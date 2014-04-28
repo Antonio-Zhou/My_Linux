@@ -1,4 +1,4 @@
-/* $Id: uaccess.h,v 1.18.2.2 2001/03/01 00:49:02 davem Exp $
+/* $Id: uaccess.h,v 1.21 2000/01/08 16:38:23 anton Exp $
  * uaccess.h: User space memore access functions.
  *
  * Copyright (C) 1996 David S. Miller (davem@caip.rutgers.edu)
@@ -29,15 +29,15 @@
 #define VERIFY_WRITE	1
 
 #define get_ds()	(KERNEL_DS)
-#define get_fs()	(current->tss.current_ds)
-#define set_fs(val)	((current->tss.current_ds) = (val))
+#define get_fs()	(current->thread.current_ds)
+#define set_fs(val)	((current->thread.current_ds) = (val))
 
 #define segment_eq(a,b)	((a).seg == (b).seg)
 
-/* We have there a nice not-mapped page at page_offset - PAGE_SIZE, so that this test
+/* We have there a nice not-mapped page at PAGE_OFFSET - PAGE_SIZE, so that this test
  * can be fairly lightweight.
  * No one can read/write anything from userland in the kernel space by setting
- * large size and address near to page_offset - a fault will break his intentions.
+ * large size and address near to PAGE_OFFSET - a fault will break his intentions.
  */
 #define __user_ok(addr,size) ((addr) < STACK_TOP)
 #define __kernel_ok (segment_eq(get_fs(), KERNEL_DS))
@@ -383,7 +383,16 @@ if(__access_ok(__sfu_src, __sfu_count)) { \
 __sfu_res = __strncpy_from_user((unsigned long) (dest), __sfu_src, __sfu_count); \
 } __sfu_res; })
 
+extern int __strlen_user(const char *);
 extern int __strnlen_user(const char *, long len);
+
+extern __inline__ int strlen_user(const char *str)
+{
+	if(!access_ok(VERIFY_READ, str, 0))
+		return 0;
+	else
+		return __strlen_user(str);
+}
 
 extern __inline__ int strnlen_user(const char *str, long len)
 {

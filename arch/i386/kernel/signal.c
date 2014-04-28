@@ -155,7 +155,7 @@ static inline int restore_i387_hard(struct _fpstate *buf)
 {
 	struct task_struct *tsk = current;
 	clear_fpu(tsk);
-	return __copy_from_user(&tsk->tss.i387.hard, buf, sizeof(*buf));
+	return __copy_from_user(&tsk->thread.i387.hard, buf, sizeof(*buf));
 }
 
 static inline int restore_i387(struct _fpstate *buf)
@@ -167,7 +167,7 @@ static inline int restore_i387(struct _fpstate *buf)
 	if (boot_cpu_data.hard_math)
 		err = restore_i387_hard(buf);
 	else
-		err = restore_i387_soft(&current->tss.i387.soft, buf);
+		err = restore_i387_soft(&current->thread.i387.soft, buf);
 #endif
 	current->used_math = 1;
 	return err;
@@ -308,8 +308,8 @@ static inline int save_i387_hard(struct _fpstate * buf)
 	struct task_struct *tsk = current;
 
 	unlazy_fpu(tsk);
-	tsk->tss.i387.hard.status = tsk->tss.i387.hard.swd;
-	if (__copy_to_user(buf, &tsk->tss.i387.hard, sizeof(*buf)))
+	tsk->thread.i387.hard.status = tsk->thread.i387.hard.swd;
+	if (__copy_to_user(buf, &tsk->thread.i387.hard, sizeof(*buf)))
 		return -1;
 	return 1;
 }
@@ -328,7 +328,7 @@ static int save_i387(struct _fpstate *buf)
 	return save_i387_hard(buf);
 #else
 	return boot_cpu_data.hard_math ? save_i387_hard(buf)
-	  : save_i387_soft(&current->tss.i387.soft, buf);
+	  : save_i387_soft(&current->thread.i387.soft, buf);
 #endif
 }
 
@@ -339,9 +339,9 @@ setup_sigcontext(struct sigcontext *sc, struct _fpstate *fpstate,
 	int tmp, err = 0;
 
 	tmp = 0;
-	__asm__("movl %%gs,%w0" : "=r"(tmp): "0"(tmp));
+	__asm__("movl %%gs,%0" : "=r"(tmp): "0"(tmp));
 	err |= __put_user(tmp, (unsigned int *)&sc->gs);
-	__asm__("movl %%fs,%w0" : "=r"(tmp): "0"(tmp));
+	__asm__("movl %%fs,%0" : "=r"(tmp): "0"(tmp));
 	err |= __put_user(tmp, (unsigned int *)&sc->fs);
 
 	err |= __put_user(regs->xes, (unsigned int *)&sc->es);
@@ -354,8 +354,8 @@ setup_sigcontext(struct sigcontext *sc, struct _fpstate *fpstate,
 	err |= __put_user(regs->edx, &sc->edx);
 	err |= __put_user(regs->ecx, &sc->ecx);
 	err |= __put_user(regs->eax, &sc->eax);
-	err |= __put_user(current->tss.trap_no, &sc->trapno);
-	err |= __put_user(current->tss.error_code, &sc->err);
+	err |= __put_user(current->thread.trap_no, &sc->trapno);
+	err |= __put_user(current->thread.error_code, &sc->err);
 	err |= __put_user(regs->eip, &sc->eip);
 	err |= __put_user(regs->xcs, (unsigned int *)&sc->cs);
 	err |= __put_user(regs->eflags, &sc->eflags);
@@ -370,7 +370,7 @@ setup_sigcontext(struct sigcontext *sc, struct _fpstate *fpstate,
 
 	/* non-iBCS2 extensions.. */
 	err |= __put_user(mask, &sc->oldmask);
-	err |= __put_user(current->tss.cr2, &sc->cr2);
+	err |= __put_user(current->thread.cr2, &sc->cr2);
 
 	return err;
 }
@@ -597,10 +597,6 @@ handle_signal(unsigned long sig, struct k_sigaction *ka,
  * Note that 'init' is a special process: it doesn't get signals it doesn't
  * want to handle. Thus you cannot kill init even with a SIGKILL even by
  * mistake.
- *
- * Note that we go through the signals twice: once to check the signals that
- * the kernel can handle, and then we build all the user-level signal handling
- * stack-frames in one go after that.
  */
 int do_signal(struct pt_regs *regs, sigset_t *oldset)
 {
@@ -629,7 +625,7 @@ int do_signal(struct pt_regs *regs, sigset_t *oldset)
 		if (!signr)
 			break;
 
-		if ((current->ptrace & PT_PTRACED) && signr != SIGKILL) {
+		if ((current->flags & PF_PTRACED) && signr != SIGKILL) {
 			/* Let the debugger run.  */
 			current->exit_code = signr;
 			current->state = TASK_STOPPED;
@@ -697,6 +693,7 @@ int do_signal(struct pt_regs *regs, sigset_t *oldset)
 
 			case SIGQUIT: case SIGILL: case SIGTRAP:
 			case SIGABRT: case SIGFPE: case SIGSEGV:
+			case SIGBUS: case SIGSYS: case SIGXCPU: case SIGXFSZ:
 				if (do_coredump(signr, regs))
 					exit_code |= 0x80;
 				/* FALLTHRU */

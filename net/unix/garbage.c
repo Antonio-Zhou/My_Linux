@@ -84,8 +84,13 @@
 
 /* Internal data structures and random procedures: */
 
-#define GC_HEAD ((unix_socket *)(-1))
+#define GC_HEAD		((unix_socket *)(-1))
+#define GC_ORPHAN	((unix_socket *)(-3))
+
 static unix_socket *gc_current=GC_HEAD;	/* stack of objects to mark */
+
+atomic_t unix_tot_inflight = ATOMIC_INIT(0);
+
 
 extern inline unix_socket *unix_get_socket(struct file *filp)
 {
@@ -108,8 +113,6 @@ extern inline unix_socket *unix_get_socket(struct file *filp)
 	return u_sock;
 }
 
-int unix_tot_inflight;
-
 /*
  *	Keep the number of times in flight count for the file
  *	descriptor if it is for an AF_UNIX socket.
@@ -118,18 +121,18 @@ int unix_tot_inflight;
 void unix_inflight(struct file *fp)
 {
 	unix_socket *s=unix_get_socket(fp);
-	if (s) {
-		s->protinfo.af_unix.inflight++;
-		unix_tot_inflight++;
+	if(s) {
+		atomic_inc(&s->protinfo.af_unix.inflight);
+		atomic_inc(&unix_tot_inflight);
 	}
 }
 
 void unix_notinflight(struct file *fp)
 {
 	unix_socket *s=unix_get_socket(fp);
-	if (s) {
-		s->protinfo.af_unix.inflight--;
-		unix_tot_inflight--;
+	if(s) {
+		atomic_dec(&s->protinfo.af_unix.inflight);
+		atomic_dec(&unix_tot_inflight);
 	}
 }
 
@@ -152,8 +155,9 @@ extern inline int empty_stack(void)
 
 extern inline void maybe_unmark_and_push(unix_socket *x)
 {
-	if (x->protinfo.af_unix.gc_tree)
+	if (x->protinfo.af_unix.gc_tree != GC_ORPHAN)
 		return;
+	sock_hold(x);
 	x->protinfo.af_unix.gc_tree = gc_current;
 	gc_current = x;
 }
@@ -163,23 +167,24 @@ extern inline void maybe_unmark_and_push(unix_socket *x)
 
 void unix_gc(void)
 {
-	static int in_unix_gc=0;
+	static DECLARE_MUTEX(unix_gc_sem);
 	int i;
 	unix_socket *s;
 	struct sk_buff_head hitlist;
 	struct sk_buff *skb;
-	
+
 	/*
 	 *	Avoid a recursive GC.
 	 */
 
-	if(in_unix_gc)
+	if(!down_trylock(&unix_gc_sem))
 		return;
-	in_unix_gc=1;
-	
+
+	read_lock(&unix_table_lock);
+
 	forall_unix_sockets(i, s)
 	{
-		s->protinfo.af_unix.gc_tree=NULL;
+		s->protinfo.af_unix.gc_tree=GC_ORPHAN;
 	}
 	/*
 	 *	Everything is now marked 
@@ -205,7 +210,7 @@ void unix_gc(void)
 		 *	in flight we are in use.
 		 */
 		if(s->socket && s->socket->file &&
-		   s->socket->file->f_count > s->protinfo.af_unix.inflight)
+		   file_count(s->socket->file) > atomic_read(&s->protinfo.af_unix.inflight))
 			maybe_unmark_and_push(s);
 	}
 
@@ -216,8 +221,9 @@ void unix_gc(void)
 	while (!empty_stack())
 	{
 		unix_socket *x = pop_stack();
-		unix_socket *f=NULL,*sk;
-tail:		
+		unix_socket *sk;
+
+		spin_lock(&x->receive_queue.lock);
 		skb=skb_peek(&x->receive_queue);
 		
 		/*
@@ -244,49 +250,28 @@ tail:
 					 */
 					if((sk=unix_get_socket(*fp++))!=NULL)
 					{
-						/*
-						 *	Remember the first,
-						 *	unmark the rest.
-						 */
-						if(f==NULL)
-							f=sk;
-						else
-							maybe_unmark_and_push(sk);
+						maybe_unmark_and_push(sk);
 					}
 				}
 			}
 			/* We have to scan not-yet-accepted ones too */
-			if ((UNIXCB(skb).attr & MSG_SYN) && !skb->sk->dead) {
-				if (f==NULL)
-					f=skb->sk;
-				else
-					maybe_unmark_and_push(skb->sk);
+			if (x->state == TCP_LISTEN) {
+				maybe_unmark_and_push(skb->sk);
 			}
 			skb=skb->next;
 		}
-		/*
-		 *	Handle first born specially 
-		 */
-
-		if (f) 
-		{
-			if (!f->protinfo.af_unix.gc_tree)
-			{
-				f->protinfo.af_unix.gc_tree=GC_HEAD;
-				x=f;
-				f=NULL;
-				goto tail;
-			}
-		}
+		spin_unlock(&x->receive_queue.lock);
+		sock_put(x);
 	}
 
 	skb_queue_head_init(&hitlist);
 
 	forall_unix_sockets(i, s)
 	{
-		if (!s->protinfo.af_unix.gc_tree)
+		if (s->protinfo.af_unix.gc_tree == GC_ORPHAN)
 		{
 			struct sk_buff *nextsk;
+			spin_lock(&s->receive_queue.lock);
 			skb=skb_peek(&s->receive_queue);
 			while(skb && skb != (struct sk_buff *)&s->receive_queue)
 			{
@@ -296,21 +281,24 @@ tail:
 				 */
 				if(UNIXCB(skb).fp)
 				{
-					skb_unlink(skb);
-					skb_queue_tail(&hitlist,skb);
+					__skb_unlink(skb, skb->list);
+					__skb_queue_tail(&hitlist,skb);
 				}
 				skb=nextsk;
 			}
+			spin_unlock(&s->receive_queue.lock);
 		}
+		s->protinfo.af_unix.gc_tree = GC_ORPHAN;
 	}
+	read_unlock(&unix_table_lock);
 
 	/*
 	 *	Here we are. Hitlist is filled. Die.
 	 */
 
-	while ((skb=skb_dequeue(&hitlist))!=NULL) {
+	while ((skb=__skb_dequeue(&hitlist))!=NULL) {
 		kfree_skb(skb);
 	}
 
-	in_unix_gc=0;
+	up(&unix_gc_sem);
 }

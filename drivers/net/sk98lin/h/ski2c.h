@@ -2,8 +2,8 @@
  *
  * Name:	ski2c.h
  * Project:	GEnesis, PCI Gigabit Ethernet Adapter
- * Version:	$Revision: 1.30 $
- * Date:	$Date: 2001/04/05 11:38:09 $
+ * Version:	$Revision: 1.27 $
+ * Date:	$Date: 1999/05/20 09:23:10 $
  * Purpose:	Defines to access Voltage and Temperature Sensor
  *		(taken from Monalisa (taken from Concentrator))
  *
@@ -28,17 +28,6 @@
  * History:
  *
  *	$Log: ski2c.h,v $
- *	Revision 1.30  2001/04/05 11:38:09  rassmann
- *	Set SenState to idle in SkI2cWaitIrq().
- *	Changed error message in SkI2cWaitIrq().
- *	
- *	Revision 1.29  2000/08/03 14:28:17  rassmann
- *	- Added function to wait for I2C being ready before resetting the board.
- *	- Replaced one duplicate "out of range" message with correct one.
- *	
- *	Revision 1.28  1999/11/22 13:55:46  cgoos
- *	Changed license header to GPL.
- *	
  *	Revision 1.27  1999/05/20 09:23:10  cgoos
  *	Changes for 1000Base-T (Fan sensors).
  *	
@@ -186,26 +175,24 @@ typedef struct  s_Sensor SK_SENSOR;
 #define	SKERR_I2C_E014MSG	"WARNING: fan sensor out of range"
 #define	SKERR_I2C_E015		(SKERR_I2C_E014+1)
 #define	SKERR_I2C_E015MSG	"ERROR: fan sensor out of range"
-#define	SKERR_I2C_E016		(SKERR_I2C_E015+1)
-#define	SKERR_I2C_E016MSG	"I2C: active transfer does not complete.\n"
 
 /*
  * Define Timeout values
  */
-#define	SK_I2C_TIM_LONG		2000000L	/* 2 seconds */
-#define	SK_I2C_TIM_SHORT	 100000L	/* 100 milliseconds */
+#define	SK_I2C_TIM_LONG		2000000L	/* 2 second */
+#define	SK_I2C_TIM_SHORT	100000L		/* 100 milli second */
 
 /*
  * Define trap and error log hold times
  */
 #ifndef	SK_SEN_ERR_TR_HOLD
-#define	SK_SEN_ERR_TR_HOLD		(4*SK_TICKS_PER_SEC)
+#define	SK_SEN_ERR_TR_HOLD	(4*SK_TICKS_PER_SEC)
 #endif
 #ifndef	SK_SEN_ERR_LOG_HOLD
-#define	SK_SEN_ERR_LOG_HOLD		(60*SK_TICKS_PER_SEC)
+#define	SK_SEN_ERR_LOG_HOLD	(60*SK_TICKS_PER_SEC)
 #endif
 #ifndef	SK_SEN_WARN_TR_HOLD
-#define	SK_SEN_WARN_TR_HOLD		(15*SK_TICKS_PER_SEC)
+#define	SK_SEN_WARN_TR_HOLD	(15*SK_TICKS_PER_SEC)
 #endif
 #ifndef	SK_SEN_WARN_LOG_HOLD
 #define	SK_SEN_WARN_LOG_HOLD	(15*60*SK_TICKS_PER_SEC)
@@ -267,11 +254,10 @@ typedef	struct	s_I2c {
 
 extern int SkI2cReadSensor(SK_AC *pAC, SK_IOC IoC, SK_SENSOR *pSen);
 #ifndef SK_DIAG
-extern int SkI2cEvent(SK_AC *pAC, SK_IOC IoC, SK_U32 Event, SK_EVPARA Para);
+extern int SkI2cEvent(SK_AC *pAC, SK_IOC IoC, SK_U32 Event,
+	SK_EVPARA Para);
 extern int SkI2cInit(SK_AC *pAC, SK_IOC IoC, int Level);
-extern void SkI2cWaitIrq(SK_AC *pAC, SK_IOC IoC);
 extern void SkI2cIsr(SK_AC *pAC, SK_IOC IoC);
 
 #endif
 #endif	/* n_SKI2C_H */
-

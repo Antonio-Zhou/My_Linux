@@ -1,11 +1,13 @@
-/* $Id: ultra.S,v 1.32.2.4 2000/05/05 18:50:48 davem Exp $
+/* $Id: ultra.S,v 1.43 2000/05/09 17:40:14 davem Exp $
  * ultra.S: Don't expand these all over the place...
  *
- * Copyright (C) 1997 David S. Miller (davem@caip.rutgers.edu)
+ * Copyright (C) 1997, 2000 David S. Miller (davem@redhat.com)
  */
 
+#include <linux/config.h>
 #include <asm/asi.h>
 #include <asm/pgtable.h>
+#include <asm/page.h>
 #include <asm/spitfire.h>
 
 	/* This file is meant to be read efficiently by the CPU, not humans.
@@ -153,65 +155,95 @@ __flush_tlb_range_pbp_slow:
 	 wrpr		%g1, 0x0, %pstate
 
 	.align		32
-	.globl		flush_icache_page
-flush_icache_page:	/* %o0 = phys_page */
+	.globl		__flush_icache_page
+__flush_icache_page:	/* %o0 = phys_page */
 	sethi		%hi(1 << 13), %o2	! IC_set bit
 	mov		1, %g1
-	srlx		%o0, 5, %o0		! phys-addr comparitor
+	srlx		%o0, 5, %o0
 	clr		%o1			! IC_addr
 	sllx		%g1, 36, %g1
+	ldda		[%o1] ASI_IC_TAG, %o4
 	sub		%g1, 1, %g2
-	andn		%g2, 0xff, %g2		! IC_tag mask
+	or		%o0, %g1, %o0		! VALID+phys-addr comparitor
+
+	sllx		%g2, 1, %g2
+	andn		%g2, 0xfe, %g2		! IC_tag mask
+	nop
+	nop
+	nop
+	nop
+	nop
 	nop
 
-1:	ldda		[%o1] ASI_IC_TAG, %o4
-	and		%o5, %g2, %o5
-	cmp		%o5, %o0
+1:	addx		%g0, %g0, %g0
+	ldda		[%o1 + %o2] ASI_IC_TAG, %g4
+	addx		%g0, %g0, %g0
+	and		%o5, %g2, %g3
+	cmp		%g3, %o0
+	add		%o1, 0x20, %o1
+	ldda		[%o1] ASI_IC_TAG, %o4
 	be,pn		%xcc, iflush1
-	 nop
-2:	ldda		[%o1 + %o2] ASI_IC_TAG, %o4
-	and		%o5, %g2, %o5
-	cmp		%o5, %o0
 
+2:	 nop
+	and		%g5, %g2, %g5
+	cmp		%g5, %o0
 	be,pn		%xcc, iflush2
-	 nop
-3:	add		%o1, 0x20, %o1
-	cmp		%o1, %o2
+3:	 cmp		%o1, %o2
 	bne,pt		%xcc, 1b
-	 nop
+	 addx		%g0, %g0, %g0
+	nop
+
+	sethi		%uhi(PAGE_OFFSET), %g4
 	retl
-	 nop
-iflush1:stxa		%g0, [%o1] ASI_IC_TAG
-	ba,pt		%xcc, 2b
-	 flush		%g6
-iflush2:stxa		%g0, [%o1 + %o2] ASI_IC_TAG
-	ba,pt		%xcc, 3b
-	 flush		%g6
+	 sllx		%g4, 32, %g4
 
-	.align		64
-	.globl		flush_dcache_page
-flush_dcache_page:
-	sub		%o0, %g4, %o0
-	clr		%o1
-	srlx		%o0, 11, %o0
-	sethi		%hi(1 << 14), %o2
-1:	ldxa		[%o1] ASI_DCACHE_TAG, %o3
-	andn		%o3, 0x3, %o3
-	cmp		%o0, %o3
-	bne,pt		%xcc, 2f
-	 nop
-	stxa		%g0, [%o1] ASI_DCACHE_TAG
-2:	add		%o1, (1 << 5), %o1
-	cmp		%o1, %o2
-	bne,pt		%xcc, 1b
-	 nop
-	/* The I-cache does not snoop local stores so we
-	 * better flush that too.
-	 */
-	ba,pt		%xcc, flush_icache_page
-	 sllx		%o0, 11, %o0
+iflush1:sub		%o1, 0x20, %g3
+	stxa		%g0, [%g3] ASI_IC_TAG
+	flush		%g6
+	ba,a,pt		%xcc, 2b
+iflush2:sub		%o1, 0x20, %g3
+	stxa		%g0, [%o1 + %o2] ASI_IC_TAG
+	flush		%g6
+	ba,a,pt		%xcc, 3b
 
-#ifdef __SMP__
+	.align		32
+__prefill_dtlb:
+	rdpr		%pstate, %g7
+	wrpr		%g7, PSTATE_IE, %pstate
+	mov		TLB_TAG_ACCESS, %g1
+	stxa		%o0, [%g1] ASI_DMMU
+	stxa		%o1, [%g0] ASI_DTLB_DATA_IN
+	flush		%g6
+	retl
+	 wrpr		%g7, %pstate
+__prefill_itlb:
+	rdpr		%pstate, %g7
+	wrpr		%g7, PSTATE_IE, %pstate
+	mov		TLB_TAG_ACCESS, %g1
+	stxa		%o0, [%g1] ASI_IMMU
+	stxa		%o1, [%g0] ASI_ITLB_DATA_IN
+	flush		%g6
+	retl
+	 wrpr		%g7, %pstate
+
+	.globl		update_mmu_cache
+update_mmu_cache:	/* %o0=vma, %o1=address, %o2=pte */
+	ldub		[%g6 + AOFF_task_thread + AOFF_thread_fault_code], %o3
+	srlx		%o1, 13, %o1
+	ldx		[%o0 + 0x0], %o4		/* XXX vma->vm_mm */
+	brz,pn		%o3, 1f
+	 sllx		%o1, 13, %o0
+	ldx		[%o4 + AOFF_mm_context], %o5
+	andcc		%o3, FAULT_CODE_DTLB, %g0
+	mov		%o2, %o1
+	and		%o5, 0x3ff, %o5
+	bne,pt		%xcc, __prefill_dtlb
+	 or		%o0, %o5, %o0
+	ba,a,pt		%xcc, __prefill_itlb
+1:	retl
+	 nop
+
+#ifdef CONFIG_SMP
 	/* These are all called by the slaves of a cross call, at
 	 * trap level 1, with interrupts fully disabled.
 	 *
@@ -400,4 +432,4 @@ xcall_flush_cache_all:
 	 nop
 	flush		%g6
 	retry
-#endif /* __SMP__ */
+#endif /* CONFIG_SMP */

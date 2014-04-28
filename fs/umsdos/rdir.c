@@ -110,10 +110,7 @@ struct dentry *umsdos_rlookup_x ( struct inode *dir, struct dentry *dentry, int 
 		 */
 Printk ((KERN_DEBUG "umsdos_rlookup_x: patch_dentry_inode %s/%s\n",
 dentry->d_parent->d_name.name, dentry->d_name.name));
-/* only patch if needed (because we get called even for lookup
-   (not only rlookup) stuff sometimes, like in umsdos_covered() */
-		if (dentry->d_inode->u.umsdos_i.i_patched == 0)	
-			umsdos_patch_dentry_inode(dentry, 0);
+		umsdos_patch_dentry_inode(dentry, 0);
 
 	}
 out:
@@ -160,7 +157,7 @@ static int UMSDOS_rrmdir ( struct inode *dir, struct dentry *dentry)
 		goto out;
 
 	ret = -EBUSY;
-	if (!list_empty(&dentry->d_hash))
+	if (!d_unhashed(dentry))
 		goto out;
 
 	ret = msdos_rmdir (dir, dentry);
@@ -177,6 +174,8 @@ static int UMSDOS_rrmdir ( struct inode *dir, struct dentry *dentry)
 			ret = 0;
 			if (demd->d_inode)
 				ret = msdos_unlink (dentry->d_inode, demd);
+			if (!ret)
+				d_delete(demd);
 			dput(demd);
 		}
 	}
@@ -221,41 +220,20 @@ out:
  * have a "r" prefix (r for real) such as UMSDOS_rlookup, to differentiate
  * from the one with full UMSDOS semantics.
  */
-static struct file_operations umsdos_rdir_operations =
+struct file_operations umsdos_rdir_operations =
 {
-	NULL,			/* lseek - default */
-	dummy_dir_read,		/* read */
-	NULL,			/* write - bad */
-	UMSDOS_rreaddir,	/* readdir */
-	NULL,			/* poll - default */
-	UMSDOS_ioctl_dir,	/* ioctl - default */
-	NULL,			/* mmap */
-	NULL,			/* no special open code */
-	NULL,			/* flush */
-	NULL,			/* no special release code */
-	NULL			/* fsync */
+	read:		generic_read_dir,
+	readdir:	UMSDOS_rreaddir,
+	ioctl:		UMSDOS_ioctl_dir,
 };
 
 struct inode_operations umsdos_rdir_inode_operations =
 {
-	&umsdos_rdir_operations,	/* default directory file-ops */
-	msdos_create,		/* create */
-	UMSDOS_rlookup,		/* lookup */
-	NULL,			/* link */
-	msdos_unlink,		/* unlink */
-	NULL,			/* symlink */
-	msdos_mkdir,		/* mkdir */
-	UMSDOS_rrmdir,		/* rmdir */
-	NULL,			/* mknod */
-	msdos_rename,		/* rename */
-	NULL,			/* readlink */
-	NULL,			/* followlink */
-	NULL,			/* readpage */
-	NULL,			/* writepage */
-	NULL,			/* bmap */
-	NULL,			/* truncate */
-	NULL,			/* permission */
-	NULL,			/* smap */
-	NULL,			/* updatepage */
-	NULL,			/* revalidate */
+	create:		msdos_create,
+	lookup:		UMSDOS_rlookup,
+	unlink:		msdos_unlink,
+	mkdir:		msdos_mkdir,
+	rmdir:		UMSDOS_rrmdir,
+	rename:		msdos_rename,
+	setattr:	UMSDOS_notify_change,
 };

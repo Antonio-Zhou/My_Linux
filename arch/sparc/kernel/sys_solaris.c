@@ -14,18 +14,19 @@
 #include <linux/mm.h>
 #include <linux/smp.h>
 #include <linux/smp_lock.h>
+#include <linux/module.h>
 
+/* CHECKME: this stuff looks rather bogus */
 asmlinkage int
 do_solaris_syscall (struct pt_regs *regs)
 {
 	int ret;
 
 	lock_kernel();
-	current->personality = PER_SVR4;
-	current->exec_domain = lookup_exec_domain(PER_SVR4);
+	set_personality(PER_SVR4);
 
 	if (current->exec_domain && current->exec_domain->handler){
-		current->exec_domain->handler (regs);
+		current->exec_domain->handler (0, regs);
 
 		/* What is going on here?  Why do we do this? */
 

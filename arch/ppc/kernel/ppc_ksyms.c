@@ -1,36 +1,49 @@
 #include <linux/config.h>
 #include <linux/module.h>
+#include <linux/threads.h>
 #include <linux/smp.h>
 #include <linux/elfcore.h>
 #include <linux/sched.h>
 #include <linux/string.h>
 #include <linux/interrupt.h>
-#include <linux/smp_lock.h>
 #include <linux/vt_kern.h>
 #include <linux/nvram.h>
+#include <linux/spinlock.h>
+#include <linux/console.h>
+#include <linux/irq.h>
+#include <linux/pci.h>
 
+#include <asm/page.h>
 #include <asm/semaphore.h>
 #include <asm/processor.h>
 #include <asm/uaccess.h>
+#include <asm/io.h>
+#include <linux/ide.h>
 #include <asm/ide.h>
+#include <asm/atomic.h>
+#include <asm/bitops.h>
 #include <asm/checksum.h>
 #include <asm/pgtable.h>
-#include <asm/adb.h>
-#include <asm/cuda.h>
-#include <asm/pmu.h>
+#include <linux/adb.h>
+#include <linux/cuda.h>
+#include <linux/pmu.h>
 #include <asm/prom.h>
+#include <asm/system.h>
 #include <asm/pci-bridge.h>
 #include <asm/irq.h>
 #include <asm/feature.h>
 #include <asm/dma.h>
-#include <asm/nvram.h>
-#include <asm/time.h>
+#include <asm/machdep.h>
+#include <asm/hw_irq.h>
+#ifdef CONFIG_SMP
+#include <asm/smplock.h>
+#endif /* CONFIG_SMP */
+#include "time.h"
 
 /* Tell string.h we don't want memcpy etc. as cpp defines */
 #define EXPORT_SYMTAB_STROPS
 
 extern void transfer_to_handler(void);
-extern void int_return(void);
 extern void syscall_trace(void);
 extern void do_IRQ(struct pt_regs *regs, int isfake);
 extern void MachineCheckException(struct pt_regs *regs);
@@ -38,23 +51,19 @@ extern void AlignmentException(struct pt_regs *regs);
 extern void ProgramCheckException(struct pt_regs *regs);
 extern void SingleStepException(struct pt_regs *regs);
 extern int sys_sigreturn(struct pt_regs *regs);
-extern atomic_t ppc_n_lost_interrupts;
 extern void do_lost_interrupts(unsigned long);
 extern int do_signal(sigset_t *, struct pt_regs *);
-extern unsigned long mktime(unsigned int, unsigned int, unsigned int,
-                            unsigned int, unsigned int, unsigned int);
-extern void to_tm(int tim, struct rtc_time * tm);
 
 long long __ashrdi3(long long, int);
 long long __ashldi3(long long, int);
 long long __lshrdi3(long long, int);
 int abs(int);
+extern unsigned long ret_to_user_hook;
 
 EXPORT_SYMBOL(clear_page);
 EXPORT_SYMBOL(do_signal);
 EXPORT_SYMBOL(syscall_trace);
 EXPORT_SYMBOL(transfer_to_handler);
-EXPORT_SYMBOL(int_return);
 EXPORT_SYMBOL(do_IRQ);
 EXPORT_SYMBOL(MachineCheckException);
 EXPORT_SYMBOL(AlignmentException);
@@ -62,31 +71,31 @@ EXPORT_SYMBOL(ProgramCheckException);
 EXPORT_SYMBOL(SingleStepException);
 EXPORT_SYMBOL(sys_sigreturn);
 EXPORT_SYMBOL(ppc_n_lost_interrupts);
+EXPORT_SYMBOL(ppc_lost_interrupts);
 EXPORT_SYMBOL(do_lost_interrupts);
 EXPORT_SYMBOL(enable_irq);
 EXPORT_SYMBOL(disable_irq);
 EXPORT_SYMBOL(disable_irq_nosync);
-EXPORT_SYMBOL(ppc_local_irq_count);
-EXPORT_SYMBOL(ppc_local_bh_count);
+EXPORT_SYMBOL(local_irq_count);
+EXPORT_SYMBOL(local_bh_count);
+#ifdef CONFIG_SMP
+EXPORT_SYMBOL(kernel_flag);
+#endif /* CONFIG_SMP */
 
+#if !defined(CONFIG_4xx) && !defined(CONFIG_8xx)
 EXPORT_SYMBOL(isa_io_base);
 EXPORT_SYMBOL(isa_mem_base);
 EXPORT_SYMBOL(pci_dram_offset);
+#endif
 EXPORT_SYMBOL(ISA_DMA_THRESHOLD);
-EXPORT_SYMBOL_NOVERS(DMA_MODE_READ);
+EXPORT_SYMBOL(DMA_MODE_READ);
 EXPORT_SYMBOL(DMA_MODE_WRITE);
-#if defined(CONFIG_PREP) || defined(CONFIG_ALL_PPC)
+#ifndef CONFIG_8xx
+#if defined(CONFIG_ALL_PPC)
 EXPORT_SYMBOL(_prep_type);
 EXPORT_SYMBOL(ucSystemType);
 #endif
-
-EXPORT_SYMBOL(atomic_add);
-EXPORT_SYMBOL(atomic_sub);
-EXPORT_SYMBOL(atomic_inc);
-EXPORT_SYMBOL(atomic_inc_return);
-EXPORT_SYMBOL(atomic_dec);
-EXPORT_SYMBOL(atomic_dec_return);
-EXPORT_SYMBOL(atomic_dec_and_test);
+#endif
 
 EXPORT_SYMBOL(set_bit);
 EXPORT_SYMBOL(clear_bit);
@@ -94,11 +103,6 @@ EXPORT_SYMBOL(change_bit);
 EXPORT_SYMBOL(test_and_set_bit);
 EXPORT_SYMBOL(test_and_clear_bit);
 EXPORT_SYMBOL(test_and_change_bit);
-#if 0
-EXPORT_SYMBOL(ffz);
-EXPORT_SYMBOL(find_first_zero_bit);
-EXPORT_SYMBOL(find_next_zero_bit);
-#endif
 
 EXPORT_SYMBOL(strcpy);
 EXPORT_SYMBOL(strncpy);
@@ -111,7 +115,6 @@ EXPORT_SYMBOL(strtok);
 EXPORT_SYMBOL(strstr);
 EXPORT_SYMBOL(strlen);
 EXPORT_SYMBOL(strnlen);
-EXPORT_SYMBOL(strspn);
 EXPORT_SYMBOL(strcmp);
 EXPORT_SYMBOL(strncmp);
 
@@ -151,32 +154,35 @@ EXPORT_SYMBOL(iounmap);
 EXPORT_SYMBOL(ide_insw);
 EXPORT_SYMBOL(ide_outsw);
 EXPORT_SYMBOL(ppc_ide_md);
+#ifdef CONFIG_BLK_DEV_IDE_MODULE
+EXPORT_SYMBOL(chrp_ide_irq);
+EXPORT_SYMBOL(chrp_ide_ports_known);
+EXPORT_SYMBOL(chrp_ide_regbase);
+EXPORT_SYMBOL(chrp_ide_probe);
+#endif
+
+#ifdef CONFIG_PCI
+EXPORT_SYMBOL(pci_alloc_consistent);
+EXPORT_SYMBOL(pci_free_consistent);
+#endif /* CONFIG_PCI */
 
 EXPORT_SYMBOL(start_thread);
 EXPORT_SYMBOL(kernel_thread);
-EXPORT_SYMBOL(init_mm);
 
-EXPORT_SYMBOL(__cli);
-EXPORT_SYMBOL(__sti);
 /*EXPORT_SYMBOL(__restore_flags);*/
-EXPORT_SYMBOL(_disable_interrupts);
-EXPORT_SYMBOL(_enable_interrupts);
+/*EXPORT_SYMBOL(_disable_interrupts);
+  EXPORT_SYMBOL(_enable_interrupts);*/
 EXPORT_SYMBOL(flush_instruction_cache);
 EXPORT_SYMBOL(_get_PVR);
 EXPORT_SYMBOL(giveup_fpu);
 EXPORT_SYMBOL(enable_kernel_fp);
 EXPORT_SYMBOL(flush_icache_range);
 EXPORT_SYMBOL(xchg_u32);
-
-#ifdef CONFIG_ALTIVEC
-EXPORT_SYMBOL(giveup_altivec);
-#endif
-
-#ifdef __SMP__
-EXPORT_SYMBOL(cpu_data);
-EXPORT_SYMBOL(kernel_flag);
-EXPORT_SYMBOL(cpu_number_map);
-EXPORT_SYMBOL(smp_num_cpus);
+#ifdef CONFIG_SMP
+EXPORT_SYMBOL(__global_cli);
+EXPORT_SYMBOL(__global_sti);
+EXPORT_SYMBOL(__global_save_flags);
+EXPORT_SYMBOL(__global_restore_flags);
 EXPORT_SYMBOL(_spin_lock);
 EXPORT_SYMBOL(_spin_unlock);
 EXPORT_SYMBOL(spin_trylock);
@@ -184,24 +190,33 @@ EXPORT_SYMBOL(_read_lock);
 EXPORT_SYMBOL(_read_unlock);
 EXPORT_SYMBOL(_write_lock);
 EXPORT_SYMBOL(_write_unlock);
+#endif
 
-/* Global SMP irq stuff */
-EXPORT_SYMBOL(synchronize_irq);
-EXPORT_SYMBOL(synchronize_bh);
-EXPORT_SYMBOL(global_bh_count);
-EXPORT_SYMBOL(global_bh_lock);
-EXPORT_SYMBOL(global_irq_holder);
-EXPORT_SYMBOL(__global_cli);
-EXPORT_SYMBOL(__global_sti);
-EXPORT_SYMBOL(__global_save_flags);
-EXPORT_SYMBOL(__global_restore_flags);
-#endif /* __SMP__ */
-
+#ifndef CONFIG_MACH_SPECIFIC
 EXPORT_SYMBOL(_machine);
+#endif
 EXPORT_SYMBOL(ppc_md);
-EXPORT_SYMBOL(abort);
 
-#ifndef CONFIG_MBX
+#ifdef CONFIG_ADB
+/*
+ * This could be more fine-grained, but for now assume if we have
+ * ADB we have it all -- Cort
+ */
+EXPORT_SYMBOL(adb_request);
+EXPORT_SYMBOL(adb_register);
+EXPORT_SYMBOL(cuda_request);
+EXPORT_SYMBOL(cuda_poll);
+#ifdef CONFIG_ADB_PMU
+EXPORT_SYMBOL(pmu_request);
+EXPORT_SYMBOL(pmu_poll);
+#endif /* CONFIG_ADB_PMU */
+#endif /* CONFIG_ADB */
+#ifdef CONFIG_PMAC_PBOOK
+EXPORT_SYMBOL(pmu_register_sleep_notifier);
+EXPORT_SYMBOL(pmu_unregister_sleep_notifier);
+EXPORT_SYMBOL(pmu_enable_irled);
+#endif CONFIG_PMAC_PBOOK
+#if defined(CONFIG_ALL_PPC)
 EXPORT_SYMBOL(find_devices);
 EXPORT_SYMBOL(find_type_devices);
 EXPORT_SYMBOL(find_compatible_devices);
@@ -212,45 +227,20 @@ EXPORT_SYMBOL(machine_is_compatible);
 EXPORT_SYMBOL(find_pci_device_OFnode);
 EXPORT_SYMBOL(find_all_nodes);
 EXPORT_SYMBOL(get_property);
-#endif /* CONFIG_MBX */
-#ifdef CONFIG_POWERMAC
-EXPORT_SYMBOL(adb_request);
-EXPORT_SYMBOL(adb_register);
-EXPORT_SYMBOL(cuda_request);
-EXPORT_SYMBOL(cuda_poll);
-EXPORT_SYMBOL(pmu_request);
-EXPORT_SYMBOL(pmu_poll);
-#endif /* CONFIG_POWERMAC */
-#ifdef CONFIG_PMAC_PBOOK
-EXPORT_SYMBOL(pmu_register_sleep_notifier);
-EXPORT_SYMBOL(pmu_unregister_sleep_notifier);
-EXPORT_SYMBOL(pmu_enable_irled);
-#endif /* CONFIG_PMAC_PBOOK */
-#ifdef CONFIG_POWERMAC
 EXPORT_SYMBOL(pci_io_base);
-EXPORT_SYMBOL(pci_dev_io_base);
-EXPORT_SYMBOL(pci_dev_mem_base);
 EXPORT_SYMBOL(pci_device_loc);
 EXPORT_SYMBOL(feature_set);
 EXPORT_SYMBOL(feature_clear);
 EXPORT_SYMBOL(feature_test);
-EXPORT_SYMBOL(feature_set_gmac_power);
-EXPORT_SYMBOL(feature_set_gmac_phy_reset);
-EXPORT_SYMBOL(feature_set_usb_power);
-EXPORT_SYMBOL(feature_set_firewire_power);
+#endif /* defined(CONFIG_ALL_PPC) */
+#if defined(CONFIG_SCSI) && defined(CONFIG_ALL_PPC)
+EXPORT_SYMBOL(note_scsi_host);
+#endif
+EXPORT_SYMBOL(kd_mksound);
+#ifdef CONFIG_NVRAM
 EXPORT_SYMBOL(nvram_read_byte);
 EXPORT_SYMBOL(nvram_write_byte);
-EXPORT_SYMBOL(pmac_xpram_read);
-EXPORT_SYMBOL(pmac_xpram_write);
-#ifdef CONFIG_SCSI
-EXPORT_SYMBOL(note_scsi_host);
-#endif /* CONFIG_SCSI */
-#endif /* CONFIG_POWERMAC */
-EXPORT_SYMBOL(kd_mksound);
-EXPORT_SYMBOL(mktime);
-EXPORT_SYMBOL(to_tm);
-
-EXPORT_SYMBOL(abs);
+#endif /* CONFIG_NVRAM */
 
 EXPORT_SYMBOL_NOVERS(__ashrdi3);
 EXPORT_SYMBOL_NOVERS(__ashldi3);
@@ -260,3 +250,40 @@ EXPORT_SYMBOL_NOVERS(memset);
 EXPORT_SYMBOL_NOVERS(memmove);
 EXPORT_SYMBOL_NOVERS(memscan);
 EXPORT_SYMBOL_NOVERS(memcmp);
+
+EXPORT_SYMBOL(abs);
+
+#ifdef CONFIG_VT
+EXPORT_SYMBOL(screen_info);
+#endif
+
+EXPORT_SYMBOL(int_control);
+EXPORT_SYMBOL(timer_interrupt_intercept);
+EXPORT_SYMBOL(timer_interrupt);
+EXPORT_SYMBOL(do_IRQ_intercept);
+EXPORT_SYMBOL(irq_desc);
+void ppc_irq_dispatch_handler(struct pt_regs *, int);
+EXPORT_SYMBOL(ppc_irq_dispatch_handler);
+EXPORT_SYMBOL(decrementer_count);
+EXPORT_SYMBOL(get_wchan);
+EXPORT_SYMBOL(console_drivers);
+#ifdef CONFIG_XMON
+EXPORT_SYMBOL(xmon);
+#endif
+EXPORT_SYMBOL(down_read_failed);
+
+extern void (*debugger)(struct pt_regs *regs);
+extern int (*debugger_bpt)(struct pt_regs *regs);
+extern int (*debugger_sstep)(struct pt_regs *regs);
+extern int (*debugger_iabr_match)(struct pt_regs *regs);
+extern int (*debugger_dabr_match)(struct pt_regs *regs);
+extern void (*debugger_fault_handler)(struct pt_regs *regs);
+
+EXPORT_SYMBOL(debugger);
+EXPORT_SYMBOL(debugger_bpt);
+EXPORT_SYMBOL(debugger_sstep);
+EXPORT_SYMBOL(debugger_iabr_match);
+EXPORT_SYMBOL(debugger_dabr_match);
+EXPORT_SYMBOL(debugger_fault_handler);
+
+EXPORT_SYMBOL(ret_to_user_hook);

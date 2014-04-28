@@ -14,7 +14,6 @@
  * for more details.
  */
 
-#include <stdarg.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
@@ -114,10 +113,17 @@ static int bvme6000_get_hardware_list(char *buffer)
 }
 
 
-__initfunc(void config_bvme6000(void))
+void __init config_bvme6000(void)
 {
     volatile PitRegsPtr pit = (PitRegsPtr)BVME_PIT_BASE;
 
+    /* Board type is only set by newer versions of vmelilo/tftplilo */
+    if (!vme_brdtype) {
+	if (m68k_cputype == CPU_68060)
+	    vme_brdtype = VME_TYPE_BVME6000;
+	else
+	    vme_brdtype = VME_TYPE_BVME4000;
+    }
 #if 0
     /* Call bvme6000_set_vectors() so ABORT will work, along with BVMBug
      * debugger.  Note trap_init() will splat the abort vector, but
@@ -126,6 +132,7 @@ __initfunc(void config_bvme6000(void))
     bvme6000_set_vectors();
 #endif
 
+    mach_max_dma_address = 0xffffffff;
     mach_sched_init      = bvme6000_sched_init;
     mach_keyb_init       = bvme6000_keyb_init;
     mach_kbdrate         = bvme6000_kbdrate;
@@ -174,7 +181,7 @@ void bvme6000_abort_int (int irq, void *dev_id, struct pt_regs *fp)
         unsigned long *old = (unsigned long *)0xf8000000;
 
         /* Wait for button release */
-	while (*(volatile unsigned char *)BVME_LOCAL_IRQ_STAT & BVME_ABORT_STATUS)
+	while (*config_reg_ptr & BVME_ABORT_STATUS)
 		;
 
         *(new+4) = *(old+4);            /* Illegal instruction */
@@ -415,6 +422,15 @@ int bvme6000_keyb_init (void)
 
 /*-------------------  Serial console stuff ------------------------*/
 
+static void bvme_scc_write(struct console *co, const char *str, unsigned cnt);
+
+
+void bvme6000_init_console_port (struct console *co, int cflag)
+{
+        co->write = bvme_scc_write;
+}
+
+
 static void scc_delay (void)
 {
         int n;
@@ -424,7 +440,6 @@ static void scc_delay (void)
 		trash = n;
 }
 
-
 static void scc_write (char ch)
 {
         volatile char *p = (volatile char *)BVME_SCC_A_ADDR;
@@ -433,7 +448,10 @@ static void scc_write (char ch)
                 scc_delay();
         }
         while (!(*p & 4));
-        *(p + 4) = ch;
+        scc_delay();
+        *p = 8;
+        scc_delay();
+        *p = ch;
 }
 
 
@@ -451,24 +469,5 @@ static void bvme_scc_write (struct console *co, const char *str, unsigned count)
                 scc_write (*str++);
         }
         restore_flags(flags);
-}
-
-
-static int bvme_scc_wait_key (struct console *co)
-{
-	volatile unsigned char *p = (volatile char *)BVME_SCC_A_ADDR;
-
-	/* wait for rx buf filled */
-	while ((*p & 0x01) == 0)
-		;
-
-	return  *(p + 4);
-}
-
-
-void bvme6000_init_console_port (struct console *co, int cflag)
-{
-        co->write    = bvme_scc_write;
-        co->wait_key = bvme_scc_wait_key;
 }
 

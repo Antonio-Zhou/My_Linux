@@ -119,9 +119,8 @@ svcauth_unix(struct svc_rqst *rqstp, u32 *statp, u32 *authp)
 	struct svc_buf	*argp = &rqstp->rq_argbuf;
 	struct svc_buf	*resp = &rqstp->rq_resbuf;
 	struct svc_cred	*cred = &rqstp->rq_cred;
-	u32		*bufp = argp->buf;
+	u32		*bufp = argp->buf, slen, i;
 	int		len   = argp->len;
-	u32		slen, i;
 
 	if ((len -= 3) < 0) {
 		*statp = rpc_garbage_args;

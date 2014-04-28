@@ -97,7 +97,6 @@ MODULE_SUPPORTED_DEVICE("video");
 #define CPIA_COMMAND_I2CRead		(INPUT | CPIA_MODULE_SYSTEM | 13)
 
 #define CPIA_COMMAND_GetVPVersion	(INPUT | CPIA_MODULE_VP_CTRL | 1)
-#define CPIA_COMMAND_ResetFrameCounter	(INPUT | CPIA_MODULE_VP_CTRL | 2)
 #define CPIA_COMMAND_SetColourParams	(OUTPUT | CPIA_MODULE_VP_CTRL | 3)
 #define CPIA_COMMAND_SetExposure	(OUTPUT | CPIA_MODULE_VP_CTRL | 4)
 #define CPIA_COMMAND_SetColourBalance	(OUTPUT | CPIA_MODULE_VP_CTRL | 6)
@@ -128,7 +127,6 @@ MODULE_SUPPORTED_DEVICE("video");
 #define CPIA_COMMAND_SetYUVThresh	(OUTPUT | CPIA_MODULE_CAPTURE | 12)
 #define CPIA_COMMAND_SetCompressionParams (OUTPUT | CPIA_MODULE_CAPTURE | 13)
 #define CPIA_COMMAND_DiscardFrame	(OUTPUT | CPIA_MODULE_CAPTURE | 14)
-#define CPIA_COMMAND_GrabReset		(OUTPUT | CPIA_MODULE_CAPTURE | 15)
 
 #define CPIA_COMMAND_OutputRS232	(OUTPUT | CPIA_MODULE_DEBUG | 1)
 #define CPIA_COMMAND_AbortProcess	(OUTPUT | CPIA_MODULE_DEBUG | 4)
@@ -137,7 +135,6 @@ MODULE_SUPPORTED_DEVICE("video");
 #define CPIA_COMMAND_StartDummyDtream	(OUTPUT | CPIA_MODULE_DEBUG | 8)
 #define CPIA_COMMAND_AbortStream	(OUTPUT | CPIA_MODULE_DEBUG | 9)
 #define CPIA_COMMAND_DownloadDRAM	(OUTPUT | CPIA_MODULE_DEBUG | 10)
-#define CPIA_COMMAND_Null		(OUTPUT | CPIA_MODULE_DEBUG | 11)
 
 enum {
 	FRAME_READY,		/* Ready to grab into */
@@ -162,7 +159,6 @@ enum {
 #define COMMAND_SETAPCOR		0x1000
 #define COMMAND_SETFLICKERCTRL		0x2000
 #define COMMAND_SETVLOFFSET		0x4000
-#define COMMAND_SETLIGHTS               0x8000 /* GA 04/14/00 */
 
 /* Developer's Guide Table 5 p 3-34
  * indexed by [mains][sensorFps.baserate][sensorFps.divisor]*/
@@ -173,45 +169,6 @@ static u8 flicker_jumps[2][2][4] =
 
 /* forward declaration of local function */
 static void reset_camera_struct(struct cam_data *cam);
-
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,3,0))
-/**********************************************************************
- *
- * Memory management
- *
- * This is a shameless copy from the USB-cpia driver (linux kernel
- * version 2.3.13 or so, I have no idea what this code actually does ;).
- * Actually it seems to be a copy of a shameless copy of the bttv-driver.
- * Or that is a copy of a shameless copy of ... (To the powers: is there
- * no generic kernel-function to do this sort of stuff?)
- *
- **********************************************************************/
-
-static inline unsigned long uvirt_to_phys(unsigned long adr)
-{
-	pgd_t *pgd;
-	pmd_t *pmd;
-	pte_t *ptep, pte;
-
-	pgd = pgd_offset(current->mm, adr);
-	if (pgd_none(*pgd))
-		return 0;
-	pmd = pmd_offset(pgd, adr);
-	if (pmd_none(*pmd))
-		return 0;
-	ptep = pte_offset(pmd, adr/*&(~PGDIR_MASK)*/);
-	pte = *ptep;
-	if (pte_present(pte))
-		return virt_to_phys((void *)(pte_page(pte)|(adr&(PAGE_SIZE-1))));
-	return 0;
-}
-
-static inline unsigned long kvirt_to_pa(unsigned long adr) 
-{
-	return uvirt_to_phys(VMALLOC_VMADDR(adr));
-}
-
-#else /* (LINUX_VERSION_CODE >= KERNEL_VERSION(2,3,0)) */
 
 /**********************************************************************
  *
@@ -263,7 +220,6 @@ static inline unsigned long kvirt_to_pa(unsigned long adr)
 	ret = __pa(kva);
 	return ret;
 }
-#endif /* (LINUX_VERSION_CODE >= KERNEL_VERSION(2,3,0)) */
 
 static void *rvmalloc(unsigned long size)
 {
@@ -282,11 +238,7 @@ static void *rvmalloc(unsigned long size)
 	adr = (unsigned long) mem;
 	while (size > 0) {
 		page = kvirt_to_pa(adr);
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,3,0))
-		mem_map_reserve(MAP_NR(phys_to_virt(page)));
-#else
 		mem_map_reserve(MAP_NR(__va(page)));
-#endif
 		adr += PAGE_SIZE;
 		if (size > PAGE_SIZE)
 			size -= PAGE_SIZE;
@@ -310,11 +262,7 @@ static void rvfree(void *mem, unsigned long size)
 	adr = (unsigned long) mem;
 	while (size > 0) {
 		page = kvirt_to_pa(adr);
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,3,0))
-		mem_map_unreserve(MAP_NR(phys_to_virt(page)));
-#else
 		mem_map_unreserve(MAP_NR(__va(page)));
-#endif
 		adr += PAGE_SIZE;
 		if (size > PAGE_SIZE)
 			size -= PAGE_SIZE;
@@ -375,16 +323,15 @@ static int cpia_read_proc(char *page, char **start, off_t off,
 	               cam->params.status.vpStatus);
 	out += sprintf(out, "error_code:               %#04x\n",
 	               cam->params.status.errorCode);
-	/* GA 04/14/00 - QX3 specific entries */
-	if (cam->params.qx3.qx3_detected) {
-		out += sprintf(out, "button:                   %4d\n",
-		               cam->params.qx3.button);
-		out += sprintf(out, "cradled:                  %4d\n",
-		               cam->params.qx3.cradled);
-	}
 	out += sprintf(out, "video_size:               %s\n",
 	               cam->params.format.videoSize == VIDEOSIZE_CIF ?
 		       "CIF " : "QCIF");
+	out += sprintf(out, "sub_sample:               %s\n",
+	               cam->params.format.subSample == SUBSAMPLE_420 ?
+		       "420" : "422");
+	out += sprintf(out, "yuv_order:                %s\n",
+	               cam->params.format.yuvOrder == YUVORDER_YUYV ?
+		       "YUYV" : "UYVY");
 	out += sprintf(out, "roi:                      (%3d, %3d) to (%3d, %3d)\n",
 	               cam->params.roi.colStart*8,
 	               cam->params.roi.rowStart*4,
@@ -419,12 +366,6 @@ static int cpia_read_proc(char *page, char **start, off_t off,
 	               2*cam->params.streamStartLine, 0,
 		       cam->params.format.videoSize == VIDEOSIZE_CIF ? 288:144,
 		       cam->params.format.videoSize == VIDEOSIZE_CIF ? 240:120);
-	out += sprintf(out, "sub_sample:             %8s  %8s  %8s  %8s\n",
-	               cam->params.format.subSample == SUBSAMPLE_420 ?
-		       "420" : "422", "420", "422", "422");
-	out += sprintf(out, "yuv_order:              %8s  %8s  %8s  %8s\n",
-	               cam->params.format.yuvOrder == YUVORDER_YUYV ?
-		       "YUYV" : "UYVY", "YUYV" , "UYVY", "YUYV");
 	out += sprintf(out, "ecp_timing:             %8s  %8s  %8s  %8s\n",
 	               cam->params.ecpTiming ? "slow" : "normal", "slow",
 		       "normal", "normal");
@@ -448,13 +389,13 @@ static int cpia_read_proc(char *page, char **start, off_t off,
 		/* 1-02 firmware limits gain to 2 */
 		sprintf(tmpstr, "%8d  %8d", 1, 2);
 	else
-		sprintf(tmpstr, "%8d  %8d", 1, 8);
+		sprintf(tmpstr, "1,2,4,8");
 
 	if (cam->params.exposure.gainMode == 0)
 		out += sprintf(out, "max_gain:                unknown  %18s"
-		               "  %8d  powers of 2\n", tmpstr, 2); 
+		               "  %8d\n", tmpstr, 2); 
 	else
-		out += sprintf(out, "max_gain:               %8d  %18s  %8d  powers of 2\n", 
+		out += sprintf(out, "max_gain:               %8d  %18s  %8d\n", 
 		               1<<(cam->params.exposure.gainMode-1), tmpstr, 2);
 
 	switch(cam->params.exposure.expMode) {
@@ -547,7 +488,7 @@ static int cpia_read_proc(char *page, char **start, off_t off,
 	out += sprintf(out, "    none,auto,manual      auto\n");
 	out += sprintf(out, "decimation_enable:      %8s  %8s  %8s  %8s\n",
         	       cam->params.compression.decimation == 
-		       DECIMATION_ENAB ? "on":"off", "off", "on",
+		       DECIMATION_ENAB ? "on":"off", "off", "off",
 		       "off");
 	out += sprintf(out, "compression_target:    %9s %9s %9s %9s\n",
 	               cam->params.compressionTarget.frTargeting  == 
@@ -555,13 +496,13 @@ static int cpia_read_proc(char *page, char **start, off_t off,
 		       "framerate":"quality",
 		       "framerate", "quality", "quality");
 	out += sprintf(out, "target_framerate:       %8d  %8d  %8d  %8d\n",
-	               cam->params.compressionTarget.targetFR, 1, 30, 15);
+	               cam->params.compressionTarget.targetFR, 0, 30, 7);
 	out += sprintf(out, "target_quality:         %8d  %8d  %8d  %8d\n",
-	               cam->params.compressionTarget.targetQ, 1, 64, 5);
+	               cam->params.compressionTarget.targetQ, 0, 255, 10);
 	out += sprintf(out, "y_threshold:            %8d  %8d  %8d  %8d\n",
-	               cam->params.yuvThreshold.yThreshold, 0, 31, 6);
+	               cam->params.yuvThreshold.yThreshold, 0, 31, 15);
 	out += sprintf(out, "uv_threshold:           %8d  %8d  %8d  %8d\n",
-	               cam->params.yuvThreshold.uvThreshold, 0, 31, 6);
+	               cam->params.yuvThreshold.uvThreshold, 0, 31, 15);
 	out += sprintf(out, "hysteresis:             %8d  %8d  %8d  %8d\n",
 	               cam->params.compressionParams.hysteresis, 0, 255, 3);
 	out += sprintf(out, "threshold_max:          %8d  %8d  %8d  %8d\n",
@@ -582,17 +523,7 @@ static int cpia_read_proc(char *page, char **start, off_t off,
 	out += sprintf(out, "decimation_thresh_mod:  %8d  %8d  %8d  %8d\n",
 	               cam->params.compressionParams.decimationThreshMod,
 		       0, 255, 2);
-
-	/* GA 04/14/00 - QX3 specific entries */
-	if (cam->params.qx3.qx3_detected) {
-		out += sprintf(out, "toplight:               %8s  %8s  %8s  %8s\n", 
-		               cam->params.qx3.toplight ? "on" : "off",
-			       "off", "on", "off");
-		out += sprintf(out, "bottomlight:            %8s  %8s  %8s  %8s\n", 
-		               cam->params.qx3.bottomlight ? "on" : "off",
-			       "off", "on", "off");
-	}
-
+	
 	len = out - page;
 	len -= off;
 	if (len < count) {
@@ -765,24 +696,6 @@ static int cpia_write_proc(struct file *file, const char *buffer,
 				else
 					retval = -EINVAL;
 			}
-		} else if (MATCH("sub_sample")) {
-			if (!retval && MATCH("420"))
-				new_params.format.subSample = SUBSAMPLE_420;
-			else if (!retval && MATCH("422"))
-				new_params.format.subSample = SUBSAMPLE_422;
-			else
-				retval = -EINVAL;
-
-			command_flags |= COMMAND_SETFORMAT;
-		} else if (MATCH("yuv_order")) {
-			if (!retval && MATCH("YUYV"))
-				new_params.format.yuvOrder = YUVORDER_YUYV;
-			else if (!retval && MATCH("UYVY"))
-				new_params.format.yuvOrder = YUVORDER_UYVY;
-			else
-				retval = -EINVAL;
-
-			command_flags |= COMMAND_SETFORMAT;
 		} else if (MATCH("ecp_timing")) {
 			if (!retval && MATCH("normal"))
 				new_params.ecpTiming = 0;
@@ -1150,8 +1063,6 @@ static int cpia_write_proc(struct file *file, const char *buffer,
 		} else if (MATCH("decimation_enable")) {
 			if (!retval && MATCH("off"))
 				new_params.compression.decimation = 0;
-			else if (!retval && MATCH("on"))
-				new_params.compression.decimation = 1;
 			else
 				retval = -EINVAL;
 
@@ -1171,23 +1082,16 @@ static int cpia_write_proc(struct file *file, const char *buffer,
 			if (!retval)
 				val = VALUE;
 
-			if (!retval) {
-				if(val > 0 && val <= 30)
-					new_params.compressionTarget.targetFR = val;
-				else
-					retval = -EINVAL;
-			}
+			if (!retval)
+				new_params.compressionTarget.targetFR = val;
 			command_flags |= COMMAND_SETCOMPRESSIONTARGET;
 		} else if (MATCH("target_quality")) {
 			if (!retval)
 				val = VALUE;
 
-			if (!retval) {
-				if(val > 0 && val <= 64)
-					new_params.compressionTarget.targetQ = val;
-				else 
-					retval = -EINVAL;
-			}
+			if (!retval)
+				new_params.compressionTarget.targetQ = val;
+
 			command_flags |= COMMAND_SETCOMPRESSIONTARGET;
 		} else if (MATCH("y_threshold")) {
 			if (!retval)
@@ -1299,28 +1203,6 @@ static int cpia_write_proc(struct file *file, const char *buffer,
 					retval = -EINVAL;
 			}
 			command_flags |= COMMAND_SETCOMPRESSIONPARAMS;
-		} else if (MATCH("toplight")) { /* GA 4/14/00 */
-		        if (!retval && MATCH("on"))
-			  new_params.qx3.toplight = 1;
-
-			else if (!retval && MATCH("off")) 
-			  new_params.qx3.toplight = 0;
-
-			else 
-			  retval = -EINVAL;
-                        command_flags |= COMMAND_SETLIGHTS;
-                        
-		} else if (MATCH("bottomlight")) { /* GA 4/14/00 */
-		        if (!retval && MATCH("on"))
-			  new_params.qx3.bottomlight = 1;
-
-			else if (!retval && MATCH("off")) 
-			  new_params.qx3.bottomlight = 0;
-
-			else 
-			  retval = -EINVAL;
-                        command_flags |= COMMAND_SETLIGHTS;
-                        
 		} else {
 			DBG("No match found\n");
 			retval = -EINVAL;
@@ -1386,9 +1268,7 @@ static void create_proc_cpia_cam(struct cam_data *cam)
 	ent->data = cam;
 	ent->read_proc = cpia_read_proc;
 	ent->write_proc = cpia_write_proc;
-	ent->size = 3736;
-	if (cam->params.qx3.qx3_detected)
-		ent->size += 188;
+	ent->size = 3626;
 	cam->proc_entry = ent;
 }
 
@@ -1404,43 +1284,20 @@ static void destroy_proc_cpia_cam(struct cam_data *cam)
 	cam->proc_entry = NULL;
 }
 
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,3,0))
-/*
- * This is called as the fill_inode function when an inode
- * is going into (fill = 1) or out of service (fill = 0).
- * We use it here to manage the module use counts.
- */
-static void proc_cpia_modcount(struct inode *inode, int fill)
-{
-#ifdef MODULE
-	if (fill)
-		MOD_INC_USE_COUNT;
-	else
-		MOD_DEC_USE_COUNT;
-#endif
-}
-#endif
-
 static void proc_cpia_create(void)
 {
 	cpia_proc_root = create_proc_entry("cpia", S_IFDIR, 0);
 
-	if (cpia_proc_root) {
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,3,0))
-		cpia_proc_root->fill_inode = &proc_cpia_modcount;
-#else
+	if (cpia_proc_root)
 		cpia_proc_root->owner = THIS_MODULE;
-#endif
-	} else
+	else
 		LOG("Unable to initialise /proc/cpia\n");
 }
 
-#ifdef MODULE
 static void proc_cpia_destroy(void)
 {
 	remove_proc_entry("cpia", 0);
 }
-#endif
 #endif /* CONFIG_PROC_FS */
 
 /* ----------------------- debug functions ---------------------- */
@@ -1705,10 +1562,6 @@ static int do_command(struct cam_data *cam, u16 command, u8 a, u8 b, u8 c, u8 d)
 		down(&cam->param_lock);
 		datasize=8;
 		break;
-        case CPIA_COMMAND_ReadMCPorts: /* GA 4/14/00 */
-        case CPIA_COMMAND_ReadVCRegs:
-                datasize = 4;
-                break;
 	default:
 		datasize=0;
 		break;
@@ -1806,23 +1659,7 @@ static int do_command(struct cam_data *cam, u16 command, u8 a, u8 b, u8 c, u8 d)
 			  }
 			up(&cam->param_lock);
 			break;
-
-                case CPIA_COMMAND_ReadMCPorts: /* GA 04/14/00 */
-                  if (!cam->params.qx3.qx3_detected) break;
-
-		  /* test button press */ 
-		  cam->params.qx3.button = ((data[1] & 0x02) == 0);
-		  if (cam->params.qx3.button) {
-		    /* button pressed - unlock the latch */
-		    do_command(cam,CPIA_COMMAND_WriteMCPort,3,0xDF,0xDF,0);
-		    do_command(cam,CPIA_COMMAND_WriteMCPort,3,0xFF,0xFF,0);
-		  }
-
-		  /* test whether microscope is cradled */
-		  cam->params.qx3.cradled = ((data[2] & 0x40) == 0);
-		  break;
-
- 		default:
+		default:
 			break;
 		}
 	}
@@ -1868,162 +1705,6 @@ static int do_command_extended(struct cam_data *cam, u16 command,
  *
  **********************************************************************/
 #define LIMIT(x) ((((x)>0xffffff)?0xff0000:(((x)<=0xffff)?0:(x)&0xff0000))>>16)
-
-static int convert420(unsigned char *yuv, unsigned char *rgb, int out_fmt,
-                      int linesize, int mmap_kludge)
-{
-	int y, u, v, r, g, b, y1;
-
-	switch(out_fmt) {
-	case VIDEO_PALETTE_RGB555:
-		y = (*yuv++ - 16) * 76310;
-		y1 = (*yuv - 16) * 76310;
-		r = ((*(rgb+1-linesize)) & 0x7c) << 1;
-		g = ((*(rgb-linesize)) & 0xe0) >> 4 |
-		    ((*(rgb+1-linesize)) & 0x03) << 6;
-		b = ((*(rgb-linesize)) & 0x1f) << 3;
-		u = (-53294 * r - 104635 * g + 157929 * b) / 5756495;
-		v = (157968 * r - 132278 * g - 25690 * b) / 5366159;
-		r = 104635 * v;
-		g = -25690 * u - 53294 * v;
-		b = 132278 * u;
-		break;
-	case VIDEO_PALETTE_RGB565:
-		y = (*yuv++ - 16) * 76310;
-		y1 = (*yuv - 16) * 76310;
-		r = (*(rgb+1-linesize)) & 0xf8;
-		g = ((*(rgb-linesize)) & 0xe0) >> 3 |
-		    ((*(rgb+1-linesize)) & 0x07) << 5;
-		b = ((*(rgb-linesize)) & 0x1f) << 3;
-		u = (-53294 * r - 104635 * g + 157929 * b) / 5756495;
-		v = (157968 * r - 132278 * g - 25690 * b) / 5366159;
-		r = 104635 * v;
-		g = -25690 * u - 53294 * v;
-		b = 132278 * u;
-		break;
-	case VIDEO_PALETTE_RGB24:
-	case VIDEO_PALETTE_RGB32:
-		y = (*yuv++ - 16) * 76310;
-		y1 = (*yuv - 16) * 76310;
-		if (mmap_kludge) {
-			r = *(rgb+2-linesize);
-			g = *(rgb+1-linesize);
-			b = *(rgb-linesize);
-		} else {
-			r = *(rgb-linesize);
-			g = *(rgb+1-linesize);
-			b = *(rgb+2-linesize);
-		}
-		u = (-53294 * r - 104635 * g + 157929 * b) / 5756495;
-		v = (157968 * r - 132278 * g - 25690 * b) / 5366159;
-		r = 104635 * v;
-		g = -25690 * u + -53294 * v;
-		b = 132278 * u;
-		break;
-	case VIDEO_PALETTE_YUV422:
-	case VIDEO_PALETTE_YUYV:
-		y = *yuv++;
-		u = *(rgb+1-linesize);
-		y1 = *yuv;
-		v = *(rgb+3-linesize);
-		/* Just to avoid compiler warnings */
-		r = 0;
-		g = 0;
-		b = 0;
-		break;
-	case VIDEO_PALETTE_UYVY:
-		u = *(rgb-linesize);
-		y = *yuv++;
-		v = *(rgb+2-linesize);
-		y1 = *yuv;
-		/* Just to avoid compiler warnings */
-		r = 0;
-		g = 0;
-		b = 0;
-		break;
-	case VIDEO_PALETTE_GREY:
-	default:
-		y = *yuv++;
-		y1 = *yuv;
-		/* Just to avoid compiler warnings */
-		u = 0;
-		v = 0;
-		r = 0;
-		g = 0;
-		b = 0;
-		break;
-	}
-	switch(out_fmt) {
-	case VIDEO_PALETTE_RGB555:
-		*rgb++ = ((LIMIT(g+y) & 0xf8) << 2) | (LIMIT(b+y) >> 3);
-		*rgb++ = ((LIMIT(r+y) & 0xf8) >> 1) | (LIMIT(g+y) >> 6);
-		*rgb++ = ((LIMIT(g+y1) & 0xf8) << 2) | (LIMIT(b+y1) >> 3);
-		*rgb = ((LIMIT(r+y1) & 0xf8) >> 1) | (LIMIT(g+y1) >> 6);
-		return 4;
-	case VIDEO_PALETTE_RGB565:
-		*rgb++ = ((LIMIT(g+y) & 0xfc) << 3) | (LIMIT(b+y) >> 3);
-		*rgb++ = (LIMIT(r+y) & 0xf8) | (LIMIT(g+y) >> 5);
-		*rgb++ = ((LIMIT(g+y1) & 0xfc) << 3) | (LIMIT(b+y1) >> 3);
-		*rgb = (LIMIT(r+y1) & 0xf8) | (LIMIT(g+y1) >> 5);
-		return 4;
-	case VIDEO_PALETTE_RGB24:
-		if (mmap_kludge) {
-			*rgb++ = LIMIT(b+y);
-			*rgb++ = LIMIT(g+y);
-			*rgb++ = LIMIT(r+y);
-			*rgb++ = LIMIT(b+y1);
-			*rgb++ = LIMIT(g+y1);
-			*rgb = LIMIT(r+y1);
-		} else {
-			*rgb++ = LIMIT(r+y);
-			*rgb++ = LIMIT(g+y);
-			*rgb++ = LIMIT(b+y);
-			*rgb++ = LIMIT(r+y1);
-			*rgb++ = LIMIT(g+y1);
-			*rgb = LIMIT(b+y1);
-		}
-		return 6;
-	case VIDEO_PALETTE_RGB32:
-		if (mmap_kludge) {
-			*rgb++ = LIMIT(b+y);
-			*rgb++ = LIMIT(g+y);
-			*rgb++ = LIMIT(r+y);
-			rgb++;
-			*rgb++ = LIMIT(b+y1);
-			*rgb++ = LIMIT(g+y1);
-			*rgb = LIMIT(r+y1);
-		} else {
-			*rgb++ = LIMIT(r+y);
-			*rgb++ = LIMIT(g+y);
-			*rgb++ = LIMIT(b+y);
-			rgb++;
-			*rgb++ = LIMIT(r+y1);
-			*rgb++ = LIMIT(g+y1);
-			*rgb = LIMIT(b+y1);
-		}
-		return 8;
-	case VIDEO_PALETTE_GREY:
-		*rgb++ = y;
-		*rgb = y1;
-		return 2;
-	case VIDEO_PALETTE_YUV422:
-	case VIDEO_PALETTE_YUYV:
-		*rgb++ = y;
-		*rgb++ = u;
-		*rgb++ = y1;
-		*rgb = v;
-		return 4;
-	case VIDEO_PALETTE_UYVY:
-		*rgb++ = u;
-		*rgb++ = y;
-		*rgb++ = v;
-		*rgb = y1;
-		return 4;
-	default:
-		DBG("Empty: %d\n", out_fmt);
-		return 0;
-	}
-}
 
 static int yuvconvert(unsigned char *yuv, unsigned char *rgb, int out_fmt,
                       int in_uyvy, int mmap_kludge)
@@ -2137,7 +1818,6 @@ static int skipcount(int count, int fmt)
 {
 	switch(fmt) {
 	case VIDEO_PALETTE_GREY:
-		return count;
 	case VIDEO_PALETTE_RGB555:
 	case VIDEO_PALETTE_RGB565:
 	case VIDEO_PALETTE_YUV422:
@@ -2156,8 +1836,7 @@ static int skipcount(int count, int fmt)
 static int parse_picture(struct cam_data *cam, int size)
 {
 	u8 *obuf, *ibuf, *end_obuf;
-	int ll, in_uyvy, compressed, decimation, even_line, origsize, out_fmt;
-	int rows, cols, linesize, subsample_422;
+	int ll, in_uyvy, compressed, origsize, out_fmt;
 
 	/* make sure params don't change while we are decoding */
 	down(&cam->param_lock);
@@ -2180,12 +1859,11 @@ static int parse_picture(struct cam_data *cam, int size)
 		return -1;
 	}
 	
-	if (ibuf[17] != SUBSAMPLE_420 && ibuf[17] != SUBSAMPLE_422) {
+	if (ibuf[17] != SUBSAMPLE_422) {
 		LOG("illegal subtype %d\n",ibuf[17]);
 		up(&cam->param_lock);
 		return -1;
 	}
-	subsample_422 = ibuf[17] == SUBSAMPLE_422;
 	
 	if (ibuf[18] != YUVORDER_YUYV && ibuf[18] != YUVORDER_UYVY) {
 		LOG("illegal yuvorder %d\n",ibuf[18]);
@@ -2194,6 +1872,8 @@ static int parse_picture(struct cam_data *cam, int size)
 	}
 	in_uyvy = ibuf[18] == YUVORDER_UYVY;
 	
+#if 0
+	/* FIXME: ROI mismatch occurs when switching capture sizes */
 	if ((ibuf[24] != cam->params.roi.colStart) ||
 	    (ibuf[25] != cam->params.roi.colEnd) ||
 	    (ibuf[26] != cam->params.roi.rowStart) ||
@@ -2202,8 +1882,7 @@ static int parse_picture(struct cam_data *cam, int size)
 		up(&cam->param_lock);
 		return -1;
 	}
-	cols = 8*(ibuf[25] - ibuf[24]);
-	rows = 4*(ibuf[27] - ibuf[26]);
+#endif
 	
 	if ((ibuf[28] != NOT_COMPRESSED) && (ibuf[28] != COMPRESSED)) {
 		LOG("illegal compression %d\n",ibuf[28]);
@@ -2212,12 +1891,11 @@ static int parse_picture(struct cam_data *cam, int size)
 	}
 	compressed = (ibuf[28] == COMPRESSED);
 	
-	if (ibuf[29] != NO_DECIMATION && ibuf[29] != DECIMATION_ENAB) {
-		LOG("illegal decimation %d\n",ibuf[29]);
+	if (ibuf[29] != NO_DECIMATION) {
+		LOG("decimation not supported\n");
 		up(&cam->param_lock);
 		return -1;
 	}
-	decimation = (ibuf[29] == DECIMATION_ENAB);
 	
 	cam->params.yuvThreshold.yThreshold = ibuf[30];
 	cam->params.yuvThreshold.uvThreshold = ibuf[31];
@@ -2232,12 +1910,10 @@ static int parse_picture(struct cam_data *cam, int size)
 	cam->fps = ibuf[41];
 	up(&cam->param_lock);
 	
-	linesize = skipcount(cols, out_fmt);
 	ibuf += FRAME_HEADER_SIZE;
 	size -= FRAME_HEADER_SIZE;
 	ll = ibuf[0] | (ibuf[1] << 8);
 	ibuf += 2;
-	even_line = 1;
 
 	while (size > 0) {
 		size -= (ll+2);
@@ -2248,24 +1924,16 @@ static int parse_picture(struct cam_data *cam, int size)
 
 		while (ll > 1) {
 			if (!compressed || (compressed && !(*ibuf & 1))) {
-				if(subsample_422 || even_line) {
-					obuf += yuvconvert(ibuf, obuf, out_fmt,
-			                	   in_uyvy, cam->mmap_kludge);
-					ibuf += 4;
-					ll -= 4;
-				} else {
-					/* SUBSAMPLE_420 on an odd line */
-					obuf += convert420(ibuf, obuf,
-					                   out_fmt, linesize,
-			                		   cam->mmap_kludge);
-					ibuf += 2;
-					ll -= 2;
-				}
+				obuf += yuvconvert(ibuf, obuf, out_fmt,
+				                   in_uyvy, cam->mmap_kludge);
+				ibuf += 4;
+				ll -= 4;
 			} else {
 				/*skip compressed interval from previous frame*/
-				obuf += skipcount(*ibuf >> 1, out_fmt);
+				int skipsize = skipcount(*ibuf >> 1, out_fmt);
+				obuf += skipsize;
 				if (obuf > end_obuf) {
-					LOG("Insufficient buffer size\n");
+					LOG("Insufficient data in buffer\n");
 					return -1;
 				}
 				++ibuf;
@@ -2279,7 +1947,7 @@ static int parse_picture(struct cam_data *cam, int size)
 				return -1;
 			}
 
-			++ibuf; /* skip over EOL */
+			ibuf++; /* skip over EOL */
 
 			if ((size > 3) && (ibuf[0] == EOI) && (ibuf[1] == EOI) &&
 			   (ibuf[2] == EOI) && (ibuf[3] == EOI)) {
@@ -2287,42 +1955,15 @@ static int parse_picture(struct cam_data *cam, int size)
 				break;
 			}
 
-			if(decimation) {
-				/* skip the odd lines for now */
-				obuf += linesize;
-			}
-			
 			if (size > 1) {
 				ll = ibuf[0] | (ibuf[1] << 8);
 				ibuf += 2; /* skip over line length */
 			}
-			
-			if(!decimation)
-				even_line = !even_line;
 		} else {
 			LOG("line length was not 1 but %d after %d/%d bytes\n",
 			    ll, origsize-size, origsize);
 			return -1;
 		}
-	}
-	
-	if(decimation) {
-		/* interpolate odd rows */
-		int i, j;
-		u8 *prev, *next;
-		prev = cam->decompressed_frame.data;
-		obuf = prev+linesize;
-		next = obuf+linesize;
-		for(i=1; i<rows-1; i+=2) {
-			for(j=0; j<linesize; ++j) {
-				*obuf++ = ((int)*prev++ + *next++) / 2;
-			}
-			prev += linesize;
-			obuf += linesize;
-			next += linesize;
-		}
-		/* last row is odd, just copy previous row */
-		memcpy(obuf, prev, linesize);
 	}
 	
 	cam->decompressed_frame.count = obuf-cam->decompressed_frame.data;
@@ -2457,15 +2098,6 @@ static void dispatch_commands(struct cam_data *cam)
 	if (cam->cmd_queue & COMMAND_RESUME)
 		init_stream_cap(cam);
 
-	/* GA 04/14/00 */
-	if (cam->cmd_queue & COMMAND_SETLIGHTS && cam->params.qx3.qx3_detected)
-	  {
-	    int p1 = (cam->params.qx3.bottomlight == 0) << 1;
-            int p2 = (cam->params.qx3.toplight == 0) << 3;
-            do_command(cam, CPIA_COMMAND_WriteVCReg,  0x90, 0x8F, 0x50, 0);
-            do_command(cam, CPIA_COMMAND_WriteMCPort, 2, 0, (p1|p2|0xE0), 0);
-	  }
-
 	up(&cam->param_lock);
 	cam->cmd_queue = COMMAND_NONE;
 	return;
@@ -2545,8 +2177,6 @@ static void fetch_frame(void *data)
 		/* Update our knowledge of the camera state - FIXME: necessary? */
 		do_command(cam, CPIA_COMMAND_GetColourBalance, 0, 0, 0, 0);
 		do_command(cam, CPIA_COMMAND_GetExposure, 0, 0, 0, 0);
-		do_command(cam, CPIA_COMMAND_ReadMCPorts, 0, 0, 0, 0); /* GA */
-
 
 		/* decompress and convert image to by copying it from
 		 * raw_image to decompressed_frame
@@ -2759,10 +2389,6 @@ static int reset_camera(struct cam_data *cam)
 	if (cam->params.version.firmwareVersion != 1)
 		return -ENODEV;
 	
-	/* GA 04/14/00 - set QX3 detected flag */
-	cam->params.qx3.qx3_detected = (cam->params.pnpID.vendor == 0x0813 &&
-					cam->params.pnpID.product == 0x0001);
-
 	/* The fatal error checking should be done after
 	 * the camera powers up (developer's guide p 3-38) */
 
@@ -3211,7 +2837,7 @@ static int cpia_ioctl(struct video_device *dev, unsigned int ioctlnr, void *arg)
 		DBG("VIDIOCMCAPTURE: %d / %d / %dx%d\n", vm.format, vm.frame,
 		    vm.width, vm.height);
 #endif
-		if (vm.frame<0||vm.frame>=FRAME_NUM) {
+		if (vm.frame<0||vm.frame>FRAME_NUM) {
 			retval = -EINVAL;
 			break;
 		}
@@ -3220,8 +2846,6 @@ static int cpia_ioctl(struct video_device *dev, unsigned int ioctlnr, void *arg)
 		cam->vp.palette = vm.format;
 		switch(vm.format) {
 		case VIDEO_PALETTE_GREY:
-			cam->vp.depth = 8;
-			break;
 		case VIDEO_PALETTE_RGB555:
 		case VIDEO_PALETTE_RGB565:
 		case VIDEO_PALETTE_YUV422:
@@ -3477,8 +3101,8 @@ static void reset_camera_struct(struct cam_data *cam)
 	cam->params.sensorFps.divisor = 1;
 	cam->params.sensorFps.baserate = 1;
 	
-	cam->params.yuvThreshold.yThreshold = 6; /* From windows driver */
-	cam->params.yuvThreshold.uvThreshold = 6; /* From windows driver */
+	cam->params.yuvThreshold.yThreshold = 15; /* FIXME? */
+	cam->params.yuvThreshold.uvThreshold = 15; /* FIXME? */
 	
 	cam->params.format.subSample = SUBSAMPLE_422;
 	cam->params.format.yuvOrder = YUVORDER_YUYV;
@@ -3486,14 +3110,8 @@ static void reset_camera_struct(struct cam_data *cam)
 	cam->params.compression.mode = CPIA_COMPRESSION_AUTO;
 	cam->params.compressionTarget.frTargeting =
 		CPIA_COMPRESSION_TARGET_QUALITY;
-	cam->params.compressionTarget.targetFR = 15; /* From windows driver */
-	cam->params.compressionTarget.targetQ = 5; /* From windows driver */
-	
-	cam->params.qx3.qx3_detected = 0;
-	cam->params.qx3.toplight = 0;
-	cam->params.qx3.bottomlight = 0;
-	cam->params.qx3.button = 0;
-	cam->params.qx3.cradled = 0;
+	cam->params.compressionTarget.targetFR = 7; /* FIXME? */
+	cam->params.compressionTarget.targetQ = 10; /* FIXME? */
 
 	cam->video_size = VIDEOSIZE_CIF;
 	
@@ -3592,6 +3210,12 @@ struct cam_data *cpia_register_camera(struct cpia_camera_ops *ops, void *lowleve
 	/* close cpia */
 	camera->ops->close(camera->lowlevel_data);
 
+/* Eh? Feeling happy? - jerdfelt */
+/*
+	camera->ops->open(camera->lowlevel_data);
+	camera->ops->close(camera->lowlevel_data);
+*/
+	
 	printk(KERN_INFO "  CPiA Version: %d.%02d (%d.%d)\n",
 	       camera->params.version.firmwareVersion,
 	       camera->params.version.firmwareRevision,

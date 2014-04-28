@@ -36,11 +36,11 @@
 
 #define modify_domain(dom,type)				\
 	do {						\
-	unsigned int domain = current->tss.domain;	\
+	unsigned int domain = current->thread.domain;	\
 	domain &= ~domain_val(dom, DOMAIN_MANAGER);	\
 	domain |= domain_val(dom, type);		\
-	current->tss.domain = domain;			\
-	set_domain(current->tss.domain);		\
+	current->thread.domain = domain;		\
+	set_domain(current->thread.domain);		\
 	} while (0)
 
 #endif

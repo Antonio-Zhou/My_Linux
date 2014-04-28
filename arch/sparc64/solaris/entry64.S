@@ -1,4 +1,4 @@
-/* $Id: entry64.S,v 1.5.2.1 2001/06/18 12:26:13 davem Exp $
+/* $Id: entry64.S,v 1.6 2000/01/12 02:59:26 davem Exp $
  * entry64.S:  Solaris syscall emulation entry point.
  *
  * Copyright (C) 1996,1997,1998 Jakub Jelinek   (jj@sunsite.mff.cuni.cz)
@@ -83,7 +83,7 @@ solaris_sparc_syscall:
 1:	 srl		%i0, 0, %o0
 	lduw		[%l7 + %l4], %l3
 	srl		%i1, 0, %o1
-	ldx		[%g6 + AOFF_task_ptrace], %l5
+	ldx		[%g6 + AOFF_task_flags], %l5
 	cmp		%l3, NR_SYSCALLS
 	bleu,a,pn	%xcc, linux_syscall_for_solaris
 	 sethi		%hi(sys_call_table32), %l6
@@ -93,21 +93,21 @@ solaris_sparc_syscall:
 10:	srl		%i2, 0, %o2
 	mov		%i5, %o5
 	andn		%l3, 3, %l7
-	andcc		%l5, 0x02, %g0				
+	andcc		%l5, 0x20, %g0				
 	bne,pn		%icc, solaris_syscall_trace		
 	 mov		%i0, %l5
 2:	call		%l7
 	 srl		%i3, 0, %o3
 ret_from_solaris:
 	stx		%o0, [%sp + STACK_BIAS + REGWIN_SZ + PT_V9_I0]
-	ldx		[%g6 + AOFF_task_ptrace], %l6
+	ldx		[%g6 + AOFF_task_flags], %l6
 	sra		%o0, 0, %o0
 	mov		%ulo(TSTATE_XCARRY | TSTATE_ICARRY), %g2
 	ldx		[%sp + STACK_BIAS + REGWIN_SZ + PT_V9_TSTATE], %g3
 	cmp		%o0, -ENOIOCTLCMD
 	sllx		%g2, 32, %g2
 	bgeu,pn		%xcc, 1f
-	 andcc		%l6, 0x02, %l6
+	 andcc		%l6, 0x20, %l6	
 
 	/* System call success, clear Carry condition code. */
 	andn		%g3, %g2, %g3
@@ -183,15 +183,15 @@ solaris_getpid:
 
 	.globl	solaris_getuid
 solaris_getuid:
-	lduh		[%g6 + AOFF_task_euid], %o1
-	lduh		[%g6 + AOFF_task_uid], %o0
+	lduw		[%g6 + AOFF_task_euid], %o1
+	lduw		[%g6 + AOFF_task_uid], %o0
 	b,pt		%xcc, ret_from_solaris
 	 stx		%o1, [%sp + STACK_BIAS + REGWIN_SZ + PT_V9_I1]
 
 	.globl	solaris_getgid
 solaris_getgid:
-	lduh		[%g6 + AOFF_task_egid], %o1
-	lduh		[%g6 + AOFF_task_gid], %o0
+	lduw		[%g6 + AOFF_task_egid], %o1
+	lduw		[%g6 + AOFF_task_gid], %o0
 	b,pt		%xcc, ret_from_solaris
 	 stx		%o1, [%sp + STACK_BIAS + REGWIN_SZ + PT_V9_I1]
 

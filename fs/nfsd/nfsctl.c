@@ -11,7 +11,7 @@
 #include <linux/module.h>
 #include <linux/version.h>
 
-#include <linux/kernel.h>
+#include <linux/linkage.h>
 #include <linux/sched.h>
 #include <linux/errno.h>
 #include <linux/fs.h>
@@ -28,15 +28,8 @@
 #include <linux/nfsd/cache.h>
 #include <linux/nfsd/xdr.h>
 #include <linux/nfsd/syscall.h>
-#include <linux/lockd/syscall.h>
 
-#if LINUX_VERSION_CODE >= 0x020100
 #include <asm/uaccess.h>
-#else
-# define copy_from_user		memcpy_fromfs
-# define copy_to_user		memcpy_tofs
-# define access_ok		!verify_area
-#endif
 #include <linux/smp.h>
 #include <linux/smp_lock.h>
 
@@ -47,81 +40,23 @@ static int	nfsctl_addclient(struct nfsctl_client *data);
 static int	nfsctl_delclient(struct nfsctl_client *data);
 static int	nfsctl_export(struct nfsctl_export *data);
 static int	nfsctl_unexport(struct nfsctl_export *data);
-static int	nfsctl_getfh(struct nfsctl_fhparm *, struct knfs_fh *);
-static int	nfsctl_getfd(struct nfsctl_fdparm *, struct knfs_fh *);
-/* static int	nfsctl_ugidupdate(struct nfsctl_ugidmap *data); */
+static int	nfsctl_getfh(struct nfsctl_fhparm *, __u8 *);
+static int	nfsctl_getfd(struct nfsctl_fdparm *, __u8 *);
+static int	nfsctl_getfs(struct nfsctl_fsparm *, struct knfsd_fh *);
+#ifdef notyet
+static int	nfsctl_ugidupdate(struct nfsctl_ugidmap *data);
+#endif
 
 static int	initialized = 0;
 
 int exp_procfs_exports(char *buffer, char **start, off_t offset,
                              int length, int *eof, void *data);
 
-struct long_maxmin
+void proc_export_init(void)
 {
-	long *value;
-	long min_value;
-	long max_value;
-};
-
-/* In seconds. */
-#define TIME_DIFF_MARGIN	10
-#define MIN_TIME_DIFF_MARGIN	0
-#define MAX_TIME_DIFF_MARGIN	600
-
-long nfsd_time_diff_margin = TIME_DIFF_MARGIN;
-
-static struct long_maxmin time_diff_margin =
-{
-	&nfsd_time_diff_margin,
-	MIN_TIME_DIFF_MARGIN,
-	MAX_TIME_DIFF_MARGIN
-};
-
-static int
-nfsd_proc_read_long_maxmin(char *buffer, char **start, off_t offset,
-			  int length, int *eof, void *data)
-{
-	int len;
-	struct long_maxmin *x = (struct long_maxmin *) data;
-	len = sprintf(buffer, "%ld\n", *x->value) - offset;
-	if (len < length) {
-		*eof = 1;
-		if (len <= 0)
-			 return 0;
-	} else
-		len = length;
-	*start = buffer + offset;
-	return len;
-}
-
-static int
-nfsd_proc_write_long_maxmin(struct file *file, const char *buffer,
-			   unsigned long count, void *data)
-{
-	long v;
-	struct long_maxmin *x = (struct long_maxmin *) data;
-	v = simple_strtoul(buffer, NULL, 10);
-	if (v < x->min_value || v > x->max_value)
-		return -EINVAL;
-	*x->value = v;
-	return count;
-}
-
-static void nfsd_proc_init(void)
-{
-	struct proc_dir_entry *nfsd_ent = NULL;
-
-	if (!(nfsd_ent = create_proc_entry("fs/nfs", S_IFDIR, 0)))
+	if (!proc_mkdir("fs/nfs", 0))
 		return;
-	if (!(nfsd_ent = create_proc_entry("fs/nfs/exports", 0, 0)))
-		return;
-	nfsd_ent->read_proc = exp_procfs_exports;
-	if (!(nfsd_ent = create_proc_entry("fs/nfs/time-diff-margin",
-					   S_IFREG|S_IRUGO|S_IWUSR, 0)))
-		return;
-	nfsd_ent->read_proc = nfsd_proc_read_long_maxmin;
-	nfsd_ent->write_proc = nfsd_proc_write_long_maxmin;
-	nfsd_ent->data = (void *) &time_diff_margin;
+	create_proc_read_entry("fs/nfs/exports", 0, 0, exp_procfs_exports,NULL);
 }
 
 
@@ -135,7 +70,7 @@ nfsd_init(void)
 	nfsd_cache_init();	/* RPC reply cache */
 	nfsd_export_init();	/* Exports table */
 	nfsd_lockd_init();	/* lockd->nfsd callbacks */
-	nfsd_proc_init();
+	proc_export_init();
 	initialized = 1;
 }
 
@@ -178,11 +113,33 @@ nfsctl_ugidupdate(nfs_ugidmap *data)
 #endif
 
 static inline int
-nfsctl_getfd(struct nfsctl_fdparm *data, struct knfs_fh *res)
+nfsctl_getfs(struct nfsctl_fsparm *data, struct knfsd_fh *res)
 {
 	struct sockaddr_in	*sin;
 	struct svc_client	*clp;
 	int			err = 0;
+
+	if (data->gd_addr.sa_family != AF_INET)
+		return -EPROTONOSUPPORT;
+	sin = (struct sockaddr_in *)&data->gd_addr;
+	if (data->gd_maxlen > NFS3_FHSIZE)
+		data->gd_maxlen = NFS3_FHSIZE;
+	exp_readlock();
+	if (!(clp = exp_getclient(sin)))
+		err = -EPERM;
+	else
+		err = exp_rootfh(clp, 0, 0, data->gd_path, res, data->gd_maxlen);
+	exp_unlock();
+	return err;
+}
+
+static inline int
+nfsctl_getfd(struct nfsctl_fdparm *data, __u8 *res)
+{
+	struct sockaddr_in	*sin;
+	struct svc_client	*clp;
+	int			err = 0;
+	struct	knfsd_fh	fh;
 
 	if (data->gd_addr.sa_family != AF_INET)
 		return -EPROTONOSUPPORT;
@@ -194,18 +151,28 @@ nfsctl_getfd(struct nfsctl_fdparm *data, struct knfs_fh *res)
 	if (!(clp = exp_getclient(sin)))
 		err = -EPERM;
 	else
-		err = exp_rootfh(clp, 0, 0, data->gd_path, res);
+		err = exp_rootfh(clp, 0, 0, data->gd_path, &fh, NFS_FHSIZE);
 	exp_unlock();
+
+	if (err == 0) {
+		if (fh.fh_size > NFS_FHSIZE)
+			err = -EINVAL;
+		else {
+			memset(res,0, NFS_FHSIZE);
+			memcpy(res, fh.fh_base.fh_pad, fh.fh_size);
+		}
+	}
 
 	return err;
 }
 
 static inline int
-nfsctl_getfh(struct nfsctl_fhparm *data, struct knfs_fh *res)
+nfsctl_getfh(struct nfsctl_fhparm *data, __u8 *res)
 {
 	struct sockaddr_in	*sin;
 	struct svc_client	*clp;
 	int			err = 0;
+	struct knfsd_fh		fh;
 
 	if (data->gf_addr.sa_family != AF_INET)
 		return -EPROTONOSUPPORT;
@@ -217,8 +184,17 @@ nfsctl_getfh(struct nfsctl_fhparm *data, struct knfs_fh *res)
 	if (!(clp = exp_getclient(sin)))
 		err = -EPERM;
 	else
-		err = exp_rootfh(clp, to_kdev_t(data->gf_dev), data->gf_ino, NULL, res);
+		err = exp_rootfh(clp, to_kdev_t(data->gf_dev), data->gf_ino, NULL, &fh, NFS_FHSIZE);
 	exp_unlock();
+
+	if (err == 0) {
+		if (fh.fh_size > NFS_FHSIZE)
+			err = -EINVAL;
+		else {
+			memset(res,0, NFS_FHSIZE);
+			memcpy(res, fh.fh_base.fh_pad, fh.fh_size);
+		}
+	}
 
 	return err;
 }
@@ -226,6 +202,21 @@ nfsctl_getfh(struct nfsctl_fhparm *data, struct knfs_fh *res)
 #ifdef CONFIG_NFSD
 #define handle_sys_nfsservctl sys_nfsservctl
 #endif
+
+static struct {
+	int argsize, respsize;
+}  sizes[] = {
+	/* NFSCTL_SVC        */ { sizeof(struct nfsctl_svc), 0 },
+	/* NFSCTL_ADDCLIENT  */ { sizeof(struct nfsctl_client), 0},
+	/* NFSCTL_DELCLIENT  */ { sizeof(struct nfsctl_client), 0},
+	/* NFSCTL_EXPORT     */ { sizeof(struct nfsctl_export), 0},
+	/* NFSCTL_UNEXPORT   */ { sizeof(struct nfsctl_export), 0},
+	/* NFSCTL_UGIDUPDATE */ { sizeof(struct nfsctl_uidmap), 0},
+	/* NFSCTL_GETFH      */ { sizeof(struct nfsctl_fhparm), NFS_FHSIZE},
+	/* NFSCTL_GETFD      */ { sizeof(struct nfsctl_fdparm), NFS_FHSIZE},
+	/* NFSCTL_GETFS      */ { sizeof(struct nfsctl_fsparm), sizeof(struct knfsd_fh)},
+};
+#define CMD_MAX (sizeof(sizes)/sizeof(sizes[0])-1)
 
 int
 asmlinkage handle_sys_nfsservctl(int cmd, void *opaque_argp, void *opaque_resp)
@@ -235,6 +226,7 @@ asmlinkage handle_sys_nfsservctl(int cmd, void *opaque_argp, void *opaque_resp)
 	struct nfsctl_arg *	arg = NULL;
 	union nfsctl_res *	res = NULL;
 	int			err;
+	int			argsize, respsize;
 
 	MOD_INC_USE_COUNT;
 	lock_kernel ();
@@ -244,12 +236,16 @@ asmlinkage handle_sys_nfsservctl(int cmd, void *opaque_argp, void *opaque_resp)
 	if (!capable(CAP_SYS_ADMIN)) {
 		goto done;
 	}
+	err = -EINVAL;
+	if (cmd<0 || cmd > CMD_MAX)
+		goto done;
 	err = -EFAULT;
-	if (!access_ok(VERIFY_READ, argp, sizeof(*argp))
-	 || (resp && !access_ok(VERIFY_WRITE, resp, sizeof(*resp)))) {
+	argsize = sizes[cmd].argsize + (int)&((struct nfsctl_arg *)0)->u;
+	respsize = sizes[cmd].respsize;	/* maximum */
+	if (!access_ok(VERIFY_READ, argp, argsize)
+	 || (resp && !access_ok(VERIFY_WRITE, resp, respsize))) {
 		goto done;
 	}
-
 	err = -ENOMEM;	/* ??? */
 	if (!(arg = kmalloc(sizeof(*arg), GFP_USER)) ||
 	    (resp && !(res = kmalloc(sizeof(*res), GFP_USER)))) {
@@ -257,14 +253,9 @@ asmlinkage handle_sys_nfsservctl(int cmd, void *opaque_argp, void *opaque_resp)
 	}
 
 	err = -EINVAL;
-	copy_from_user(arg, argp, sizeof(*argp));
+	copy_from_user(arg, argp, argsize);
 	if (arg->ca_version != NFSCTL_VERSION) {
 		printk(KERN_WARNING "nfsd: incompatible version in syscall.\n");
-		goto done;
-	}
-
-	if (cmd >= NFSCTL_LOCKD) {
-		err = lockdctl(cmd, argp, resp);
 		goto done;
 	}
 
@@ -290,17 +281,21 @@ asmlinkage handle_sys_nfsservctl(int cmd, void *opaque_argp, void *opaque_resp)
 		break;
 #endif
 	case NFSCTL_GETFH:
-		err = nfsctl_getfh(&arg->ca_getfh, &res->cr_getfh);
+		err = nfsctl_getfh(&arg->ca_getfh, res->cr_getfh);
 		break;
 	case NFSCTL_GETFD:
-		err = nfsctl_getfd(&arg->ca_getfd, &res->cr_getfh);
+		err = nfsctl_getfd(&arg->ca_getfd, res->cr_getfh);
+		break;
+	case NFSCTL_GETFS:
+		err = nfsctl_getfs(&arg->ca_getfs, &res->cr_getfs);
+		respsize = res->cr_getfs.fh_size+ (int)&((struct knfsd_fh*)0)->fh_base;
 		break;
 	default:
 		err = -EINVAL;
 	}
 
-	if (!err && resp)
-		copy_to_user(resp, res, sizeof(*resp));
+	if (!err && resp && respsize)
+		copy_to_user(resp, res, respsize);
 
 done:
 	if (arg)
@@ -315,27 +310,10 @@ done:
 
 #ifdef MODULE
 /* New-style module support since 2.1.18 */
-#if LINUX_VERSION_CODE >= 131346
 EXPORT_NO_SYMBOLS;
 MODULE_AUTHOR("Olaf Kirch <okir@monad.swb.de>");
-#endif
 
 extern int (*do_nfsservctl)(int, void *, void *);
-
-/*
- * This is called as the fill_inode function when an inode
- * is going into (fill = 1) or out of service (fill = 0).
- *
- * We use it here to make sure the module can't be unloaded
- * while a /proc inode is in use.
- */
-void nfsd_modcount(struct inode *inode, int fill)
-{
-	if (fill)
-		MOD_INC_USE_COUNT;
-	else
-		MOD_DEC_USE_COUNT;
-}
 
 /*
  * Initialize the module
@@ -343,7 +321,7 @@ void nfsd_modcount(struct inode *inode, int fill)
 int
 init_module(void)
 {
-	printk(KERN_INFO "Installing knfsd (copyright (C) 1996 okir@monad.swb.de)\n");
+	printk(KERN_INFO "Installing knfsd (copyright (C) 1996 okir@monad.swb.de).\n");
 	do_nfsservctl = handle_sys_nfsservctl;
 	return 0;
 }
@@ -361,7 +339,6 @@ cleanup_module(void)
 	do_nfsservctl = NULL;
 	nfsd_export_shutdown();
 	nfsd_cache_shutdown();
-	remove_proc_entry("fs/nfs/time-diff-margin", NULL);
 	remove_proc_entry("fs/nfs/exports", NULL);
 	remove_proc_entry("fs/nfs", NULL);
 	nfsd_stat_shutdown();

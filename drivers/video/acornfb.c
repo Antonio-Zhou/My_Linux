@@ -36,6 +36,8 @@
 #include <video/fbcon-cfb16.h>
 #include <video/fbcon-cfb32.h>
 
+#include "acornfb.h"
+
 /*
  * Default resolution.
  * NOTE that it has to be supported in the table towards
@@ -68,85 +70,6 @@
  */
 #undef DEBUG_MODE_SELECTION
 
-#if defined(HAS_VIDC20)
-#define VIDC_PALETTE_SIZE	256
-#define VIDC_NAME		"VIDC20"
-#elif defined(HAS_VIDC)
-#include <asm/memc.h>
-#define VIDC_PALETTE_SIZE	16
-#define VIDC_NAME		"VIDC"
-#endif
-
-#define EXTEND8(x) ((x)|(x)<<8)
-#define EXTEND4(x) ((x)|(x)<<4|(x)<<8|(x)<<16)
-
-struct vidc20_palette {
-	u_int red:8;
-	u_int green:8;
-	u_int blue:8;
-	u_int ext:4;
-	u_int unused:4;
-};
-
-struct vidc_palette {
-	u_int red:4;
-	u_int green:4;
-	u_int blue:4;
-	u_int trans:1;
-	u_int sbz1:13;
-	u_int reg:4;
-	u_int sbz2:2;
-};
-
-union palette {
-	struct vidc20_palette	vidc20;
-	struct vidc_palette	vidc;
-	u_int	p;
-};
-
-struct acornfb_par {
-	unsigned long	screen_base;
-	unsigned long	screen_base_p;
-	unsigned long	screen_end;
-	unsigned long	screen_size;
-	unsigned int	dram_size;
-	unsigned int	vram_half_sam;
-	unsigned int	palette_size;
-	  signed int	montype;
-	  signed int	currcon;
-	unsigned int	using_vram	: 1;
-	unsigned int	dpms		: 1;
-
-	union palette palette[VIDC_PALETTE_SIZE];
-
-	union {
-		unsigned short cfb16[16];
-		unsigned long  cfb32[16];
-	} cmap;
-};
-
-struct vidc_timing {
-	u_int	h_cycle;
-	u_int	h_sync_width;
-	u_int	h_border_start;
-	u_int	h_display_start;
-	u_int	h_display_end;
-	u_int	h_border_end;
-	u_int	h_interlace;
-
-	u_int	v_cycle;
-	u_int	v_sync_width;
-	u_int	v_border_start;
-	u_int	v_display_start;
-	u_int	v_display_end;
-	u_int	v_border_end;
-
-	u_int	control;
-
-	/* VIDC20 only */
-	u_int	pll_ctl;
-};
-
 /*
  * Translation from RISC OS monitor types to actual
  * HSYNC and VSYNC frequency ranges.  These are
@@ -173,26 +96,6 @@ extern int acornfb_depth;	/* set by setup.c */
 extern unsigned int vram_size;	/* set by setup.c */
 
 #ifdef HAS_VIDC
-
-#define VID_CTL_VS_NVSYNC	(1 << 3)
-#define VID_CTL_HS_NHSYNC	(1 << 2)
-#define VID_CTL_24MHz		(0)
-#define VID_CTL_25MHz		(1)
-#define VID_CTL_36MHz		(2)
-
-#define VIDC_CTRL_INTERLACE	(1 << 6)
-#define VIDC_CTRL_FIFO_0_4	(0 << 4)
-#define VIDC_CTRL_FIFO_1_5	(1 << 4)
-#define VIDC_CTRL_FIFO_2_6	(2 << 4)
-#define VIDC_CTRL_FIFO_3_7	(3 << 4)
-#define VIDC_CTRL_1BPP		(0 << 2)
-#define VIDC_CTRL_2BPP		(1 << 2)
-#define VIDC_CTRL_4BPP		(2 << 2)
-#define VIDC_CTRL_8BPP		(3 << 2)
-#define VIDC_CTRL_DIV3		(0 << 0)
-#define VIDC_CTRL_DIV2		(1 << 0)
-#define VIDC_CTRL_DIV1_5	(2 << 0)
-#define VIDC_CTRL_DIV1		(3 << 0)
 
 /* CTL     VIDC	Actual
  * 24.000  0	 8.000
@@ -430,162 +333,7 @@ acornfb_palette_decode(u_int regno, u_int *red, u_int *green, u_int *blue,
 #endif
 
 #ifdef HAS_VIDC20
-/*
- * VIDC20 registers
- */
-#define VIDC20_CTRL		0xe0000000
-#define VIDC20_CTRL_PIX_VCLK	(0 << 0)
-#define VIDC20_CTRL_PIX_HCLK	(1 << 0)
-#define VIDC20_CTRL_PIX_RCLK	(2 << 0)
-#define VIDC20_CTRL_PIX_CK	(0 << 2)
-#define VIDC20_CTRL_PIX_CK2	(1 << 2)
-#define VIDC20_CTRL_PIX_CK3	(2 << 2)
-#define VIDC20_CTRL_PIX_CK4	(3 << 2)
-#define VIDC20_CTRL_PIX_CK5	(4 << 2)
-#define VIDC20_CTRL_PIX_CK6	(5 << 2)
-#define VIDC20_CTRL_PIX_CK7	(6 << 2)
-#define VIDC20_CTRL_PIX_CK8	(7 << 2)
-#define VIDC20_CTRL_1BPP	(0 << 5)
-#define VIDC20_CTRL_2BPP	(1 << 5)
-#define VIDC20_CTRL_4BPP	(2 << 5)
-#define VIDC20_CTRL_8BPP	(3 << 5)
-#define VIDC20_CTRL_16BPP	(4 << 5)
-#define VIDC20_CTRL_32BPP	(6 << 5)
-#define VIDC20_CTRL_FIFO_NS	(0 << 8)
-#define VIDC20_CTRL_FIFO_4	(1 << 8)
-#define VIDC20_CTRL_FIFO_8	(2 << 8)
-#define VIDC20_CTRL_FIFO_12	(3 << 8)
-#define VIDC20_CTRL_FIFO_16	(4 << 8)
-#define VIDC20_CTRL_FIFO_20	(5 << 8)
-#define VIDC20_CTRL_FIFO_24	(6 << 8)
-#define VIDC20_CTRL_FIFO_28	(7 << 8)
-#define VIDC20_CTRL_INT		(1 << 12)
-#define VIDC20_CTRL_DUP		(1 << 13)
-#define VIDC20_CTRL_PDOWN	(1 << 14)
-
-#define VIDC20_ECTL		0xc0000000
-#define VIDC20_ECTL_REG(x)	((x) & 0xf3)
-#define VIDC20_ECTL_ECK		(1 << 2)
-#define VIDC20_ECTL_REDPED	(1 << 8)
-#define VIDC20_ECTL_GREENPED	(1 << 9)
-#define VIDC20_ECTL_BLUEPED	(1 << 10)
-#define VIDC20_ECTL_DAC		(1 << 12)
-#define VIDC20_ECTL_LCDGS	(1 << 13)
-#define VIDC20_ECTL_HRM		(1 << 14)
-
-#define VIDC20_ECTL_HS_MASK	(3 << 16)
-#define VIDC20_ECTL_HS_HSYNC	(0 << 16)
-#define VIDC20_ECTL_HS_NHSYNC	(1 << 16)
-#define VIDC20_ECTL_HS_CSYNC	(2 << 16)
-#define VIDC20_ECTL_HS_NCSYNC	(3 << 16)
-
-#define VIDC20_ECTL_VS_MASK	(3 << 18)
-#define VIDC20_ECTL_VS_VSYNC	(0 << 18)
-#define VIDC20_ECTL_VS_NVSYNC	(1 << 18)
-#define VIDC20_ECTL_VS_CSYNC	(2 << 18)
-#define VIDC20_ECTL_VS_NCSYNC	(3 << 18)
-
-#define VIDC20_DCTL		0xf0000000
-/* 0-9 = number of words in scanline */
-#define VIDC20_DCTL_SNA		(1 << 12)
-#define VIDC20_DCTL_HDIS	(1 << 13)
-#define VIDC20_DCTL_BUS_NS	(0 << 16)
-#define VIDC20_DCTL_BUS_D31_0	(1 << 16)
-#define VIDC20_DCTL_BUS_D63_32	(2 << 16)
-#define VIDC20_DCTL_BUS_D63_0	(3 << 16)
-#define VIDC20_DCTL_VRAM_DIS	(0 << 18)
-#define VIDC20_DCTL_VRAM_PXCLK	(1 << 18)
-#define VIDC20_DCTL_VRAM_PXCLK2	(2 << 18)
-#define VIDC20_DCTL_VRAM_PXCLK4	(3 << 18)
-
-#define acornfb_valid_pixrate(rate) (1)
-
-/*
- * Try to find the best PLL parameters for the pixel clock.
- * This algorithm seems to give best predictable results,
- * and produces the same values as detailed in the VIDC20
- * data sheet.
- */
-static inline u_int
-acornfb_vidc20_find_pll(u_int pixclk)
-{
-	u_int r, best_r = 2, best_v = 2;
-	int best_d = 0x7fffffff;
-
-	for (r = 2; r <= 32; r++) {
-		u_int rr, v, p;
-		int d;
-
-		rr = 41667 * r;
-
-		v = (rr + pixclk / 2) / pixclk;
-
-		if (v > 32 || v < 2)
-			continue;
-
-		p = (rr + v / 2) / v;
-
-		d = pixclk - p;
-
-		if (d < 0)
-			d = -d;
-
-		if (d < best_d) {
-			best_d = d;
-			best_v = v - 1;
-			best_r = r - 1;
-		}
-
-		if (d == 0)
-			break;
-	}
-
-	return best_v << 8 | best_r;
-}
-
-static inline void
-acornfb_vidc20_find_rates(struct vidc_timing *vidc,
-			  struct fb_var_screeninfo *var)
-{
-	u_int div, bandwidth;
-
-	/* Select pixel-clock divisor to keep PLL in range */
-	div = var->pixclock / 9090; /*9921*/
-
-	/* Limit divisor */
-	if (div == 0)
-		div = 1;
-	if (div > 8)
-		div = 8;
-
-	/* Encode divisor to VIDC20 setting */
-	switch (div) {
-	case 1:	vidc->control |= VIDC20_CTRL_PIX_CK;  break;
-	case 2:	vidc->control |= VIDC20_CTRL_PIX_CK2; break;
-	case 3:	vidc->control |= VIDC20_CTRL_PIX_CK3; break;
-	case 4:	vidc->control |= VIDC20_CTRL_PIX_CK4; break;
-	case 5:	vidc->control |= VIDC20_CTRL_PIX_CK5; break;
-	case 6:	vidc->control |= VIDC20_CTRL_PIX_CK6; break;
-	case 7:	vidc->control |= VIDC20_CTRL_PIX_CK7; break;
-	case 8: vidc->control |= VIDC20_CTRL_PIX_CK8; break;
-	}
-
-	/* Calculate bandwidth */
-	bandwidth = var->pixclock * 8 / var->bits_per_pixel;
-
-	/* Encode bandwidth as VIDC20 setting */
-	if (bandwidth > 16667*2)
-		vidc->control |= VIDC20_CTRL_FIFO_16;
-	else if (bandwidth > 13333*2)
-		vidc->control |= VIDC20_CTRL_FIFO_20;
-	else if (bandwidth > 11111*2)
-		vidc->control |= VIDC20_CTRL_FIFO_24;
-	else
-		vidc->control |= VIDC20_CTRL_FIFO_28;
-
-	/* Find the PLL values */
-	vidc->pll_ctl  = acornfb_vidc20_find_pll(var->pixclock / div);
-}
+#include <asm/arch/acornfb.h>
 
 /* VIDC20 has a different set of rules from the VIDC:
  *  hcr  : must be multiple of 4
@@ -619,7 +367,7 @@ acornfb_set_timing(struct fb_var_screeninfo *var)
 	vidc.v_display_start	= vidc.v_border_start;
 	vidc.v_display_end	= vidc.v_display_start + var->yres;
 	vidc.v_border_end	= vidc.v_display_end;
-	vidc.control		= VIDC20_CTRL_PIX_VCLK;
+	vidc.control		= acornfb_default_control();
 
 	vcr = var->vsync_len + var->upper_margin + var->yres +
 	      var->lower_margin;
@@ -668,7 +416,7 @@ acornfb_set_timing(struct fb_var_screeninfo *var)
 
 	outl(fsize, IOMD_FSIZE);
 
-	ext_ctl = VIDC20_ECTL_DAC | VIDC20_ECTL_REG(3);
+	ext_ctl = acornfb_default_econtrol();
 
 	if (var->sync & FB_SYNC_COMP_HIGH_ACT) /* should be FB_SYNC_COMP */
 		ext_ctl |= VIDC20_ECTL_HS_NCSYNC | VIDC20_ECTL_VS_NCSYNC;
@@ -1174,7 +922,7 @@ acornfb_get_fix(struct fb_fix_screeninfo *fix, int con, struct fb_info *info)
 	else
 		display = &global_disp;
 
-	fix->smem_start	 = (char *)current_par.screen_base_p;
+	fix->smem_start	 = current_par.screen_base_p;
 	fix->smem_len	 = current_par.screen_size;
 	fix->type	 = display->type;
 	fix->type_aux	 = display->type_aux;
@@ -1463,24 +1211,6 @@ acornfb_blank(int blank, struct fb_info *info)
 /*
  * Everything after here is initialisation!!!
  */
-#define fb_videomode fb_2_3_videomode
-
-struct fb_videomode {
-    const char *name;	/* optional */
-    u32 refresh;	/* optional */
-    u32 xres;
-    u32 yres;
-    u32 pixclock;
-    u32 left_margin;
-    u32 right_margin;
-    u32 upper_margin;
-    u32 lower_margin;
-    u32 hsync_len;
-    u32 vsync_len;
-    u32 sync;
-    u32 vmode;
-};
-
 static struct fb_videomode modedb[] __initdata = {
 	{	/* 320x256 @ 50Hz */
 		NULL, 50,  320,  256, 125000,  92,  62,  35, 19,  38, 2,
@@ -1549,31 +1279,6 @@ acornfb_default_mode = {
 	sync:		0,
 	vmode:		FB_VMODE_NONINTERLACED
 };
-
-static int fb_find_mode(struct fb_var_screeninfo *var, struct fb_info *info,
-			const char *mode_option, const struct fb_videomode *db,
-			unsigned int dbsize, const struct fb_videomode *default_mode,
-			unsigned int default_bpp)
-{
-	var->xres = default_mode->xres;
-	var->yres = default_mode->yres;
-	var->xres_virtual = default_mode->xres;
-	var->yres_virtual = default_mode->yres;
-	var->xoffset = 0;
-	var->yoffset = 0;
-	var->bits_per_pixel = default_bpp;
-	var->activate = 0;
-	var->pixclock = default_mode->pixclock;
-	var->left_margin = default_mode->left_margin;
-	var->right_margin = default_mode->right_margin;
-	var->upper_margin = default_mode->upper_margin;
-	var->lower_margin = default_mode->lower_margin;
-	var->hsync_len = default_mode->hsync_len;
-	var->vsync_len = default_mode->vsync_len;
-	var->sync = default_mode->sync;
-	var->vmode = default_mode->vmode;
-	return 3;
-}
 
 static void __init
 acornfb_init_fbinfo(void)
@@ -1706,7 +1411,7 @@ check_values:
 	return;
 
 bad:
-	printk("Acornfb: bad monitor settings: %s\n", opt);
+	printk(KERN_ERR "Acornfb: bad monitor settings: %s\n", opt);
 	current_par.montype = -1;
 }
 
@@ -1786,14 +1491,14 @@ static struct options {
 	{ NULL, NULL }
 };
 
-void __init
-acornfb_setup(char *options, int *ints)
+int __init
+acornfb_setup(char *options)
 {
 	struct options *optp;
 	char *opt;
 
 	if (!options || !*options)
-		return;
+		return 0;
 
 	acornfb_init_fbinfo();
 
@@ -1817,6 +1522,7 @@ acornfb_setup(char *options, int *ints)
 			printk(KERN_ERR "acornfb: unknown parameter: %s\n",
 			       opt);
 	}
+	return 0;
 }
 
 /*
@@ -1860,7 +1566,7 @@ free_unused_pages(unsigned int virtual_start, unsigned int virtual_end)
 	printk("acornfb: freed %dK memory\n", mb_freed);
 }
 
-void __init
+int __init
 acornfb_init(void)
 {
 	unsigned long size;
@@ -1901,7 +1607,7 @@ acornfb_init(void)
 	}
 
 	current_par.currcon	   = -1;
-	current_par.screen_base	   = SCREEN2_BASE;
+	current_par.screen_base	   = SCREEN_BASE;
 	current_par.screen_base_p  = SCREEN_START;
 	current_par.using_vram     = 0;
 
@@ -1938,11 +1644,11 @@ acornfb_init(void)
 		if (current_par.screen_base == 0) {
 			printk(KERN_ERR "acornfb: unable to allocate screen "
 			       "memory\n");
-			return;
+			return -ENOMEM;
 		}
 		top = current_par.screen_base + (PAGE_SIZE * (1 << order));
 		/* Mark the framebuffer pages as reserved so mmap will work. */
-		for (page = current_par.screen_base;
+		for (page = current_par.screen_base; 
 		     page < PAGE_ALIGN(current_par.screen_base + size);
 		     page += PAGE_SIZE)
 			mem_map[MAP_NR(page)].flags |= (1 << PG_reserved);
@@ -1950,7 +1656,7 @@ acornfb_init(void)
 		for (page = current_par.screen_base + size; page < top; page += PAGE_SIZE)
 			free_page(page);
 		current_par.screen_base_p =
-			virt_to_phys(current_par.screen_base);
+			virt_to_phys((void *)current_par.screen_base);
 	}
 #endif
 #if defined(HAS_VIDC)
@@ -1990,13 +1696,14 @@ acornfb_init(void)
 	v_sync = h_sync / (init_var.yres + init_var.upper_margin +
 		 init_var.lower_margin + init_var.vsync_len);
 
-	printk("Acornfb: %ldkB %cRAM, %s, using %dx%d, %d.%03dkHz, %dHz\n",
+	printk(KERN_INFO "Acornfb: %ldkB %cRAM, %s, using %dx%d, "
+		"%d.%03dkHz, %dHz\n",
 		current_par.screen_size / 1024,
 		current_par.using_vram ? 'V' : 'D',
 		VIDC_NAME, init_var.xres, init_var.yres,
 		h_sync / 1000, h_sync % 1000, v_sync);
 
-	printk("Acornfb: Monitor: %d.%03d-%d.%03dkHz, %d-%dHz%s\n",
+	printk(KERN_INFO "Acornfb: Monitor: %d.%03d-%d.%03dkHz, %d-%dHz%s\n",
 		fb_info.monspecs.hfmin / 1000, fb_info.monspecs.hfmin % 1000,
 		fb_info.monspecs.hfmax / 1000, fb_info.monspecs.hfmax % 1000,
 		fb_info.monspecs.vfmin, fb_info.monspecs.vfmax,
@@ -2005,5 +1712,7 @@ acornfb_init(void)
 	if (acornfb_set_var(&init_var, -1, &fb_info))
 		printk(KERN_ERR "Acornfb: unable to set display parameters\n");
 
-	register_framebuffer(&fb_info);
+	if (register_framebuffer(&fb_info) < 0)
+		return -EINVAL;
+	return 0;
 }

@@ -70,17 +70,24 @@ SECTIONS
   . = ALIGN(4096);
   __init_begin = .;
   .text.init : { *(.text.init) }
-  .data.init : { *(.data.init) }
-  . = ALIGN(16);		/* __setup() commandline parameters */
+  .data.init : { 
+    *(.data.init);
+    __vtop_table_begin = .;
+    *(.vtop_fixup);
+    __vtop_table_end = .;
+    __ptov_table_begin = .;
+    *(.ptov_fixup);
+    __ptov_table_end = .;
+  }
+  . = ALIGN(16);
   __setup_start = .;
   .setup.init : { *(.setup.init) }
   __setup_end = .;
-  __initcall_start = .;		/* the init functions to be called */
+  __initcall_start = .;
   .initcall.init : { *(.initcall.init) }
   __initcall_end = .;
   . = ALIGN(4096);
   __init_end = .;
-
 
   . = ALIGN(4096);
   __pmac_begin = .;
@@ -95,6 +102,27 @@ SECTIONS
   .data.prep : { *(.data.prep) }
   . = ALIGN(4096);
   __prep_end = .;
+
+  . = ALIGN(4096);
+  __chrp_begin = .;
+  .text.chrp : { *(.text.chrp) }
+  .data.chrp : { *(.data.chrp) }
+  . = ALIGN(4096);
+  __chrp_end = .;
+
+  . = ALIGN(4096);
+  __apus_begin = .;
+  .text.apus : { *(.text.apus) }
+  .data.apus : { *(.data.apus) }
+  . = ALIGN(4096);
+  __apus_end = .;
+
+  . = ALIGN(4096);
+  __apus_begin = .;
+  .text.apus : { *(.text.apus) }
+  .data.apus : { *(.data.apus) }
+  . = ALIGN(4096);
+  __apus_end = .;
 
   . = ALIGN(4096);
   __openfirmware_begin = .;
@@ -114,4 +142,3 @@ SECTIONS
   _end = . ;
   PROVIDE (end = .);
 }
-

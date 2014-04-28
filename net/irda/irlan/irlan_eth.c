@@ -6,7 +6,7 @@
  * Status:        Experimental.
  * Author:        Dag Brattli <dagb@cs.uit.no>
  * Created at:    Thu Oct 15 08:37:58 1998
- * Modified at:   Fri Apr 21 14:54:42 2000
+ * Modified at:   Tue Mar 21 09:06:41 2000
  * Modified by:   Dag Brattli <dagb@cs.uit.no>
  * Sources:       skeleton.c by Donald Becker <becker@CESDIS.gsfc.nasa.gov>
  *                slip.c by Laurence Culhane,   <loz@holmes.demon.co.uk>
@@ -25,6 +25,7 @@
  *     
  ********************************************************************/
 
+#include <linux/config.h>
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
 #include <linux/inetdevice.h>
@@ -45,8 +46,9 @@
  *    The network device initialization function.
  *
  */
-int irlan_eth_init(struct device *dev)
+int irlan_eth_init(struct net_device *dev)
 {
+	struct irmanager_event mgr_event;
 	struct irlan_cb *self;
 
 	IRDA_DEBUG(2, __FUNCTION__"()\n");
@@ -61,8 +63,6 @@ int irlan_eth_init(struct device *dev)
 	dev->get_stats	        = irlan_eth_get_stats;
 	dev->set_multicast_list = irlan_eth_set_multicast_list;
 
-	dev->tbusy = 1;
-	
 	ether_setup(dev);
 	
 	/* 
@@ -85,6 +85,22 @@ int irlan_eth_init(struct device *dev)
 		get_random_bytes(dev->dev_addr+5, 1);
 	}
 
+	/* 
+	 * Network device has now been registered, so tell irmanager about
+	 * it, so it can be configured with network parameters
+	 */
+	mgr_event.event = EVENT_IRLAN_START;
+	sprintf(mgr_event.devname, "%s", self->dev.name);
+	irmanager_notify(&mgr_event);
+
+	/* 
+	 * We set this so that we only notify once, since if 
+	 * configuration of the network device fails, the user
+	 * will have to sort it out first anyway. No need to 
+	 * try again.
+	 */
+	self->notify_irmanager = FALSE;
+
 	return 0;
 }
 
@@ -94,7 +110,7 @@ int irlan_eth_init(struct device *dev)
  *    Network device has been opened by user
  *
  */
-int irlan_eth_open(struct device *dev)
+int irlan_eth_open(struct net_device *dev)
 {
 	struct irlan_cb *self;
 	
@@ -107,12 +123,11 @@ int irlan_eth_open(struct device *dev)
 	ASSERT(self != NULL, return -1;);
 
 	/* Ready to play! */
- 	dev->tbusy = 1; /* Wait until data link is ready */
-	dev->interrupt = 0;
-	dev->start = 0;
+/* 	netif_start_queue(dev) */ /* Wait until data link is ready */
+
+	self->notify_irmanager = TRUE;
 
 	/* We are now open, so time to do some work */
-	self->disconnect_reason = 0;
 	irlan_client_wakeup(self, self->saddr, self->daddr);
 
 	irlan_mod_inc_use_count();
@@ -128,30 +143,31 @@ int irlan_eth_open(struct device *dev)
  *    close timer, so that the instance will be removed if we are unable
  *    to discover the remote device after the disconnect.
  */
-int irlan_eth_close(struct device *dev)
+int irlan_eth_close(struct net_device *dev)
 {
 	struct irlan_cb *self = (struct irlan_cb *) dev->priv;
-	struct sk_buff *skb;
-	
+
 	IRDA_DEBUG(2, __FUNCTION__ "()\n");
 	
 	/* Stop device */
-	dev->tbusy = 1;
-	dev->start = 0;
-
+	netif_stop_queue(dev);
+	
 	irlan_mod_dec_use_count();
 
 	irlan_close_data_channel(self);
+
 	irlan_close_tsaps(self);
 
 	irlan_do_client_event(self, IRLAN_LMP_DISCONNECT, NULL);
 	irlan_do_provider_event(self, IRLAN_LMP_DISCONNECT, NULL);	
 	
-	/* Remove frames queued on the control channel */
-	while ((skb = skb_dequeue(&self->client.txq))) {
-		dev_kfree_skb(skb);
-	}
-	self->client.tx_busy = 0;
+	irlan_start_watchdog_timer(self, IRLAN_TIMEOUT);
+
+	/* Device closed by user! */
+	if (self->notify_irmanager)
+		self->notify_irmanager = FALSE;
+	else
+		self->notify_irmanager = TRUE;
 
 	return 0;
 }
@@ -162,7 +178,7 @@ int irlan_eth_close(struct device *dev)
  *    Transmits ethernet frames over IrDA link.
  *
  */
-int irlan_eth_xmit(struct sk_buff *skb, struct device *dev)
+int irlan_eth_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct irlan_cb *self;
 	int ret;
@@ -172,10 +188,6 @@ int irlan_eth_xmit(struct sk_buff *skb, struct device *dev)
 	ASSERT(self != NULL, return 0;);
 	ASSERT(self->magic == IRLAN_MAGIC, return 0;);
 
-	/* Check if IrTTP can accept more frames */
-	if (dev->tbusy)
-		return -EBUSY;
-	
 	/* skb headroom large enough to contain all IrDA-headers? */
 	if ((skb_headroom(skb) < self->max_header_size) || (skb_shared(skb))) {
 		struct sk_buff *new_skb = 
@@ -259,14 +271,12 @@ int irlan_eth_receive(void *instance, void *sap, struct sk_buff *skb)
  * Function irlan_eth_flow (status)
  *
  *    Do flow control between IP/Ethernet and IrLAN/IrTTP. This is done by 
- *    controlling the dev->tbusy variable. Currently not used, since we
- *    just drop the frames instead of asking the client layer to buffer 
- *    them.
+ *    controlling the queue stop/start.
  */
 void irlan_eth_flow_indication(void *instance, void *sap, LOCAL_FLOW flow)
 {
 	struct irlan_cb *self;
-	struct device *dev;
+	struct net_device *dev;
 
 	self = (struct irlan_cb *) instance;
 
@@ -279,15 +289,13 @@ void irlan_eth_flow_indication(void *instance, void *sap, LOCAL_FLOW flow)
 	
 	switch (flow) {
 	case FLOW_STOP:
-		dev->tbusy = 1;
+		netif_stop_queue(dev);
 		break;
 	case FLOW_START:
 	default:
 		/* Tell upper layers that its time to transmit frames again */
-		dev->tbusy = 0;
-
 		/* Schedule network layer */
-		mark_bh(NET_BH);		
+		netif_start_queue(dev);
 		break;
 	}
 }
@@ -298,7 +306,7 @@ void irlan_eth_flow_indication(void *instance, void *sap, LOCAL_FLOW flow)
  *    If we don't want to use ARP. Currently not used!!
  *
  */
-void irlan_eth_rebuild_header(void *buff, struct device *dev, 
+void irlan_eth_rebuild_header(void *buff, struct net_device *dev, 
 			      unsigned long dest, struct sk_buff *skb)
 {
 	struct ethhdr *eth = (struct ethhdr *) buff;
@@ -315,7 +323,7 @@ void irlan_eth_rebuild_header(void *buff, struct device *dev,
  *    Send gratuitous ARP to announce that we have changed
  *    hardware address, so that all peers updates their ARP tables
  */
-void irlan_eth_send_gratuitous_arp(struct device *dev)
+void irlan_eth_send_gratuitous_arp(struct net_device *dev)
 {
 	struct in_device *in_dev;
 
@@ -326,12 +334,19 @@ void irlan_eth_send_gratuitous_arp(struct device *dev)
 	 */
 #ifdef CONFIG_INET
 	IRDA_DEBUG(4, "IrLAN: Sending gratuitous ARP\n");
-	in_dev = dev->ip_ptr;
+	in_dev = in_dev_get(dev);
+	if (in_dev == NULL)
+		return;
+	read_lock(&in_dev->lock);
+	if (in_dev->ifa_list)
+		
 	arp_send(ARPOP_REQUEST, ETH_P_ARP, 
 		 in_dev->ifa_list->ifa_address,
 		 dev, 
 		 in_dev->ifa_list->ifa_address,
 		 NULL, dev->dev_addr, NULL);
+	read_unlock(&in_dev->lock);
+	in_dev_put(in_dev);
 #endif /* CONFIG_INET */
 }
 
@@ -342,7 +357,7 @@ void irlan_eth_send_gratuitous_arp(struct device *dev)
  *
  */
 #define HW_MAX_ADDRS 4 /* Must query to get it! */
-void irlan_eth_set_multicast_list(struct device *dev) 
+void irlan_eth_set_multicast_list(struct net_device *dev) 
 {
  	struct irlan_cb *self;
 
@@ -394,7 +409,7 @@ void irlan_eth_set_multicast_list(struct device *dev)
  *    Get the current statistics for this device
  *
  */
-struct enet_statistics *irlan_eth_get_stats(struct device *dev) 
+struct enet_statistics *irlan_eth_get_stats(struct net_device *dev) 
 {
 	struct irlan_cb *self = (struct irlan_cb *) dev->priv;
 

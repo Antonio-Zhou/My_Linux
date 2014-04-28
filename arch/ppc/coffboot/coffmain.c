@@ -8,10 +8,14 @@
  */
 #include "nonstdio.h"
 #include "zlib.h"
+#include <asm/bootinfo.h>
+#include <asm/processor.h>
+#include <asm/page.h>
 
 extern void *finddevice(const char *);
 extern int getprop(void *, const char *, void *, int);
 extern char *claim(unsigned, unsigned, unsigned);
+void make_bi_recs(unsigned long);
 void gunzip(void *, int, unsigned char *, int *);
 
 #define get_16be(x)	(*(unsigned short *)(x))
@@ -69,6 +73,7 @@ boot(int a1, int a2, void *prom)
     }
 
     flush_cache(dst, len);
+    make_bi_recs((unsigned long)dst + len);
     
     sa = (unsigned long)PROG_START;
     printf("start address = 0x%x\n", sa);
@@ -81,6 +86,32 @@ boot(int a1, int a2, void *prom)
     printf("returned?\n");
 
     pause();
+}
+
+void make_bi_recs(unsigned long addr)
+{
+	struct bi_record *rec;
+
+	rec = (struct bi_record *)PAGE_ALIGN(addr);
+	    
+	rec->tag = BI_FIRST;
+	rec->size = sizeof(struct bi_record);
+	rec = (struct bi_record *)((unsigned long)rec + rec->size);
+
+	rec->tag = BI_BOOTLOADER_ID;
+	sprintf( (char *)rec->data, "coffboot");
+	rec->size = sizeof(struct bi_record) + strlen("coffboot") + 1;
+	rec = (struct bi_record *)((unsigned long)rec + rec->size);
+	    
+	rec->tag = BI_MACHTYPE;
+	rec->data[0] = _MACH_Pmac;
+	rec->data[1] = 1;
+	rec->size = sizeof(struct bi_record) + sizeof(unsigned long);
+	rec = (struct bi_record *)((unsigned long)rec + rec->size);
+	    
+	rec->tag = BI_LAST;
+	rec->size = sizeof(struct bi_record);
+	rec = (struct bi_record *)((unsigned long)rec + rec->size);
 }
 
 void *zalloc(void *x, unsigned items, unsigned size)

@@ -1,12 +1,3 @@
-/* $Id: elsa_ser.c,v 1.1.2.1 2001/12/31 13:26:45 kai Exp $
- *
- * stuff for the serial modem on ELSA cards
- *
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
- *
- */
-
 #include <linux/config.h>
 #include <linux/serial.h>
 #include <linux/serial_reg.h>
@@ -307,7 +298,7 @@ modem_fill(struct BCState *bcs) {
 				(PACKET_NOACK != bcs->tx_skb->pkt_type))
 					bcs->st->lli.l1writewakeup(bcs->st,
 						bcs->hw.hscx.count);
-			dev_kfree_skb(bcs->tx_skb);
+			dev_kfree_skb_any(bcs->tx_skb);
 			bcs->tx_skb = NULL;
 		}
 	}
@@ -441,6 +432,8 @@ extern void hscx_l2l1(struct PStack *st, int pr, void *arg);
 void
 close_elsastate(struct BCState *bcs)
 {
+	struct sk_buff *skb;
+
 	modehscx(bcs, 0, bcs->channel);
 	if (test_and_clear_bit(BC_FLG_INIT, &bcs->Flag)) {
 		if (bcs->hw.hscx.rcvbuf) {
@@ -448,10 +441,14 @@ close_elsastate(struct BCState *bcs)
 				kfree(bcs->hw.hscx.rcvbuf);
 			bcs->hw.hscx.rcvbuf = NULL;
 		}
-		skb_queue_purge(&bcs->rqueue);
-		skb_queue_purge(&bcs->squeue);
+		while ((skb = skb_dequeue(&bcs->rqueue))) {
+			dev_kfree_skb_any(skb);
+		}
+		while ((skb = skb_dequeue(&bcs->squeue))) {
+			dev_kfree_skb_any(skb);
+		}
 		if (bcs->tx_skb) {
-			dev_kfree_skb(bcs->tx_skb);
+			dev_kfree_skb_any(bcs->tx_skb);
 			bcs->tx_skb = NULL;
 			test_and_clear_bit(BC_FLG_BUSY, &bcs->Flag);
 		}

@@ -339,17 +339,17 @@ struct lance_addr {
 
 static int addr_accessible( volatile void *regp, int wordflag, int
                             writeflag );
-static unsigned long lance_probe1( struct device *dev, struct lance_addr
+static unsigned long lance_probe1( struct net_device *dev, struct lance_addr
                                    *init_rec );
-static int lance_open( struct device *dev );
-static void lance_init_ring( struct device *dev );
-static int lance_start_xmit( struct sk_buff *skb, struct device *dev );
+static int lance_open( struct net_device *dev );
+static void lance_init_ring( struct net_device *dev );
+static int lance_start_xmit( struct sk_buff *skb, struct net_device *dev );
 static void lance_interrupt( int irq, void *dev_id, struct pt_regs *fp );
-static int lance_rx( struct device *dev );
-static int lance_close( struct device *dev );
-static struct net_device_stats *lance_get_stats( struct device *dev );
-static void set_multicast_list( struct device *dev );
-static int lance_set_mac_address( struct device *dev, void *addr );
+static int lance_rx( struct net_device *dev );
+static int lance_close( struct net_device *dev );
+static struct net_device_stats *lance_get_stats( struct net_device *dev );
+static void set_multicast_list( struct net_device *dev );
+static int lance_set_mac_address( struct net_device *dev, void *addr );
 
 /************************* End of Prototypes **************************/
 
@@ -370,9 +370,9 @@ void *slow_memcpy( void *dst, const void *src, size_t len )
 }
 
 
-__initfunc(int atarilance_probe( struct device *dev ))
-
-{	int i;
+int __init atarilance_probe( struct net_device *dev )
+{	
+    int i;
 	static int found = 0;
 
 	if (!MACH_IS_ATARI || found)
@@ -393,9 +393,9 @@ __initfunc(int atarilance_probe( struct device *dev ))
 
 /* Derived from hwreg_present() in atari/config.c: */
 
-__initfunc(static int addr_accessible( volatile void *regp, int wordflag, int writeflag ))
-
-{	int		ret;
+static int __init addr_accessible( volatile void *regp, int wordflag, int writeflag )
+{
+	int		ret;
 	long	flags;
 	long	*vbr, save_berr;
 
@@ -443,10 +443,10 @@ __initfunc(static int addr_accessible( volatile void *regp, int wordflag, int wr
 }
 
 
-__initfunc(static unsigned long lance_probe1( struct device *dev,
-								   struct lance_addr *init_rec ))
-
-{	volatile unsigned short *memaddr =
+static unsigned long __init lance_probe1( struct net_device *dev,
+								   struct lance_addr *init_rec )
+{
+	volatile unsigned short *memaddr =
 		(volatile unsigned short *)init_rec->memaddr;
 	volatile unsigned short *ioaddr =
 		(volatile unsigned short *)init_rec->ioaddr;
@@ -623,7 +623,7 @@ __initfunc(static unsigned long lance_probe1( struct device *dev,
 }
 
 
-static int lance_open( struct device *dev )
+static int lance_open( struct net_device *dev )
 
 {	struct lance_private *lp = (struct lance_private *)dev->priv;
 	struct lance_ioreg	 *IO = lp->iobase;
@@ -667,7 +667,7 @@ static int lance_open( struct device *dev )
 
 /* Initialize the LANCE Rx and Tx rings. */
 
-static void lance_init_ring( struct device *dev )
+static void lance_init_ring( struct net_device *dev )
 
 {	struct lance_private *lp = (struct lance_private *)dev->priv;
 	int i;
@@ -713,7 +713,7 @@ static void lance_init_ring( struct device *dev )
 }
 
 
-static int lance_start_xmit( struct sk_buff *skb, struct device *dev )
+static int lance_start_xmit( struct sk_buff *skb, struct net_device *dev )
 
 {	struct lance_private *lp = (struct lance_private *)dev->priv;
 	struct lance_ioreg	 *IO = lp->iobase;
@@ -766,21 +766,6 @@ static int lance_start_xmit( struct sk_buff *skb, struct device *dev )
 	DPRINTK( 2, ( "%s: lance_start_xmit() called, csr0 %4.4x.\n",
 				  dev->name, DREG ));
 
-	/* The old LANCE chips doesn't automatically pad buffers to min. size. */
-	len = skb->len;
-	if(len < ETH_ZLEN)
-		len = ETH_ZLEN;
-	/* PAM-Card has a bug: Can only send packets with even number of bytes! */
-	else if (lp->cardtype == PAM_CARD && (len & 1))
-		++len;
-		
-	if(len > skb->len)
-	{
-		skb = skb_padto(skb, len);
-		if(skb == NULL)
-			return 0;
-	}
-		
 	/* Block a timer-based transmit from overlapping.  This could better be
 	   done with atomic_swap(1, dev->tbusy), but set_bit() works as well. */
 	if (test_and_set_bit( 0, (void*)&dev->tbusy ) != 0) {
@@ -822,6 +807,12 @@ static int lance_start_xmit( struct sk_buff *skb, struct device *dev )
 	 * last.
 	 */
 
+	/* The old LANCE chips doesn't automatically pad buffers to min. size. */
+	len = (ETH_ZLEN < skb->len) ? skb->len : ETH_ZLEN;
+	/* PAM-Card has a bug: Can only send packets with even number of bytes! */
+	if (lp->cardtype == PAM_CARD && (len & 1))
+		++len;
+
 	head->length = -len;
 	head->misc = 0;
 	lp->memcpy_f( PKTBUF_ADDR(head), (void *)skb->data, skb->len );
@@ -853,7 +844,7 @@ static int lance_start_xmit( struct sk_buff *skb, struct device *dev )
 
 static void lance_interrupt( int irq, void *dev_id, struct pt_regs *fp)
 {
-	struct device *dev = dev_id;
+	struct net_device *dev = dev_id;
 	struct lance_private *lp;
 	struct lance_ioreg	 *IO;
 	int csr0, boguscnt = 10;
@@ -961,7 +952,7 @@ static void lance_interrupt( int irq, void *dev_id, struct pt_regs *fp)
 }
 
 
-static int lance_rx( struct device *dev )
+static int lance_rx( struct net_device *dev )
 
 {	struct lance_private *lp = (struct lance_private *)dev->priv;
 	int entry = lp->cur_rx & RX_RING_MOD_MASK;
@@ -1054,7 +1045,7 @@ static int lance_rx( struct device *dev )
 }
 
 
-static int lance_close( struct device *dev )
+static int lance_close( struct net_device *dev )
 
 {	struct lance_private *lp = (struct lance_private *)dev->priv;
 	struct lance_ioreg	 *IO = lp->iobase;
@@ -1076,7 +1067,7 @@ static int lance_close( struct device *dev )
 }
 
 
-static struct net_device_stats *lance_get_stats( struct device *dev )
+static struct net_device_stats *lance_get_stats( struct net_device *dev )
 
 {	struct lance_private *lp = (struct lance_private *)dev->priv;
 
@@ -1091,7 +1082,7 @@ static struct net_device_stats *lance_get_stats( struct device *dev )
 						best-effort filtering.
  */
 
-static void set_multicast_list( struct device *dev )
+static void set_multicast_list( struct net_device *dev )
 
 {	struct lance_private *lp = (struct lance_private *)dev->priv;
 	struct lance_ioreg	 *IO = lp->iobase;
@@ -1133,7 +1124,7 @@ static void set_multicast_list( struct device *dev )
 
 /* This is needed for old RieblCards and possible for new RieblCards */
 
-static int lance_set_mac_address( struct device *dev, void *addr )
+static int lance_set_mac_address( struct net_device *dev, void *addr )
 
 {	struct lance_private *lp = (struct lance_private *)dev->priv;
 	struct sockaddr *saddr = addr;
@@ -1163,7 +1154,7 @@ static int lance_set_mac_address( struct device *dev, void *addr )
 #ifdef MODULE
 static char devicename[9] = { 0, };
 
-static struct device atarilance_dev =
+static struct net_device atarilance_dev =
 {
 	devicename,	/* filled in by register_netdev() */
 	0, 0, 0, 0,	/* memory */

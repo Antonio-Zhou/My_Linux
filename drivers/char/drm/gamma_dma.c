@@ -2,7 +2,6 @@
  * Created: Fri Mar 19 14:30:16 1999 by faith@precisioninsight.com
  *
  * Copyright 1999 Precision Insight, Inc., Cedar Park, Texas.
- * Copyright 2000 VA Linux Systems, Inc., Sunnyvale, California.
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -25,7 +24,7 @@
  * DEALINGS IN THE SOFTWARE.
  * 
  * Authors:
- *    Rickard E. (Rik) Faith <faith@valinux.com>
+ *    Rickard E. (Rik) Faith <faith@precisioninsight.com>
  *
  */
 
@@ -88,31 +87,13 @@ static inline void gamma_dma_dispatch(drm_device_t *dev, unsigned long address,
 	GAMMA_WRITE(GAMMA_DMACOUNT, length / 4);
 }
 
-static inline void gamma_dma_quiescent_single(drm_device_t *dev)
+static inline void gamma_dma_quiescent(drm_device_t *dev)
 {
 	while (GAMMA_READ(GAMMA_DMACOUNT))
 		;
 	while (GAMMA_READ(GAMMA_INFIFOSPACE) < 3)
 		;
-
-	GAMMA_WRITE(GAMMA_FILTERMODE, 1 << 10);
-	GAMMA_WRITE(GAMMA_SYNC, 0);
-	
-	do {
-		while (!GAMMA_READ(GAMMA_OUTFIFOWORDS))
-			;
-	} while (GAMMA_READ(GAMMA_OUTPUTFIFO) != GAMMA_SYNC_TAG);
-}
-
-static inline void gamma_dma_quiescent_dual(drm_device_t *dev)
-{
-	while (GAMMA_READ(GAMMA_DMACOUNT))
-		;
-	while (GAMMA_READ(GAMMA_INFIFOSPACE) < 3)
-		;
-
 	GAMMA_WRITE(GAMMA_BROADCASTMASK, 3);
-
 	GAMMA_WRITE(GAMMA_FILTERMODE, 1 << 10);
 	GAMMA_WRITE(GAMMA_SYNC, 0);
 	
@@ -122,6 +103,7 @@ static inline void gamma_dma_quiescent_dual(drm_device_t *dev)
 			;
 	} while (GAMMA_READ(GAMMA_OUTPUTFIFO) != GAMMA_SYNC_TAG);
 	
+
 				/* Read from second MX */
 	do {
 		while (!GAMMA_READ(GAMMA_OUTFIFOWORDS + 0x10000))
@@ -542,8 +524,8 @@ static int gamma_dma_send_buffers(drm_device_t *dev, drm_dma_t *d)
 	
 	if (d->flags & _DRM_DMA_BLOCK) {
 		DRM_DEBUG("%d waiting\n", current->pid);
+		current->state = TASK_INTERRUPTIBLE;
 		for (;;) {
-			current->state = TASK_INTERRUPTIBLE;
 			if (!last_buf->waiting
 			    && !last_buf->pending)
 				break; /* finished */
@@ -774,7 +756,6 @@ int gamma_lock(struct inode *inode, struct file *filp, unsigned int cmd,
 		}
 		add_wait_queue(&dev->lock.lock_queue, &entry);
 		for (;;) {
-			current->state = TASK_INTERRUPTIBLE;
 			if (!dev->lock.hw_lock) {
 				/* Device has been unregistered */
 				ret = -EINTR;
@@ -791,6 +772,7 @@ int gamma_lock(struct inode *inode, struct file *filp, unsigned int cmd,
 			
 				/* Contention */
 			atomic_inc(&dev->total_sleeps);
+			current->state = TASK_INTERRUPTIBLE;
 			schedule();
 			if (signal_pending(current)) {
 				ret = -ERESTARTSYS;
@@ -806,13 +788,8 @@ int gamma_lock(struct inode *inode, struct file *filp, unsigned int cmd,
 	if (!ret) {
 		if (lock.flags & _DRM_LOCK_READY)
 			gamma_dma_ready(dev);
-		if (lock.flags & _DRM_LOCK_QUIESCENT) {
-			if (gamma_found() == 1) {
-				gamma_dma_quiescent_single(dev);
-			} else {
-				gamma_dma_quiescent_dual(dev);
-			}
-		}
+		if (lock.flags & _DRM_LOCK_QUIESCENT)
+			gamma_dma_quiescent(dev);
 	}
 	DRM_DEBUG("%d %s\n", lock.context, ret ? "interrupted" : "has lock");
 

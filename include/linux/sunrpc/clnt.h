@@ -30,7 +30,7 @@ struct rpc_portmap {
  * The high-level client handle
  */
 struct rpc_clnt {
-	atomic_t		cl_users;	/* number of references */
+	unsigned int		cl_users;	/* number of references */
 	struct rpc_xprt *	cl_xprt;	/* transport */
 	struct rpc_procinfo *	cl_procinfo;	/* procedure info */
 	u32			cl_maxproc;	/* max procedure number */
@@ -45,7 +45,6 @@ struct rpc_clnt {
 				cl_chatty   : 1,/* be verbose */
 				cl_autobind : 1,/* use getport() */
 				cl_binding  : 1,/* doing a getport() */
-				cl_droppriv : 1,/* enable NFS suid hack */
 				cl_oneshot  : 1,/* dispose after use */
 				cl_dead     : 1;/* abandoned */
 	unsigned int		cl_flags;	/* misc client flags */
@@ -111,8 +110,6 @@ int		rpc_destroy_client(struct rpc_clnt *);
 void		rpc_release_client(struct rpc_clnt *);
 void		rpc_getport(struct rpc_task *, struct rpc_clnt *);
 int		rpc_register(u32, u32, int, unsigned short, int *);
-u32 *		rpc_call_header(struct rpc_task *task);
-u32 *		rpc_call_verify(struct rpc_task *task);
 
 void		rpc_call_setup(struct rpc_task *, struct rpc_message *, int);
 
@@ -145,11 +142,6 @@ extern void rpciod_wake_up(void);
  * Helper function for NFSroot support
  */
 int		rpc_getport_external(struct sockaddr_in *, __u32, __u32, int);
-
-/*
- * Ping function
- */
-void		rpc_ping(struct rpc_task *task);
 
 #endif /* __KERNEL__ */
 #endif /* _LINUX_SUNRPC_CLNT_H */

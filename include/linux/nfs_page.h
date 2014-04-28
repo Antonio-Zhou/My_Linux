@@ -26,10 +26,10 @@ struct nfs_page {
 				wb_list,	/* Defines state of page: */
 				*wb_list_head;	/*      read/write/commit */
 	struct file		*wb_file;
-	struct inode		*wb_inode;
+	struct dentry		*wb_dentry;
 	struct rpc_cred		*wb_cred;
 	struct page		*wb_page;	/* page to read in/write out */
-	struct wait_queue	*wb_wait;	/* wait queue */
+	wait_queue_head_t	wb_wait;	/* wait queue */
 	unsigned long		wb_timeout;	/* when to read/write/commit */
 	unsigned int		wb_offset,	/* Offset of read/write */
 				wb_bytes,	/* Length of request */
@@ -41,7 +41,6 @@ struct nfs_page {
 #define NFS_WBACK_BUSY(req)	((req)->wb_flags & PG_BUSY)
 
 extern	struct nfs_page *nfs_create_request(struct file *file,
-					    struct inode *inode,
 					    struct page *page,
 					    unsigned int offset,
 					    unsigned int count);
@@ -60,6 +59,8 @@ extern	int nfs_scan_list(struct list_head *src, struct list_head *dst,
 			  unsigned int npages);
 extern	int nfs_coalesce_requests(struct list_head *src, struct list_head *dst,
 				  unsigned int maxpages);
+
+extern	spinlock_t nfs_wreq_lock;
 
 /*
  * Lock the page of an asynchronous request

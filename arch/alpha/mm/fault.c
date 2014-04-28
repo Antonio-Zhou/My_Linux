@@ -4,6 +4,7 @@
  *  Copyright (C) 1995  Linus Torvalds
  */
 
+#include <linux/config.h>
 #include <linux/sched.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
@@ -11,7 +12,7 @@
 
 #define __EXTERN_INLINE inline
 #include <asm/mmu_context.h>
-#include <asm/pgtable.h>
+#include <asm/pgalloc.h>
 #undef  __EXTERN_INLINE
 
 #include <linux/signal.h>
@@ -22,6 +23,7 @@
 #include <linux/mman.h>
 #include <linux/smp.h>
 #include <linux/smp_lock.h>
+#include <linux/interrupt.h>
 
 #include <asm/system.h>
 #include <asm/uaccess.h>
@@ -33,17 +35,24 @@ extern void die_if_kernel(char *,struct pt_regs *,long, unsigned long *);
  * Force a new ASN for a task.
  */
 
-#ifndef __SMP__
+#ifndef CONFIG_SMP
 unsigned long last_asn = ASN_FIRST_VERSION;
 #endif
 
-void
-get_new_mmu_context(struct task_struct *p, struct mm_struct *mm)
+extern void
+__load_new_mm_context(struct mm_struct *next_mm)
 {
-	unsigned long new = __get_new_mmu_context();
-	mm->context[smp_processor_id()] = new;
-	p->tss.asn = new & HARDWARE_ASN_MASK;
+	unsigned long mmc;
+
+	mmc = __get_new_mm_context(next_mm, smp_processor_id());
+	next_mm->context = mmc;
+	current->thread.asn = mmc & HARDWARE_ASN_MASK;
+        current->thread.ptbr
+	  = ((unsigned long) next_mm->pgd - IDENT_ADDR) >> PAGE_SHIFT;
+
+	__reload_thread(&current->thread);
 }
+
 
 /*
  * This routine handles page faults.  It determines the address,
@@ -77,7 +86,8 @@ do_page_fault(unsigned long address, unsigned long mmcsr,
 {
 	struct vm_area_struct * vma;
 	struct mm_struct *mm = current->mm;
-	unsigned fixup;
+	unsigned int fixup;
+	int fault;
 
 	/* As of EV6, a load into $31/$f31 is a prefetch, and never faults
 	   (or is suppressed by the PALcode).  Support that for older CPUs
@@ -93,8 +103,12 @@ do_page_fault(unsigned long address, unsigned long mmcsr,
 		}
 	}
 
+	/* If we're in an interrupt context, or have no user context,
+	   we must not take the fault.  */
+	if (!mm || in_interrupt())
+		goto no_context;
+
 	down(&mm->mmap_sem);
-	lock_kernel();
 	vma = find_vma(mm, address);
 	if (!vma)
 		goto bad_area;
@@ -120,17 +134,20 @@ good_area:
 		if (!(vma->vm_flags & VM_WRITE))
 			goto bad_area;
 	}
-survive:
-	{
-		int fault = handle_mm_fault(current, vma, address, cause > 0);
-		if (!fault)
-			goto do_sigbus;
-		if (fault < 0)
-			goto out_of_memory;
-	}
+
+	/*
+	 * If for any reason at all we couldn't handle the fault,
+	 * make sure we exit gracefully rather than endlessly redo
+	 * the fault.
+	 */
+	fault = handle_mm_fault(mm, vma, address, cause > 0);
 	up(&mm->mmap_sem);
- out_unlock:
-	unlock_kernel();
+
+	if (fault < 0)
+		goto out_of_memory;
+	if (fault == 0)
+		goto do_sigbus;
+
 	return;
 
 /*
@@ -142,20 +159,18 @@ bad_area:
 
 	if (user_mode(regs)) {
 		force_sig(SIGSEGV, current);
-		goto out_unlock;
+		return;
 	}
 
 no_context:
 	/* Are we prepared to handle this fault as an exception?  */
-	if ((fixup = search_exception_table(regs->pc, regs->gp)) != 0) {
+	if ((fixup = search_exception_table(regs->pc)) != 0) {
 		unsigned long newpc;
 		newpc = fixup_exception(dpf_reg, fixup, regs->pc);
-#if 0
 		printk("%s: Exception at [<%lx>] (%lx)\n",
 		       current->comm, regs->pc, newpc);
-#endif
 		regs->pc = newpc;
-		goto out_unlock;
+		return;
 	}
 
 /*
@@ -172,31 +187,19 @@ no_context:
  * us unable to handle the page fault gracefully.
  */
 out_of_memory:
-	if (current->pid == 1)
-	{
-		current->policy |= SCHED_YIELD;
-		schedule();
-		goto survive;
-	}
-	up(&mm->mmap_sem);
-	if (user_mode(regs))
-	{
-		printk("VM: killing process %s\n", current->comm);
-		do_exit(SIGKILL);
-	}
-	goto no_context;
+	printk(KERN_ALERT "VM: killing process %s(%d)\n",
+	       current->comm, current->pid);
+	if (!user_mode(regs))
+		goto no_context;
+	do_exit(SIGKILL);
 
 do_sigbus:
-	up(&mm->mmap_sem);
-
 	/*
 	 * Send a sigbus, regardless of whether we were in kernel
 	 * or user mode.
 	 */
 	force_sig(SIGBUS, current);
-
-	/* Kernel mode? Handle exceptions or die */
 	if (!user_mode(regs))
 		goto no_context;
-	goto out_unlock;
+	return;
 }

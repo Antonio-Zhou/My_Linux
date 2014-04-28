@@ -38,7 +38,7 @@ void nr_loopback_init(void)
 
 static int nr_loopback_running(void)
 {
-	return (loopback_timer.prev != NULL || loopback_timer.next != NULL);
+	return timer_pending(&loopback_timer);
 }
 
 int nr_loopback_queue(struct sk_buff *skb)
@@ -76,7 +76,7 @@ static void nr_loopback_timer(unsigned long param)
 {
 	struct sk_buff *skb;
 	ax25_address *nr_dest;
-	struct device *dev;
+	struct net_device *dev;
 
 	if ((skb = skb_dequeue(&loopback_queue)) != NULL) {
 		nr_dest = (ax25_address *)(skb->data + 7);

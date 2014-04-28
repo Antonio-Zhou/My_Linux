@@ -42,7 +42,7 @@
 
 #include <asm/fiq.h>
 #include <asm/io.h>
-#include <asm/pgtable.h>
+#include <asm/pgalloc.h>
 #include <asm/system.h>
 #include <asm/uaccess.h>
 
@@ -136,7 +136,7 @@ void set_fiq_regs(struct pt_regs *regs)
 	msr	cpsr, %0	@ return to SVC mode
 	mov	r0, r0"
 #endif
-	: "=&r" (tmp), "=&r" (tmp2)
+	: "=r" (tmp), "=r" (tmp2)
 	: "r" (&regs->ARM_r8)
 	/* These registers aren't modified by the above code in a way
 	   visible to the compiler, but we mark them as clobbers anyway
@@ -169,7 +169,7 @@ void get_fiq_regs(struct pt_regs *regs)
 	msr	cpsr, %0	@ return to SVC mode
 	mov	r0, r0"
 #endif
-	: "=&r" (tmp), "=&r" (tmp2)
+	: "=r" (tmp), "=r" (tmp2)
 	: "r" (&regs->ARM_r8)
 	/* These registers aren't modified by the above code in a way
 	   visible to the compiler, but we mark them as clobbers anyway

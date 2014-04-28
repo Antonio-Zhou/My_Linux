@@ -2,15 +2,18 @@
  *
  * Name:	skxmac2.c
  * Project:	GEnesis, PCI Gigabit Ethernet Adapter
- * Version:	$Revision: 1.61 $
- * Date:	$Date: 2001/02/09 15:40:59 $
+ * Version:	$Revision: 1.49 $
+ * Date:	$Date: 1999/11/22 08:12:13 $
  * Purpose:	Contains functions to initialize the XMAC II
  *
  ******************************************************************************/
 
 /******************************************************************************
  *
- *	(C)Copyright 1998-2001 SysKonnect GmbH.
+ *	(C)Copyright 1998,1999 SysKonnect,
+ *	a business unit of Schneider & Koch & Co. Datensysteme GmbH.
+ *
+ *	See the file "skge.c" for further information.
  *
  *	This program is free software; you can redistribute it and/or modify
  *	it under the terms of the GNU General Public License as published by
@@ -26,47 +29,11 @@
  * History:
  *
  *	$Log: skxmac2.c,v $
- *	Revision 1.61  2001/02/09 15:40:59  rassmann
- *	Editorial changes.
- *	
- *	Revision 1.60  2001/02/07 15:02:01  cgoos
- *	Added workaround for Fujitsu switch link down.
- *	
- *	Revision 1.59  2001/01/10 09:38:06  cgoos
- *	Fixed Broadcom C0/A1 Id check for workaround.
- *	
- *	Revision 1.58  2000/11/29 11:30:38  cgoos
- *	Changed DEBUG sections with NW output to xDEBUG
- *	
- *	Revision 1.57  2000/11/27 12:40:40  rassmann
- *	Suppressing preamble after first access to BCom, not before (#10556).
- *	
- *	Revision 1.56  2000/11/09 12:32:48  rassmann
- *	Renamed variables.
- *	
- *	Revision 1.55  2000/11/09 11:30:10  rassmann
- *	WA: Waiting after releasing reset until BCom chip is accessible.
- *	
- *	Revision 1.54  2000/10/02 14:10:27  rassmann
- *	Reading BCOM PHY after releasing reset until it returns a valid value.
- *	
- *	Revision 1.53  2000/07/27 12:22:11  gklug
- *	fix: possible endless loop in XmHardRst.
- *	
- *	Revision 1.52  2000/05/22 08:48:31  malthoff
- *	Fix: #10523 errata valid for all BCOM PHYs.
- *	
- *	Revision 1.51  2000/05/17 12:52:18  malthoff
- *	Fixes BCom link errata (#10523).
- *	
- *	Revision 1.50  1999/11/22 13:40:14  cgoos
- *	Changed license header to GPL.
- *	
  *	Revision 1.49  1999/11/22 08:12:13  malthoff
- *	Add workaround for power consumption feature of BCom C0 chip.
+ *	Add workaround for power consumption feature of Bcom C0 chip.
  *	
  *	Revision 1.48  1999/11/16 08:39:01  malthoff
- *	Fix: MDIO preamble suppression is port dependent.
+ *	Fix: MDIO preamble suppression is port dependend.
  *	
  *	Revision 1.47  1999/08/27 08:55:35  malthoff
  *	1000BT: Optimizing MDIO transfer by oppressing MDIO preamble.
@@ -102,7 +69,8 @@
  *	Changes for 1000Base-T.
  *	
  *	Revision 1.38  1999/04/08 14:35:10  malthoff
- *	Add code for enabling signal detect. Enabling signal detect is disabled.
+ *	Add code for enabling signal detect. Enabling signal
+ *	detect is disabled.
  *	
  *	Revision 1.37  1999/03/12 13:42:54  malthoff
  *	Add: Jumbo Frame Support.
@@ -256,11 +224,11 @@
 /* local variables ************************************************************/
 
 static const char SysKonnectFileId[] =
-	"@(#)$Id: skxmac2.c,v 1.61 2001/02/09 15:40:59 rassmann Exp $ (C) SK ";
+	"@(#)$Id: skxmac2.c,v 1.49 1999/11/22 08:12:13 malthoff Exp $ (C) SK ";
 
 /* BCOM PHY magic pattern list */
 typedef struct s_PhyHack {
-	int		PhyReg;		/* Phy register */
+	int	PhyReg;		/* Phy register */
 	SK_U16	PhyVal;		/* Value to write */
 } BCOM_HACK;
 
@@ -315,12 +283,12 @@ static int	SkXmAutoNegDoneNat (SK_AC*, SK_IOC, int);
 void SkXmSetRxCmd(
 SK_AC	*pAC,		/* adapter context */
 SK_IOC	IoC,		/* IO context */
-int		Port,		/* The XMAC to handle with belongs to this Port */
-int		Mode)		/* Mode is SK_STRIP_FCS_ON/OFF, SK_STRIP_PAD_ON/OFF,
-					   SK_LENERR_OK_ON/OFF, or SK_BIG_PK_OK_ON/OFF */
+int	Port,		/* The XMAC to handle with belongs to this Port */
+int	Mode)		/* Mode is SK_STRIP_FCS_ON/OFF, SK_STRIP_PAD_ON/OFF,
+				SK_LENERR_OK_ON/OFF, or SK_BIG_PK_OK_ON/OFF */
 {
-	SK_GEPORT	*pPrt;
-	SK_U16		OldRxMode;
+	SK_GEPORT *pPrt;
+	SK_U16	OldRxMode;
 
 	pPrt = &pAC->GIni.GP[Port];
 	OldRxMode = pPrt->PRxCmd;
@@ -365,8 +333,7 @@ int		Mode)		/* Mode is SK_STRIP_FCS_ON/OFF, SK_STRIP_PAD_ON/OFF,
 	if (OldRxMode != pPrt->PRxCmd) {
 		XM_OUT16(IoC, Port, XM_RX_CMD, pPrt->PRxCmd);
 	}
-}	/* SkXmSetRxCmd*/
-
+}
 
 /******************************************************************************
  *
@@ -383,12 +350,12 @@ int		Mode)		/* Mode is SK_STRIP_FCS_ON/OFF, SK_STRIP_PAD_ON/OFF,
 void SkXmClrExactAddr(
 SK_AC	*pAC,		/* adapter context */
 SK_IOC	IoC,		/* IO context */
-int		Port,		/* The XMAC to handle with belongs to this Port */
-int		StartNum,	/* Begin with this Address Register Index (0..15) */
-int		StopNum)	/* Stop after finished with this Register Idx (0..15) */
+int	Port,		/* The XMAC to handle with belongs to this Port */
+int	StartNum,	/* Begin with this Address Register Index (0..15) */
+int	StopNum)	/* Stop after finished with this Register Idx (0..15) */
 {
-	int		i;
-	SK_U16	ZeroAddr[3] = {0x0000, 0x0000, 0x0000};
+	int	i;
+	SK_U16	ZeroAddr[3] = { 0x0000, 0x0000, 0x0000 };
 
 	if ((unsigned)StartNum > 15 || (unsigned)StopNum > 15 ||
 		StartNum > StopNum) {
@@ -400,8 +367,7 @@ int		StopNum)	/* Stop after finished with this Register Idx (0..15) */
 	for (i = StartNum; i <= StopNum; i++) {
 		XM_OUTADDR(IoC, Port, XM_EXM(i), &ZeroAddr[0]);
 	}
-}	/* SkXmClrExactAddr */
-
+}
 
 /******************************************************************************
  *
@@ -417,13 +383,12 @@ int		StopNum)	/* Stop after finished with this Register Idx (0..15) */
 static void SkXmClrSrcCheck(
 SK_AC	*pAC,	/* adapter context */
 SK_IOC	IoC,	/* IO context */
-int		Port)	/* The XMAC to handle with belongs to this Port (MAC_1 + n) */
+int	Port)	/* The XMAC to handle with belongs to this Port (MAC_1 + n) */
 {
-	SK_U16	ZeroAddr[3] = {0x0000, 0x0000, 0x0000};
+	SK_U16	ZeroAddr[3] = { 0x0000, 0x0000, 0x0000 };
 
 	XM_OUTHASH(IoC, Port, XM_SRC_CHK, &ZeroAddr);
-}	/* SkXmClrSrcCheck */
-
+}
 
 /******************************************************************************
  *
@@ -438,13 +403,12 @@ int		Port)	/* The XMAC to handle with belongs to this Port (MAC_1 + n) */
 static void SkXmClrHashAddr(
 SK_AC	*pAC,	/* adapter context */
 SK_IOC	IoC,	/* IO context */
-int		Port)	/* The XMAC to handle with belongs to this Port (MAC_1 + n) */
+int	Port)	/* The XMAC to handle with belongs to this Port (MAC_1 + n) */
 {
-	SK_U16	ZeroAddr[4] = {0x0000, 0x0000, 0x0000, 0x0000};
+	SK_U16	ZeroAddr[4] = { 0x0000, 0x0000, 0x0000, 0x0000 };
 
 	XM_OUTHASH(IoC, Port, XM_HSM, &ZeroAddr);
-}	/* SkXmClrHashAddr*/
-
+}
 
 /******************************************************************************
  *
@@ -459,15 +423,14 @@ int		Port)	/* The XMAC to handle with belongs to this Port (MAC_1 + n) */
 void SkXmFlushTxFifo(
 SK_AC	*pAC,	/* adapter context */
 SK_IOC	IoC,	/* IO context */
-int		Port)	/* The XMAC to handle with belongs to this Port (MAC_1 + n) */
+int	Port)	/* The XMAC to handle with belongs to this Port (MAC_1 + n) */
 {
 	SK_U32	MdReg;
 
 	XM_IN32(IoC, Port, XM_MODE, &MdReg);
 	MdReg |= XM_MD_FTF;
 	XM_OUT32(IoC, Port, XM_MODE, MdReg);
-}	/* SkXmFlushTxFifo */
-
+}
 
 /******************************************************************************
  *
@@ -482,15 +445,14 @@ int		Port)	/* The XMAC to handle with belongs to this Port (MAC_1 + n) */
 void SkXmFlushRxFifo(
 SK_AC	*pAC,	/* adapter context */
 SK_IOC	IoC,	/* IO context */
-int		Port)	/* The XMAC to handle with belongs to this Port (MAC_1 + n) */
+int	Port)	/* The XMAC to handle with belongs to this Port (MAC_1 + n) */
 {
 	SK_U32	MdReg;
 
 	XM_IN32(IoC, Port, XM_MODE, &MdReg);
 	MdReg |= XM_MD_FRF;
 	XM_OUT32(IoC, Port, XM_MODE, MdReg);
-}	/* SkXmFlushRxFifo*/
-
+}
 
 /******************************************************************************
  *
@@ -530,10 +492,10 @@ int		Port)	/* The XMAC to handle with belongs to this Port (MAC_1 + n) */
 void SkXmSoftRst(
 SK_AC	*pAC,	/* adapter context */
 SK_IOC	IoC,	/* IO context */
-int		Port)	/* port to stop (MAC_1 + n) */
+int	Port)	/* port to stop (MAC_1 + n) */
 {
 	SK_GEPORT	*pPrt;
-	SK_U16		Word;
+	SK_U16	Word;
 
 	pPrt = &pAC->GIni.GP[Port];
 
@@ -555,11 +517,13 @@ int		Port)	/* port to stop (MAC_1 + n) */
 	
 	/* disable all PHY IRQs */
 	switch (pAC->GIni.GP[Port].PhyType) {
-	case SK_PHY_BCOM:
-			PHY_WRITE(IoC, pPrt, Port, PHY_BCOM_INT_MASK, 0xffff);
+		case SK_PHY_BCOM:
+			PHY_WRITE(IoC, pPrt, Port, PHY_BCOM_INT_MASK, 
+				0xffff);
 			break;
 		case SK_PHY_LONE:
-			PHY_WRITE(IoC, pPrt, Port, PHY_LONE_INT_ENAB, 0x0);
+			PHY_WRITE(IoC, pPrt, Port, PHY_LONE_INT_ENAB, 
+				0x0);
 			break;
 		case SK_PHY_NAT:
 			/* todo: National
@@ -580,8 +544,7 @@ int		Port)	/* port to stop (MAC_1 + n) */
 	SkXmFlushRxFifo(pAC, IoC, Port);
 
 	pAC->GIni.GP[Port].PState = SK_PRT_STOP;
-}	/* SkXmSoftRst*/
-
+}
 
 /******************************************************************************
  *
@@ -595,47 +558,31 @@ int		Port)	/* port to stop (MAC_1 + n) */
  *	register (Timing requirements: Broadcom: 400ns, Level One:
  *	none, National: 80ns).
  *
- * ATTENTION:
- * 	It is absolutely neccessary to reset the SW_RST Bit first
- *	before calling this function.
- *
  * Returns:
  *	nothing
  */
 void SkXmHardRst(
 SK_AC	*pAC,	/* adapter context */
 SK_IOC	IoC,	/* IO context */
-int		Port)	/* port to stop (MAC_1 + n) */
+int	Port)	/* port to stop (MAC_1 + n) */
 {
-	SK_U32	Reg;
-	int		i;
-	int		TOut;
 	SK_U16	Word;
+	int	i;
+	SK_U32	Reg;
 
-	for (i = 0; i < 4; i++) {
+	for (i=0; i<4; i++) {
 		/* TX_MFF_CTRL1 is a 32 bit register but only the lowest 16 */
 		/* bit contains buttoms to press */
-		SK_OUT16(IoC, MR_ADDR(Port, TX_MFF_CTRL1), (SK_U16)MFF_CLR_MAC_RST);
-
-		TOut = 0;
+		SK_OUT16(IoC, MR_ADDR(Port, TX_MFF_CTRL1),
+			(SK_U16) MFF_CLR_MAC_RST);
+		SK_OUT16(IoC, MR_ADDR(Port, TX_MFF_CTRL1),
+			(SK_U16) MFF_SET_MAC_RST);
 		do {
-			TOut ++;
-			if (TOut > 10000) {
-				/*
-				 * Adapter seems to be in RESET state.
-				 * Registers cannot be written.
-				 */
-				return;
-			}
-
-			SK_OUT16(IoC, MR_ADDR(Port, TX_MFF_CTRL1),
-				(SK_U16) MFF_SET_MAC_RST);
 			SK_IN16(IoC,MR_ADDR(Port,TX_MFF_CTRL1), &Word);
 		} while ((Word & MFF_SET_MAC_RST) == 0);
 	}
-
-	/* For external PHYs there must be special handling */
 	if (pAC->GIni.GP[Port].PhyType != SK_PHY_XMAC) {
+
 		/* reset external PHY */
 		SK_IN32(IoC, B2_GP_IO, &Reg);
 		if (Port == 0) {
@@ -653,8 +600,7 @@ int		Port)	/* port to stop (MAC_1 + n) */
 	}
 
 	pAC->GIni.GP[Port].PState = SK_PRT_RESET;
-}	/* SkXmHardRst */
-
+}
 
 /******************************************************************************
  *
@@ -665,7 +611,8 @@ int		Port)	/* port to stop (MAC_1 + n) */
  *	The XMAC must be reset or stopped before calling this function.
  *
  * Note:
- *	The XMAC's Rx and Tx state machine is still disabled when returning.
+ *	The XMACs Rx and Tx state machine is still disabled when
+ *	returning.
  *
  * Returns:
  *	nothing
@@ -673,13 +620,12 @@ int		Port)	/* port to stop (MAC_1 + n) */
 void SkXmInitMac(
 SK_AC	*pAC,		/* adapter context */
 SK_IOC	IoC,		/* IO context */
-int		Port)		/* Port Index (MAC_1 + n) */
+int	Port)		/* Port Index (MAC_1 + n) */
 {
-	SK_GEPORT	*pPrt;
-	SK_U32		Reg;
-	int			i;
-	SK_U16		SWord;
-	SK_U16		PhyId;
+	SK_GEPORT *pPrt;
+	SK_U16	SWord;
+	int	i;
+	SK_U32	Reg;
 
 	pPrt = &pAC->GIni.GP[Port];
 
@@ -687,118 +633,74 @@ int		Port)		/* Port Index (MAC_1 + n) */
 		/* Port State: SK_PRT_STOP */
 		/* Verify that the reset bit is cleared */
 		SK_IN16(IoC, MR_ADDR(Port, TX_MFF_CTRL1), &SWord);
-		if (SWord & (SK_U16)MFF_SET_MAC_RST) {
+		if (SWord & (SK_U16) MFF_SET_MAC_RST) {
 			/* PState does not match HW state */
-			SK_ERR_LOG(pAC, SK_ERRCL_SW, SKERR_HWI_E006, SKERR_HWI_E006MSG);
-			/* Correct it. */
+			SK_ERR_LOG(pAC, SK_ERRCL_SW, SKERR_HWI_E006,
+				SKERR_HWI_E006MSG);
+			/* correct it */
 			pPrt->PState = SK_PRT_RESET;
 		}
 	}
-
 	if (pPrt->PState == SK_PRT_RESET) {
 		/*
 		 * clear HW reset
 		 * Note: The SW reset is self clearing, therefore there is
 		 *	 nothing to do here.
 		 */
-		SK_OUT16(IoC, MR_ADDR(Port, TX_MFF_CTRL1), (SK_U16)MFF_CLR_MAC_RST);
-
-		/* Ensure that XMAC reset release is done (errata from LReinbold?). */
-		SK_IN16(IoC, MR_ADDR(Port, TX_MFF_CTRL1), &SWord);
-
-		/* Clear PHY reset. */
+		SK_OUT16(IoC, MR_ADDR(Port, TX_MFF_CTRL1),
+			(SK_U16) MFF_CLR_MAC_RST);
+		
+		/*
+		 * clear PHY reset
+		 */
 		if (pAC->GIni.GP[Port].PhyType != SK_PHY_XMAC) {
+
 			SK_IN32(IoC, B2_GP_IO, &Reg);
 			if (Port == 0) {
-				Reg |= GP_DIR_0; /* Set to output. */
+				Reg |= GP_DIR_0; /* set to output */
 				Reg |= GP_IO_0;
 			}
 			else {
-				Reg |= GP_DIR_2; /* Set to output. */
+				Reg |= GP_DIR_2; /* set to output */
 				Reg |= GP_IO_2;
 			}
 			SK_OUT32(IoC, B2_GP_IO, Reg);
 
-			/* Enable GMII interface. */
+			/* enable GMII interface */
 			XM_OUT16(IoC, Port, XM_HW_CFG, XM_HW_GMII_MD);
 
-			PHY_READ(IoC, pPrt, Port, PHY_XMAC_ID1, &PhyId);
-#ifdef xDEBUG
-			if (SWord == 0xFFFF) {
-				i = 1;
-				do {
-					PHY_READ(IoC, pPrt, Port, PHY_XMAC_ID1, &SWord);
-					i++;
-					/* Limit retries; else machine may hang. */
-				} while (SWord == 0xFFFF && i < 500000);
-
-				CMSMPrintString(
-					pAC->pConfigTable,
-					MSG_TYPE_RUNTIME_INFO,
-					"ID1 is %x after %d reads.",
-					(void *)SWord,
-					(void *)i);
-
-				/* Trigger PCI analyzer */
-				/* SK_IN32(IoC, 0x012c, &Reg); */
-			}
-#endif	/* DEBUG */
-
-			/*
-			 * Optimize MDIO transfer by suppressing preamble.
-			 * Must be done AFTER first access to BCOM chip.
-			 */
+			/* optimize MDIO transfer by oppressing preamble */
 			XM_IN16(IoC, Port, XM_MMU_CMD, &SWord);
 			XM_OUT16(IoC, Port, XM_MMU_CMD, SWord | XM_MMU_NO_PRE);
 
-			if (PhyId == 0x6044) {
-				/* Workaround BCOM Errata for the C0 type. */
-				/* Write magic patterns to reserved registers. */
-				i = 0;
-				while (BcomRegC0Hack[i].PhyReg != 0) {
-					PHY_WRITE(IoC, pPrt, Port, BcomRegC0Hack[i].PhyReg,
-						BcomRegC0Hack[i].PhyVal);
-					i++;
-				}
-			}
-			else if (PhyId == 0x6041) {
-				/* Workaround BCOM Errata for the A1 type. */
-				/* Write magic patterns to reserved registers. */
+			/* Workaround BCOM Errata for the A1 type */
+			/* Write magic patterns to reserved registers */
+			PHY_READ(IoC, pPrt, Port, PHY_XMAC_ID1, &SWord);
+			if (SWord == 0x6041) {
 				i = 0;
 				while (BcomRegA1Hack[i].PhyReg != 0) {
-					PHY_WRITE(IoC, pPrt, Port, BcomRegA1Hack[i].PhyReg,
+					PHY_WRITE(IoC, pPrt, Port,
+						BcomRegA1Hack[i].PhyReg,
 						BcomRegA1Hack[i].PhyVal);
 					i++;
 				}
 			}
-
-			/* Workaround BCOM Errata (#10523) for all BCom PHYs. */
-			/* Disable Power Management after reset. */
-			PHY_READ(IoC, pPrt, Port, PHY_BCOM_AUX_CTRL, &SWord);
-#ifdef xDEBUG
-			if (SWord == 0xFFFF) {
-				i = 1;
-				do {
-					PHY_READ(IoC, pPrt, Port, PHY_BCOM_AUX_CTRL, &SWord);
+			/* Workaround BCOM Errata for the C0 type */
+			/* Write magic patterns to reserved registers */
+			if (SWord == 0x6044) {
+				i = 0;
+				while (BcomRegC0Hack[i].PhyReg != 0) {
+					PHY_WRITE(IoC, pPrt, Port,
+						BcomRegC0Hack[i].PhyReg,
+						BcomRegC0Hack[i].PhyVal);
 					i++;
-					/* Limit retries; else machine may hang. */
-				} while (SWord == 0xFFFF && i < 500000);
-
-				CMSMPrintString(
-					pAC->pConfigTable,
-					MSG_TYPE_RUNTIME_INFO,
-					"AUX_CTRL is %x after %d reads.",
-					(void *)SWord,
-					(void *)i);
-
-				/* Trigger PCI analyzer */
-				/* SK_IN32(IoC, 0x012c, &Reg); */
+				}
 			}
-#endif	/* DEBUG */
-			PHY_WRITE(IoC, pPrt, Port, PHY_BCOM_AUX_CTRL,
-				SWord | PHY_B_AC_DIS_PM);
 
-			/* PHY LED initialization is done in SkGeXmitLED(), not here. */
+			/*
+			 * PHY LED initialization is performed in
+			 * SkGeXmitLED() (but not here).
+			 */
 		}
 
 		/* Dummy read the Interrupt source register */
@@ -806,7 +708,7 @@ int		Port)		/* Port Index (MAC_1 + n) */
 		
 		/*
 		 * The autonegotiation process starts immediately after
-		 * clearing the reset. The autonegotiation process should be
+		 * clearing the reset. Autonegotiation process should be
 		 * started by the SIRQ, therefore stop it here immediately.
 		 */
 		SkXmInitPhy(pAC, IoC, Port, SK_FALSE);
@@ -914,8 +816,7 @@ int		Port)		/* Port Index (MAC_1 + n) */
 	 * This should be done after the autonegotiation process
 	 * has been completed successfully.
 	 */
-}	/* SkXmInitMac*/
-
+}
 
 /******************************************************************************
  *
@@ -932,7 +833,7 @@ int		Port)		/* Port Index (MAC_1 + n) */
 void SkXmInitDupMd(
 SK_AC	*pAC,		/* adapter context */
 SK_IOC	IoC,		/* IO context */
-int		Port)		/* Port Index (MAC_1 + n) */
+int	Port)		/* Port Index (MAC_1 + n) */
 {
 	switch (pAC->GIni.GP[Port].PLinkModeStatus) {
 	case SK_LMODE_STAT_AUTOHALF:
@@ -961,8 +862,7 @@ int		Port)		/* Port Index (MAC_1 + n) */
 		SK_ERR_LOG(pAC, SK_ERRCL_SW, SKERR_HWI_E007, SKERR_HWI_E007MSG);
 		break;
 	}
-}	/* SkXmInitDupMd */
-
+}
 
 /******************************************************************************
  *
@@ -980,11 +880,11 @@ int		Port)		/* Port Index (MAC_1 + n) */
 void SkXmInitPauseMd(
 SK_AC	*pAC,		/* adapter context */
 SK_IOC	IoC,		/* IO context */
-int		Port)		/* Port Index (MAC_1 + n) */
+int	Port)		/* Port Index (MAC_1 + n) */
 {
 	SK_GEPORT	*pPrt;
-	SK_U32		DWord;
 	SK_U16		Word;
+	SK_U32		DWord;
 
 	pPrt = &pAC->GIni.GP[Port];
 
@@ -1043,7 +943,8 @@ int		Port)		/* Port Index (MAC_1 + n) */
 		/* Disable Pause Mode in MAC Rx FIFO */
 		SK_OUT16(IoC, MR_ADDR(Port,RX_MFF_CTRL1), MFF_DIS_PAUSE);
 	}
-}	/* SkXmInitPauseMd*/
+
+}
 
 
 /******************************************************************************
@@ -1061,7 +962,7 @@ int		Port)		/* Port Index (MAC_1 + n) */
 void SkXmInitPhy(
 SK_AC	*pAC,		/* adapter context */
 SK_IOC	IoC,		/* IO context */
-int		Port,		/* Port Index (MAC_1 + n) */
+int	Port,		/* Port Index (MAC_1 + n) */
 SK_BOOL	DoLoop)		/* Should a Phy LOOback be set-up? */
 {
 	SK_GEPORT	*pPrt;
@@ -1081,8 +982,7 @@ SK_BOOL	DoLoop)		/* Should a Phy LOOback be set-up? */
 		SkXmInitPhyNat(pAC, IoC, Port, DoLoop);
 		break;
 	}
-}	/* SkXmInitPhy*/
-
+}
 
 /******************************************************************************
  *
@@ -1099,11 +999,11 @@ SK_BOOL	DoLoop)		/* Should a Phy LOOback be set-up? */
 static void SkXmInitPhyXmac(
 SK_AC	*pAC,		/* adapter context */
 SK_IOC	IoC,		/* IO context */
-int		Port,		/* Port Index (MAC_1 + n) */
+int	Port,		/* Port Index (MAC_1 + n) */
 SK_BOOL	DoLoop)		/* Should a Phy LOOback be set-up? */
 {
 	SK_GEPORT	*pPrt;
-	SK_U16		Ctrl;
+	SK_U16		Crtl;
 
 	pPrt = &pAC->GIni.GP[Port];
 
@@ -1114,69 +1014,67 @@ SK_BOOL	DoLoop)		/* Should a Phy LOOback be set-up? */
 			("InitPhyXmac: no autonegotiation Port %d\n", Port));
 		/* No Autonegiotiation */
 		/* Set DuplexMode in Config register */
-		Ctrl = (pPrt->PLinkMode == SK_LMODE_FULL ? PHY_CT_DUP_MD : 0);
+		Crtl = (pPrt->PLinkMode == SK_LMODE_FULL ? PHY_CT_DUP_MD : 0);
 
 		/*
 		 * Do NOT enable Autonegotiation here. This would hold
 		 * the link down because no IDLES are transmitted
 		 */
-	}
-	else {
+	} else {
 		SK_DBG_MSG(pAC,SK_DBGMOD_HWM,SK_DBGCAT_CTRL,
 			("InitPhyXmac: with autonegotiation Port %d\n", Port));
 		/* Set Autonegotiation advertisement */
-		Ctrl = 0;
+		Crtl = 0;
 
 		/* Set Full/half duplex capabilities */
 		switch (pPrt->PLinkMode) {
 		case SK_LMODE_AUTOHALF:
-			Ctrl |= PHY_X_AN_HD;
+			Crtl |= PHY_X_AN_HD;
 			break;
 		case SK_LMODE_AUTOFULL:
-			Ctrl |= PHY_X_AN_FD;
+			Crtl |= PHY_X_AN_FD;
 			break;
 		case SK_LMODE_AUTOBOTH:
-			Ctrl |= PHY_X_AN_FD | PHY_X_AN_HD;
+			Crtl |= PHY_X_AN_FD | PHY_X_AN_HD;
 			break;
 		default:
 			SK_ERR_LOG(pAC, SK_ERRCL_SW | SK_ERRCL_INIT,
-				SKERR_HWI_E015, SKERR_HWI_E015MSG);
+				SKERR_HWI_E015, SKERR_HWI_E015MSG) ;
 		}
 
 		switch (pPrt->PFlowCtrlMode) {
 		case SK_FLOW_MODE_NONE:
-			Ctrl |= PHY_X_P_NO_PAUSE;
+			Crtl |= PHY_X_P_NO_PAUSE;
 			break;
 		case SK_FLOW_MODE_LOC_SEND:
-			Ctrl |= PHY_X_P_ASYM_MD;
+			Crtl |= PHY_X_P_ASYM_MD;
 			break;
 		case SK_FLOW_MODE_SYMMETRIC:
-			Ctrl |= PHY_X_P_SYM_MD;
+			Crtl |= PHY_X_P_SYM_MD;
 			break;
 		case SK_FLOW_MODE_SYM_OR_REM:
-			Ctrl |= PHY_X_P_BOTH_MD;
+			Crtl |= PHY_X_P_BOTH_MD;
 			break;
 		default:
 			SK_ERR_LOG(pAC, SK_ERRCL_SW | SK_ERRCL_INIT,
-				SKERR_HWI_E016, SKERR_HWI_E016MSG);
+				SKERR_HWI_E016, SKERR_HWI_E016MSG) ;
 		}
 
 		/* Write AutoNeg Advertisement Register */
-		PHY_WRITE(IoC, pPrt, Port, PHY_XMAC_AUNE_ADV, Ctrl);
+		PHY_WRITE(IoC, pPrt, Port, PHY_XMAC_AUNE_ADV, Crtl) ;
 
 		/* Restart Autonegotiation */
-		Ctrl = PHY_CT_ANE | PHY_CT_RE_CFG;
+		Crtl = PHY_CT_ANE | PHY_CT_RE_CFG;
 	}
 
 	if (DoLoop) {
 		/* Set the Phy Loopback bit, too */
-		Ctrl |= PHY_CT_LOOP;
+		Crtl |= PHY_CT_LOOP;
 	}
 
 	/* Write to the Phy control register */
-	PHY_WRITE(IoC, pPrt, Port, PHY_XMAC_CTRL, Ctrl);
-}	/* SkXmInitPhyXmac*/
-
+	PHY_WRITE(IoC, pPrt, Port, PHY_XMAC_CTRL, Crtl) ;
+}
 
 /******************************************************************************
  *
@@ -1193,29 +1091,23 @@ SK_BOOL	DoLoop)		/* Should a Phy LOOback be set-up? */
 static void SkXmInitPhyBcom(
 SK_AC	*pAC,		/* adapter context */
 SK_IOC	IoC,		/* IO context */
-int		Port,		/* Port Index (MAC_1 + n) */
+int	Port,		/* Port Index (MAC_1 + n) */
 SK_BOOL	DoLoop)		/* Should a Phy LOOback be set-up? */
 {
 	SK_GEPORT	*pPrt;
-	SK_U16		Ctrl1;
-	SK_U16		Ctrl2;
-	SK_U16		Ctrl3;
-	SK_U16		Ctrl4;
-	SK_U16		Ctrl5;
-
-	Ctrl1 = PHY_B_CT_SP1000;
-	Ctrl2 = 0;
-	Ctrl3 = PHY_SEL_TYPE;
-	Ctrl4 = PHY_B_PEC_EN_LTR;
-	Ctrl5 = PHY_B_AC_TX_TST;
+	SK_U16		Crtl1 = PHY_B_CT_SP1000;
+	SK_U16		Crtl2 = 0;
+	SK_U16		Crtl3 = PHY_SEL_TYPE;
+	SK_U16		Crtl4 = PHY_B_PEC_EN_LTR;
+	SK_U16		Crtl5 = PHY_B_AC_TX_TST;
 
 	pPrt = &pAC->GIni.GP[Port];
 
-	/* manually Master/Slave ? */
+	/* manuell Master/Slave ? */
 	if (pPrt->PMSMode != SK_MS_MODE_AUTO) {
-		Ctrl2 |= PHY_B_1000C_MSE;
+		Crtl2 |= PHY_B_1000C_MSE;
 		if (pPrt->PMSMode == SK_MS_MODE_MASTER) {
-			Ctrl2 |= PHY_B_1000C_MSC;
+			Crtl2 |= PHY_B_1000C_MSC;
 		}
 	}
 	/* Autonegotiation ? */
@@ -1225,19 +1117,18 @@ SK_BOOL	DoLoop)		/* Should a Phy LOOback be set-up? */
 			("InitPhyBcom: no autonegotiation Port %d\n", Port));
 		/* No Autonegiotiation */
 		/* Set DuplexMode in Config register */
-		Ctrl1 |= (pPrt->PLinkMode == SK_LMODE_FULL ? PHY_CT_DUP_MD : 0);
+		Crtl1 |= (pPrt->PLinkMode == SK_LMODE_FULL ? PHY_CT_DUP_MD : 0);
 
-		/* Determine Master/Slave manually if not already done. */
+		/* Determine Master/Slave manuell if not already done */
 		if (pPrt->PMSMode == SK_MS_MODE_AUTO) {
-			Ctrl2 |= PHY_B_1000C_MSE;	/* set it to Slave */
+			Crtl2 |= PHY_B_1000C_MSE;	/* set it to Slave */
 		}
 
 		/*
 		 * Do NOT enable Autonegotiation here. This would hold
 		 * the link down because no IDLES are transmitted
 		 */
-	}
-	else {
+	} else {
 		SK_DBG_MSG(pAC,SK_DBGMOD_HWM,SK_DBGCAT_CTRL,
 			("InitPhyBcom: with autonegotiation Port %d\n", Port));
 		/* Set Autonegotiation advertisement */
@@ -1245,31 +1136,31 @@ SK_BOOL	DoLoop)		/* Should a Phy LOOback be set-up? */
 		/* Set Full/half duplex capabilities */
 		switch (pPrt->PLinkMode) {
 		case SK_LMODE_AUTOHALF:
-			Ctrl2 |= PHY_B_1000C_AHD;
+			Crtl2 |= PHY_B_1000C_AHD;
 			break;
 		case SK_LMODE_AUTOFULL:
-			Ctrl2 |= PHY_B_1000C_AFD;
+			Crtl2 |= PHY_B_1000C_AFD;
 			break;
 		case SK_LMODE_AUTOBOTH:
-			Ctrl2 |= PHY_B_1000C_AFD | PHY_B_1000C_AHD;
+			Crtl2 |= PHY_B_1000C_AFD | PHY_B_1000C_AHD;
 			break;
 		default:
 			SK_ERR_LOG(pAC, SK_ERRCL_SW | SK_ERRCL_INIT,
-				SKERR_HWI_E015, SKERR_HWI_E015MSG);
+				SKERR_HWI_E015, SKERR_HWI_E015MSG) ;
 		}
 
 		switch (pPrt->PFlowCtrlMode) {
 		case SK_FLOW_MODE_NONE:
-			Ctrl3 |= PHY_B_P_NO_PAUSE;
+			Crtl3 |= PHY_B_P_NO_PAUSE;
 			break;
 		case SK_FLOW_MODE_LOC_SEND:
-			Ctrl3 |= PHY_B_P_ASYM_MD;
+			Crtl3 |= PHY_B_P_ASYM_MD;
 			break;
 		case SK_FLOW_MODE_SYMMETRIC:
-			Ctrl3 |= PHY_B_P_SYM_MD;
+			Crtl3 |= PHY_B_P_SYM_MD;
 			break;
 		case SK_FLOW_MODE_SYM_OR_REM:
-			Ctrl3 |= PHY_B_P_BOTH_MD;
+			Crtl3 |= PHY_B_P_BOTH_MD;
 			break;
 		default:
 			SK_ERR_LOG(pAC, SK_ERRCL_SW | SK_ERRCL_INIT,
@@ -1277,7 +1168,7 @@ SK_BOOL	DoLoop)		/* Should a Phy LOOback be set-up? */
 		}
 
 		/* Restart Autonegotiation */
-		Ctrl1 |= PHY_CT_ANE | PHY_CT_RE_CFG;
+		Crtl1 |= PHY_CT_ANE | PHY_CT_RE_CFG;
 
 	}
 	
@@ -1286,40 +1177,39 @@ SK_BOOL	DoLoop)		/* Should a Phy LOOback be set-up? */
 	   init order of LEDs and XMAC. (MAl) */
 	
 	/* Write 1000Base-T Control Register */
-	PHY_WRITE(IoC, pPrt, Port, PHY_BCOM_1000T_CTRL, Ctrl2);
+	PHY_WRITE(IoC, pPrt, Port, PHY_BCOM_1000T_CTRL, Crtl2);
 	SK_DBG_MSG(pAC,SK_DBGMOD_HWM,SK_DBGCAT_CTRL,
-		("1000Base-T Control Reg = %x\n", Ctrl2));
+		("1000Base-T Control Reg = %x\n", Crtl2));
 	
 	/* Write AutoNeg Advertisement Register */
-	PHY_WRITE(IoC, pPrt, Port, PHY_BCOM_AUNE_ADV, Ctrl3);
+	PHY_WRITE(IoC, pPrt, Port, PHY_BCOM_AUNE_ADV, Crtl3);
 	SK_DBG_MSG(pAC,SK_DBGMOD_HWM,SK_DBGCAT_CTRL,
-		("AutoNeg Advertisment Reg = %x\n", Ctrl3));
+		("AutoNeg Advertisment Reg = %x\n", Crtl3));
 	
 
 	if (DoLoop) {
 		/* Set the Phy Loopback bit, too */
-		Ctrl1 |= PHY_CT_LOOP;
+		Crtl1 |= PHY_CT_LOOP;
 	}
 
 	if (pAC->GIni.GIPortUsage == SK_JUMBO_LINK) {
 		/* configure fifo to high latency for xmission of ext. packets*/
-		Ctrl4 |= PHY_B_PEC_HIGH_LA;
+		Crtl4 |= PHY_B_PEC_HIGH_LA;
 
 		/* configure reception of extended packets */
-		Ctrl5 |= PHY_B_AC_LONG_PACK;
+		Crtl5 |= PHY_B_AC_LONG_PACK;
 
-		PHY_WRITE(IoC, pPrt, Port, PHY_BCOM_AUX_CTRL, Ctrl5);
+		PHY_WRITE(IoC, pPrt, Port, PHY_BCOM_AUX_CTRL, Crtl5);
 	}
 
 	/* Configure LED Traffic Mode and Jumbo Frame usage if specified */
-	PHY_WRITE(IoC, pPrt, Port, PHY_BCOM_P_EXT_CTRL, Ctrl4);
+	PHY_WRITE(IoC, pPrt, Port, PHY_BCOM_P_EXT_CTRL, Crtl4);
 	
 	/* Write to the Phy control register */
-	PHY_WRITE(IoC, pPrt, Port, PHY_BCOM_CTRL, Ctrl1);
+	PHY_WRITE(IoC, pPrt, Port, PHY_BCOM_CTRL, Crtl1);
 	SK_DBG_MSG(pAC,SK_DBGMOD_HWM,SK_DBGCAT_CTRL,
-		("PHY Control Reg = %x\n", Ctrl1));
-}	/* SkXmInitPhyBcom */
-
+		("PHY Control Reg = %x\n", Crtl1));
+}
 
 /******************************************************************************
  *
@@ -1336,25 +1226,21 @@ SK_BOOL	DoLoop)		/* Should a Phy LOOback be set-up? */
 static void SkXmInitPhyLone(
 SK_AC	*pAC,		/* adapter context */
 SK_IOC	IoC,		/* IO context */
-int		Port,		/* Port Index (MAC_1 + n) */
+int	Port,		/* Port Index (MAC_1 + n) */
 SK_BOOL	DoLoop)		/* Should a Phy LOOback be set-up? */
 {
 	SK_GEPORT	*pPrt;
-	SK_U16		Ctrl1;
-	SK_U16		Ctrl2;
-	SK_U16		Ctrl3;
-
-	Ctrl1 = PHY_L_CT_SP1000;
-	Ctrl2 = 0;
-	Ctrl3 = PHY_SEL_TYPE;
+	SK_U16		Crtl1 = PHY_L_CT_SP1000;
+	SK_U16		Crtl2 = 0;
+	SK_U16		Crtl3 = PHY_SEL_TYPE;
 
 	pPrt = &pAC->GIni.GP[Port];
 
-	/* manually Master/Slave ? */
+	/* manuell Master/Slave ? */
 	if (pPrt->PMSMode != SK_MS_MODE_AUTO) {
-		Ctrl2 |= PHY_L_1000C_MSE;
+		Crtl2 |= PHY_L_1000C_MSE;
 		if (pPrt->PMSMode == SK_MS_MODE_MASTER) {
-			Ctrl2 |= PHY_L_1000C_MSC;
+			Crtl2 |= PHY_L_1000C_MSC;
 		}
 	}
 	/* Autonegotiation ? */
@@ -1370,19 +1256,18 @@ SK_BOOL	DoLoop)		/* Should a Phy LOOback be set-up? */
 			("InitPhyLone: no autonegotiation Port %d\n", Port));
 		/* No Autonegiotiation */
 		/* Set DuplexMode in Config register */
-		Ctrl1 = (pPrt->PLinkMode == SK_LMODE_FULL ? PHY_CT_DUP_MD : 0);
+		Crtl1 = (pPrt->PLinkMode == SK_LMODE_FULL ? PHY_CT_DUP_MD : 0);
 
-		/* Determine Master/Slave manually if not already done. */
+		/* Determine Master/Slave manuell if not already done */
 		if (pPrt->PMSMode == SK_MS_MODE_AUTO) {
-			Ctrl2 |= PHY_L_1000C_MSE;	/* set it to Slave */
+			Crtl2 |= PHY_L_1000C_MSE;	/* set it to Slave */
 		}
 
 		/*
 		 * Do NOT enable Autonegotiation here. This would hold
 		 * the link down because no IDLES are transmitted
 		 */
-	}
-	else {
+	} else {
 		SK_DBG_MSG(pAC,SK_DBGMOD_HWM,SK_DBGCAT_CTRL,
 			("InitPhyLone: with autonegotiation Port %d\n", Port));
 		/* Set Autonegotiation advertisement */
@@ -1390,31 +1275,31 @@ SK_BOOL	DoLoop)		/* Should a Phy LOOback be set-up? */
 		/* Set Full/half duplex capabilities */
 		switch (pPrt->PLinkMode) {
 		case SK_LMODE_AUTOHALF:
-			Ctrl2 |= PHY_L_1000C_AHD;
+			Crtl2 |= PHY_L_1000C_AHD;
 			break;
 		case SK_LMODE_AUTOFULL:
-			Ctrl2 |= PHY_L_1000C_AFD;
+			Crtl2 |= PHY_L_1000C_AFD;
 			break;
 		case SK_LMODE_AUTOBOTH:
-			Ctrl2 |= PHY_L_1000C_AFD | PHY_L_1000C_AHD;
+			Crtl2 |= PHY_L_1000C_AFD | PHY_L_1000C_AHD;
 			break;
 		default:
 			SK_ERR_LOG(pAC, SK_ERRCL_SW | SK_ERRCL_INIT,
-				SKERR_HWI_E015, SKERR_HWI_E015MSG);
+				SKERR_HWI_E015, SKERR_HWI_E015MSG) ;
 		}
 
 		switch (pPrt->PFlowCtrlMode) {
 		case SK_FLOW_MODE_NONE:
-			Ctrl3 |= PHY_L_P_NO_PAUSE;
+			Crtl3 |= PHY_L_P_NO_PAUSE;
 			break;
 		case SK_FLOW_MODE_LOC_SEND:
-			Ctrl3 |= PHY_L_P_ASYM_MD;
+			Crtl3 |= PHY_L_P_ASYM_MD;
 			break;
 		case SK_FLOW_MODE_SYMMETRIC:
-			Ctrl3 |= PHY_L_P_SYM_MD;
+			Crtl3 |= PHY_L_P_SYM_MD;
 			break;
 		case SK_FLOW_MODE_SYM_OR_REM:
-			Ctrl3 |= PHY_L_P_BOTH_MD;
+			Crtl3 |= PHY_L_P_BOTH_MD;
 			break;
 		default:
 			SK_ERR_LOG(pAC, SK_ERRCL_SW | SK_ERRCL_INIT,
@@ -1422,7 +1307,7 @@ SK_BOOL	DoLoop)		/* Should a Phy LOOback be set-up? */
 		}
 
 		/* Restart Autonegotiation */
-		Ctrl1 = PHY_CT_ANE | PHY_CT_RE_CFG;
+		Crtl1 = PHY_CT_ANE | PHY_CT_RE_CFG;
 
 	}
 	
@@ -1431,19 +1316,19 @@ SK_BOOL	DoLoop)		/* Should a Phy LOOback be set-up? */
 	   init order of LEDs and XMAC. (MAl) */
 	
 	/* Write 1000Base-T Control Register */
-	PHY_WRITE(IoC, pPrt, Port, PHY_LONE_1000T_CTRL, Ctrl2);
+	PHY_WRITE(IoC, pPrt, Port, PHY_LONE_1000T_CTRL, Crtl2);
 	SK_DBG_MSG(pAC,SK_DBGMOD_HWM,SK_DBGCAT_CTRL,
-		("1000Base-T Control Reg = %x\n", Ctrl2));
+		("1000Base-T Control Reg = %x\n", Crtl2));
 	
 	/* Write AutoNeg Advertisement Register */
-	PHY_WRITE(IoC, pPrt, Port, PHY_LONE_AUNE_ADV, Ctrl3);
+	PHY_WRITE(IoC, pPrt, Port, PHY_LONE_AUNE_ADV, Crtl3);
 	SK_DBG_MSG(pAC,SK_DBGMOD_HWM,SK_DBGCAT_CTRL,
-		("AutoNeg Advertisment Reg = %x\n", Ctrl3));
+		("AutoNeg Advertisment Reg = %x\n", Crtl3));
 	
 
 	if (DoLoop) {
 		/* Set the Phy Loopback bit, too */
-		Ctrl1 |= PHY_CT_LOOP;
+		Crtl1 |= PHY_CT_LOOP;
 	}
 
 	if (pAC->GIni.GIPortUsage == SK_JUMBO_LINK) {
@@ -1454,11 +1339,10 @@ SK_BOOL	DoLoop)		/* Should a Phy LOOback be set-up? */
 	}
 	
 	/* Write to the Phy control register */
-	PHY_WRITE(IoC, pPrt, Port, PHY_LONE_CTRL, Ctrl1);
+	PHY_WRITE(IoC, pPrt, Port, PHY_LONE_CTRL, Crtl1);
 	SK_DBG_MSG(pAC,SK_DBGMOD_HWM,SK_DBGCAT_CTRL,
-		("PHY Control Reg = %x\n", Ctrl1));
-}	/* SkXmInitPhyLone*/
-
+		("PHY Control Reg = %x\n", Crtl1));
+}
 
 /******************************************************************************
  *
@@ -1475,12 +1359,11 @@ SK_BOOL	DoLoop)		/* Should a Phy LOOback be set-up? */
 static void SkXmInitPhyNat(
 SK_AC	*pAC,		/* adapter context */
 SK_IOC	IoC,		/* IO context */
-int		Port,		/* Port Index (MAC_1 + n) */
+int	Port,		/* Port Index (MAC_1 + n) */
 SK_BOOL	DoLoop)		/* Should a Phy LOOback be set-up? */
 {
 /* todo: National */
-}	/* SkXmInitPhyNat*/
-
+}
 
 /******************************************************************************
  *
@@ -1493,7 +1376,7 @@ SK_BOOL	DoLoop)		/* Should a Phy LOOback be set-up? */
 void	SkXmAutoNegLipaXmac(
 SK_AC	*pAC,		/* adapter context */
 SK_IOC	IoC,		/* IO context */
-int		Port,		/* Port Index (MAC_1 + n) */
+int	Port,		/* Port Index (MAC_1 + n) */
 SK_U16	IStatus)	/* Interrupt Status word to analyse */
 {
 	SK_GEPORT	*pPrt;
@@ -1507,8 +1390,7 @@ SK_U16	IStatus)	/* Interrupt Status word to analyse */
 			("AutoNegLipa: AutoNeg detected on port %d %x\n", Port, IStatus));
 		pPrt->PLipaAutoNeg = SK_LIPA_AUTO;
 	}
-}	/* SkXmAutoNegLipaXmac*/
-
+}
 
 /******************************************************************************
  *
@@ -1521,20 +1403,21 @@ SK_U16	IStatus)	/* Interrupt Status word to analyse */
 void	SkXmAutoNegLipaBcom(
 SK_AC	*pAC,		/* adapter context */
 SK_IOC	IoC,		/* IO context */
-int		Port,		/* Port Index (MAC_1 + n) */
+int	Port,		/* Port Index (MAC_1 + n) */
 SK_U16	PhyStat)	/* PHY Status word to analyse */
 {
 	SK_GEPORT	*pPrt;
 
 	pPrt = &pAC->GIni.GP[Port];
 
-	if (pPrt->PLipaAutoNeg != SK_LIPA_AUTO && (PhyStat & PHY_ST_AN_OVER)) {
+	if (pPrt->PLipaAutoNeg != SK_LIPA_AUTO &&
+		(PhyStat & (PHY_ST_AN_OVER))) {
+
 		SK_DBG_MSG(pAC,SK_DBGMOD_HWM,SK_DBGCAT_CTRL,
 			("AutoNegLipa: AutoNeg detected on port %d %x\n", Port, PhyStat));
 		pPrt->PLipaAutoNeg = SK_LIPA_AUTO;
 	}
-}	/* SkXmAutoNegLipaBcom*/
-
+}
 
 /******************************************************************************
  *
@@ -1561,8 +1444,7 @@ SK_U16	PhyStat)	/* PHY Status word to analyse */
 			("AutoNegLipa: AutoNeg detected on port %d %x\n", Port, PhyStat));
 		pPrt->PLipaAutoNeg = SK_LIPA_AUTO;
 	}
-}	/* SkXmAutoNegLipaLone*/
-
+}
 
 /******************************************************************************
  *
@@ -1575,7 +1457,7 @@ SK_U16	PhyStat)	/* PHY Status word to analyse */
 void	SkXmAutoNegLipaNat(
 SK_AC	*pAC,		/* adapter context */
 SK_IOC	IoC,		/* IO context */
-int		Port,		/* Port Index (MAC_1 + n) */
+int	Port,		/* Port Index (MAC_1 + n) */
 SK_U16	PhyStat)	/* PHY Status word to analyse */
 {
 	SK_GEPORT	*pPrt;
@@ -1589,9 +1471,7 @@ SK_U16	PhyStat)	/* PHY Status word to analyse */
 			("AutoNegLipa: AutoNeg detected on port %d %x\n", Port, PhyStat));
 		pPrt->PLipaAutoNeg = SK_LIPA_AUTO;
 	}
-}	/* SkXmAutoNegLipaNat*/
-
-
+}
 /******************************************************************************
  *
  *	SkXmAutoNegDone() - Auto negotiation handling
@@ -1612,9 +1492,13 @@ SK_U16	PhyStat)	/* PHY Status word to analyse */
 int	SkXmAutoNegDone(
 SK_AC	*pAC,		/* adapter context */
 SK_IOC	IoC,		/* IO context */
-int		Port)		/* Port Index (MAC_1 + n) */
+int	Port)		/* Port Index (MAC_1 + n) */
 {
-	switch (pAC->GIni.GP[Port].PhyType) {
+	SK_GEPORT	*pPrt;
+
+	pPrt = &pAC->GIni.GP[Port];
+
+	switch (pPrt->PhyType) {
 	case SK_PHY_XMAC:
 		return (SkXmAutoNegDoneXmac(pAC, IoC, Port));
 	case SK_PHY_BCOM:
@@ -1624,9 +1508,8 @@ int		Port)		/* Port Index (MAC_1 + n) */
 	case SK_PHY_NAT:
 		return (SkXmAutoNegDoneNat(pAC, IoC, Port));
 	}
-	return (SK_AND_OTHER);
-}	/* SkXmAutoNegDone*/
-
+	return(SK_AND_OTHER);
+}
 
 /******************************************************************************
  *
@@ -1646,11 +1529,11 @@ int		Port)		/* Port Index (MAC_1 + n) */
 static int	SkXmAutoNegDoneXmac(
 SK_AC	*pAC,		/* adapter context */
 SK_IOC	IoC,		/* IO context */
-int		Port)		/* Port Index (MAC_1 + n) */
+int	Port)		/* Port Index (MAC_1 + n) */
 {
 	SK_GEPORT	*pPrt;
-	SK_U16		ResAb;		/* Resolved Ability */
-	SK_U16		LPAb;		/* Link Partner Ability */
+	SK_U16		ResAb ;		/* Resolved Ability */
+	SK_U16		LPAb ;		/* Link Partner Ability */
 
 	SK_DBG_MSG(pAC,SK_DBGMOD_HWM,SK_DBGCAT_CTRL, ("AutoNegDoneXmac"
 		"Port %d\n",Port));
@@ -1666,23 +1549,21 @@ int		Port)		/* Port Index (MAC_1 + n) */
 		/* Error */
 		SK_DBG_MSG(pAC,SK_DBGMOD_HWM,SK_DBGCAT_CTRL,
 			("AutoNegFail: Remote fault bit set Port %d\n", Port));
-		pPrt->PAutoNegFail = SK_TRUE;
-		return (SK_AND_OTHER);
+		pPrt->PAutoNegFail = SK_TRUE ;
+		return (SK_AND_OTHER) ;
 	}
 
 	/* Check Duplex mismatch */
 	if ((ResAb & (PHY_X_RS_HD | PHY_X_RS_FD)) == PHY_X_RS_FD) {
-		pPrt->PLinkModeStatus = SK_LMODE_STAT_AUTOFULL;
-	}
-	else if ((ResAb & (PHY_X_RS_HD | PHY_X_RS_FD)) == PHY_X_RS_HD) {
-		pPrt->PLinkModeStatus = SK_LMODE_STAT_AUTOHALF;
-	}
-	else {
+		pPrt->PLinkModeStatus = SK_LMODE_STAT_AUTOFULL ;
+	} else if ((ResAb & (PHY_X_RS_HD | PHY_X_RS_FD)) == PHY_X_RS_HD) {
+		pPrt->PLinkModeStatus = SK_LMODE_STAT_AUTOHALF ;
+	} else {
 		/* Error */
 		SK_DBG_MSG(pAC,SK_DBGMOD_HWM,SK_DBGCAT_CTRL,
 			("AutoNegFail: Duplex mode mismatch port %d\n", Port));
-		pPrt->PAutoNegFail = SK_TRUE;
-		return (SK_AND_DUP_CAP);
+		pPrt->PAutoNegFail = SK_TRUE ;
+		return (SK_AND_DUP_CAP) ;
 	}
 
 	/* Check PAUSE mismatch */
@@ -1693,29 +1574,25 @@ int		Port)		/* Port Index (MAC_1 + n) */
 	    (LPAb & PHY_X_P_SYM_MD)) {
 		/* Symmetric PAUSE */
 		pPrt->PFlowCtrlStatus = SK_FLOW_STAT_SYMMETRIC;
-	}
-	else if (pPrt->PFlowCtrlMode == SK_FLOW_MODE_SYM_OR_REM &&
+	} else if (pPrt->PFlowCtrlMode == SK_FLOW_MODE_SYM_OR_REM &&
 		   (LPAb & PHY_X_RS_PAUSE) == PHY_X_P_ASYM_MD) {
 		/* Enable PAUSE receive, disable PAUSE transmit */
 		pPrt->PFlowCtrlStatus = SK_FLOW_STAT_REM_SEND;
-	}
-	else if (pPrt->PFlowCtrlMode == SK_FLOW_MODE_LOC_SEND &&
+	} else if (pPrt->PFlowCtrlMode == SK_FLOW_MODE_LOC_SEND &&
 		   (LPAb & PHY_X_RS_PAUSE) == PHY_X_P_BOTH_MD) {
 		/* Disable PAUSE receive, enable PAUSE transmit */
 		pPrt->PFlowCtrlStatus = SK_FLOW_STAT_LOC_SEND;
-	}
-	else {
+	} else {
 		/* PAUSE mismatch -> no PAUSE */
 		pPrt->PFlowCtrlStatus = SK_FLOW_STAT_NONE;
 	}
 
 	/* We checked everything and may now enable the link */
-	pPrt->PAutoNegFail = SK_FALSE;
+	pPrt->PAutoNegFail = SK_FALSE ;
 
 	SkXmRxTxEnable(pAC, IoC, Port);
-	return (SK_AND_OK);
-}	/* SkXmAutoNegDoneXmac*/
-
+	return(SK_AND_OK) ;
+}
 
 /******************************************************************************
  *
@@ -1735,99 +1612,82 @@ int		Port)		/* Port Index (MAC_1 + n) */
 static int	SkXmAutoNegDoneBcom(
 SK_AC	*pAC,		/* adapter context */
 SK_IOC	IoC,		/* IO context */
-int		Port)		/* Port Index (MAC_1 + n) */
+int	Port)		/* Port Index (MAC_1 + n) */
 {
 	SK_GEPORT	*pPrt;
-	SK_U16		LPAb;		/* Link Partner Ability */
+	SK_U16		ResAb ;		/* Resolved Ability */
+	SK_U16		LPAb ;		/* Link Partner Ability */
 	SK_U16		AuxStat;	/* Auxiliary Status */
 
-#if 0
-01-Sep-2000 RA;:;:
-	SK_U16		ResAb;		/* Resolved Ability */
-#endif	/* 0 */
-
-	SK_DBG_MSG(pAC,SK_DBGMOD_HWM,SK_DBGCAT_CTRL,
-		("AutoNegDoneBcom, Port %d\n", Port));
+	SK_DBG_MSG(pAC,SK_DBGMOD_HWM,SK_DBGCAT_CTRL, ("AutoNegDoneBcom,"
+		" Port %d\n",Port));
 	pPrt = &pAC->GIni.GP[Port];
 
-	/* Get PHY parameters. */
+	/* Get PHY parameters */
 	PHY_READ(IoC, pPrt, Port, PHY_BCOM_AUNE_LP, &LPAb);
-#if 0
-01-Sep-2000 RA;:;:
 	PHY_READ(IoC, pPrt, Port, PHY_BCOM_1000T_STAT, &ResAb);
-#endif	/* 0 */
 	PHY_READ(IoC, pPrt, Port, PHY_BCOM_AUX_STAT, &AuxStat);
 
 	if (LPAb & PHY_B_AN_RF) {
-		/* Remote fault bit is set: Error. */
-		SK_DBG_MSG(pAC, SK_DBGMOD_HWM, SK_DBGCAT_CTRL,
+		/* Remote fault bit is set */
+		/* Error */
+		SK_DBG_MSG(pAC,SK_DBGMOD_HWM,SK_DBGCAT_CTRL,
 			("AutoNegFail: Remote fault bit set Port %d\n", Port));
-		pPrt->PAutoNegFail = SK_TRUE;
-		return (SK_AND_OTHER);
+		pPrt->PAutoNegFail = SK_TRUE ;
+		return (SK_AND_OTHER) ;
 	}
 
-	/* Check Duplex mismatch. */
+	/* Check Duplex mismatch */
 	if ((AuxStat & PHY_B_AS_AN_RES) == PHY_B_RES_1000FD) {
-		pPrt->PLinkModeStatus = SK_LMODE_STAT_AUTOFULL;
-	}
-	else if ((AuxStat & PHY_B_AS_AN_RES) == PHY_B_RES_1000HD) {
-		pPrt->PLinkModeStatus = SK_LMODE_STAT_AUTOHALF;
-	}
-	else {
-		/* Error. */
+		pPrt->PLinkModeStatus = SK_LMODE_STAT_AUTOFULL ;
+	} else 	if ((AuxStat & PHY_B_AS_AN_RES) == PHY_B_RES_1000HD) {
+		pPrt->PLinkModeStatus = SK_LMODE_STAT_AUTOHALF ;
+	} else {
+		/* Error */
 		SK_DBG_MSG(pAC,SK_DBGMOD_HWM,SK_DBGCAT_CTRL,
 			("AutoNegFail: Duplex mode mismatch port %d\n", Port));
-		pPrt->PAutoNegFail = SK_TRUE;
-		return (SK_AND_DUP_CAP);
+		pPrt->PAutoNegFail = SK_TRUE ;
+		return (SK_AND_DUP_CAP) ;
 	}
 	
-#if 0
-01-Sep-2000 RA;:;:
-	/* Check Master/Slave resolution. */
-	if (ResAb & PHY_B_1000S_MSF) {
-		/* Error. */
-		SK_DBG_MSG(pAC, SK_DBGMOD_HWM, SK_DBGCAT_CTRL,
+	/* Check Master/Slave resolution */
+	if (ResAb & (PHY_B_1000S_MSF)) {
+		/* Error */
+		SK_DBG_MSG(pAC,SK_DBGMOD_HWM,SK_DBGCAT_CTRL,
 			("Master/Slave Fault port %d\n", Port));
 		pPrt->PAutoNegFail = SK_TRUE;
 		pPrt->PMSStatus = SK_MS_STAT_FAULT;
 		return (SK_AND_OTHER);
+	} else if (ResAb & PHY_B_1000S_MSR) {
+		pPrt->PMSStatus = SK_MS_STAT_MASTER ;
+	} else {
+		pPrt->PMSStatus = SK_MS_STAT_SLAVE ;
 	}
-	else if (ResAb & PHY_B_1000S_MSR) {
-		pPrt->PMSStatus = SK_MS_STAT_MASTER;
-	}
-	else {
-		pPrt->PMSStatus = SK_MS_STAT_SLAVE;
-	}
-#endif	/* 0 */
 
-	/* Check PAUSE mismatch. */
-	/* We are NOT using chapter 4.23 of the Xaqti manual. */
-	/* We are using IEEE 802.3z/D5.0 Table 37-4. */
+	/* Check PAUSE mismatch */
+	/* We are NOT using chapter 4.23 of the Xaqti manual */
+	/* We are using IEEE 802.3z/D5.0 Table 37-4 */
 	if ((AuxStat & (PHY_B_AS_PRR | PHY_B_AS_PRT)) == 
 		(PHY_B_AS_PRR | PHY_B_AS_PRT)) {
-		/* Symmetric PAUSE. */
+		/* Symmetric PAUSE */
 		pPrt->PFlowCtrlStatus = SK_FLOW_STAT_SYMMETRIC;
-	}
-	else if ((AuxStat & (PHY_B_AS_PRR | PHY_B_AS_PRT)) == PHY_B_AS_PRR) {
-		/* Enable PAUSE receive, disable PAUSE transmit. */
+	} else if ((AuxStat & (PHY_B_AS_PRR | PHY_B_AS_PRT)) == PHY_B_AS_PRR) {
+		/* Enable PAUSE receive, disable PAUSE transmit */
 		pPrt->PFlowCtrlStatus = SK_FLOW_STAT_REM_SEND;
-	}
-	else if ((AuxStat & (PHY_B_AS_PRR | PHY_B_AS_PRT)) == PHY_B_AS_PRT) {
-		/* Disable PAUSE receive, enable PAUSE transmit. */
+	} else if ((AuxStat & (PHY_B_AS_PRR | PHY_B_AS_PRT)) == PHY_B_AS_PRT) {
+		/* Disable PAUSE receive, enable PAUSE transmit */
 		pPrt->PFlowCtrlStatus = SK_FLOW_STAT_LOC_SEND;
-	}
-	else {
-		/* PAUSE mismatch -> no PAUSE. */
+	} else {
+		/* PAUSE mismatch -> no PAUSE */
 		pPrt->PFlowCtrlStatus = SK_FLOW_STAT_NONE;
 	}
 
-	/* We checked everything and may now enable the link. */
-	pPrt->PAutoNegFail = SK_FALSE;
+	/* We checked everything and may now enable the link */
+	pPrt->PAutoNegFail = SK_FALSE ;
 
 	SkXmRxTxEnable(pAC, IoC, Port);
-	return (SK_AND_OK);
-}	/* SkXmAutoNegDoneBcom*/
-
+	return(SK_AND_OK) ;
+}
 
 /******************************************************************************
  *
@@ -1847,11 +1707,11 @@ int		Port)		/* Port Index (MAC_1 + n) */
 static int	SkXmAutoNegDoneLone(
 SK_AC	*pAC,		/* adapter context */
 SK_IOC	IoC,		/* IO context */
-int		Port)		/* Port Index (MAC_1 + n) */
+int	Port)		/* Port Index (MAC_1 + n) */
 {
 	SK_GEPORT	*pPrt;
-	SK_U16		ResAb;		/* Resolved Ability */
-	SK_U16		LPAb;		/* Link Partner Ability */
+	SK_U16		ResAb ;		/* Resolved Ability */
+	SK_U16		LPAb ;		/* Link Partner Ability */
 	SK_U16		QuickStat;	/* Auxiliary Status */
 
 	SK_DBG_MSG(pAC,SK_DBGMOD_HWM,SK_DBGCAT_CTRL, ("AutoNegDoneLone"
@@ -1868,16 +1728,15 @@ int		Port)		/* Port Index (MAC_1 + n) */
 		/* Error */
 		SK_DBG_MSG(pAC,SK_DBGMOD_HWM,SK_DBGCAT_CTRL,
 			("AutoNegFail: Remote fault bit set Port %d\n", Port));
-		pPrt->PAutoNegFail = SK_TRUE;
-		return (SK_AND_OTHER);
+		pPrt->PAutoNegFail = SK_TRUE ;
+		return (SK_AND_OTHER) ;
 	}
 
 	/* Check Duplex mismatch */
 	if (QuickStat & PHY_L_QS_DUP_MOD) {
-		pPrt->PLinkModeStatus = SK_LMODE_STAT_AUTOFULL;
-	}
-	else {
-		pPrt->PLinkModeStatus = SK_LMODE_STAT_AUTOHALF;
+		pPrt->PLinkModeStatus = SK_LMODE_STAT_AUTOFULL ;
+	} else {
+		pPrt->PLinkModeStatus = SK_LMODE_STAT_AUTOHALF ;
 	}
 	
 	/* Check Master/Slave resolution */
@@ -1886,14 +1745,12 @@ int		Port)		/* Port Index (MAC_1 + n) */
 		SK_DBG_MSG(pAC,SK_DBGMOD_HWM,SK_DBGCAT_CTRL,
 			("Master/Slave Fault port %d\n", Port));
 		pPrt->PAutoNegFail = SK_TRUE;
-		pPrt->PMSStatus = SK_MS_STAT_FAULT;
+		pPrt->PMSStatus = SK_MS_STAT_FAULT ;
 		return (SK_AND_OTHER);
-	}
-	else if (ResAb & PHY_L_1000S_MSR) {
-		pPrt->PMSStatus = SK_MS_STAT_MASTER;
-	}
-	else {
-		pPrt->PMSStatus = SK_MS_STAT_SLAVE;
+	} else if (ResAb & PHY_L_1000S_MSR) {
+		pPrt->PMSStatus = SK_MS_STAT_MASTER ;
+	} else {
+		pPrt->PMSStatus = SK_MS_STAT_SLAVE ;
 	}
 
 	/* Check PAUSE mismatch */
@@ -1935,12 +1792,11 @@ int		Port)		/* Port Index (MAC_1 + n) */
 	}
 
 	/* We checked everything and may now enable the link */
-	pPrt->PAutoNegFail = SK_FALSE;
+	pPrt->PAutoNegFail = SK_FALSE ;
 
 	SkXmRxTxEnable(pAC, IoC, Port);
-	return (SK_AND_OK);
-}	/* SkXmAutoNegDoneLone */
-
+	return(SK_AND_OK);
+}
 
 /******************************************************************************
  *
@@ -1962,12 +1818,11 @@ int		Port)		/* Port Index (MAC_1 + n) */
 static int	SkXmAutoNegDoneNat(
 SK_AC	*pAC,		/* adapter context */
 SK_IOC	IoC,		/* IO context */
-int		Port)		/* Port Index (MAC_1 + n) */
+int	Port)		/* Port Index (MAC_1 + n) */
 {
 /* todo: National */
-	return (SK_AND_OK);
-}	/* SkXmAutoNegDoneNat*/
-
+	return(SK_AND_OK);
+}
 
 /******************************************************************************
  *
@@ -1985,18 +1840,17 @@ int		Port)		/* Port Index (MAC_1 + n) */
 int SkXmRxTxEnable(
 SK_AC	*pAC,		/* adapter context */
 SK_IOC	IoC,		/* IO context */
-int		Port)		/* Port Index (MAC_1 + n) */
+int	Port)		/* Port Index (MAC_1 + n) */
 {
 	SK_GEPORT	*pPrt;
-	SK_U16		Reg;		/* 16bit register value */
+	SK_U16		Reg ;		/* 16bit register value */
 	SK_U16		IntMask;	/* XMac interrupt mask */
-	SK_U16		SWord;
 
 	pPrt = &pAC->GIni.GP[Port];
 
 	if (!pPrt->PHWLinkUp) {
 		/* The Hardware link is NOT up */
-		return (0);
+		return(0) ;
 	}
 
 	if ((pPrt->PLinkMode == SK_LMODE_AUTOHALF ||
@@ -2004,7 +1858,7 @@ int		Port)		/* Port Index (MAC_1 + n) */
 	     pPrt->PLinkMode == SK_LMODE_AUTOBOTH) &&
 	     pPrt->PAutoNegFail) {
 		/* Autonegotiation is not done or failed */
-		return (0);
+		return(0) ;
 	}
 
 	/* Set Dup Mode and Pause Mode */
@@ -2038,14 +1892,12 @@ int		Port)		/* Port Index (MAC_1 + n) */
 	}
 	switch (pPrt->PhyType) {
 	case SK_PHY_BCOM:
-		/* Workaround BCOM Errata (#10523) for all BCom Phys */
-		/* Enable Power Management after link up */
-		PHY_READ(IoC, pPrt, Port, PHY_BCOM_AUX_CTRL, &SWord);
-		PHY_WRITE(IoC, pPrt, Port, PHY_BCOM_AUX_CTRL, SWord & ~PHY_B_AC_DIS_PM);
-		PHY_WRITE(IoC, pPrt, Port, PHY_BCOM_INT_MASK, PHY_B_DEF_MSK);
+		PHY_WRITE(IoC, pPrt, Port, PHY_BCOM_INT_MASK, 
+			PHY_B_DEF_MSK);
 		break;
 	case SK_PHY_LONE:
-		PHY_WRITE(IoC, pPrt, Port, PHY_LONE_INT_ENAB, PHY_L_DEF_MSK);
+		PHY_WRITE(IoC, pPrt, Port, PHY_LONE_INT_ENAB, 
+			PHY_L_DEF_MSK);
 		break;
 	case SK_PHY_NAT:
 		/* todo National:
@@ -2057,10 +1909,9 @@ int		Port)		/* Port Index (MAC_1 + n) */
 	XM_OUT16(IoC, Port, XM_MMU_CMD, Reg | XM_MMU_ENA_RX | XM_MMU_ENA_TX);
 				      
 	return (0);
-}	/* SkXmRxTxEnable*/
+}
 
 #ifndef SK_DIAG
-
 /******************************************************************************
  *
  *	SkXmIrq() - Interrupt service routine
@@ -2086,12 +1937,11 @@ int		Port)		/* Port Index (MAC_1 + n) */
 void SkXmIrq(
 SK_AC	*pAC,		/* adapter context */
 SK_IOC	IoC,		/* IO context */
-int		Port,		/* Port Index (MAC_1 + n) */
+int	Port,		/* Port Index (MAC_1 + n) */
 SK_U16	IStatus)	/* Interrupt status read from the XMAC */
 {
 	SK_GEPORT	*pPrt;
 	SK_EVPARA	Para;
-	SK_U16		IStatus2;
 
 	pPrt = &pAC->GIni.GP[Port];
 	
@@ -2103,7 +1953,7 @@ SK_U16	IStatus)	/* Interrupt status read from the XMAC */
 	}
 	
 	/*
-	 * LinkPartner Autonegable?
+	 * LinkPartner Autonegable ?
 	 */
 	if (pPrt->PhyType == SK_PHY_XMAC) {
 		SkXmAutoNegLipaXmac(pAC, IoC, Port, IStatus);
@@ -2115,20 +1965,9 @@ SK_U16	IStatus)	/* Interrupt status read from the XMAC */
 	if (!pPrt->PHWLinkUp) {
 		/* Spurious XMAC interrupt */
 		SK_DBG_MSG(pAC, SK_DBGMOD_HWM, SK_DBGCAT_IRQ,
-			("SkXmIrq: spurious interrupt on port %d\n", Port));
+			("SkXmIrq: spurious interrupt on port %d\n",
+			 Port));
 		return;
-	}
-
-	if (IStatus & XM_IS_INP_ASS) {
-		/* Reread ISR Register if link is not in sync */
-		XM_IN16(IoC, Port, XM_ISRC, &IStatus2);
-
-		SK_DBG_MSG(pAC, SK_DBGMOD_HWM, SK_DBGCAT_IRQ,
-			("SkXmIrq: Link async. Double check port %d %x %x\n",
-			 Port, IStatus, IStatus2));
-		IStatus &= ~XM_IS_INP_ASS;
-		IStatus |= IStatus2;
-
 	}
 
 	if (IStatus & XM_IS_LNK_AE) {
@@ -2152,7 +1991,7 @@ SK_U16	IStatus)	/* Interrupt status read from the XMAC */
 
 		/* Start workaround Errata #2 timer */
 		SkTimerStart(pAC, IoC, &pAC->GIni.GP[Port].PWaTimer,
-			SK_WA_INA_TIME, SKGE_HWAC, SK_HWEV_WATIM, Para);
+			SK_WA_INA_TIME,SKGE_HWAC,SK_HWEV_WATIM,Para);
 	}
 
 	if (IStatus & XM_IS_RX_PAGE) {
@@ -2191,7 +2030,7 @@ SK_U16	IStatus)	/* Interrupt status read from the XMAC */
 	if (IStatus & XM_IS_TXF_UR) {
 		/* may NOT happen -> error log */
 		SK_ERR_LOG(pAC, SK_ERRCL_HW , SKERR_SIRQ_E020,
-			SKERR_SIRQ_E020MSG);
+			SKERR_SIRQ_E020MSG) ;
 	}
 
 	if (IStatus & XM_IS_TX_COMP) {
@@ -2202,8 +2041,7 @@ SK_U16	IStatus)	/* Interrupt status read from the XMAC */
 		/* not served here */
 	}
 
-}	/* SkXmIrq*/
-
+}
 #endif /* !SK_DIAG */
 
 /* End of file */

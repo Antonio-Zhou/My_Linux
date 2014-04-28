@@ -1,4 +1,4 @@
-/* $Id: sparc64_ksyms.c,v 1.58.2.14 2001/03/01 00:48:59 davem Exp $
+/* $Id: sparc64_ksyms.c,v 1.84 2000/05/09 17:40:14 davem Exp $
  * arch/sparc64/kernel/sparc64_ksyms.c: Sparc64 specific ksyms support.
  *
  * Copyright (C) 1996 David S. Miller (davem@caip.rutgers.edu)
@@ -43,11 +43,8 @@
 #endif
 #ifdef CONFIG_PCI
 #include <asm/ebus.h>
-#include <asm/pbm.h>
 #endif
 #include <asm/a.out.h>
-#include <asm/svr4.h>
-#include <asm/elf.h>
 
 struct poll {
 	int fd;
@@ -83,16 +80,16 @@ extern int svr4_setcontext(svr4_ucontext_t *uc, struct pt_regs *regs);
 extern int sys_ioctl(unsigned int fd, unsigned int cmd, unsigned long arg);
 extern int sys32_ioctl(unsigned int fd, unsigned int cmd, u32 arg);
 extern int (*handle_mathemu)(struct pt_regs *, struct fpustate *);
-extern void VISenter(void);
-extern int io_remap_page_range(unsigned long from, unsigned long offset, unsigned long size, pgprot_t prot, int space);
+extern long sparc32_open(const char * filename, int flags, int mode);
+extern int register_ioctl32_conversion(unsigned int cmd, int (*handler)(unsigned int, unsigned int, unsigned long, struct file *));
+extern int unregister_ioctl32_conversion(unsigned int cmd);
                 
 extern void bcopy (const char *, char *, int);
 extern int __ashrdi3(int, int);
 
 extern void dump_thread(struct pt_regs *, struct user *);
-extern int dump_fpu (struct pt_regs * regs, elf_fpregset_t * fpregs);
 
-#ifdef __SMP__
+#ifdef CONFIG_SMP
 extern spinlock_t kernel_flag;
 extern int smp_num_cpus;
 #ifdef SPIN_LOCK_DEBUG
@@ -120,19 +117,20 @@ __attribute__((section("__ksymtab"))) =				\
 { (unsigned long) &__sparc_priv_ ## sym, "__" #sym }
 
 /* used by various drivers */
-#ifdef __SMP__
+#ifdef CONFIG_SMP
+#ifndef SPIN_LOCK_DEBUG
+/* Out of line rw-locking implementation. */
+EXPORT_SYMBOL_PRIVATE(read_lock);
+EXPORT_SYMBOL_PRIVATE(read_unlock);
+EXPORT_SYMBOL_PRIVATE(write_lock);
+EXPORT_SYMBOL_PRIVATE(write_unlock);
+#endif
+
 /* Kernel wide locking */
 EXPORT_SYMBOL(kernel_flag);
 
-/* Software-IRQ BH locking */
-EXPORT_SYMBOL(global_bh_lock);
-EXPORT_SYMBOL(global_bh_count);
-EXPORT_SYMBOL(synchronize_bh);
-
 /* Hard IRQ locking */
 EXPORT_SYMBOL(global_irq_holder);
-EXPORT_SYMBOL(global_irq_lock);
-EXPORT_SYMBOL(global_irq_count);
 EXPORT_SYMBOL(synchronize_irq);
 EXPORT_SYMBOL_PRIVATE(global_cli);
 EXPORT_SYMBOL_PRIVATE(global_sti);
@@ -144,6 +142,8 @@ EXPORT_SYMBOL(cpu_data);
 
 /* Misc SMP information */
 EXPORT_SYMBOL(smp_num_cpus);
+EXPORT_SYMBOL(__cpu_number_map);
+EXPORT_SYMBOL(__cpu_logical_map);
 
 /* Spinlock debugging library, optional. */
 #ifdef SPIN_LOCK_DEBUG
@@ -157,9 +157,25 @@ EXPORT_SYMBOL(_do_write_unlock);
 #endif
 
 #else
-EXPORT_SYMBOL(local_irq_count);
 EXPORT_SYMBOL(local_bh_count);
+EXPORT_SYMBOL(local_irq_count);
 #endif
+
+/* rw semaphores */
+EXPORT_SYMBOL_NOVERS(__down_read_failed);
+EXPORT_SYMBOL_NOVERS(__down_write_failed);
+EXPORT_SYMBOL_NOVERS(__rwsem_wake);
+
+/* Atomic counter implementation. */
+EXPORT_SYMBOL_PRIVATE(atomic_add);
+EXPORT_SYMBOL_PRIVATE(atomic_sub);
+
+/* Atomic bit operations. */
+EXPORT_SYMBOL_PRIVATE(test_and_set_bit);
+EXPORT_SYMBOL_PRIVATE(test_and_clear_bit);
+EXPORT_SYMBOL_PRIVATE(test_and_change_bit);
+EXPORT_SYMBOL_PRIVATE(test_and_set_le_bit);
+EXPORT_SYMBOL_PRIVATE(test_and_clear_le_bit);
 
 EXPORT_SYMBOL(ivector_table);
 EXPORT_SYMBOL(enable_irq);
@@ -167,30 +183,24 @@ EXPORT_SYMBOL(disable_irq);
 
 EXPORT_SYMBOL_PRIVATE(flushw_user);
 
-EXPORT_SYMBOL(flush_icache_range);
-EXPORT_SYMBOL(flush_dcache_page);
-
 EXPORT_SYMBOL(mstk48t02_regs);
 EXPORT_SYMBOL(request_fast_irq);
-EXPORT_SYMBOL(sparc_alloc_io);
-EXPORT_SYMBOL(sparc_free_io);
-EXPORT_SYMBOL(sparc_ultra_unmapioaddr);
-EXPORT_SYMBOL(mmu_get_scsi_sgl);
-EXPORT_SYMBOL(mmu_get_scsi_one);
-EXPORT_SYMBOL(sparc_dvma_malloc);
-EXPORT_SYMBOL(mmu_release_scsi_one);
-EXPORT_SYMBOL(mmu_release_scsi_sgl);
 #if CONFIG_SBUS
-EXPORT_SYMBOL(mmu_set_sbus64);
-EXPORT_SYMBOL(SBus_chain);
+EXPORT_SYMBOL(sbus_root);
 EXPORT_SYMBOL(dma_chain);
+EXPORT_SYMBOL(sbus_set_sbus64);
+EXPORT_SYMBOL(sbus_alloc_consistent);
+EXPORT_SYMBOL(sbus_free_consistent);
+EXPORT_SYMBOL(sbus_map_single);
+EXPORT_SYMBOL(sbus_unmap_single);
+EXPORT_SYMBOL(sbus_map_sg);
+EXPORT_SYMBOL(sbus_unmap_sg);
+EXPORT_SYMBOL(sbus_dma_sync_single);
+EXPORT_SYMBOL(sbus_dma_sync_sg);
 #endif
-#if CONFIG_PCI
+#ifdef CONFIG_PCI
 EXPORT_SYMBOL(ebus_chain);
-EXPORT_SYMBOL(pci_dvma_offset);
-EXPORT_SYMBOL(pci_dvma_mask);
-EXPORT_SYMBOL(pci_dvma_v2p_hash);
-EXPORT_SYMBOL(pci_dvma_p2v_hash);
+EXPORT_SYMBOL(pci_memspace_mask);
 EXPORT_SYMBOL(empty_zero_page);
 EXPORT_SYMBOL(outsb);
 EXPORT_SYMBOL(outsw);
@@ -198,30 +208,32 @@ EXPORT_SYMBOL(outsl);
 EXPORT_SYMBOL(insb);
 EXPORT_SYMBOL(insw);
 EXPORT_SYMBOL(insl);
-EXPORT_SYMBOL(pci_dma_wsync);
+EXPORT_SYMBOL(pci_alloc_consistent);
+EXPORT_SYMBOL(pci_free_consistent);
+EXPORT_SYMBOL(pci_map_single);
+EXPORT_SYMBOL(pci_unmap_single);
+EXPORT_SYMBOL(pci_map_sg);
+EXPORT_SYMBOL(pci_unmap_sg);
+EXPORT_SYMBOL(pci_dma_sync_single);
+EXPORT_SYMBOL(pci_dma_sync_sg);
+EXPORT_SYMBOL(pci_dma_supported);
 #endif
 
-/* I/O device mmaping on Sparc64. */
-EXPORT_SYMBOL(io_remap_page_range);
+/* IOCTL32 emulation hooks. */
+EXPORT_SYMBOL(register_ioctl32_conversion);
+EXPORT_SYMBOL(unregister_ioctl32_conversion);
 
 /* Solaris/SunOS binary compatibility */
 EXPORT_SYMBOL(_sigpause_common);
 
 /* Should really be in linux/kernel/ksyms.c */
 EXPORT_SYMBOL(dump_thread);
-EXPORT_SYMBOL(dump_fpu);
-EXPORT_SYMBOL(get_pmd_slow);
-EXPORT_SYMBOL(get_pte_slow);
-#ifndef CONFIG_SMP
-EXPORT_SYMBOL(pgt_quicklists);
-#endif
 
 /* math-emu wants this */
 EXPORT_SYMBOL(die_if_kernel);
 
 /* Kernel thread creation. */
 EXPORT_SYMBOL(kernel_thread);
-EXPORT_SYMBOL(init_mm);
 
 /* prom symbols */
 EXPORT_SYMBOL(idprom);
@@ -241,7 +253,6 @@ EXPORT_SYMBOL(prom_finddevice);
 EXPORT_SYMBOL(prom_feval);
 EXPORT_SYMBOL(prom_getbool);
 EXPORT_SYMBOL(prom_getstring);
-EXPORT_SYMBOL(prom_apply_sbus_ranges);
 EXPORT_SYMBOL(prom_getint);
 EXPORT_SYMBOL(prom_getintdefault);
 EXPORT_SYMBOL(__prom_getchild);
@@ -250,7 +261,7 @@ EXPORT_SYMBOL(__prom_getsibling);
 /* sparc library symbols */
 EXPORT_SYMBOL(bcopy);
 EXPORT_SYMBOL(__strlen);
-#if (__GNUC__ > 2) || (__GNUC__ == 2 && __GNUC_MINOR__ >= 91)
+#if __GNUC__ > 2 || __GNUC_MINOR__ >= 91
 EXPORT_SYMBOL(strlen);
 #endif
 EXPORT_SYMBOL(strnlen);
@@ -264,7 +275,6 @@ EXPORT_SYMBOL(strrchr);
 EXPORT_SYMBOL(strpbrk);
 EXPORT_SYMBOL(strtok);
 EXPORT_SYMBOL(strstr);
-EXPORT_SYMBOL(strspn);
 
 #ifdef CONFIG_SOLARIS_EMUL_MODULE
 EXPORT_SYMBOL(getname32);
@@ -283,6 +293,7 @@ EXPORT_SYMBOL(svr4_setcontext);
 EXPORT_SYMBOL(prom_cpu_nodes);
 EXPORT_SYMBOL(sys_ioctl);
 EXPORT_SYMBOL(sys32_ioctl);
+EXPORT_SYMBOL(sparc32_open);
 EXPORT_SYMBOL(move_addr_to_kernel);
 EXPORT_SYMBOL(move_addr_to_user);
 #endif
@@ -290,7 +301,10 @@ EXPORT_SYMBOL(move_addr_to_user);
 /* Special internal versions of library functions. */
 EXPORT_SYMBOL(__memcpy);
 EXPORT_SYMBOL(__memset);
-EXPORT_SYMBOL(clear_page);
+EXPORT_SYMBOL(_clear_page);
+EXPORT_SYMBOL(_copy_page);
+EXPORT_SYMBOL(clear_user_page);
+EXPORT_SYMBOL(copy_user_page);
 EXPORT_SYMBOL(__bzero);
 EXPORT_SYMBOL(__memscan_zero);
 EXPORT_SYMBOL(__memscan_generic);
@@ -314,9 +328,6 @@ EXPORT_SYMBOL(sparc64_valid_addr_bitmap);
  * and will always be 'void __ret_efault(void)'.
  */
 EXPORT_SYMBOL_NOVERS(__ret_efault);
-/* VISenter is defined in assembly as well.
- */
-EXPORT_SYMBOL_NOVERS(VISenter);
 
 /* No version information on these, as gcc produces such symbols. */
 EXPORT_SYMBOL_NOVERS(memcmp);

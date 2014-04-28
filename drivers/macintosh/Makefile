@@ -13,11 +13,15 @@ SUB_DIRS     :=
 MOD_SUB_DIRS := $(SUB_DIRS)
 
 O_TARGET := macintosh.o
+O_OBJS   :=
 M_OBJS   :=
 
-ifdef CONFIG_POWERMAC
-O_OBJS   := via-cuda.o macio-adb.o via-pmu.o mediabay.o
-OX_OBJS  := adb.o
+ifeq ($(CONFIG_PMAC_PBOOK),y)
+  O_OBJS += mediabay.o
+else
+  ifeq ($(CONFIG_MAC_FLOPPY),y)
+    O_OBJS += mediabay.o
+  endif
 endif
 
 ifeq ($(CONFIG_MAC_SERIAL),y)
@@ -36,22 +40,40 @@ else
   endif
 endif
 
-ifeq ($(CONFIG_PPC_RTC),y)
-  O_OBJS += rtc.o
-else
-  ifeq ($(CONFIG_PPC_RTC),m)
-    M_OBJS += rtc.o
-  endif
+ifdef CONFIG_ADB
+  OX_OBJS  := adb.o
 endif
 
-ifdef CONFIG_MAC_KEYBOARD
+ifdef CONFIG_ADB_KEYBOARD
   O_OBJS += mac_keyb.o
 endif
-ifdef CONFIG_INPUT_ADBHID
-  O_OBJS += adbhid.o
+
+ifdef CONFIG_ADB_MACII
+  O_OBJS += via-macii.o
 endif
-ifdef CONFIG_MAC_HID
-  O_OBJS += mac_hid.o
+
+ifdef CONFIG_ADB_MACIISI
+  O_OBJS += via-maciisi.o
+endif
+
+ifdef CONFIG_ADB_CUDA
+  O_OBJS += via-cuda.o
+endif
+
+ifdef CONFIG_ADB_IOP
+  O_OBJS += adb-iop.o
+endif
+
+ifdef CONFIG_ADB_PMU
+  O_OBJS += via-pmu.o
+endif
+
+ifdef CONFIG_ADB_PMU68K
+  O_OBJS += via-pmu68k.o
+endif
+
+ifdef CONFIG_ADB_MACIO
+  O_OBJS += macio-adb.o
 endif
 
 include $(TOPDIR)/Rules.make

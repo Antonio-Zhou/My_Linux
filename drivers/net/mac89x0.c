@@ -124,16 +124,16 @@ struct net_local {
 
 /* Index to functions, as function prototypes. */
 
-extern int mac89x0_probe(struct device *dev);
-extern void reset_chip(struct device *dev);
-static int net_open(struct device *dev);
-static int	net_send_packet(struct sk_buff *skb, struct device *dev);
+extern int mac89x0_probe(struct net_device *dev);
+extern void reset_chip(struct net_device *dev);
+static int net_open(struct net_device *dev);
+static int	net_send_packet(struct sk_buff *skb, struct net_device *dev);
 static void net_interrupt(int irq, void *dev_id, struct pt_regs *regs);
-static void set_multicast_list(struct device *dev);
-static void net_rx(struct device *dev);
-static int net_close(struct device *dev);
-static struct net_device_stats *net_get_stats(struct device *dev);
-static int set_mac_address(struct device *dev, void *addr);
+static void set_multicast_list(struct net_device *dev);
+static void net_rx(struct net_device *dev);
+static int net_close(struct net_device *dev);
+static struct net_device_stats *net_get_stats(struct net_device *dev);
+static int set_mac_address(struct net_device *dev, void *addr);
 
 
 /* Example routines you must write ;->. */
@@ -141,14 +141,14 @@ static int set_mac_address(struct device *dev, void *addr);
 
 /* For reading/writing registers ISA-style */
 static int inline
-readreg_io(struct device *dev, int portno)
+readreg_io(struct net_device *dev, int portno)
 {
 	writew(swab16(portno), dev->base_addr + ADD_PORT);
 	return swab16(readw(dev->base_addr + DATA_PORT));
 }
 
 static void inline
-writereg_io(struct device *dev, int portno, int value)
+writereg_io(struct net_device *dev, int portno, int value)
 {
 	writew(swab16(portno), dev->base_addr + ADD_PORT);
 	writew(swab16(value), dev->base_addr + DATA_PORT);
@@ -156,20 +156,20 @@ writereg_io(struct device *dev, int portno, int value)
 
 /* These are for reading/writing registers in shared memory */
 static int inline
-readreg(struct device *dev, int portno)
+readreg(struct net_device *dev, int portno)
 {
 	return swab16(readw(dev->mem_start + portno));
 }
 
 static void inline
-writereg(struct device *dev, int portno, int value)
+writereg(struct net_device *dev, int portno, int value)
 {
 	writew(swab16(value), dev->mem_start + portno);
 }
 
 /* Probe for the CS8900 card in slot E.  We won't bother looking
    anywhere else until we have a really good reason to do so. */
-__initfunc(int mac89x0_probe(struct device *dev))
+int __init mac89x0_probe(struct net_device *dev)
 {
 	static int once_is_enough = 0;
 	struct net_local *lp;
@@ -212,7 +212,7 @@ __initfunc(int mac89x0_probe(struct device *dev))
 	if (sig != swab16(CHIP_EISA_ID_SIG))
 		return ENODEV;
 
-	/* Initialize the device structure. */
+	/* Initialize the net_device structure. */
 	if (dev->priv == NULL) {
 		dev->priv = kmalloc(sizeof(struct net_local), GFP_KERNEL);
                 memset(dev->priv, 0, sizeof(struct net_local));
@@ -279,7 +279,7 @@ __initfunc(int mac89x0_probe(struct device *dev))
 	dev->set_multicast_list = &set_multicast_list;
 	dev->set_mac_address = &set_mac_address;
 
-	/* Fill in the fields of the device structure with ethernet values. */
+	/* Fill in the fields of the net_device structure with ethernet values. */
 	ether_setup(dev);
 
 	printk("\n");
@@ -287,8 +287,7 @@ __initfunc(int mac89x0_probe(struct device *dev))
 }
 
 /* This is useful for something, but I don't know what yet. */
-__initfunc(void
-reset_chip(struct device *dev))
+void __init reset_chip(struct net_device *dev)
 {
 	int reset_start_time;
 
@@ -312,7 +311,7 @@ reset_chip(struct device *dev))
    there is non-reboot way to recover if something goes wrong.
    */
 static int
-net_open(struct device *dev)
+net_open(struct net_device *dev)
 {
 	struct net_local *lp = (struct net_local *)dev->priv;
 	int i;
@@ -361,7 +360,7 @@ net_open(struct device *dev)
 }
 
 static int
-net_send_packet(struct sk_buff *skb, struct device *dev)
+net_send_packet(struct sk_buff *skb, struct net_device *dev)
 {
 	if (dev->tbusy) {
 		/* If we get here, some higher level has decided we are broken.
@@ -423,7 +422,7 @@ net_send_packet(struct sk_buff *skb, struct device *dev)
    Handle the network interface interrupts. */
 static void net_interrupt(int irq, void *dev_id, struct pt_regs * regs)
 {
-	struct device *dev = dev_id;
+	struct net_device *dev = dev_id;
 	struct net_local *lp;
 	int ioaddr, status;
 
@@ -493,7 +492,7 @@ static void net_interrupt(int irq, void *dev_id, struct pt_regs * regs)
 
 /* We have a good packet(s), get it/them out of the buffers. */
 static void
-net_rx(struct device *dev)
+net_rx(struct net_device *dev)
 {
 	struct net_local *lp = (struct net_local *)dev->priv;
 	struct sk_buff *skb;
@@ -538,7 +537,7 @@ net_rx(struct device *dev)
 
 /* The inverse routine to net_open(). */
 static int
-net_close(struct device *dev)
+net_close(struct net_device *dev)
 {
 
 	writereg(dev, PP_RxCFG, 0);
@@ -560,7 +559,7 @@ net_close(struct device *dev)
 /* Get the current statistics.	This may be called with the card open or
    closed. */
 static struct net_device_stats *
-net_get_stats(struct device *dev)
+net_get_stats(struct net_device *dev)
 {
 	struct net_local *lp = (struct net_local *)dev->priv;
 
@@ -573,7 +572,7 @@ net_get_stats(struct device *dev)
 	return &lp->stats;
 }
 
-static void set_multicast_list(struct device *dev)
+static void set_multicast_list(struct net_device *dev)
 {
 	struct net_local *lp = (struct net_local *)dev->priv;
 
@@ -598,7 +597,7 @@ static void set_multicast_list(struct device *dev)
 }
 
 
-static int set_mac_address(struct device *dev, void *addr)
+static int set_mac_address(struct net_device *dev, void *addr)
 {
 	int i;
 	if (dev->start)
@@ -617,7 +616,7 @@ static int set_mac_address(struct device *dev, void *addr)
 #ifdef MODULE
 
 static char namespace[16] = "";
-static struct device dev_cs89x0 = {
+static struct net_device dev_cs89x0 = {
         NULL,
         0, 0, 0, 0,
         0, 0,

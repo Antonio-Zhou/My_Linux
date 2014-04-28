@@ -170,7 +170,7 @@ struct w83977af_ir {
 	int tx_buff_offsets[10]; /* Offsets between frames in tx_buff */
 	int tx_len;          /* Number of frames in tx_buff */
 
-	struct device *netdev; /* Yes! we are some kind of netdevice */
+	struct net_device *netdev; /* Yes! we are some kind of netdevice */
 	struct net_device_stats stats;
 	
 	struct irlap_cb    *irlap; /* The link layer we are binded to */

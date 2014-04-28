@@ -47,11 +47,27 @@ else
   endif
 endif
 
+ifeq ($(CONFIG_I2O_LAN),y)
+LX_OBJS += i2o_lan.o
+else
+  ifeq ($(CONFIG_I2O_LAN),m)
+  MX_OBJS += i2o_lan.o
+  endif
+endif
+
 ifeq ($(CONFIG_I2O_SCSI),y)
 LX_OBJS += i2o_scsi.o
 else
   ifeq ($(CONFIG_I2O_SCSI),m)
   MX_OBJS += i2o_scsi.o
+  endif
+endif
+
+ifeq ($(CONFIG_I2O_PROC),y)
+LX_OBJS += i2o_proc.o
+else
+  ifeq ($(CONFIG_I2O_PROC),m)
+  MX_OBJS += i2o_proc.o
   endif
 endif
 

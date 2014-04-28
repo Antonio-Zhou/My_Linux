@@ -23,9 +23,9 @@
 #define VERIFY_READ	0
 #define VERIFY_WRITE	1
 
-#define get_fs()  (current->tss.fs)
+#define get_fs()  (current->thread.fs)
 #define get_ds()  (KERNEL_DS)
-#define set_fs(x) (current->tss.fs = (x))
+#define set_fs(x) (current->thread.fs = (x))
 
 #define segment_eq(a,b)	((a).seg == (b).seg)
 
@@ -479,6 +479,14 @@ strncpy_from_user(char *to, const char *from, long n)
 	return ret;
 }
 
+/* Returns: 0 if bad, string length+1 (memory size) of string if ok */
+extern long __strlen_user(const char *);
+
+extern inline long strlen_user(const char *str)
+{
+	return access_ok(VERIFY_READ,str,0) ? __strlen_user(str) : 0;
+}
+
 /* Returns: 0 if exception before NUL or reaching the supplied limit (N),
  * a value greater than N if the limit would be exceeded, else strlen.  */
 extern long __strnlen_user(const char *, long);
@@ -522,7 +530,7 @@ struct exception_table_entry
 };
 
 /* Returns 0 if exception not found and fixup.unit otherwise.  */
-extern unsigned search_exception_table(unsigned long, unsigned long);
+extern unsigned search_exception_table(unsigned long);
 
 /* Returns the new pc */
 #define fixup_exception(map_reg, fixup_unit, pc)		\

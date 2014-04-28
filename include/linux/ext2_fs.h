@@ -216,13 +216,13 @@ struct ext2_group_desc
  */
 struct ext2_inode {
 	__u16	i_mode;		/* File mode */
-	__u16	i_uid;		/* Owner Uid */
+	__u16	i_uid;		/* Low 16 bits of Owner Uid */
 	__u32	i_size;		/* Size in bytes */
 	__u32	i_atime;	/* Access time */
 	__u32	i_ctime;	/* Creation time */
 	__u32	i_mtime;	/* Modification time */
 	__u32	i_dtime;	/* Deletion Time */
-	__u16	i_gid;		/* Group Id */
+	__u16	i_gid;		/* Low 16 bits of Group Id */
 	__u16	i_links_count;	/* Links count */
 	__u32	i_blocks;	/* Blocks count */
 	__u32	i_flags;	/* File flags */
@@ -247,7 +247,9 @@ struct ext2_inode {
 			__u8	l_i_frag;	/* Fragment number */
 			__u8	l_i_fsize;	/* Fragment size */
 			__u16	i_pad1;
-			__u32	l_i_reserved2[2];
+			__u16	l_i_uid_high;	/* these 2 fields    */
+			__u16	l_i_gid_high;	/* were reserved2[0] */
+			__u32	l_i_reserved2;
 		} linux2;
 		struct {
 			__u8	h_i_frag;	/* Fragment number */
@@ -272,6 +274,10 @@ struct ext2_inode {
 #define i_reserved1	osd1.linux1.l_i_reserved1
 #define i_frag		osd2.linux2.l_i_frag
 #define i_fsize		osd2.linux2.l_i_fsize
+#define i_uid_low	i_uid
+#define i_gid_low	i_gid
+#define i_uid_high	osd2.linux2.l_i_uid_high
+#define i_gid_high	osd2.linux2.l_i_gid_high
 #define i_reserved2	osd2.linux2.l_i_reserved2
 #endif
 
@@ -300,16 +306,14 @@ struct ext2_inode {
 /*
  * Mount flags
  */
-#define EXT2_MOUNT_CHECK_NORMAL		0x0001	/* Do some more checks */
-#define EXT2_MOUNT_CHECK_STRICT		0x0002	/* Do again more checks */
-#define EXT2_MOUNT_CHECK		(EXT2_MOUNT_CHECK_NORMAL | \
-					 EXT2_MOUNT_CHECK_STRICT)
+#define EXT2_MOUNT_CHECK		0x0001	/* Do mount-time checks */
 #define EXT2_MOUNT_GRPID		0x0004	/* Create files with directory's group */
 #define EXT2_MOUNT_DEBUG		0x0008	/* Some debugging messages */
 #define EXT2_MOUNT_ERRORS_CONT		0x0010	/* Continue on errors */
 #define EXT2_MOUNT_ERRORS_RO		0x0020	/* Remount fs ro on errors */
 #define EXT2_MOUNT_ERRORS_PANIC		0x0040	/* Panic on errors */
 #define EXT2_MOUNT_MINIX_DF		0x0080	/* Mimics the Minix statfs */
+#define EXT2_MOUNT_NO_UID32		0x0200  /* Disable 32-bit UIDs */
 
 #define clear_opt(o, opt)		o &= ~EXT2_MOUNT_##opt
 #define set_opt(o, opt)			o |= EXT2_MOUNT_##opt
@@ -504,10 +508,6 @@ struct ext2_dir_entry_2 {
 					 ~EXT2_DIR_ROUND)
 
 #ifdef __KERNEL__
-
-/* Filesize hard limits for 64-bit file offsets */
-extern long long ext2_max_sizes[];
-
 /*
  * Function prototypes
  */
@@ -546,7 +546,6 @@ extern int ext2_check_dir_entry (const char *, struct inode *,
 /* file.c */
 extern int ext2_read (struct inode *, struct file *, char *, int);
 extern int ext2_write (struct inode *, struct file *, char *, int);
-extern void ext2_remove_suid (struct inode *); 
 
 /* fsync.c */
 extern int ext2_sync_file (struct file *, struct dentry *);
@@ -558,18 +557,15 @@ extern unsigned long ext2_count_free_inodes (struct super_block *);
 extern void ext2_check_inodes_bitmap (struct super_block *);
 
 /* inode.c */
-extern int ext2_bmap (struct inode *, int);
 
 extern struct buffer_head * ext2_getblk (struct inode *, long, int, int *);
 extern struct buffer_head * ext2_bread (struct inode *, int, int, int *);
 
-extern int ext2_getcluster (struct inode * inode, long block);
 extern void ext2_read_inode (struct inode *);
 extern void ext2_write_inode (struct inode *);
 extern void ext2_put_inode (struct inode *);
 extern void ext2_delete_inode (struct inode *);
 extern int ext2_sync_inode (struct inode *);
-extern int ext2_notify_change(struct dentry *, struct iattr *);
 extern void ext2_discard_prealloc (struct inode *);
 
 /* ioctl.c */
@@ -577,17 +573,7 @@ extern int ext2_ioctl (struct inode *, struct file *, unsigned int,
 		       unsigned long);
 
 /* namei.c */
-extern void ext2_release (struct inode *, struct file *);
-extern struct dentry *ext2_lookup (struct inode *, struct dentry *);
-extern int ext2_create (struct inode *,struct dentry *,int);
-extern int ext2_mkdir (struct inode *,struct dentry *,int);
-extern int ext2_rmdir (struct inode *,struct dentry *);
-extern int ext2_unlink (struct inode *,struct dentry *);
-extern int ext2_symlink (struct inode *,struct dentry *,const char *);
-extern int ext2_link (struct dentry *, struct inode *, struct dentry *);
-extern int ext2_mknod (struct inode *, struct dentry *, int, int);
-extern int ext2_rename (struct inode *, struct dentry *,
-			struct inode *, struct dentry *);
+extern struct inode_operations ext2_dir_inode_operations;
 
 /* super.c */
 extern void ext2_error (struct super_block *, const char *, const char *, ...)
@@ -601,8 +587,7 @@ extern void ext2_put_super (struct super_block *);
 extern void ext2_write_super (struct super_block *);
 extern int ext2_remount (struct super_block *, int *, char *);
 extern struct super_block * ext2_read_super (struct super_block *,void *,int);
-extern int init_ext2_fs(void);
-extern int ext2_statfs (struct super_block *, struct statfs *, int);
+extern int ext2_statfs (struct super_block *, struct statfs *);
 
 /* truncate.c */
 extern void ext2_truncate (struct inode *);
@@ -612,13 +597,16 @@ extern void ext2_truncate (struct inode *);
  */
 
 /* dir.c */
-extern struct inode_operations ext2_dir_inode_operations;
+extern struct file_operations ext2_dir_operations;
 
 /* file.c */
 extern struct inode_operations ext2_file_inode_operations;
+extern struct file_operations ext2_file_operations;
 
 /* symlink.c */
-extern struct inode_operations ext2_symlink_inode_operations;
+extern struct inode_operations ext2_fast_symlink_inode_operations;
+
+extern struct address_space_operations ext2_aops;
 
 #endif	/* __KERNEL__ */
 

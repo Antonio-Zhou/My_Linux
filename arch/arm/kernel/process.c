@@ -1,15 +1,10 @@
 /*
  *  linux/arch/arm/kernel/process.c
  *
- *  Copyright (C) 1996 Russell King - Converted to ARM.
+ *  Copyright (C) 1996-2000 Russell King - Converted to ARM.
  *  Origional Copyright (C) 1995  Linus Torvalds
  */
 
-/*
- * This file handles the architecture-dependent parts of process handling..
- */
-
-#define __KERNEL_SYSCALLS__
 #include <stdarg.h>
 
 #include <linux/errno.h>
@@ -35,12 +30,22 @@
 #include <asm/system.h>
 #include <asm/io.h>
 
+/*
+ * Values for cpu_do_idle()
+ */
+#define IDLE_WAIT_SLOW	0
+#define IDLE_WAIT_FAST	1
+#define IDLE_CLOCK_SLOW	2
+#define IDLE_CLOCK_FAST	3
+
 extern char *processor_modes[];
 extern void setup_mm_for_reboot(char mode);
 
 asmlinkage void ret_from_sys_call(void) __asm__("ret_from_sys_call");
 
-static int hlt_counter=0;
+static volatile int hlt_counter;
+
+#include <asm/arch/system.h>
 
 void disable_hlt(void)
 {
@@ -52,18 +57,35 @@ void enable_hlt(void)
 	hlt_counter--;
 }
 
-/*
- * The idle loop on an ARM...
- */
-asmlinkage int sys_idle(void)
+static int __init nohlt_setup(char *__unused)
 {
+	hlt_counter = 1;
+	return 1;
+}
+
+static int __init hlt_setup(char *__unused)
+{
+	hlt_counter = 0;
+	return 1;
+}
+
+__setup("nohlt", nohlt_setup);
+__setup("hlt", hlt_setup);
+
+/*
+ * The idle thread.  We try to conserve power, while trying to keep
+ * overall latency low.  The architecture specific idle is passed
+ * a value to indicate the level of "idleness" of the system.
+ */
+void cpu_idle(void)
+{
+	/* endless idle loop with no priority at all */
+	init_idle();
 	current->priority = 0;
 	current->counter = -100;
 
-	/* endless idle loop with no priority at all */
 	while (1) {
-		if (!current->need_resched && !hlt_counter)
-			arch_do_idle();
+		arch_idle();
 		schedule();
 #ifndef CONFIG_NO_PGT_CACHE
 		check_pgt_cache();
@@ -73,21 +95,24 @@ asmlinkage int sys_idle(void)
 
 static char reboot_mode = 'h';
 
-__initfunc(void reboot_setup(char *str, int *ints))
+int __init reboot_setup(char *str)
 {
 	reboot_mode = str[0];
+	return 1;
 }
+
+__setup("reboot=", reboot_setup);
 
 void machine_restart(char * __unused)
 {
 	/*
-	 * Clean and disable cache, turn off interrupts
+	 * Clean and disable cache, and turn off interrupts
 	 */
-	processor._proc_fin();
+	cpu_proc_fin();
 
 	/*
 	 * Tell the mm system that we are going to reboot -
-	 * we may need to insert some 1:1 mappings so that
+	 * we may need it to insert some 1:1 mappings so that
 	 * soft boot works.
 	 */
 	setup_mm_for_reboot(reboot_mode);
@@ -102,7 +127,7 @@ void machine_restart(char * __unused)
 	 * Tell the user!
 	 */
 	mdelay(1000);
-	panic("Reboot failed -- System halted\n");
+	printk("Reboot failed -- System halted\n");
 	while (1);
 }
 
@@ -112,6 +137,7 @@ void machine_halt(void)
 
 void machine_power_off(void)
 {
+	arch_power_off();
 }
 
 void show_regs(struct pt_regs * regs)
@@ -120,18 +146,18 @@ void show_regs(struct pt_regs * regs)
 
 	flags = condition_codes(regs);
 
-	printk( "pc : [<%08lx>]    lr : [<%08lx>]\n"
-		"sp : %08lx  ip : %08lx  fp : %08lx\n",
+	printk("pc : [<%08lx>]    lr : [<%08lx>]\n"
+	       "sp : %08lx  ip : %08lx  fp : %08lx\n",
 		instruction_pointer(regs),
 		regs->ARM_lr, regs->ARM_sp,
 		regs->ARM_ip, regs->ARM_fp);
-	printk( "r10: %08lx  r9 : %08lx  r8 : %08lx\n",
+	printk("r10: %08lx  r9 : %08lx  r8 : %08lx\n",
 		regs->ARM_r10, regs->ARM_r9,
 		regs->ARM_r8);
-	printk( "r7 : %08lx  r6 : %08lx  r5 : %08lx  r4 : %08lx\n",
+	printk("r7 : %08lx  r6 : %08lx  r5 : %08lx  r4 : %08lx\n",
 		regs->ARM_r7, regs->ARM_r6,
 		regs->ARM_r5, regs->ARM_r4);
-	printk( "r3 : %08lx  r2 : %08lx  r1 : %08lx  r0 : %08lx\n",
+	printk("r3 : %08lx  r2 : %08lx  r1 : %08lx  r0 : %08lx\n",
 		regs->ARM_r3, regs->ARM_r2,
 		regs->ARM_r1, regs->ARM_r0);
 	printk("Flags: %c%c%c%c",
@@ -158,64 +184,82 @@ void show_regs(struct pt_regs * regs)
 #endif
 }
 
+void show_fpregs(struct user_fp *regs)
+{
+	int i;
+
+	for (i = 0; i < 8; i++) {
+		unsigned long *p;
+		char type;
+
+		p = (unsigned long *)(regs->fpregs + i);
+
+		switch (regs->ftype[i]) {
+			case 1: type = 'f'; break;
+			case 2: type = 'd'; break;
+			case 3: type = 'e'; break;
+			default: type = '?'; break;
+		}
+		if (regs->init_flag)
+			type = '?';
+
+		printk("  f%d(%c): %08lx %08lx %08lx%c",
+			i, type, p[0], p[1], p[2], i & 1 ? '\n' : ' ');
+	}
+			
+
+	printk("FPSR: %08lx FPCR: %08lx\n",
+		(unsigned long)regs->fpsr,
+		(unsigned long)regs->fpcr);
+}
+
 /*
  * Task structure and kernel stack allocation.
- *
- * Taken from the i386 version.
  */
+static struct task_struct *task_struct_head;
+static unsigned int nr_task_struct;
+
 #ifdef CONFIG_CPU_32
-#define EXTRA_TASK_STRUCT	8
-static struct task_struct *task_struct_stack[EXTRA_TASK_STRUCT];
-static int task_struct_stack_ptr = -1;
+#define EXTRA_TASK_STRUCT	4
+#else
+#define EXTRA_TASK_STRUCT	0
 #endif
 
 struct task_struct *alloc_task_struct(void)
 {
 	struct task_struct *tsk;
 
-#ifndef EXTRA_TASK_STRUCT
-	tsk = ll_alloc_task_struct();
-#else
-	int index;
+	if (EXTRA_TASK_STRUCT)
+		tsk = task_struct_head;
+	else
+		tsk = NULL;
 
-	index = task_struct_stack_ptr;
-	if (index >= EXTRA_TASK_STRUCT/2)
-		goto use_cache;
+	if (tsk) {
+		task_struct_head = tsk->next_task;
+		nr_task_struct -= 1;
+	} else
+		tsk = ll_alloc_task_struct();
 
-	tsk = ll_alloc_task_struct();
-
-	if (!tsk) {
-		index = task_struct_stack_ptr;
-
-		if (index >= 0) {
-use_cache:		tsk = task_struct_stack[index];
-			task_struct_stack_ptr = index - 1;
-		}
-	}
-#endif
 #ifdef CONFIG_SYSRQ
-	/* You need this if you want SYSRQ-T to give sensible stack
-	 * usage information
+	/*
+	 * The stack must be cleared if you want SYSRQ-T to
+	 * give sensible stack usage information
 	 */
 	if (tsk) {
 		char *p = (char *)tsk;
 		memzero(p+KERNEL_STACK_SIZE, KERNEL_STACK_SIZE);
 	}
 #endif
-
 	return tsk;
 }
 
-void free_task_struct(struct task_struct *p)
+void __free_task_struct(struct task_struct *p)
 {
-#ifdef EXTRA_TASK_STRUCT
-	int index = task_struct_stack_ptr + 1;
-
-	if (index < EXTRA_TASK_STRUCT) {
-		task_struct_stack[index] = p;
-		task_struct_stack_ptr = index;
+	if (EXTRA_TASK_STRUCT && nr_task_struct < EXTRA_TASK_STRUCT) {
+		p->next_task = task_struct_head;
+		task_struct_head = p;
+		nr_task_struct += 1;
 	} else
-#endif
 		ll_free_task_struct(p);
 }
 
@@ -228,8 +272,8 @@ void exit_thread(void)
 
 void flush_thread(void)
 {
-	memset(&current->tss.debug, 0, sizeof(struct debug_info));
-	memset(&current->tss.fpstate, 0, sizeof(union fp_state));
+	memset(&current->thread.debug, 0, sizeof(current->thread.debug));
+	memset(&current->thread.fpstate, 0, sizeof(current->thread.fpstate));
 	current->used_math = 0;
 	current->flags &= ~PF_USEDFPU;
 }
@@ -244,6 +288,8 @@ int copy_thread(int nr, unsigned long clone_flags, unsigned long esp,
 	struct pt_regs * childregs;
 	struct context_save_struct * save;
 
+	atomic_set(&p->thread.refcount, 1);
+
 	childregs = ((struct pt_regs *)((unsigned long)p + 8192)) - 1;
 	*childregs = *regs;
 	childregs->ARM_r0 = 0;
@@ -251,7 +297,7 @@ int copy_thread(int nr, unsigned long clone_flags, unsigned long esp,
 
 	save = ((struct context_save_struct *)(childregs)) - 1;
 	init_thread_css(save);
-	p->tss.save = save;
+	p->thread.save = save;
 
 	return 0;
 }
@@ -262,7 +308,7 @@ int copy_thread(int nr, unsigned long clone_flags, unsigned long esp,
 int dump_fpu (struct pt_regs *regs, struct user_fp *fp)
 {
 	if (current->used_math)
-		memcpy (fp, &current->tss.fpstate.soft, sizeof (*fp));
+		memcpy(fp, &current->thread.fpstate.soft, sizeof (*fp));
 
 	return current->used_math;
 }
@@ -272,20 +318,19 @@ int dump_fpu (struct pt_regs *regs, struct user_fp *fp)
  */
 void dump_thread(struct pt_regs * regs, struct user * dump)
 {
-	struct task_struct *tsk = current;
 	dump->magic = CMAGIC;
-	dump->start_code = tsk->mm->start_code;
+	dump->start_code = current->mm->start_code;
 	dump->start_stack = regs->ARM_sp & ~(PAGE_SIZE - 1);
 
-	dump->u_tsize = (tsk->mm->end_code - tsk->mm->start_code) >> PAGE_SHIFT;
-	dump->u_dsize = (tsk->mm->brk - tsk->mm->start_data + PAGE_SIZE - 1) >> PAGE_SHIFT;
+	dump->u_tsize = (current->mm->end_code - current->mm->start_code) >> PAGE_SHIFT;
+	dump->u_dsize = (current->mm->brk - current->mm->start_data + PAGE_SIZE - 1) >> PAGE_SHIFT;
 	dump->u_ssize = 0;
 
-	dump->u_debugreg[0] = tsk->tss.debug.bp[0].address;
-	dump->u_debugreg[1] = tsk->tss.debug.bp[1].address;
-	dump->u_debugreg[2] = tsk->tss.debug.bp[0].insn;
-	dump->u_debugreg[3] = tsk->tss.debug.bp[1].insn;
-	dump->u_debugreg[4] = tsk->tss.debug.nsaved;
+	dump->u_debugreg[0] = current->thread.debug.bp[0].address;
+	dump->u_debugreg[1] = current->thread.debug.bp[1].address;
+	dump->u_debugreg[2] = current->thread.debug.bp[0].insn;
+	dump->u_debugreg[3] = current->thread.debug.bp[1].insn;
+	dump->u_debugreg[4] = current->thread.debug.nsaved;
 
 	if (dump->start_stack < 0x04000000)
 		dump->u_ssize = (0x04000000 - dump->start_stack) >> PAGE_SHIFT;
@@ -304,23 +349,46 @@ void dump_thread(struct pt_regs * regs, struct user * dump)
  */
 pid_t kernel_thread(int (*fn)(void *), void *arg, unsigned long flags)
 {
-	extern int sys_exit(int) __attribute__((noreturn));
+	extern long sys_exit(int) __attribute__((noreturn));
 	pid_t __ret;
 
 	__asm__ __volatile__(
-	"orr	r0, %1, %2	@ kernel_thread\n"
+	"mov	r0, %1		@ kernel_thread sys_clone\n"
 "	mov	r1, #0\n"
 	__syscall(clone)"\n"
-"	movs	%0, r0
-	bne	1f
-	mov	fp, r0
-	mov	r0, %4
-	mov	lr, pc
-	mov	pc, %3
-	b	sys_exit
-1:	"
+"	mov	%0, r0"
         : "=r" (__ret)
-        : "Ir" (flags), "I" (CLONE_VM), "r" (fn), "r" (arg): "r0", "r1", "lr");
+        : "Ir" (flags | CLONE_VM) : "r0", "r1");
+	if (__ret == 0)
+		sys_exit((fn)(arg));
 	return __ret;
 }
 
+/*
+ * These bracket the sleeping functions..
+ */
+extern void scheduling_functions_start_here(void);
+extern void scheduling_functions_end_here(void);
+#define first_sched	((unsigned long) scheduling_functions_start_here)
+#define last_sched	((unsigned long) scheduling_functions_end_here)
+
+unsigned long get_wchan(struct task_struct *p)
+{
+	unsigned long fp, lr;
+	unsigned long stack_page;
+	int count = 0;
+	if (!p || p == current || p->state == TASK_RUNNING)
+		return 0;
+
+	stack_page = 4096 + (unsigned long)p;
+	fp = get_css_fp(&p->thread);
+	do {
+		if (fp < stack_page || fp > 4092+stack_page)
+			return 0;
+		lr = pc_pointer (((unsigned long *)fp)[-1]);
+		if (lr < first_sched || lr > last_sched)
+			return lr;
+		fp = *(unsigned long *) (fp - 12);
+	} while (count ++ < 16);
+	return 0;
+}

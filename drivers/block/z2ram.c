@@ -27,7 +27,6 @@
 
 #define MAJOR_NR    Z2RAM_MAJOR
 
-#include <linux/config.h>
 #include <linux/major.h>
 #include <linux/malloc.h>
 #include <linux/blk.h>
@@ -69,7 +68,7 @@ static int list_count       = 0;
 static int current_device   = -1;
 
 static void
-do_z2_request( void )
+do_z2_request( request_queue_t * q )
 {
     u_long start, len, addr, size;
 
@@ -145,7 +144,7 @@ get_chipram( void )
     {
 	chip_count++;
 	z2ram_map[ z2ram_size ] =
-	    (u_long)amiga_chip_alloc( Z2RAM_CHUNKSIZE );
+	    (u_long)amiga_chip_alloc( Z2RAM_CHUNKSIZE, "z2ram" );
 
 	if ( z2ram_map[ z2ram_size ] == 0 )
 	{
@@ -321,8 +320,6 @@ z2_release( struct inode *inode, struct file *filp )
     if ( current_device == -1 )
 	return 0;     
 
-    sync_dev( inode->i_rdev );
-
     /*
      * FIXME: unmap memory
      */
@@ -332,26 +329,14 @@ z2_release( struct inode *inode, struct file *filp )
     return 0;
 }
 
-static struct file_operations z2_fops =
+static struct block_device_operations z2_fops =
 {
-	NULL,                   /* lseek - default */
-	block_read,             /* read - general block-dev read */
-	block_write,            /* write - general block-dev write */
-	NULL,                   /* readdir - bad */
-	NULL,                   /* poll */
-	NULL,                   /* ioctl */
-	NULL,                   /* mmap */
-	z2_open,                /* open */
-	NULL,			/* flush */
-	z2_release,             /* release */
-	block_fsync,            /* fsync */
-	NULL,			/* fasync */
-	NULL,			/* check_media_change */
-	NULL,			/* revalidate */
+	open:		z2_open,
+	release:	z2_release,
 };
 
-__initfunc(int
-z2_init( void ))
+int __init 
+z2_init( void )
 {
 
     if ( !MACH_IS_AMIGA )
@@ -374,7 +359,7 @@ z2_init( void ))
 	    }
     }    
    
-    blk_dev[ MAJOR_NR ].request_fn = DEVICE_REQUEST;
+    blk_init_queue(BLK_DEFAULT_QUEUE(MAJOR_NR), DEVICE_REQUEST);
     blksize_size[ MAJOR_NR ] = z2_blocksizes;
     blk_size[ MAJOR_NR ] = z2_sizes;
 

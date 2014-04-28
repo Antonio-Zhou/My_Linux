@@ -44,19 +44,12 @@
 #include <linux/notifier.h>
 
 #include <asm/bitops.h>
-#include <asm/adb.h>
-#include <asm/cuda.h>
-#include <asm/pmu.h>
-#include <asm/init.h>
-#include <asm/machdep.h>
-#include <asm/backlight.h>
 
+#include <linux/adb.h>
+#include <linux/cuda.h>
+#include <linux/pmu.h>
 #include <linux/kbd_kern.h>
 #include <linux/kbd_ll.h>
-
-#ifdef CONFIG_PMAC_BACKLIGHT
-#include <asm/backlight.h>
-#endif
 
 #define KEYB_KEYREG	0	/* register # for key up/down data */
 #define KEYB_LEDREG	2	/* register # for leds on ADB keyboard */
@@ -232,7 +225,7 @@ static u_short macctrl_alt_map[NR_KEYS] __initdata = {
 
 
 static void kbd_repeat(unsigned long);
-static struct timer_list repeat_timer = { function: kbd_repeat };
+static struct timer_list repeat_timer = { NULL, NULL, 0, 0, kbd_repeat };
 static int last_keycode;
 
 static void mackeyb_probe(void);
@@ -261,7 +254,7 @@ int adb_button3_keycode = 0x7c; /* right option key */
 extern int console_loglevel;
 
 extern struct kbd_struct kbd_table[];
-extern struct wait_queue * keypress_wait;
+extern wait_queue_head_t keypress_wait;
 
 extern void handle_scancode(unsigned char, int);
 
@@ -282,8 +275,6 @@ static struct adb_ids buttons_ids;
 #define ADBMOUSE_MACALLY2	9	/* MacAlly 2-button mouse */
 
 static int adb_mouse_kinds[16];
-
-__openfirmware
 
 int mackbd_setkeycode(unsigned int scancode, unsigned int keycode)
 {
@@ -400,16 +391,17 @@ input_keycode(int keycode, int repeat)
 		 case 0x39:
 			handle_scancode(0x39, 1);
 			handle_scancode(0x39, 0);
-		 	mark_bh(KEYBOARD_BH);
+		 	tasklet_schedule(&keyboard_tasklet);
 		 	return;
 		 case 0x47:
 		 /*case 0xc7:*/
-		 	mark_bh(KEYBOARD_BH);
+		 	tasklet_schedule(&keyboard_tasklet);
 		 	break;
 		 }
 	}
 
 	handle_scancode(keycode, !up_flag);
+	tasklet_schedule(&keyboard_tasklet);
 }
 
 static void
@@ -593,48 +585,68 @@ mouse_input(unsigned char *data, int nb, struct pt_regs *regs, int autopoll)
 }
 #endif /* CONFIG_ADBMOUSE */
 
+/* XXX Needs to get rid of this, see comments in pmu.c */
+extern int backlight_level;
+
 static void
 buttons_input(unsigned char *data, int nb, struct pt_regs *regs, int autopoll)
 {
-	int backlight = get_backlight_level();
-
+#ifdef CONFIG_ADB_PMU
 	/*
 	 * XXX: Where is the contrast control for the passive?
 	 *  -- Cort
 	 */
 
 	/* Ignore data from register other than 0 */
+#if 0
+	if ((adb_hardware != ADB_VIAPMU) || (data[0] & 0x3) || (nb < 2))
+#else
 	if ((data[0] & 0x3) || (nb < 2))
+#endif
 		return;
 
-	switch (data[1]) {
-	case 0x8:		/* mute */
-		break;
-
-	case 0x7:		/* contrast decrease */
-		break;
-
-	case 0x6:		/* contrast increase */
-		break;
-
-	case 0xa:		/* brightness decrease */
-		if (backlight < 0)
+	switch (data[1]&0xf )
+	{
+		/* mute */
+		case 0x8:
+			/* down event */
+			if ( data[1] == (data[1]&0xf) ) {
+			}
 			break;
-		if (backlight > BACKLIGHT_OFF)
-			set_backlight_level(backlight-1);
-		else
-			set_backlight_level(BACKLIGHT_OFF);
-		break;
-
-	case 0x9:		/* brightness increase */
-		if (backlight < 0)
+		/* contrast decrease */
+		case 0x7:
+			/* down event */
+			if ( data[1] == (data[1]&0xf) ) {
+			}
 			break;
-		if (backlight < BACKLIGHT_MAX)
-			set_backlight_level(backlight+1);
-		else 
-			set_backlight_level(BACKLIGHT_MAX);
-		break;
+		/* contrast increase */
+		case 0x6:
+			/* down event */
+			if ( data[1] == (data[1]&0xf) ) {
+			}
+			break;
+		/* brightness decrease */
+		case 0xa:
+			/* down event */
+			if ( data[1] == (data[1]&0xf) ) {
+				if (backlight_level > 2)
+					pmu_set_brightness(backlight_level-2);
+				else
+					pmu_set_brightness(0);
+			}
+			break;
+		/* brightness increase */
+		case 0x9:
+			/* down event */
+			if ( data[1] == (data[1]&0xf) ) {
+				if (backlight_level < 0x1e)
+					pmu_set_brightness(backlight_level+2);
+				else
+					pmu_set_brightness(0x1f);
+			}
+			break;
 	}
+#endif /* CONFIG_ADB_PMU */
 }
 
 /* Map led flags as defined in kbd_kern.h to bits for Apple keyboard. */
@@ -696,8 +708,14 @@ static void leds_done(struct adb_request *req)
 
 void __init mackbd_init_hw(void)
 {
+#ifdef CONFIG_PPC
 	if ( (_machine != _MACH_chrp) && (_machine != _MACH_Pmac) )
 		return;
+#endif
+#ifdef CONFIG_MAC
+	if (!MACH_IS_MAC)
+		return;
+#endif
 
 	/* setup key map */
 	memcpy(key_maps[0], macplain_map, sizeof(plain_map));

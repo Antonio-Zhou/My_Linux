@@ -100,7 +100,7 @@ typedef struct _i2ChanStr
 	PWAITQ   dss_now_wait;	// Pointer for OS sleep function.
 
 	struct timer_list  BookmarkTimer;   // Used by i2DrainOutput
-	struct wait_queue *pBookmarkWait;   // Used by i2DrainOutput
+	wait_queue_head_t pBookmarkWait;   // Used by i2DrainOutput
 
 	struct termios NormalTermios;
 	struct termios CalloutTermios;
@@ -340,12 +340,6 @@ static int  i2Output(i2ChanStrPtr, const char *, int, int);
 static int  i2OutputFree(i2ChanStrPtr);
 static int  i2ServiceBoard(i2eBordStrPtr);
 static void i2DrainOutput(i2ChanStrPtr, int);
-
-#ifdef IP2DEBUG_TRACE
-void ip2trace(unsigned short,unsigned char,unsigned char,unsigned long,...);
-#else
-#define ip2trace(a,b,c,d...) do {} while (0)
-#endif
 
 // Argument to i2QueueCommands
 //

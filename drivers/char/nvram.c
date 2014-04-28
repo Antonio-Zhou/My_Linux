@@ -25,10 +25,9 @@
  * the kernel and is not a module. Since the functions are used by some Atari
  * drivers, this is the case on the Atari.
  *
- * 1.0a		Paul Gortmaker: use rtc_lock, fix get/put_user in cli bugs.
  */
 
-#define NVRAM_VERSION		"1.0a"
+#define NVRAM_VERSION		"1.0"
 
 #include <linux/module.h>
 #include <linux/config.h>
@@ -39,7 +38,7 @@
 /* select machine configuration */
 #if defined(CONFIG_ATARI)
 #define MACH ATARI
-#elif defined(__i386__) /* and others?? */
+#elif defined(__i386__) || defined(__arm__) /* and others?? */
 #define MACH PC
 #else
 #error Cannot build nvram driver for this machine configuration.
@@ -79,12 +78,10 @@
 #define	mach_set_checksum	atari_set_checksum
 #define	mach_proc_infos		atari_proc_infos
 
-static spinlock_t rtc_lock;	/* optimized away; no SMP m68K */
-
 #endif
 
 /* Note that *all* calls to CMOS_READ and CMOS_WRITE must be done with
- * rtc_lock held. Due to the index-port/data-port design of the RTC, we
+ * interrupts disabled. Due to the index-port/data-port design of the RTC, we
  * don't want two different things trying to get to it at once. (e.g. the
  * periodic 11 min sync from time.c vs. this driver.)
  */
@@ -98,9 +95,7 @@ static spinlock_t rtc_lock;	/* optimized away; no SMP m68K */
 #include <linux/mc146818rtc.h>
 #include <linux/nvram.h>
 #include <linux/init.h>
-#ifdef CONFIG_PROC_FS
 #include <linux/proc_fs.h>
-#endif
 
 #include <asm/io.h>
 #include <asm/uaccess.h>
@@ -236,28 +231,23 @@ static ssize_t nvram_read(struct file * file,
 	unsigned long flags;
 	unsigned i = *ppos;
 	char *tmp = buf;
-	int checksum;
 	
 	if (i != *ppos)
 		return -EINVAL;
 
-	spin_lock_irqsave(&rtc_lock, flags);
-	checksum = nvram_check_checksum_int();
-	spin_unlock_irqrestore(&rtc_lock, flags);
-
-	if (!checksum)
+	save_flags(flags);
+	cli();
+	
+	if (!nvram_check_checksum_int()) {
+		restore_flags(flags);
 		return( -EIO );
+	}
 
 	for( ; count-- > 0 && i < NVRAM_BYTES; ++i, ++tmp )
-	{
-		int val;
-		spin_lock_irqsave(&rtc_lock, flags);
-		val = nvram_read_int(i);
-		spin_unlock_irqrestore(&rtc_lock, flags);
-		put_user( val, tmp );
-	}
+		put_user( nvram_read_int(i), tmp );
 	*ppos = i;
 
+	restore_flags(flags);
 	return( tmp - buf );
 }
 
@@ -268,31 +258,26 @@ static ssize_t nvram_write(struct file * file,
 	unsigned i = *ppos;
 	const char *tmp = buf;
 	char c;
-	int checksum;
 	
 	if (i != *ppos)
 		return -EINVAL;
 
-	spin_lock_irqsave(&rtc_lock, flags);
-	checksum = nvram_check_checksum_int();
-	spin_unlock_irqrestore(&rtc_lock, flags);
-
-	if (!checksum)
+	save_flags(flags);
+	cli();
+	
+	if (!nvram_check_checksum_int()) {
+		restore_flags(flags);
 		return( -EIO );
+	}
 
 	for( ; count-- > 0 && i < NVRAM_BYTES; ++i, ++tmp ) {
 		get_user( c, tmp );
-		spin_lock_irqsave(&rtc_lock, flags);
 		nvram_write_int( c, i );
-		spin_unlock_irqrestore(&rtc_lock, flags);
 	}
-
-	spin_lock_irqsave(&rtc_lock, flags);
 	nvram_set_checksum_int();
-	spin_unlock_irqrestore(&rtc_lock, flags);
-
 	*ppos = i;
 
+	restore_flags(flags);
 	return( tmp - buf );
 }
 
@@ -308,13 +293,14 @@ static int nvram_ioctl( struct inode *inode, struct file *file,
 		if (!capable(CAP_SYS_ADMIN))
 			return( -EACCES );
 
-		spin_lock_irqsave(&rtc_lock, flags);
+		save_flags(flags);
+		cli();
 
 		for( i = 0; i < NVRAM_BYTES; ++i )
 			nvram_write_int( 0, i );
 		nvram_set_checksum_int();
 		
-		spin_unlock_irqrestore(&rtc_lock, flags);
+		restore_flags(flags);
 		return( 0 );
 	  
 	  case NVRAM_SETCKS:		/* just set checksum, contents unchanged
@@ -323,13 +309,14 @@ static int nvram_ioctl( struct inode *inode, struct file *file,
 		if (!capable(CAP_SYS_ADMIN))
 			return( -EACCES );
 
-		spin_lock_irqsave(&rtc_lock, flags);
+		save_flags(flags);
+		cli();
 		nvram_set_checksum_int();
-		spin_unlock_irqrestore(&rtc_lock, flags);
+		restore_flags(flags);
 		return( 0 );
 
 	  default:
-		return( -ENOTTY );
+		return( -EINVAL );
 	}
 }
 
@@ -362,9 +349,10 @@ static int nvram_release( struct inode *inode, struct file *file )
 }
 
 
-#ifdef CONFIG_PROC_FS
-
-struct proc_dir_entry *proc_nvram;
+#ifndef CONFIG_PROC_FS
+static int nvram_read_proc( char *buffer, char **start, off_t offset,
+			    int size, int *eof, void *data) { return 0; }
+#else
 
 static int nvram_read_proc( char *buffer, char **start, off_t offset,
 							int size, int *eof, void *data )
@@ -374,10 +362,11 @@ static int nvram_read_proc( char *buffer, char **start, off_t offset,
     int i, len = 0;
     off_t begin = 0;
 	
-	spin_lock_irqsave(&rtc_lock, flags);
+	save_flags(flags);
+	cli();
 	for( i = 0; i < NVRAM_BYTES; ++i )
 		contents[i] = nvram_read_int( i );
-	spin_unlock_irqrestore(&rtc_lock, flags);
+	restore_flags(flags);
 	
 	*eof = mach_proc_infos( contents, buffer, &len, &begin, offset, size );
 
@@ -401,19 +390,15 @@ static int nvram_read_proc( char *buffer, char **start, off_t offset,
 		}												\
 	} while(0)
 
-#endif
+#endif /* CONFIG_PROC_FS */
 
 static struct file_operations nvram_fops = {
-	nvram_llseek,
-	nvram_read,
-	nvram_write,
-	NULL,			/* No readdir */
-	NULL,			/* No poll */
-	nvram_ioctl,
-	NULL,			/* No mmap */
-	nvram_open,
-	NULL,			/* flush */
-	nvram_release
+	llseek:		nvram_llseek,
+	read:		nvram_read,
+	write:		nvram_write,
+	ioctl:		nvram_ioctl,
+	open:		nvram_open,
+	release:	nvram_release,
 };
 
 static struct miscdevice nvram_dev = {
@@ -423,7 +408,7 @@ static struct miscdevice nvram_dev = {
 };
 
 
-__initfunc(int nvram_init(void))
+static int __init nvram_init(void)
 {
 	/* First test whether the driver should init at all */
 	if (!CHECK_DRIVER_INIT())
@@ -431,29 +416,18 @@ __initfunc(int nvram_init(void))
 
 	printk(KERN_INFO "Non-volatile memory driver v%s\n", NVRAM_VERSION );
 	misc_register( &nvram_dev );
-#ifdef CONFIG_PROC_FS
-	if ((proc_nvram = create_proc_entry( "nvram", 0, 0 )))
-		proc_nvram->read_proc = nvram_read_proc;
-#endif
-	
+	create_proc_read_entry("driver/nvram",0,0,nvram_read_proc,NULL);
 	return( 0 );
 }
 
-#ifdef MODULE
-int init_module (void)
+static void __exit nvram_cleanup_module (void)
 {
-	return( nvram_init() );
-}
-
-void cleanup_module (void)
-{
-#ifdef CONFIG_PROC_FS
-	if (proc_nvram)
-		remove_proc_entry( "nvram", 0 );
-#endif
+	remove_proc_entry( "driver/nvram", 0 );
 	misc_deregister( &nvram_dev );
 }
-#endif
+
+module_init(nvram_init);
+module_exit(nvram_cleanup_module);
 
 
 /*

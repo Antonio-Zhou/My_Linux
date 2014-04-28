@@ -14,7 +14,6 @@
 #
 
 LD=$(CROSS_COMPILE)ld -m elf_s390
-CPP=$(CC) -E
 OBJCOPY=$(CROSS_COMPILE)objcopy -O binary -R .note -R .comment -S
 LDFLAGS=-e start
 LINKFLAGS =-T $(TOPDIR)/arch/s390/vmlinux.lds $(LDFLAGS)
@@ -22,11 +21,6 @@ LINKFLAGS =-T $(TOPDIR)/arch/s390/vmlinux.lds $(LDFLAGS)
 CFLAGS_PIPE := -pipe
 CFLAGS_NSR  := -fno-strength-reduce
 CFLAGS := $(CFLAGS) $(CFLAGS_PIPE) $(CFLAGS_NSR)
-
-
-ifdef SMP
-CFLAGS := $(CFLAGS) -D__SMP__
-endif
 
 HEAD := arch/s390/kernel/head.o arch/s390/kernel/init_task.o
 

@@ -14,25 +14,24 @@
 
 #if defined(CONFIG_QUOTA)
 
+#include <linux/smp_lock.h>
+
 /*
  * declaration of quota_function calls in kernel.
  */
 extern void dquot_initialize(struct inode *inode, short type);
 extern void dquot_drop(struct inode *inode);
 extern void invalidate_dquots(kdev_t dev, short type);
-extern int  quota_off(kdev_t dev, short type);
+extern int  quota_off(struct super_block *sb, short type);
 extern int  sync_dquots(kdev_t dev, short type);
 
-extern int  dquot_alloc_block(const struct inode *inode, unsigned long number,
-                              uid_t initiator, char warn);
-extern int  dquot_alloc_inode(const struct inode *inode, unsigned long number,
-                              uid_t initiator);
+extern int  dquot_alloc_block(const struct inode *inode, unsigned long number, char prealloc);
+extern int  dquot_alloc_inode(const struct inode *inode, unsigned long number);
 
 extern void dquot_free_block(const struct inode *inode, unsigned long number);
 extern void dquot_free_inode(const struct inode *inode, unsigned long number);
 
-extern int  dquot_transfer(struct dentry *dentry, struct iattr *iattr,
-                           uid_t initiator);
+extern int  dquot_transfer(struct dentry *dentry, struct iattr *iattr);
 
 /*
  * Operations supported for diskquotas.
@@ -54,8 +53,7 @@ extern __inline__ void DQUOT_DROP(struct inode *inode)
 extern __inline__ int DQUOT_PREALLOC_BLOCK(struct super_block *sb, const struct inode *inode, int nr)
 {
 	if (sb->dq_op) {
-		if (sb->dq_op->alloc_block(inode, fs_to_dq_blocks(nr, sb->s_blocksize),
-					   current->fsuid, 0) == NO_QUOTA)
+		if (sb->dq_op->alloc_block(inode, fs_to_dq_blocks(nr, sb->s_blocksize), 1) == NO_QUOTA)
 			return 1;
 	}
 	return 0;
@@ -64,8 +62,7 @@ extern __inline__ int DQUOT_PREALLOC_BLOCK(struct super_block *sb, const struct 
 extern __inline__ int DQUOT_ALLOC_BLOCK(struct super_block *sb, const struct inode *inode, int nr)
 {
 	if (sb->dq_op) {
-		if (sb->dq_op->alloc_block(inode, fs_to_dq_blocks(nr, sb->s_blocksize),
-					   current->fsuid, 1) == NO_QUOTA)
+		if (sb->dq_op->alloc_block(inode, fs_to_dq_blocks(nr, sb->s_blocksize), 0) == NO_QUOTA)
 			return 1;
 	}
 	return 0;
@@ -75,7 +72,7 @@ extern __inline__ int DQUOT_ALLOC_INODE(struct super_block *sb, struct inode *in
 {
 	if (sb->dq_op) {
 		sb->dq_op->initialize (inode, -1);
-		if (sb->dq_op->alloc_inode (inode, 1, current->fsuid))
+		if (sb->dq_op->alloc_inode (inode, 1))
 			return 1;
 	}
 	inode->i_flags |= S_QUOTA;
@@ -98,9 +95,11 @@ extern __inline__ int DQUOT_TRANSFER(struct dentry *dentry, struct iattr *iattr)
 {
 	int error = -EDQUOT;
 
-	if (dentry->d_inode->i_sb && dentry->d_inode->i_sb->dq_op) {
+	if (dentry->d_inode->i_sb->dq_op) {
+		lock_kernel();
 		dentry->d_inode->i_sb->dq_op->initialize(dentry->d_inode, -1);
-		error = dentry->d_inode->i_sb->dq_op->transfer(dentry, iattr, current->fsuid);
+		error = dentry->d_inode->i_sb->dq_op->transfer(dentry, iattr);
+		unlock_kernel();
 	} else {
 		error = notify_change(dentry, iattr);
 	}
@@ -108,7 +107,7 @@ extern __inline__ int DQUOT_TRANSFER(struct dentry *dentry, struct iattr *iattr)
 }
 
 #define DQUOT_SYNC(dev)	sync_dquots(dev, -1)
-#define DQUOT_OFF(dev)	quota_off(dev, -1)
+#define DQUOT_OFF(sb)	quota_off(sb, -1)
 
 #else
 
@@ -123,7 +122,7 @@ extern __inline__ int DQUOT_TRANSFER(struct dentry *dentry, struct iattr *iattr)
 #define DQUOT_FREE_BLOCK(sb, inode, nr)		do { } while(0)
 #define DQUOT_FREE_INODE(sb, inode)		do { } while(0)
 #define DQUOT_SYNC(dev)				do { } while(0)
-#define DQUOT_OFF(dev)				do { } while(0)
+#define DQUOT_OFF(sb)				do { } while(0)
 
 /*
  * Special case expands to a simple notify_change.

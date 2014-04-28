@@ -504,9 +504,6 @@ struct ufs_inode {
 
 #ifdef __KERNEL__
 
-/* acl.c */
-extern int ufs_permission (struct inode *, int);
-
 /* balloc.c */
 extern void ufs_free_fragments (struct inode *, unsigned, unsigned);
 extern void ufs_free_blocks (struct inode *, unsigned, unsigned);
@@ -518,19 +515,20 @@ extern void ufs_put_cylinder (struct super_block *, unsigned);
 
 /* dir.c */
 extern struct inode_operations ufs_dir_inode_operations;
-extern struct file_operations ufs_dir_operations;
 extern int ufs_check_dir_entry (const char *, struct inode *, struct ufs_dir_entry *, struct buffer_head *, unsigned long);
 
 /* file.c */
 extern struct inode_operations ufs_file_inode_operations;
 extern struct file_operations ufs_file_operations;
 
+extern struct address_space_operations ufs_aops;
+
 /* ialloc.c */
 extern void ufs_free_inode (struct inode *inode);
 extern struct inode * ufs_new_inode (const struct inode *, int, int *);
 
 /* inode.c */
-extern int ufs_bmap (struct inode *, int);
+extern int ufs_frag_map (struct inode *, int);
 extern void ufs_read_inode (struct inode *);
 extern void ufs_put_inode (struct inode *);
 extern void ufs_write_inode (struct inode *);
@@ -541,27 +539,17 @@ extern struct buffer_head * ufs_getfrag (struct inode *, unsigned, int, int *);
 extern struct buffer_head * ufs_bread (struct inode *, unsigned, int, int *);
 
 /* namei.c */
-extern struct dentry *ufs_lookup (struct inode *, struct dentry *);
-extern int ufs_mkdir(struct inode *, struct dentry *, int);
-extern int ufs_rmdir (struct inode *, struct dentry *);
-extern int ufs_unlink (struct inode *, struct dentry *);
-extern int ufs_create (struct inode *, struct dentry *, int);
-extern int ufs_rename (struct inode *, struct dentry *, struct inode *, struct dentry *);
-extern int ufs_mknod (struct inode *, struct dentry *, int, int);
-extern int ufs_symlink (struct inode *, struct dentry *, const char *);
-extern int ufs_link (struct dentry *, struct inode *, struct dentry *);
+extern struct file_operations ufs_dir_operations;
         
 /* super.c */
-extern struct super_operations ufs_super_ops;
 extern struct file_system_type ufs_fs_type;
 extern void ufs_warning (struct super_block *, const char *, const char *, ...) __attribute__ ((format (printf, 3, 4)));
 extern void ufs_error (struct super_block *, const char *, const char *, ...) __attribute__ ((format (printf, 3, 4)));
 extern void ufs_panic (struct super_block *, const char *, const char *, ...) __attribute__ ((format (printf, 3, 4)));
-extern int init_ufs_fs(void);
 extern void ufs_write_super (struct super_block *);
 
 /* symlink.c */
-extern struct inode_operations ufs_symlink_inode_operations;
+extern struct inode_operations ufs_fast_symlink_inode_operations;
 
 /* truncate.c */
 extern void ufs_truncate (struct inode *);

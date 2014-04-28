@@ -1,7 +1,7 @@
 /*
- * $Id: keybdev.c,v 1.3 2000/05/28 17:31:36 vojtech Exp $
+ *  keybdev.c  Version 0.1
  *
- *  Copyright (c) 1999-2000 Vojtech Pavlik
+ *  Copyright (c) 1999 Vojtech Pavlik
  *
  *  Input driver to keyboard driver binding.
  *
@@ -35,72 +35,30 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/kbd_kern.h>
-#include <linux/kcomp.h>
 
-#if defined(__i386__) || defined(__alpha__) || defined(__mips__) || defined(__powerpc__)
+#if defined(CONFIG_X86) || defined(CONFIG_IA64) || defined(__alpha__) || defined(__mips__)
 
 static int x86_sysrq_alt = 0;
 
-static unsigned short x86_keycodes[256] = {
-	  0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15,
+static unsigned short x86_keycodes[256] =
+	{ 0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15,
 	 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
 	 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
 	 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63,
 	 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79,
 	 80, 81, 82, 83, 43, 85, 86, 87, 88,115,119,120,121,375,123, 90,
 	284,285,309,298,312, 91,327,328,329,331,333,335,336,337,338,339,
-	367,294,293,286,350, 92,334,512,116,377,109,111,259,347,348,349,
+	367,294,293,286,350, 92,334,512,116,377,109,111,373,347,348,349,
 	360, 93, 94, 95, 98,376,100,101,357,316,354,304,289,102,351,355,
 	103,104,105,275,281,272,306,106,274,107,288,364,358,363,362,361,
 	291,108,381,290,287,292,279,305,280, 99,112,257,258,113,270,114,
-	118,117,125,374,379,125,260,261,262,263,264,265,266,267,268,269,
+	118,117,125,374,379,259,260,261,262,263,264,265,266,267,268,269,
 	271,273,276,277,278,282,283,295,296,297,299,300,301,302,303,307,
 	308,310,313,314,315,317,318,319,320,321,322,323,324,325,326,330,
-	332,340,341,342,343,344,345,346,356,359,365,368,369,370,371,372
-};
-
-#ifdef CONFIG_INPUT_ADBHID
-#ifdef CONFIG_MAC_ADBKEYCODES
-extern int mac_hid_keyboard_sends_linux_keycodes(void);
-
-static unsigned char mac_keycodes[256] = {
-	  0, 53, 18, 19, 20, 21, 23, 22, 26, 28, 25, 29, 27, 24, 51, 48,
-	 12, 13, 14, 15, 17, 16, 32, 34, 31, 35, 33, 30, 36, 54,128,  1,
-	  2,  3,  5,  4, 38, 40, 37, 41, 39, 50, 56, 42,  6,  7,  8,  9,
-	 11, 45, 46, 43, 47, 44,123, 67, 58, 49, 57,122,120, 99,118, 96,
-	 97, 98,100,101,109, 71,107, 89, 91, 92, 78, 86, 87, 88, 69, 83,
-	 84, 85, 82, 65, 42,  0, 10,103,111,  0,  0,  0,  0,  0,  0,  0,
-	 76,125, 75,105,124,110,115, 62,116, 59, 60,119, 61,121,114,117,
-	  0,  0,  0,  0,127, 81,  0,113,  0,  0,  0,  0, 95, 55, 55,  0,
-	  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
-	  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
-	  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
-	  0,  0,  0,  0,  0, 94,  0, 93,  0,  0,  0,  0,  0,  0,104,102
-};
-#endif /* CONFIG_MAC_ADBKEYCODES */
-#ifdef CONFIG_MAC_EMUMOUSEBTN
-extern int mac_hid_mouse_emulate_buttons(int, unsigned int, int);
-#endif /* CONFIG_MAC_EMUMOUSEBTN */
-#endif /* CONFIG_INPUT_ADBHID */
+	332,340,341,342,343,344,345,346,356,359,365,368,369,370,371,372 };
 
 static int emulate_raw(unsigned int keycode, int down)
 {
-#ifdef CONFIG_INPUT_ADBHID
-#ifdef CONFIG_MAC_EMUMOUSEBTN
-	if (mac_hid_mouse_emulate_buttons(1, keycode, down))
-		return 0;
-#endif /* CONFIG_MAC_EMUMOUSEBTN */
-#ifdef CONFIG_MAC_ADBKEYCODES
-	if (!mac_hid_keyboard_sends_linux_keycodes()) {
-		if (keycode > 255 || !mac_keycodes[keycode])
-			return -1;
-
-		handle_scancode(mac_keycodes[keycode] & 0x7f, down);
-
-		return 0;
-	}
-#endif /* CONFIG_MAC_ADBKEYCODES */
-#endif /* CONFIG_INPUT_ADBHID */
 	if (keycode > 255 || !x86_keycodes[keycode])
 		return -1; 
 
@@ -132,6 +90,28 @@ static int emulate_raw(unsigned int keycode, int down)
 	return 0;
 }
 
+#elif defined(CONFIG_ADB_KEYBOARD)
+
+static unsigned char mac_keycodes[128] =
+	{ 0, 53, 18, 19, 20, 21, 23, 22, 26, 28, 25, 29, 27, 24, 51, 48,
+	 12, 13, 14, 15, 17, 16, 32, 34, 31, 35, 33, 30, 36, 54,128,  1,
+	  2,  3,  5,  4, 38, 40, 37, 41, 39, 50, 56, 42,  6,  7,  8,  9,
+	 11, 45, 46, 43, 47, 44,123, 67, 58, 49, 57,122,120, 99,118, 96,
+	 97, 98,100,101,109, 71,107, 89, 91, 92, 78, 86, 87, 88, 69, 83,
+	 84, 85, 82, 65, 42,  0, 10,103,111,  0,  0,  0,  0,  0,  0,  0,
+	 76,125, 75,105,124,  0,115, 62,116, 59, 60,119, 61,121,114,117,
+	  0,  0,  0,  0,127, 81,  0,113,  0,  0,  0,  0,  0, 55, 55 };
+
+static int emulate_raw(unsigned int keycode, int down)
+{
+	if (keycode > 127 || !mac_keycodes[keycode])
+		return -1;
+
+	handle_scancode(mac_keycodes[keycode] & 0x7f, down);
+
+	return 0;
+}
+
 #endif
 
 static struct input_handler keybdev_handler;
@@ -156,7 +136,7 @@ void keybdev_event(struct input_handle *handle, unsigned int type, unsigned int 
 	if (emulate_raw(code, down))
 		printk(KERN_WARNING "keyboard.c: can't emulate rawmode for keycode %d\n", code);
 
-	mark_bh(KEYBOARD_BH);
+	tasklet_schedule(&keyboard_tasklet);
 }
 
 static struct input_handle *keybdev_connect(struct input_handler *handler, struct input_dev *dev)
@@ -182,14 +162,14 @@ static struct input_handle *keybdev_connect(struct input_handler *handler, struc
 
 	input_open_device(handle);
 
-	printk(KERN_INFO "keybdev.c: Adding keyboard: input%d\n", dev->number);
+	printk("keybdev.c: Adding keyboard: input%d\n", dev->number);
 
 	return handle;
 }
 
 static void keybdev_disconnect(struct input_handle *handle)
 {
-	printk(KERN_INFO "keybdev.c: Removing keyboard: input%d\n", handle->dev->number);
+	printk("keybdev.c: Removing keyboard: input%d\n", handle->dev->number);
 	input_close_device(handle);
 	kfree(handle);
 }
@@ -215,6 +195,3 @@ static void __exit keybdev_exit(void)
 
 module_init(keybdev_init);
 module_exit(keybdev_exit);
-
-MODULE_AUTHOR("Vojtech Pavlik <vojtech@suse.cz>");
-MODULE_DESCRIPTION("Input driver to keyboard driver binding");

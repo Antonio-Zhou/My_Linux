@@ -1,4 +1,4 @@
-/* $Id: delay.h,v 1.7.6.1 2000/10/02 02:05:52 anton Exp $
+/* $Id: delay.h,v 1.9 2000/05/09 17:40:15 davem Exp $
  * delay.h: Linux delay routines on the V9.
  *
  * Copyright (C) 1996 David S. Miller (davem@caip.rutgers.edu).
@@ -7,9 +7,9 @@
 #ifndef __SPARC64_DELAY_H
 #define __SPARC64_DELAY_H
 
-#include <asm/param.h>
-
-#ifdef __SMP__
+#include <linux/config.h>
+#ifdef CONFIG_SMP
+#include <linux/sched.h>
 #include <asm/smp.h>
 #endif 
 
@@ -37,13 +37,13 @@ extern __inline__ void __udelay(unsigned long usecs, unsigned long lps)
 "	: "=r" (usecs)
 	: "r" (usecs), "r" (lps));
 
-	__delay(HZ * usecs);
+	__delay(usecs);
 }
 
-#ifdef __SMP__
+#ifdef CONFIG_SMP
 #define __udelay_val cpu_data[smp_processor_id()].udelay_val
 #else
-#define __udelay_val loops_per_jiffy
+#define __udelay_val loops_per_sec
 #endif
 
 #define udelay(usecs) __udelay((usecs),__udelay_val)

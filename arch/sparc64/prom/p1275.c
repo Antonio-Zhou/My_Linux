@@ -1,4 +1,4 @@
-/* $Id: p1275.c,v 1.15.2.3 1999/10/27 00:22:27 davem Exp $
+/* $Id: p1275.c,v 1.20 1999/11/23 23:47:56 davem Exp $
  * p1275.c: Sun IEEE 1275 PROM low level interface routines
  *
  * Copyright (C) 1996,1997 Jakub Jelinek (jj@sunsite.mff.cuni.cz)
@@ -9,13 +9,13 @@
 #include <linux/sched.h>
 #include <linux/smp.h>
 #include <linux/string.h>
+#include <linux/spinlock.h>
 
 #include <asm/openprom.h>
 #include <asm/oplib.h>
 #include <asm/system.h>
 #include <asm/spitfire.h>
 #include <asm/pstate.h>
-#include <asm/spinlock.h>
 
 struct {
 	long prom_callback;			/* 0x00 */
@@ -252,9 +252,7 @@ void prom_cif_callback(void)
  * the counter is needed.  -DaveM
  */
 static int prom_entry_depth = 0;
-#ifdef __SMP__
 spinlock_t prom_entry_lock = SPIN_LOCK_UNLOCKED;
-#endif
 
 static __inline__ unsigned long prom_get_lock(void)
 {

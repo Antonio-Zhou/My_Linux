@@ -164,25 +164,17 @@ static int mixcomwd_ioctl(struct inode *inode, struct file *file,
 			mixcomwd_ping();
 			break;
 		default:
-			return -ENOTTY;
+			return -ENOIOCTLCMD;
 	}
 	return 0;
 }
 
 static struct file_operations mixcomwd_fops=
 {
-	NULL,		/* Seek */
-	NULL,		/* Read */
-	mixcomwd_write,	/* Write */
-	NULL,		/* Readdir */
-	NULL,		/* Select */
-	mixcomwd_ioctl,	/* Ioctl */
-	NULL,		/* MMap */
-	mixcomwd_open,
-	NULL,		/* flush */
-	mixcomwd_release,
-	NULL,		
-	NULL		/* Fasync */
+	write:		mixcomwd_write,
+	ioctl:		mixcomwd_ioctl,
+	open:		mixcomwd_open,
+	release:	mixcomwd_release,
 };
 
 static struct miscdevice mixcomwd_miscdev=
@@ -192,22 +184,22 @@ static struct miscdevice mixcomwd_miscdev=
 	&mixcomwd_fops
 };
 
-__initfunc(static int mixcom_checkcard(int port))
+static int __init mixcomwd_checkcard(int port)
 {
 	int id;
 
-	if(check_region(port + MIXCOM_WATCHDOG_OFFSET,1)) {
+	if(check_region(port+MIXCOM_WATCHDOG_OFFSET,1)) {
 		return 0;
 	}
 	
-	id=inb_p(port + MIXCOM_WATCHDOG_OFFSET);
+	id=inb_p(port + MIXCOM_WATCHDOG_OFFSET) & 0x3f;
 	if(id!=MIXCOM_ID) {
 		return 0;
 	}
 	return 1;
 }
 
-__initfunc(static int flashcom_checkcard(int port))
+static int __init flashcom_checkcard(int port)
 {
 	int id;
 	
@@ -216,20 +208,19 @@ __initfunc(static int flashcom_checkcard(int port))
 	}
 	
 	id=inb_p(port + FLASHCOM_WATCHDOG_OFFSET);
-	if(id!=FLASHCOM_ID) {
+ 	if(id!=FLASHCOM_ID) {
 		return 0;
 	}
-	return 1;
-}
-
-
-__initfunc(void mixcomwd_init(void))
+ 	return 1;
+ }
+ 
+void __init mixcomwd_init(void)
 {
 	int i;
 	int found=0;
 
 	for (i = 0; !found && mixcomwd_ioports[i] != 0; i++) {
-		if (mixcom_checkcard(mixcomwd_ioports[i])) {
+		if (mixcomwd_checkcard(mixcomwd_ioports[i])) {
 			found = 1;
 			watchdog_port = mixcomwd_ioports[i] + MIXCOM_WATCHDOG_OFFSET;
 		}
@@ -251,7 +242,7 @@ __initfunc(void mixcomwd_init(void))
 	request_region(watchdog_port,1,"MixCOM watchdog");
 		
 	misc_register(&mixcomwd_miscdev);
-	printk("MixCOM watchdog driver v%s, watchdog port at 0x%3x\n",VERSION,watchdog_port);
+	printk(KERN_INFO "MixCOM watchdog driver v%s, watchdog port at 0x%3x\n",VERSION,watchdog_port);
 }	
 
 #ifdef MODULE

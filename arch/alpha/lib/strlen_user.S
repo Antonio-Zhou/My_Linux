@@ -28,9 +28,17 @@
 	.set noat
 	.text
 
-	.globl __strnlen_user
-	.ent __strnlen_user
+	.globl __strlen_user
+	.ent __strlen_user
 	.frame sp, 0, ra
+
+	.align 3
+__strlen_user:
+	ldah	a1, 32767(zero)	# do not use plain strlen_user() for strings
+				# that might be almost 2 GB long; you should
+				# be using strnlen_user() instead
+
+	.globl __strnlen_user
 
 	.align 3
 __strnlen_user:
@@ -81,4 +89,4 @@ $limit:
 	subq	a1, t2, v0
 	ret
 
-	.end __strnlen_user
+	.end __strlen_user

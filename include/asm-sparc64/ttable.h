@@ -1,4 +1,4 @@
-/* $Id: ttable.h,v 1.11.2.5 2001/03/28 11:24:15 davem Exp $ */
+/* $Id: ttable.h,v 1.15 2000/04/03 10:36:42 davem Exp $ */
 #ifndef _SPARC64_TTABLE_H
 #define _SPARC64_TTABLE_H
 
@@ -54,22 +54,12 @@
 	 clr	%l6;					\
 	nop;
 	
-	/* The grotty trick to save %g1 into current->thread.kernel_cntd0
-	 * is because when we take this trap we could be interrupting trap
-	 * code already using the trap alternate global registers.  It is
-	 * better to corrupt a performance counter than corrupt trap register
-	 * state.  We cross our fingers and pray that this store/load does
-	 * not cause yet another CEE trap.
-	 */
 #define TRAPTL1_CEE			\
-	membar	#Sync;			\
-	stx	%g1, [%g6 + AOFF_task_tss + AOFF_thread_kernel_cntd0]; \
 	ldxa	[%g0] ASI_AFSR, %g1;	\
 	membar	#Sync;			\
 	stxa	%g1, [%g0] ASI_AFSR;	\
 	membar	#Sync;			\
-	ldx	[%g6 + AOFF_task_tss + AOFF_thread_kernel_cntd0], %g1; \
-	retry;
+	retry; nop; nop; nop;
 
 #define TRAP_ARG(routine, arg)				\
 	sethi	%hi(109f), %g7;				\
@@ -95,7 +85,7 @@
 	sethi	%hi(109f), %g7;				\
 	ba,pt	%xcc, scetrap;				\
 109:	 or	%g7, %lo(109b), %g7;			\
-	call	routine;				\
+	ba,pt	%xcc, routine;				\
 	 sethi	%hi(systbl), %l7;			\
 	nop; nop; nop;
 	
@@ -108,7 +98,7 @@
 	nop;nop;nop;
 	
 #define TRAP_UTRAP(handler,lvl)						\
-	ldx	[%g6 + AOFF_task_tss + AOFF_thread_utraps], %g1;	\
+	ldx	[%g6 + AOFF_task_thread + AOFF_thread_utraps], %g1;	\
 	sethi	%hi(109f), %g7;						\
 	brz,pn	%g1, utrap;						\
 	 or	%g7, %lo(109f), %g7;					\
@@ -175,7 +165,7 @@
  * see how arch/sparc64/kernel/winfixup.S works... -DaveM
  *
  * For the user cases we used to use the %asi register, but
- * it turns out that the "wr xxx, %asi" costs ~30 cycles, so
+ * it turns out that the "wr xxx, %asi" costs ~5 cycles, so
  * now we use immediate ASI loads and stores instead.  Kudos
  * to Greg Onufer for pointing out this performance anomaly.
  *

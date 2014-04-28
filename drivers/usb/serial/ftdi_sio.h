@@ -20,9 +20,9 @@
  */
 
 #define FTDI_VID	0x0403	/* Vendor Id */
-#define FTDI_SIO_PID	0x8372	/* Product Id SIO application of 8U100AX  */
-#define FTDI_8U232AM_PID 0x6001 /* Similar device to SIO above */
+#define FTDI_SIO_PID	0x8372	/* Product Id */
 
+/* Vendor Request Interface */
 #define FTDI_SIO_RESET 		0 /* Reset the port */
 #define FTDI_SIO_MODEM_CTRL 	1 /* Set the modem control register */
 #define FTDI_SIO_SET_FLOW_CTRL	2 /* Set flow control register */
@@ -86,12 +86,6 @@
  */
 
 typedef enum {
-	sio = 1,
-	F8U232AM = 2,
-} ftdi_type_t;
-
-
-typedef enum {
  ftdi_sio_b300 = 0, 
  ftdi_sio_b600 = 1, 
  ftdi_sio_b1200 = 2,
@@ -104,38 +98,6 @@ typedef enum {
  ftdi_sio_b115200 = 9
 } FTDI_SIO_baudrate_t ;
 
-
-typedef enum {
-  ftdi_8U232AM_12MHz_b300 = 0x09c4,
-  ftdi_8U232AM_12MHz_b600 = 0x04E2,
-  ftdi_8U232AM_12MHz_b1200 = 0x0271,
-  ftdi_8U232AM_12MHz_b2400 = 0x4138,
-  ftdi_8U232AM_12MHz_b4800 = 0x809c,
-  ftdi_8U232AM_12MHz_b9600 = 0xc04e,
-  ftdi_8U232AM_12MHz_b19200 = 0x0027,
-  ftdi_8U232AM_12MHz_b38400 = 0x4013,
-  ftdi_8U232AM_12MHz_b57600 = 0x000d,
-  ftdi_8U232AM_12MHz_b115200 = 0x4006,
-  ftdi_8U232AM_12MHz_b230400 = 0x8003,
-} FTDI_8U232AM_12MHz_baudrate_t;
-/* Apparently all devices are 48MHz */
-typedef enum {
-  ftdi_8U232AM_48MHz_b300 = 0x2710,
-  ftdi_8U232AM_48MHz_b600 = 0x1388,
-  ftdi_8U232AM_48MHz_b1200 = 0x09c4,
-  ftdi_8U232AM_48MHz_b2400 = 0x04e2,
-  ftdi_8U232AM_48MHz_b4800 = 0x0271,
-  ftdi_8U232AM_48MHz_b9600 = 0x4138,
-  ftdi_8U232AM_48MHz_b19200 = 0x809c,
-  ftdi_8U232AM_48MHz_b38400 = 0xc04e,
-  ftdi_8U232AM_48MHz_b57600 = 0x0034,
-  ftdi_8U232AM_48MHz_b115200 = 0x001a,
-  ftdi_8U232AM_48MHz_b230400 = 0x000d,
-  ftdi_8U232AM_48MHz_b460800 = 0x4006,
-  ftdi_8U232AM_48MHz_b921600 = 0x8003,
-
-} FTDI_8U232AM_48MHz_baudrate_t;
-
 #define FTDI_SIO_SET_DATA_REQUEST FTDI_SIO_SET_DATA
 #define FTDI_SIO_SET_DATA_REQUEST_TYPE 0x40
 #define FTDI_SIO_SET_DATA_PARITY_NONE (0x0 << 8 )
@@ -146,7 +108,7 @@ typedef enum {
 #define FTDI_SIO_SET_DATA_STOP_BITS_1 (0x0 << 11 )
 #define FTDI_SIO_SET_DATA_STOP_BITS_15 (0x1 << 11 )
 #define FTDI_SIO_SET_DATA_STOP_BITS_2 (0x2 << 11 )
-#define FTDI_SIO_SET_BREAK (0x1 << 14)
+
 /* FTDI_SIO_SET_DATA */
 
 /*
@@ -170,10 +132,7 @@ typedef enum {
  *           0 = 1
  *           1 = 1.5
  *           2 = 2
- *   B14
- *           1 = TX ON (break)
- *           0 = TX OFF (normal state)
- *   B15 Reserved
+ *   B14..15 Reserved
  *
  */
 
@@ -437,17 +396,6 @@ typedef enum {
  * B6	Transmitter Empty (TEMT)
  * B7	Error in RCVR FIFO
  * 
- */
-#define FTDI_RS_DR  1
-#define FTDI_RS_OE (1<<1)
-#define FTDI_RS_PE (1<<2)
-#define FTDI_RS_FE (1<<3)
-#define FTDI_RS_BI (1<<4)
-#define FTDI_RS_THRE (1<<5)
-#define FTDI_RS_TEMT (1<<6)
-#define FTDI_RS_FIFO  (1<<7)
-
-/*
  * OUT Endpoint
  * 
  * This device reserves the first bytes of data on this endpoint contain the length

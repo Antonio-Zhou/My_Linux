@@ -45,29 +45,16 @@ enum chipset_type {
 	INTEL_BX,
 	INTEL_GX,
 	INTEL_I810,
-	INTEL_I815,
-	INTEL_I840,
 	VIA_GENERIC,
 	VIA_VP3,
 	VIA_MVP3,
 	VIA_MVP4,
 	VIA_APOLLO_PRO,
-	VIA_APOLLO_KT133,
-	VIA_APOLLO_KX133,
 	SIS_GENERIC,
 	AMD_GENERIC,
 	AMD_IRONGATE,
 	ALI_M1541,
-	ALI_M1621,
-	ALI_M1631,
-	ALI_M1632,
-	ALI_M1641,
-	ALI_M1647,
-	ALI_M1651,
-	ALI_GENERIC,
-	SVWRKS_HE,
-	SVWRKS_LE,
-	SVWRKS_GENERIC
+	ALI_GENERIC
 };
 
 typedef struct _agp_version {
@@ -235,8 +222,5 @@ extern void agp_backend_release(void);
  * it bound is unbound.)
  * 
  */
-
-/* Don't call this directly!! used in initialization */
-extern int agp_init(void);
 
 #endif				/* _AGP_BACKEND_H */

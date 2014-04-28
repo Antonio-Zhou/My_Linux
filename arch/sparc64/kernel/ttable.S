@@ -1,4 +1,4 @@
-/* $Id: ttable.S,v 1.28.2.3 2001/08/12 10:56:22 davem Exp $
+/* $Id: ttable.S,v 1.31 2000/05/09 17:40:14 davem Exp $
  * ttable.S: Sparc V9 Trap Table(s) with SpitFire extensions.
  *
  * Copyright (C) 1996 David S. Miller (davem@caip.rutgers.edu)
@@ -45,7 +45,7 @@ tl0_irq7:	TRAP_IRQ(handler_irq, 7)  TRAP_IRQ(handler_irq, 8)
 tl0_irq9:	TRAP_IRQ(handler_irq, 9)  TRAP_IRQ(handler_irq, 10)
 tl0_irq11:	TRAP_IRQ(handler_irq, 11) TRAP_IRQ(handler_irq, 12)
 tl0_irq13:	TRAP_IRQ(handler_irq, 13)
-#ifndef __SMP__
+#ifndef CONFIG_SMP
 tl0_irq14:	TRAP_IRQ(handler_irq, 14)
 #else
 tl0_irq14:	TICK_SMP_IRQ
@@ -101,7 +101,7 @@ tl0_f6o:	FILL_6_OTHER
 tl0_f7o:	FILL_7_OTHER
 tl0_sunos:	SUNOS_SYSCALL_TRAP
 tl0_bkpt:	BREAKPOINT_TRAP
-tl0_divz:	TRAP(do_div0)
+tl0_resv102:	BTRAP(0x102)
 tl0_flushw:	FLUSH_WINDOW_TRAP
 tl0_resv104:	BTRAP(0x104) BTRAP(0x105) BTRAP(0x106) BTRAP(0x107)
 		.globl tl0_solaris

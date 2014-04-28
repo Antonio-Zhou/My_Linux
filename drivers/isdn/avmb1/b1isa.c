@@ -1,11 +1,61 @@
-/* $Id: b1isa.c,v 1.1.2.1 2001/12/31 13:26:39 kai Exp $
+/*
+ * $Id: b1isa.c,v 1.8 2000/04/03 13:29:24 calle Exp $
  * 
  * Module for AVM B1 ISA-card.
  * 
- * Copyright 1999 by Carsten Paeth <calle@calle.de>
+ * (c) Copyright 1999 by Carsten Paeth (calle@calle.in-berlin.de)
  * 
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
+ * $Log: b1isa.c,v $
+ * Revision 1.8  2000/04/03 13:29:24  calle
+ * make Tim Waugh happy (module unload races in 2.3.99-pre3).
+ * no real problem there, but now it is much cleaner ...
+ *
+ * Revision 1.7  2000/02/02 18:36:03  calle
+ * - Modules are now locked while init_module is running
+ * - fixed problem with memory mapping if address is not aligned
+ *
+ * Revision 1.6  2000/01/25 14:37:39  calle
+ * new message after successfull detection including card revision and
+ * used resources.
+ *
+ * Revision 1.5  1999/11/05 16:38:01  calle
+ * Cleanups before kernel 2.4:
+ * - Changed all messages to use card->name or driver->name instead of
+ *   constant string.
+ * - Moved some data from struct avmcard into new struct avmctrl_info.
+ *   Changed all lowlevel capi driver to match the new structur.
+ *
+ * Revision 1.4  1999/08/22 20:26:24  calle
+ * backported changes from kernel 2.3.14:
+ * - several #include "config.h" gone, others come.
+ * - "struct device" changed to "struct net_device" in 2.3.14, added a
+ *   define in isdn_compat.h for older kernel versions.
+ *
+ * Revision 1.3  1999/07/09 15:05:40  keil
+ * compat.h is now isdn_compat.h
+ *
+ * Revision 1.2  1999/07/05 15:09:49  calle
+ * - renamed "appl_release" to "appl_released".
+ * - version und profile data now cleared on controller reset
+ * - extended /proc interface, to allow driver and controller specific
+ *   informations to include by driver hackers.
+ *
+ * Revision 1.1  1999/07/01 15:26:27  calle
+ * complete new version (I love it):
+ * + new hardware independed "capi_driver" interface that will make it easy to:
+ *   - support other controllers with CAPI-2.0 (i.e. USB Controller)
+ *   - write a CAPI-2.0 for the passive cards
+ *   - support serial link CAPI-2.0 boxes.
+ * + wrote "capi_driver" for all supported cards.
+ * + "capi_driver" (supported cards) now have to be configured with
+ *   make menuconfig, in the past all supported cards where included
+ *   at once.
+ * + new and better informations in /proc/capi/
+ * + new ioctl to switch trace of capi messages per controller
+ *   using "avmcapictrl trace [contr] on|off|...."
+ * + complete testcircle with all supported cards and also the
+ *   PCMCIA cards (now patch for pcmcia-cs-3.0.13 needed) done.
+ *
  *
  */
 
@@ -17,21 +67,17 @@
 #include <linux/interrupt.h>
 #include <linux/ioport.h>
 #include <linux/capi.h>
-#include <linux/init.h>
 #include <asm/io.h>
-#include <linux/isdn_compat.h>
 #include "capicmd.h"
 #include "capiutil.h"
 #include "capilli.h"
 #include "avmcard.h"
 
-static char *revision = "$Revision: 1.1.2.1 $";
+static char *revision = "$Revision: 1.8 $";
 
 /* ------------------------------------------------------------- */
 
-MODULE_DESCRIPTION("CAPI4Linux: Driver for AVM B1 ISA card");
-MODULE_AUTHOR("Carsten Paeth");
-MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Carsten Paeth <calle@calle.in-berlin.de>");
 
 /* ------------------------------------------------------------- */
 
@@ -198,23 +244,28 @@ static char *b1isa_procinfo(struct capi_ctr *ctrl)
 /* ------------------------------------------------------------- */
 
 static struct capi_driver b1isa_driver = {
-    name: "b1isa",
-    revision: "0.0",
-    load_firmware: b1_load_firmware,
-    reset_ctr: b1_reset_ctr,
-    remove_ctr: b1isa_remove_ctr,
-    register_appl: b1_register_appl,
-    release_appl: b1_release_appl,
-    send_message: b1_send_message,
+    "b1isa",
+    "0.0",
+    b1_load_firmware,
+    b1_reset_ctr,
+    b1isa_remove_ctr,
+    b1_register_appl,
+    b1_release_appl,
+    b1_send_message,
 
-    procinfo: b1isa_procinfo,
-    ctr_read_proc: b1ctl_read_proc,
-    driver_read_proc: 0,	/* use standard driver_read_proc */
+    b1isa_procinfo,
+    b1ctl_read_proc,
+    0,	/* use standard driver_read_proc */
 
-    add_card: b1isa_add_card,
+    b1isa_add_card,
 };
 
-static int __init b1isa_init(void)
+#ifdef MODULE
+#define b1isa_init init_module
+void cleanup_module(void);
+#endif
+
+int b1isa_init(void)
 {
 	struct capi_driver *driver = &b1isa_driver;
 	char *p;
@@ -222,12 +273,11 @@ static int __init b1isa_init(void)
 
 	MOD_INC_USE_COUNT;
 
-	if ((p = strchr(revision, ':')) != 0 && p[1]) {
-		strncpy(driver->revision, p + 2, sizeof(driver->revision));
-		driver->revision[sizeof(driver->revision)-1] = 0;
-		if ((p = strchr(driver->revision, '$')) != 0 && p > driver->revision)
-			*(p-1) = 0;
-	}
+	if ((p = strchr(revision, ':'))) {
+		strncpy(driver->revision, p + 1, sizeof(driver->revision));
+		p = strchr(driver->revision, '$');
+		*p = 0;
+	} 
 
 	printk(KERN_INFO "%s: revision %s\n", driver->name, driver->revision);
 
@@ -242,10 +292,9 @@ static int __init b1isa_init(void)
 	return retval;
 }
 
-static void  b1isa_exit(void)
+#ifdef MODULE
+void cleanup_module(void)
 {
     detach_capi_driver(&b1isa_driver);
 }
-
-module_init(b1isa_init);
-module_exit(b1isa_exit);
+#endif

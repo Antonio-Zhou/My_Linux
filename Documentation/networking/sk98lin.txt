@@ -1,17 +1,16 @@
-(C)Copyright 1999-2001 SysKonnect GmbH.
-All rights reserved
+(C)Copyright 1999 SysKonnect.
 ===========================================================================
 
-sk98lin.txt created 07-Jun-2001
+sk98lin.txt created 11-Nov-1999
 
-Readme File for sk98lin v4.07
-SK-NET Gigabit Ethernet PCI driver for LINUX
+Readme File for sk98lin.o v3.02
+SK-NET Gigabit Ethernet Adapter SK-98xx Driver for Linux
 
 This file contains
 (1) OVERVIEW
 (2) REQUIRED FILES
 (3) INSTALLATION
-(4) INCLUSION OF ADAPTER AT SYSTEM START
+(4) INCLUSION OF THE ADAPTER AT SYSTEM START
 (5) DRIVER PARAMETERS
 (6) LARGE FRAME SUPPORT
 (7) TROUBLESHOOTING
@@ -20,12 +19,13 @@ This file contains
 ===========================================================================
 
 
+
 (1) OVERVIEW
 ============
 
 The sk98lin driver supports the SysKonnect SK-NET Gigabit Ethernet
-Adapter SK-98xx family on Linux 2.2.x and above.
-It has been tested with Linux on Intel/x86 machines.
+Adapter SK-98xx family on Linux 2.2.x.
+It has been tested with Linux on Intel/x86 and ALPHA machines.
 From v3.02 on, the driver is integrated in the linux kernel source.
 ***
 
@@ -64,8 +64,8 @@ NOTE 2:	IMPORTANT: In case of problems, please read the section
    "make modules_install".
    Reboot your system.
 
-2) Load the module manually by entering:
-       modprobe sk98lin
+4) Load the module manually by entering:
+       insmod sk98lin.o
    If the SysKonnect SK-98xx adapter is installed in your
    computer and you have a /proc filesystem, running the command
    'more /proc/net/dev' should produce an output containing a
@@ -84,7 +84,7 @@ NOTE 2:	IMPORTANT: In case of problems, please read the section
 	   for each adapter that is found, containing the
 	   corresponding 'ethX'.
 
-3) Select an IP address and assign it to the respective adapter by
+5) Select an IP address and assign it to the respective adapter by
    entering:
        ifconfig eth0 <ip-address>
    This causes the adapter to connect to the ethernet. The solitary
@@ -99,22 +99,22 @@ NOTE 2:	IMPORTANT: In case of problems, please read the section
    NOTE: If you are in doubt about IP addresses, ask your network
          administrator for assistance.
 
-4) Your adapter should now be fully operational.
+6) Your adapter should now be fully operational.
    Use 'ping <otherstation>' to verify the connection to other
    computers on your network.
-   By viewing /proc/net/sk98lin/[devicename], you can check some 
-   information regarding to the adapter configuration.
+   By entering 'ifconfig', you can check the number of packets sent
+   and received by your adapter and additional some other information
+   regarding the adapter configuration.
 
-
-5) The driver module can be stopped and unloaded using the following
+7) The driver module can be stopped and unloaded using the following
    commands:
        ifconfig eth0 down
        rmmod sk98lin
 ***
 
 
-(4) INCLUSION OF ADAPTER AT SYSTEM START
-========================================
+(4) INCLUSION OF THE ADAPTER AT SYSTEM START
+============================================
 
 Since a large number of different Linux distributions are 
 available, we are unable to describe a general installation procedure
@@ -129,21 +129,20 @@ Refer to the distribution's manual for installation of ethernet adapters.
 =====================
 
 Parameters can be set at the command line while loading the
-module with 'modprobe'. The configuration tools of some distributions
+module with 'insmod'. The configuration tools of some distributions
 can also give parameters to the driver module.
 If you use the kernel module loader, you can set driver parameters
-in the file /etc/modules.conf (or old name: /etc/conf.modules).
-Insert a line of the form:
+in the file /etc/conf.modules. Insert a line of the form:
 
 options sk98lin ...
 
 For "...", use the same syntax as described below for the command
-line paramaters of modprobe.
+line paramaters of insmod.
 You either have to reboot your computer or unload and reload
 the driver to activate the new parameters.
 The syntax of the driver parameters is:
 
-modprobe sk98lin parameter=value1[,value2[,value3...]]
+insmod sk98lin parameter=value1[,value2[,value3...]]
 
 value1 is for the first adapter, value2 for the second one etc.
 All Parameters are case sensitive, so write them exactly as
@@ -156,7 +155,7 @@ Sample: Suppose you have two adapters. You want to set AutoNegotiation
 	adapter to FULL and on Port A of the second adapter to HALF.
 	You must enter:
 
-	modprobe sk98lin AutoNeg_A=On,Off DupCap_A=Full,Half
+	insmod sk98lin.o AutoNeg_A=On,Off DupCap_A=Full,Half
 
 NOTE: The number of adapters that can be configured this way is
       limited in the driver (file skge.c, constant SK_MAX_CARD_PARAM).
@@ -234,7 +233,7 @@ which you set the parameter (A or B).
 
 - RLMT (Redundant Link Management Technology) Mode
   Parameter:	RlmtMode
-  Values:	CheckLinkState,CheckLocalPort, CheckSeg, DualNet
+  Values:	CheckLinkState,CheckLocalPort, CheckSeg
   Default:	CheckLinkState
 
   RLMT (the driver part that decides which port to use) knows three
@@ -256,13 +255,6 @@ which you set the parameter (A or B).
    the ports. Thus, this mode is only to be used if you have Gigabit
    Ethernet switches installed in your network that have been configured
    to use the Spanning Tree protocol.
-
--- DualNet - Both ports A and B are used as separate devices at the same
-   time. So if you have a dual port adapter, port A will show up as eth0
-   and port B as eth1. Both ports can be used independend with distinct
-   IP addresses.
-   The preferred port setting is not used. Rlmt is turned off.
-   
 
   NOTE: The modes CheckLocalPort and CheckSeg are meant to operate in
         configurations where a network path between the ports on one
@@ -289,12 +281,14 @@ The setting must be done on all adapters that can be reached by
 the large frames. If one adapter is not set to receive large frames,
 it will simply drop them.
 
+NOTE: If you look at the statistics (with netstat) in large frame
+      mode while there is traffic on the net, you will see the
+      RX error counter go up. This is because the adapter hardware
+      counts received large frames as errors, although they are
+      received correctly. So ignore this counter in that case.
+
 You can switch back to the standard ethernet frame size with:
   ifconfig eth0 mtu 1500
-
-To make this setting persitent, add a script with the 'ifconfig'
-line to the system startup sequence (named something like "S99sk98lin"
-in /etc/rc.d/rc2.d).
 ***
 
 
@@ -380,49 +374,15 @@ following information is available:
 (8) HISTORY
 ===========
 
-VERSION 4.02 (In-Kernel version)
-New Features:
-- Add Kernel 2.4 changes
-Known limitations:
-- None
-
-VERSION 4.01 (In-Kernel version)
-Problems fixed:
-- Full statistics support for DualNet mode
-Known limitations:
-- None
-
-VERSION 4.00 (In-Kernel version)
-Problems fixed:
-- Memory leak found 
-New Features:
-- Proc filesystem integration
-- DualNet functionality integrated
-- Rlmt networks added
-Known limitations:
-- statistics partially incorrect in DualNet mode
-
-VERSION 3.04 (In-Kernel version)
-Problems fixed:
-- Driver start failed on UltraSPARC
-- Rx checksum calculation for big endian machines did not work
-- Jumbo frames were counted as input-errors in netstat
-
-VERSION 3.03 (Standalone version)
-Problems fixed:
-- Compilation did not find script "printver.sh" if "." not in PATH
-Known limitations:
-- None
-
-VERSION 3.02 (In-Kernel version)
+VERSION 3.02
 Problems fixed:
 - None
 New Features:
-- Integration in Linux kernel source (2.2.14 and 2.3.29) 
+- Integration in linux kernel source.
 Known limitations:
 - None
 
-VERSION 3.01
+VERSION 3.02
 Problems fixed:
 - None
 New Features:

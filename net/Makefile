@@ -10,7 +10,7 @@
 MOD_SUB_DIRS := ipv4
 ALL_SUB_DIRS := 802 ax25 bridge core ethernet ipv4 ipv6 ipx unix appletalk \
 		netrom rose lapb x25 wanrouter netlink sched packet sunrpc \
-		econet irda #decnet
+		econet irda decnet atm khttpd ipv4/netfilter ipv6/netfilter
 SUB_DIRS     := core ethernet sched
 MOD_LIST_NAME := NET_MISC_MODULES
 
@@ -20,6 +20,10 @@ endif
 
 ifeq ($(CONFIG_INET),y)
 SUB_DIRS += ipv4
+ifeq ($(CONFIG_NETFILTER),y)
+SUB_DIRS += ipv4/netfilter
+MOD_SUB_DIRS += ipv4/netfilter
+endif
 endif
 
 ifeq ($(CONFIG_UNIX),y)
@@ -32,9 +36,24 @@ endif
 
 ifeq ($(CONFIG_IPV6),y)
 SUB_DIRS += ipv6
+ifeq ($(CONFIG_NETFILTER),y)
+SUB_DIRS += ipv6/netfilter
+MOD_SUB_DIRS += ipv6/netfilter
+endif
 else
   ifeq ($(CONFIG_IPV6),m)
   MOD_SUB_DIRS += ipv6
+  ifeq ($(CONFIG_NETFILTER),y)
+  MOD_SUB_DIRS += ipv6/netfilter
+  endif
+  endif
+endif
+
+ifeq ($(CONFIG_KHTTPD),y)
+SUB_DIRS += khttpd
+else
+  ifeq ($(CONFIG_KHTTPD),m)
+  MOD_SUB_DIRS += khttpd
   endif
 endif
 
@@ -59,6 +78,10 @@ endif
 
 ifeq ($(CONFIG_BRIDGE),y)
 SUB_DIRS += bridge
+else
+  ifeq ($(CONFIG_BRIDGE),m)
+    MOD_SUB_DIRS += bridge
+  endif
 endif
 
 ifeq ($(CONFIG_IPX),y)
@@ -145,6 +168,17 @@ else
   endif
 endif
 
+ifeq ($(CONFIG_ATM),y)
+SUB_DIRS += atm
+ifeq ($(CONFIG_ATM_LANE),m)
+  MOD_ATM = atm
+endif
+ifeq ($(CONFIG_ATM_MPOA),m)
+  MOD_ATM = atm
+endif
+MOD_SUB_DIRS += $(MOD_ATM)
+endif
+
 ifeq ($(CONFIG_DECNET),y)
 SUB_DIRS += decnet
 else
@@ -175,7 +209,7 @@ endif
 endif
 
 L_TARGET     := network.a
-L_OBJS	     := $(SOCK) protocols.o $(join $(SUB_DIRS),$(SUB_DIRS:%=/%.o))
+L_OBJS	     := $(SOCK) protocols.o $(join $(SUB_DIRS), $(patsubst %,/%.o,$(notdir $(SUB_DIRS))))
 
 M_OBJS	     :=
 

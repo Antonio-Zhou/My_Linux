@@ -1,11 +1,73 @@
-/* $Id: t1isa.c,v 1.1.2.1 2001/12/31 13:26:43 kai Exp $
+/*
+ * $Id: t1isa.c,v 1.11 2000/04/03 13:29:25 calle Exp $
  * 
  * Module for AVM T1 HEMA-card.
  * 
- * Copyright 1999 by Carsten Paeth <calle@calle.de>
+ * (c) Copyright 1999 by Carsten Paeth (calle@calle.in-berlin.de)
  * 
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
+ * $Log: t1isa.c,v $
+ * Revision 1.11  2000/04/03 13:29:25  calle
+ * make Tim Waugh happy (module unload races in 2.3.99-pre3).
+ * no real problem there, but now it is much cleaner ...
+ *
+ * Revision 1.10  2000/02/02 18:36:04  calle
+ * - Modules are now locked while init_module is running
+ * - fixed problem with memory mapping if address is not aligned
+ *
+ * Revision 1.9  2000/01/25 14:37:39  calle
+ * new message after successfull detection including card revision and
+ * used resources.
+ *
+ * Revision 1.8  1999/11/05 16:38:01  calle
+ * Cleanups before kernel 2.4:
+ * - Changed all messages to use card->name or driver->name instead of
+ *   constant string.
+ * - Moved some data from struct avmcard into new struct avmctrl_info.
+ *   Changed all lowlevel capi driver to match the new structur.
+ *
+ * Revision 1.7  1999/09/15 08:16:03  calle
+ * Implementation of 64Bit extention complete.
+ *
+ * Revision 1.6  1999/09/07 09:02:53  calle
+ * SETDATA removed. Now inside the kernel the datapart of DATA_B3_REQ and
+ * DATA_B3_IND is always directly after the CAPI message. The "Data" member
+ * ist never used inside the kernel.
+ *
+ * Revision 1.5  1999/08/22 20:26:28  calle
+ * backported changes from kernel 2.3.14:
+ * - several #include "config.h" gone, others come.
+ * - "struct device" changed to "struct net_device" in 2.3.14, added a
+ *   define in isdn_compat.h for older kernel versions.
+ *
+ * Revision 1.4  1999/07/09 15:05:50  keil
+ * compat.h is now isdn_compat.h
+ *
+ * Revision 1.3  1999/07/06 07:42:04  calle
+ * - changes in /proc interface
+ * - check and changed calls to [dev_]kfree_skb and [dev_]alloc_skb.
+ *
+ * Revision 1.2  1999/07/05 15:09:54  calle
+ * - renamed "appl_release" to "appl_released".
+ * - version und profile data now cleared on controller reset
+ * - extended /proc interface, to allow driver and controller specific
+ *   informations to include by driver hackers.
+ *
+ * Revision 1.1  1999/07/01 15:26:44  calle
+ * complete new version (I love it):
+ * + new hardware independed "capi_driver" interface that will make it easy to:
+ *   - support other controllers with CAPI-2.0 (i.e. USB Controller)
+ *   - write a CAPI-2.0 for the passive cards
+ *   - support serial link CAPI-2.0 boxes.
+ * + wrote "capi_driver" for all supported cards.
+ * + "capi_driver" (supported cards) now have to be configured with
+ *   make menuconfig, in the past all supported cards where included
+ *   at once.
+ * + new and better informations in /proc/capi/
+ * + new ioctl to switch trace of capi messages per controller
+ *   using "avmcapictrl trace [contr] on|off|...."
+ * + complete testcircle with all supported cards and also the
+ *   PCMCIA cards (now patch for pcmcia-cs-3.0.13 needed) done.
+ *
  *
  */
 
@@ -17,22 +79,17 @@
 #include <linux/interrupt.h>
 #include <linux/ioport.h>
 #include <linux/capi.h>
-#include <linux/kernelcapi.h>
-#include <linux/init.h>
-#include <linux/isdn_compat.h>
 #include <asm/io.h>
 #include "capicmd.h"
 #include "capiutil.h"
 #include "capilli.h"
 #include "avmcard.h"
 
-static char *revision = "$Revision: 1.1.2.1 $";
+static char *revision = "$Revision: 1.11 $";
 
 /* ------------------------------------------------------------- */
 
-MODULE_DESCRIPTION("CAPI4Linux: Driver for AVM T1 HEMA ISA card");
-MODULE_AUTHOR("Carsten Paeth");
-MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Carsten Paeth <calle@calle.in-berlin.de>");
 
 /* ------------------------------------------------------------- */
 
@@ -82,7 +139,7 @@ static int t1_detectandinit(unsigned int base, unsigned irq, int cardnr)
 	cli();
 	/* board reset */
 	t1outp(base, T1_RESETBOARD, 0xf);
-	mdelay(100);
+	udelay(100 * 1000);
 	dummy = t1inp(base, T1_FASTLINK+T1_OUTSTAT); /* first read */
 
 	/* write config */
@@ -94,18 +151,18 @@ static int t1_detectandinit(unsigned int base, unsigned irq, int cardnr)
 	t1outp(base, ((base >> 4)) & 0x3, cregs[7]);
 	restore_flags(flags);
 
-	mdelay(100);
+	udelay(100 * 1000);
 	t1outp(base, T1_FASTLINK+T1_RESETLINK, 0);
 	t1outp(base, T1_SLOWLINK+T1_RESETLINK, 0);
-	mdelay(10);
+	udelay(10 * 1000);
 	t1outp(base, T1_FASTLINK+T1_RESETLINK, 1);
 	t1outp(base, T1_SLOWLINK+T1_RESETLINK, 1);
-	mdelay(100);
+	udelay(100 * 1000);
 	t1outp(base, T1_FASTLINK+T1_RESETLINK, 0);
 	t1outp(base, T1_SLOWLINK+T1_RESETLINK, 0);
-	mdelay(10);
+	udelay(10 * 1000);
 	t1outp(base, T1_FASTLINK+T1_ANALYSE, 0);
-	mdelay(5);
+	udelay(5 * 1000);
 	t1outp(base, T1_SLOWLINK+T1_ANALYSE, 0);
 
 	if (t1inp(base, T1_FASTLINK+T1_OUTSTAT) != 0x1) /* tx empty */
@@ -225,29 +282,24 @@ static void t1_handle_interrupt(avmcard * card)
 		case RECEIVE_TASK_READY:
 			ApplId = (unsigned) b1_get_word(card->port);
 			MsgLen = t1_get_slice(card->port, card->msgbuf);
-			card->msgbuf[MsgLen] = 0;
-			while (    MsgLen > 0
-			       && (   card->msgbuf[MsgLen-1] == '\n'
-				   || card->msgbuf[MsgLen-1] == '\r')) {
-				card->msgbuf[MsgLen-1] = 0;
-				MsgLen--;
-			}
+			card->msgbuf[MsgLen--] = 0;
+			while (    MsgLen >= 0
+			       && (   card->msgbuf[MsgLen] == '\n'
+				   || card->msgbuf[MsgLen] == '\r'))
+				card->msgbuf[MsgLen--] = 0;
 			printk(KERN_INFO "%s: task %d \"%s\" ready.\n",
 					card->name, ApplId, card->msgbuf);
 			break;
 
 		case RECEIVE_DEBUGMSG:
 			MsgLen = t1_get_slice(card->port, card->msgbuf);
-			card->msgbuf[MsgLen] = 0;
-			while (    MsgLen > 0
-			       && (   card->msgbuf[MsgLen-1] == '\n'
-				   || card->msgbuf[MsgLen-1] == '\r')) {
-				card->msgbuf[MsgLen-1] = 0;
-				MsgLen--;
-			}
+			card->msgbuf[MsgLen--] = 0;
+			while (    MsgLen >= 0
+			       && (   card->msgbuf[MsgLen] == '\n'
+				   || card->msgbuf[MsgLen] == '\r'))
+				card->msgbuf[MsgLen--] = 0;
 			printk(KERN_INFO "%s: DEBUG: %s\n", card->name, card->msgbuf);
 			break;
-
 
 		case 0xff:
 			printk(KERN_ERR "%s: card reseted ?\n", card->name);
@@ -322,7 +374,7 @@ static int t1isa_load_firmware(struct capi_ctr *ctrl, capiloaddata *data)
 	cli();
 	b1_setinterrupt(port, card->irq, card->cardtype);
 	b1_put_byte(port, SEND_INIT);
-	b1_put_word(port, CAPI_MAXAPPL);
+	b1_put_word(port, AVM_NAPPS);
 	b1_put_word(port, AVM_NCCI_PER_CHANNEL*30);
 	b1_put_word(port, ctrl->cnr - 1);
 	restore_flags(flags);
@@ -525,23 +577,28 @@ static char *t1isa_procinfo(struct capi_ctr *ctrl)
 /* ------------------------------------------------------------- */
 
 static struct capi_driver t1isa_driver = {
-    name: "t1isa",
-    revision: "0.0",
-    load_firmware: t1isa_load_firmware,
-    reset_ctr: t1isa_reset_ctr,
-    remove_ctr: t1isa_remove_ctr,
-    register_appl: b1_register_appl,
-    release_appl: b1_release_appl,
-    send_message: t1isa_send_message,
+    "t1isa",
+    "0.0",
+    t1isa_load_firmware,
+    t1isa_reset_ctr,
+    t1isa_remove_ctr,
+    b1_register_appl,
+    b1_release_appl,
+    t1isa_send_message,
 
-    procinfo: t1isa_procinfo,
-    ctr_read_proc: b1ctl_read_proc,
-    driver_read_proc: 0,	/* use standard driver_read_proc */
+    t1isa_procinfo,
+    b1ctl_read_proc,
+    0,	/* use standard driver_read_proc */
 
-    add_card: t1isa_add_card,
+    t1isa_add_card,
 };
 
-static int __init t1isa_init(void)
+#ifdef MODULE
+#define t1isa_init init_module
+void cleanup_module(void);
+#endif
+
+int t1isa_init(void)
 {
 	struct capi_driver *driver = &t1isa_driver;
 	char *p;
@@ -549,11 +606,10 @@ static int __init t1isa_init(void)
 
 	MOD_INC_USE_COUNT;
 
-	if ((p = strchr(revision, ':')) != 0 && p[1]) {
-		strncpy(driver->revision, p + 2, sizeof(driver->revision));
-		driver->revision[sizeof(driver->revision)-1] = 0;
-		if ((p = strchr(driver->revision, '$')) != 0 && p > driver->revision)
-			*(p-1) = 0;
+	if ((p = strchr(revision, ':'))) {
+		strncpy(driver->revision, p + 1, sizeof(driver->revision));
+		p = strchr(driver->revision, '$');
+		*p = 0;
 	}
 
 	printk(KERN_INFO "%s: revision %s\n", driver->name, driver->revision);
@@ -570,10 +626,9 @@ static int __init t1isa_init(void)
 	return retval;
 }
 
-static void  t1isa_exit(void)
+#ifdef MODULE
+void cleanup_module(void)
 {
     detach_capi_driver(&t1isa_driver);
 }
-
-module_init(t1isa_init);
-module_exit(t1isa_exit);
+#endif

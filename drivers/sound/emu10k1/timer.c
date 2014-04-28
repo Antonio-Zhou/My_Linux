@@ -29,9 +29,6 @@
 /* 4/3/2000	Implemented timer list using list.h 	     Rui Sousa */
 
 #include "hwaccess.h"
-#include "8010.h"
-#include "irqmgr.h"
-#include "timer.h"
 
 /* Try to schedule only once per fragment */
 
@@ -45,7 +42,7 @@ void emu10k1_timer_irqhandler(struct emu10k1_card *card)
 	list_for_each(entry, &card->timers) {
 		t = list_entry(entry, struct emu_timer, list);
 
-		if (t->state & TIMER_STATE_ACTIVE) {
+		if (t->active) {
 			t->count++;
 			if (t->count == t->count_max) {
 				t->count = 0;
@@ -59,17 +56,22 @@ void emu10k1_timer_irqhandler(struct emu10k1_card *card)
 	return;
 }
 
-void emu10k1_timer_install(struct emu10k1_card *card, struct emu_timer *timer, u32 delay)
+struct emu_timer *emu10k1_timer_install(struct emu10k1_card *card, void (*func) (unsigned long), unsigned long data, u32 delay)
 {
+	struct emu_timer *timer;
 	struct emu_timer *t;
 	struct list_head *entry;
 	unsigned long flags;
+
+	if ((timer = (struct emu_timer *) kmalloc(sizeof(struct emu_timer), GFP_KERNEL)) == NULL)
+		return timer;
 
 	if (delay < 5)
 		delay = 5;
 
 	timer->delay = delay;
-	timer->state = TIMER_STATE_INSTALLED;
+	tasklet_init(&timer->tasklet, func, data);
+	timer->active = 0;
 
 	spin_lock_irqsave(&card->timer_lock, flags);
 
@@ -85,7 +87,7 @@ void emu10k1_timer_install(struct emu10k1_card *card, struct emu_timer *timer, u
 		card->timer_delay = delay;
 		delay = (delay < 1024 ? delay : 1024);
 
-		emu10k1_writefn0(card, TIMER_RATE, delay);
+		WRITE_FN0(card, TIMER_RATE, delay);
 
 		list_for_each(entry, &card->timers) {
 			t = list_entry(entry, struct emu_timer, list);
@@ -101,7 +103,7 @@ void emu10k1_timer_install(struct emu10k1_card *card, struct emu_timer *timer, u
 
 	spin_unlock_irqrestore(&card->timer_lock, flags);
 
-	return;
+	return timer;
 }
 
 void emu10k1_timer_uninstall(struct emu10k1_card *card, struct emu_timer *timer)
@@ -110,9 +112,6 @@ void emu10k1_timer_uninstall(struct emu10k1_card *card, struct emu_timer *timer)
 	struct list_head *entry;
 	u32 delay = TIMER_STOPPED;
 	unsigned long flags;
-
-	if (timer->state == TIMER_STATE_UNINSTALLED)
-		return;
 
 	spin_lock_irqsave(&card->timer_lock, flags);
 
@@ -133,7 +132,7 @@ void emu10k1_timer_uninstall(struct emu10k1_card *card, struct emu_timer *timer)
 		else {
 			delay = (delay < 1024 ? delay : 1024);
 
-			emu10k1_writefn0(card, TIMER_RATE, delay);
+			WRITE_FN0(card, TIMER_RATE, delay);
 
 			list_for_each(entry, &card->timers) {
 				t = list_entry(entry, struct emu_timer, list);
@@ -148,7 +147,8 @@ void emu10k1_timer_uninstall(struct emu10k1_card *card, struct emu_timer *timer)
 
 	spin_unlock_irqrestore(&card->timer_lock, flags);
 
-	timer->state = TIMER_STATE_UNINSTALLED;
+	tasklet_unlock_wait(&timer->tasklet);
+	kfree(timer);
 
 	return;
 }
@@ -158,7 +158,7 @@ void emu10k1_timer_enable(struct emu10k1_card *card, struct emu_timer *timer)
 	unsigned long flags;
 
 	spin_lock_irqsave(&card->timer_lock, flags);
-	timer->state |= TIMER_STATE_ACTIVE;
+	timer->active = 1;
 	spin_unlock_irqrestore(&card->timer_lock, flags);
 
 	return;
@@ -169,7 +169,7 @@ void emu10k1_timer_disable(struct emu10k1_card *card, struct emu_timer *timer)
 	unsigned long flags;
 
 	spin_lock_irqsave(&card->timer_lock, flags);
-	timer->state &= ~TIMER_STATE_ACTIVE;
+	timer->active = 0;
 	spin_unlock_irqrestore(&card->timer_lock, flags);
 
 	return;

@@ -1,12 +1,12 @@
-/* 
+/*
  * QNX4 file system, Linux implementation.
- * 
+ *
  * Version : 0.2.1
- * 
+ *
  * Using parts of the xiafs filesystem.
- * 
+ *
  * History :
- * 
+ *
  * 01-06-1998 by Richard Frowijn : first release.
  * 20-06-1998 by Frank Denis : Linux 2.1.99+ support, boot signature, misc.
  * 30-06-1998 by Frank Denis : first step to write inodes.
@@ -15,12 +15,14 @@
 #include <linux/config.h>
 #include <linux/module.h>
 #include <linux/types.h>
+#include <linux/string.h>
 #include <linux/errno.h>
 #include <linux/malloc.h>
 #include <linux/qnx4_fs.h>
 #include <linux/fs.h>
 #include <linux/locks.h>
 #include <linux/init.h>
+#include <linux/highuid.h>
 
 #include <asm/uaccess.h>
 
@@ -48,7 +50,7 @@ int qnx4_sync_inode(struct inode *inode)
 				kdevname(inode->i_dev), inode->i_ino);
 			err = -1;
 		}
-	        brelse (bh);	   
+	        brelse (bh);
 	} else if (!bh) {
 		err = -1;
 	}
@@ -69,14 +71,6 @@ static void qnx4_write_super(struct super_block *sb)
 {
 	QNX4DEBUG(("qnx4: write_super\n"));
 	sb->s_dirt = 0;
-}
-
-static void qnx4_put_inode(struct inode *inode)
-{
-	if (inode->i_nlink != 0) {
-		return;
-	}
-	inode->i_size = 0;
 }
 
 static void qnx4_write_inode(struct inode *inode)
@@ -105,8 +99,8 @@ static void qnx4_write_inode(struct inode *inode)
 	raw_inode = ((struct qnx4_inode_entry *) bh->b_data) +
 	    (ino % QNX4_INODES_PER_BLOCK);
 	raw_inode->di_mode  = cpu_to_le16(inode->i_mode);
-	raw_inode->di_uid   = cpu_to_le16(inode->i_uid);
-	raw_inode->di_gid   = cpu_to_le16(inode->i_gid);
+	raw_inode->di_uid   = cpu_to_le16(fs_high2lowuid(inode->i_uid));
+	raw_inode->di_gid   = cpu_to_le16(fs_high2lowgid(inode->i_gid));
 	raw_inode->di_nlink = cpu_to_le16(inode->i_nlink);
 	raw_inode->di_size  = cpu_to_le32(inode->i_size);
 	raw_inode->di_mtime = cpu_to_le32(inode->i_mtime);
@@ -123,22 +117,21 @@ static struct super_block *qnx4_read_super(struct super_block *, void *, int);
 static void qnx4_put_super(struct super_block *sb);
 static void qnx4_read_inode(struct inode *);
 static int qnx4_remount(struct super_block *sb, int *flags, char *data);
-static int qnx4_statfs(struct super_block *, struct statfs *, int);
+static int qnx4_statfs(struct super_block *, struct statfs *);
 
 static struct super_operations qnx4_sops =
 {
-	read_inode:		qnx4_read_inode,
+	read_inode:	qnx4_read_inode,
 #ifdef CONFIG_QNX4FS_RW
-	write_inode:		qnx4_write_inode,
-	put_inode:		qnx4_put_inode,
-	delete_inode:		qnx4_delete_inode,
+	write_inode:	qnx4_write_inode,
+	delete_inode:	qnx4_delete_inode,
 #endif
-	put_super:		qnx4_put_super,
+	put_super:	qnx4_put_super,
 #ifdef CONFIG_QNX4FS_RW
-	write_super:		qnx4_write_super,
+	write_super:	qnx4_write_super,
 #endif
-	statfs:			qnx4_statfs,
-	remount_fs:		qnx4_remount,
+	statfs:		qnx4_statfs,
+	remount_fs:	qnx4_remount,
 };
 
 static int qnx4_remount(struct super_block *sb, int *flags, char *data)
@@ -205,6 +198,24 @@ struct buffer_head *qnx4_bread(struct inode *inode, int block, int create)
 	return NULL;
 }
 
+int qnx4_get_block( struct inode *inode, long iblock, struct buffer_head *bh, int create )
+{
+	unsigned long phys;
+
+	QNX4DEBUG(("qnx4: qnx4_get_block inode=[%ld] iblock=[%ld]\n",inode->i_ino,iblock));
+
+	phys = qnx4_block_map( inode, iblock );
+	if ( phys ) {
+		// logical block is before EOF
+		bh->b_dev     = inode->i_dev;
+		bh->b_blocknr = phys;
+		bh->b_state  |= (1UL << BH_Mapped);
+	} else if ( create ) {
+		// to be done.
+	}
+	return 0;
+}
+
 unsigned long qnx4_block_map( struct inode *inode, long iblock )
 {
 	int ix;
@@ -258,22 +269,16 @@ unsigned long qnx4_block_map( struct inode *inode, long iblock )
 	return block;
 }
 
-static int qnx4_statfs(struct super_block *sb,
-		       struct statfs *buf, int bufsize)
+static int qnx4_statfs(struct super_block *sb, struct statfs *buf)
 {
-	struct statfs tmp;
+	buf->f_type    = sb->s_magic;
+	buf->f_bsize   = sb->s_blocksize;
+	buf->f_blocks  = le32_to_cpu(sb->u.qnx4_sb.BitMap->di_size) * 8;
+	buf->f_bfree   = qnx4_count_free_blocks(sb);
+	buf->f_bavail  = buf->f_bfree;
+	buf->f_namelen = QNX4_NAME_MAX;
 
-	memset(&tmp, 0, sizeof tmp);
-	tmp.f_type    = sb->s_magic;
-	tmp.f_bsize   = sb->s_blocksize;
-	tmp.f_blocks  = le32_to_cpu(sb->u.qnx4_sb.BitMap->di_size) * 8;
-	tmp.f_bfree   = qnx4_count_free_blocks(sb);
-	tmp.f_bavail  = tmp.f_bfree;
-	tmp.f_files   = -1;	/* we don't count files */
-	tmp.f_ffree   = -1;	/* inodes are allocated dynamically */
-	tmp.f_namelen = QNX4_NAME_MAX;
-
-	return copy_to_user(buf, &tmp, bufsize) ? -EFAULT : 0;
+	return 0;
 }
 
 /*
@@ -292,7 +297,7 @@ static const char *qnx4_checkroot(struct super_block *sb)
 	if (*(sb->u.qnx4_sb.sb->RootDir.di_fname) != '/') {
 		return "no qnx4 filesystem (no root dir).";
 	} else {
-		QNX4DEBUG(("QNX4 filesystem found on dev %s.\n", kdevname(s->s_dev)));
+		QNX4DEBUG(("QNX4 filesystem found on dev %s.\n", kdevname(sb->s_dev)));
 		rd = le32_to_cpu(sb->u.qnx4_sb.sb->RootDir.di_first_xtnt.xtnt_blk) - 1;
 		rl = le32_to_cpu(sb->u.qnx4_sb.sb->RootDir.di_first_xtnt.xtnt_size);
 		for (j = 0; j < rl; j++) {
@@ -324,7 +329,7 @@ static const char *qnx4_checkroot(struct super_block *sb)
 	return NULL;
 }
 
-static struct super_block *qnx4_read_super(struct super_block *s, 
+static struct super_block *qnx4_read_super(struct super_block *s,
 					   void *data, int silent)
 {
 	struct buffer_head *bh;
@@ -332,8 +337,6 @@ static struct super_block *qnx4_read_super(struct super_block *s,
 	struct inode *root;
 	const char *errmsg;
 
-	MOD_INC_USE_COUNT;
-	lock_super(s);
 	set_blocksize(dev, QNX4_BLOCK_SIZE);
 	s->s_blocksize = QNX4_BLOCK_SIZE;
 	s->s_blocksize_bits = QNX4_BLOCK_SIZE_BITS;
@@ -367,27 +370,27 @@ static struct super_block *qnx4_read_super(struct super_block *s,
 	s->u.qnx4_sb.sb_buf = bh;
 	s->u.qnx4_sb.sb = (struct qnx4_super_block *) bh->b_data;
 
-	/* check before allocating dentries, inodes, .. */
+
+ 	/* check before allocating dentries, inodes, .. */
 	errmsg = qnx4_checkroot(s);
 	if (errmsg != NULL) {
-		if (!silent)
-			printk("qnx4: %s\n", errmsg);
+ 		if (!silent)
+ 			printk("qnx4: %s\n", errmsg);
 		goto out;
 	}
 
-	/* does root not have inode number QNX4_ROOT_INO ?? */
-	root = iget(s, QNX4_ROOT_INO * QNX4_INODES_PER_BLOCK);
-	if (!root) {
-		printk("qnx4: get inode failed\n");
-		goto out;
-	}
+ 	/* does root not have inode number QNX4_ROOT_INO ?? */
+ 	root = iget(s, QNX4_ROOT_INO * QNX4_INODES_PER_BLOCK);
+ 	if (!root) {
+ 		printk("qnx4: get inode failed\n");
+ 		goto out;
+ 	}
 
-	s->s_root = d_alloc_root(root, NULL);
-	if (s->s_root == NULL)
-		goto outi;
+ 	s->s_root = d_alloc_root(root);
+ 	if (s->s_root == NULL)
+ 		goto outi;
 
 	brelse(bh);
-	unlock_super(s);
 	s->s_dirt = 1;
 
 	return s;
@@ -397,9 +400,6 @@ static struct super_block *qnx4_read_super(struct super_block *s,
       out:
 	brelse(bh);
       outnobh:
-	s->s_dev = 0;
-	unlock_super(s);
-	MOD_DEC_USE_COUNT;
 
 	return NULL;
 }
@@ -407,9 +407,34 @@ static struct super_block *qnx4_read_super(struct super_block *s,
 static void qnx4_put_super(struct super_block *sb)
 {
 	kfree_s( sb->u.qnx4_sb.BitMap, sizeof( struct qnx4_inode_entry ) );
-	MOD_DEC_USE_COUNT;
 	return;
 }
+
+static int qnx4_writepage(struct file *file, struct page *page)
+{
+	return block_write_full_page(page,qnx4_get_block);
+}
+static int qnx4_readpage(struct file *file, struct page *page)
+{
+	return block_read_full_page(page,qnx4_get_block);
+}
+static int qnx4_prepare_write(struct file *file, struct page *page, unsigned from, unsigned to)
+{
+	return cont_prepare_write(page,from,to,qnx4_get_block,
+		&((struct inode*)page->mapping->host)->u.qnx4_i.mmu_private);
+}
+static int qnx4_bmap(struct address_space *mapping, long block)
+{
+	return generic_block_bmap(mapping,block,qnx4_get_block);
+}
+struct address_space_operations qnx4_aops = {
+	readpage: qnx4_readpage,
+	writepage: qnx4_writepage,
+	sync_page: block_sync_page,
+	prepare_write: qnx4_prepare_write,
+	commit_write: generic_commit_write,
+	bmap: qnx4_bmap
+};
 
 static void qnx4_read_inode(struct inode *inode)
 {
@@ -418,7 +443,6 @@ static void qnx4_read_inode(struct inode *inode)
 	int block, ino;
 
 	ino = inode->i_ino;
-	inode->i_op = NULL;
 	inode->i_mode = 0;
 
 	QNX4DEBUG(("Reading inode : [%d]\n", ino));
@@ -438,8 +462,8 @@ static void qnx4_read_inode(struct inode *inode)
 	    (ino % QNX4_INODES_PER_BLOCK);
 
 	inode->i_mode    = le16_to_cpu(raw_inode->di_mode);
-	inode->i_uid     = le16_to_cpu(raw_inode->di_uid);
-	inode->i_gid     = le16_to_cpu(raw_inode->di_gid);
+	inode->i_uid     = (uid_t)le16_to_cpu(raw_inode->di_uid);
+	inode->i_gid     = (gid_t)le16_to_cpu(raw_inode->di_gid);
 	inode->i_nlink   = le16_to_cpu(raw_inode->di_nlink);
 	inode->i_size    = le32_to_cpu(raw_inode->di_size);
 	inode->i_mtime   = le32_to_cpu(raw_inode->di_mtime);
@@ -449,43 +473,37 @@ static void qnx4_read_inode(struct inode *inode)
 	inode->i_blksize = QNX4_DIR_ENTRY_SIZE;
 
 	memcpy(&inode->u.qnx4_i, (struct qnx4_inode_info *) raw_inode, QNX4_DIR_ENTRY_SIZE);
-	inode->i_op = &qnx4_file_inode_operations;
-	if (S_ISREG(inode->i_mode))
+	if (S_ISREG(inode->i_mode)) {
 		inode->i_op = &qnx4_file_inode_operations;
-	else if (S_ISDIR(inode->i_mode))
+		inode->i_fop = &qnx4_file_operations;
+		inode->i_mapping->a_ops = &qnx4_aops;
+		inode->u.qnx4_i.mmu_private = inode->i_size;
+	} else if (S_ISDIR(inode->i_mode)) {
 		inode->i_op = &qnx4_dir_inode_operations;
-	else if (S_ISLNK(inode->i_mode))
-		inode->i_op = &qnx4_symlink_inode_operations;
-	else
+		inode->i_fop = &qnx4_dir_operations;
+	} else if (S_ISLNK(inode->i_mode)) {
+		inode->i_op = &page_symlink_inode_operations;
+		inode->i_mapping->a_ops = &qnx4_aops;
+		inode->u.qnx4_i.mmu_private = inode->i_size;
+	} else
 		printk("qnx4: bad inode %d on dev %s\n",ino,kdevname(inode->i_dev));
 	brelse(bh);
 }
 
-static struct file_system_type qnx4_fs_type =
-{
-	"qnx4",
-	FS_REQUIRES_DEV,
-	qnx4_read_super,
-	NULL
-};
+static DECLARE_FSTYPE_DEV(qnx4_fs_type, "qnx4", qnx4_read_super);
 
-__initfunc(int init_qnx4_fs(void))
+static int __init init_qnx4_fs(void)
 {
-	printk("QNX4 filesystem v0.2.2 registered.\n");
+	printk("QNX4 filesystem 0.2.2 registered.\n");
 	return register_filesystem(&qnx4_fs_type);
 }
 
-#ifdef MODULE
-EXPORT_NO_SYMBOLS;
-
-int init_module(void)
-{
-	return init_qnx4_fs();
-}
-
-void cleanup_module(void)
+static void __exit exit_qnx4_fs(void)
 {
 	unregister_filesystem(&qnx4_fs_type);
 }
 
-#endif
+EXPORT_NO_SYMBOLS;
+
+module_init(init_qnx4_fs)
+module_exit(exit_qnx4_fs)

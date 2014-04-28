@@ -42,12 +42,12 @@
       defined(CONFIG_ALPHA_SX164)
 # define NR_IRQS	40
 
-#elif defined(CONFIG_ALPHA_DP264)     || \
+#elif defined(CONFIG_ALPHA_DP264) || \
       defined(CONFIG_ALPHA_EIGER)
 # define NR_IRQS	64
 
-#elif defined(CONFIG_ALPHA_RAWHIDE)   || \
-      defined(CONFIG_ALPHA_TAKARA)
+#elif defined(CONFIG_ALPHA_RAWHIDE) || \
+	defined(CONFIG_ALPHA_TAKARA)
 # define NR_IRQS	128
 
 #else /* everyone else */
@@ -66,9 +66,6 @@ static __inline__ int irq_cannonicalize(int irq)
 extern void disable_irq(unsigned int);
 extern void disable_irq_nosync(unsigned int);
 extern void enable_irq(unsigned int);
-
-extern void irq_enter(int cpu, int irq);
-extern void irq_exit(int cpu, int irq);
 
 struct pt_regs;
 extern void (*perf_irq)(unsigned long, struct pt_regs *);

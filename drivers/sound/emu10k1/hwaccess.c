@@ -1,3 +1,4 @@
+
 /*
  **********************************************************************
  *     hwaccess.c -- Hardware access layer
@@ -30,10 +31,7 @@
  **********************************************************************
  */
 
-#include <asm/io.h>
-
 #include "hwaccess.h"
-#include "8010.h"
 #include "icardmid.h"
 
 /*************************************************************************
@@ -88,7 +86,7 @@ u32 srToPitch(u32 sampleRate)
 	};
 
 	if (sampleRate == 0)
-		return 0;	/* Bail out if no leading "1" */
+		return (0);	/* Bail out if no leading "1" */
 
 	sampleRate *= 11185;	/* Scale 48000 to 0x20002380 */
 
@@ -133,58 +131,51 @@ u8 sumVolumeToAttenuation(u32 value)
 /*******************************************
 * write/read PCI function 0 registers      *
 ********************************************/
-void emu10k1_writefn0(struct emu10k1_card *card, u32 reg, u32 data)
+void sblive_writefn0(struct emu10k1_card *card, u8 reg, u32 data)
 {
 	unsigned long flags;
 
-	if (reg & 0xff000000) {
-		u32 mask;
-		u8 size, offset;
-
-		size = (reg >> 24) & 0x3f;
-		offset = (reg >> 16) & 0x1f;
-		mask = ((1 << size) - 1) << offset;
-		data = (data << offset) & mask;
-		reg &= 0x7f;
-
-		spin_lock_irqsave(&card->lock, flags);
-		data |= inl(card->iobase + reg) & ~mask;
-		outl(data, card->iobase + reg);
-		spin_unlock_irqrestore(&card->lock, flags);
-	} else {
-		spin_lock_irqsave(&card->lock, flags);
-		outl(data, card->iobase + reg);
-		spin_unlock_irqrestore(&card->lock, flags);
-	}
+	spin_lock_irqsave(&card->lock, flags);
+	outl(data, card->iobase + reg);
+	spin_unlock_irqrestore(&card->lock, flags);
 
 	return;
 }
 
-u32 emu10k1_readfn0(struct emu10k1_card * card, u32 reg)
+void sblive_wrtmskfn0(struct emu10k1_card *card, u8 reg, u32 mask, u32 data)
+{
+	unsigned long flags;
+
+	data &= mask;
+
+	spin_lock_irqsave(&card->lock, flags);
+	data |= inl(card->iobase + reg) & ~mask;
+	outl(data, card->iobase + reg);
+	spin_unlock_irqrestore(&card->lock, flags);
+
+	return;
+}
+
+u32 sblive_readfn0(struct emu10k1_card * card, u8 reg)
 {
 	u32 val;
 	unsigned long flags;
 
-	if (reg & 0xff000000) {
-		u32 mask;
-		u8 size, offset;
+	spin_lock_irqsave(&card->lock, flags);
+	val = inl(card->iobase + reg);
+	spin_unlock_irqrestore(&card->lock, flags);
+	return val;
+}
 
-		size = (reg >> 24) & 0x3f;
-		offset = (reg >> 16) & 0x1f;
-		mask = ((1 << size) - 1) << offset;
-		reg &= 0x7f;
+u32 sblive_rdmskfn0(struct emu10k1_card * card, u8 reg, u32 mask)
+{
+	u32 val;
+	unsigned long flags;
 
-		spin_lock_irqsave(&card->lock, flags);
-		val = inl(card->iobase + reg);
-		spin_unlock_irqrestore(&card->lock, flags);
-
-		return (val & mask) >> offset;
-        } else {
-		spin_lock_irqsave(&card->lock, flags);
-		val = inl(card->iobase + reg);
-		spin_unlock_irqrestore(&card->lock, flags);
-		return val;
-	}
+	spin_lock_irqsave(&card->lock, flags);
+	val = inl(card->iobase + reg);
+	spin_unlock_irqrestore(&card->lock, flags);
+	return val & mask;
 }
 
 /************************************************************************
@@ -218,37 +209,6 @@ void sblive_writeptr(struct emu10k1_card *card, u32 reg, u32 channel, u32 data)
 		outl(data, card->iobase + DATA);
 		spin_unlock_irqrestore(&card->lock, flags);
 	}
-}
-
-/* ... :  data, reg, ... , TAGLIST_END */
-void sblive_writeptr_tag(struct emu10k1_card *card, u32 channel, ...)
-{
-	va_list args;
-
-	unsigned long flags;
-        u32 reg;
-
-	va_start(args, channel);
-
-	spin_lock_irqsave(&card->lock, flags);
-	while ((reg = va_arg(args, u32)) != TAGLIST_END) {
-		u32 data = va_arg(args, u32);
-		u32 regptr = (((reg << 16) & PTR_ADDRESS_MASK)
-			      | (channel & PTR_CHANNELNUM_MASK));
-		outl(regptr, card->iobase + PTR);
-		if (reg & 0xff000000) {
-			int size = (reg >> 24) & 0x3f;
-                        int offset = (reg >> 16) & 0x1f;
-			u32 mask = ((1 << size) - 1) << offset;
-			data = (data << offset) & mask;
-
-			data |= inl(card->iobase + DATA) & ~mask;
-		}
-		outl(data, card->iobase + DATA);
-	}
-	spin_unlock_irqrestore(&card->lock, flags);
-
-	va_end(args);
 
 	return;
 }
@@ -284,34 +244,6 @@ u32 sblive_readptr(struct emu10k1_card * card, u32 reg, u32 channel)
 	}
 }
 
-void emu10k1_irq_enable(struct emu10k1_card *card, u32 irq_mask)
-{
-	u32 val;
-	unsigned long flags;
-
-	DPF(2,"emu10k1_irq_enable()\n");
-
-	spin_lock_irqsave(&card->lock, flags);
-        val = inl(card->iobase + INTE) | irq_mask;
-        outl(val, card->iobase + INTE);
-	spin_unlock_irqrestore(&card->lock, flags);
-	return;
-}
-
-void emu10k1_irq_disable(struct emu10k1_card *card, u32 irq_mask)
-{
-        u32 val;
-        unsigned long flags;
-
-        DPF(2,"emu10k1_irq_disable()\n");
-
-        spin_lock_irqsave(&card->lock, flags);
-        val = inl(card->iobase + INTE) & ~irq_mask;
-        outl(val, card->iobase + INTE);
-        spin_unlock_irqrestore(&card->lock, flags);
-        return;
-}
-
 void emu10k1_set_stop_on_loop(struct emu10k1_card *card, u32 voicenum)
 {
 	/* Voice interrupt */
@@ -339,11 +271,11 @@ static void sblive_wcwait(struct emu10k1_card *card, u32 wait)
 	volatile unsigned uCount;
 	u32 newtime = 0, curtime;
 
-	curtime = emu10k1_readfn0(card, WC_SAMPLECOUNTER);
+	curtime = READ_FN0(card, WC_SAMPLECOUNTER);
 	while (wait--) {
 		uCount = 0;
 		while (uCount++ < TIMEOUT) {
-			newtime = emu10k1_readfn0(card, WC_SAMPLECOUNTER);
+			newtime = READ_FN0(card, WC_SAMPLECOUNTER);
 			if (newtime != curtime)
 				break;
 		}
@@ -361,12 +293,12 @@ int sblive_readac97(struct emu10k1_card *card, u8 index, u16 * data)
 
 	spin_lock_irqsave(&card->lock, flags);
 
-	outb(index, card->iobase + AC97ADDRESS);
-	*data = inw(card->iobase + AC97DATA);
+	outb(index, card->mixeraddx + 2);
+	*data = inw(card->mixeraddx);
 
 	spin_unlock_irqrestore(&card->lock, flags);
 
-	return 0;
+	return CTSTATUS_SUCCESS;
 }
 
 int sblive_writeac97(struct emu10k1_card *card, u8 index, u16 data)
@@ -375,12 +307,12 @@ int sblive_writeac97(struct emu10k1_card *card, u8 index, u16 data)
 
 	spin_lock_irqsave(&card->lock, flags);
 
-	outb(index, card->iobase + AC97ADDRESS);
-	outw(data, card->iobase + AC97DATA);
+	outb(index, card->mixeraddx + 2);
+	outw(data, card->mixeraddx);
 
 	spin_unlock_irqrestore(&card->lock, flags);
 
-	return 0;
+	return CTSTATUS_SUCCESS;
 }
 
 int sblive_rmwac97(struct emu10k1_card *card, u8 index, u16 data, u16 mask)
@@ -390,16 +322,16 @@ int sblive_rmwac97(struct emu10k1_card *card, u8 index, u16 data, u16 mask)
 
 	spin_lock_irqsave(&card->lock, flags);
 
-	outb(index, card->iobase + AC97ADDRESS);
-	temp = inw(card->iobase + AC97DATA);
+	outb(index, card->mixeraddx + 2);
+	temp = inw(card->mixeraddx);
 	temp &= ~mask;
 	data &= mask;
 	temp |= data;
-	outw(temp, card->iobase + AC97DATA);
+	outw(temp, card->mixeraddx);
 
 	spin_unlock_irqrestore(&card->lock, flags);
 
-	return 0;
+	return CTSTATUS_SUCCESS;
 }
 
 /*********************************************************
@@ -415,9 +347,9 @@ int emu10k1_mpu_write_data(struct emu10k1_card *card, u8 data)
 
 	if ((inb(card->iobase + MUSTAT) & MUSTAT_ORDYN) == 0) {
 		outb(data, card->iobase + MUDATA);
-		ret = 0;
+		ret = CTSTATUS_SUCCESS;
 	} else
-		ret = -1;
+		ret = CTSTATUS_BUSY;
 
 	spin_unlock_irqrestore(&card->lock, flags);
 
@@ -433,9 +365,9 @@ int emu10k1_mpu_read_data(struct emu10k1_card *card, u8 * data)
 
 	if ((inb(card->iobase + MUSTAT) & MUSTAT_IRDYN) == 0) {
 		*data = inb(card->iobase + MUDATA);
-		ret = 0;
+		ret = CTSTATUS_SUCCESS;
 	} else
-		ret = -1;
+		ret = CTSTATUS_NODATA;
 
 	spin_unlock_irqrestore(&card->lock, flags);
 
@@ -473,12 +405,12 @@ int emu10k1_mpu_reset(struct emu10k1_card *card)
 		spin_unlock_irqrestore(&card->lock, flags);
 
 		if (status == 0xfe)
-			return 0;
+			return CTSTATUS_SUCCESS;
 		else
-			return -1;
+			return CTSTATUS_ERROR;
 	}
 
-	return 0;
+	return CTSTATUS_SUCCESS;
 }
 
 int emu10k1_mpu_acquire(struct emu10k1_card *card)
@@ -486,7 +418,7 @@ int emu10k1_mpu_acquire(struct emu10k1_card *card)
 	/* FIXME: This should be a macro */
 	++card->mpuacqcount;
 
-	return 0;
+	return CTSTATUS_SUCCESS;
 }
 
 int emu10k1_mpu_release(struct emu10k1_card *card)
@@ -494,5 +426,5 @@ int emu10k1_mpu_release(struct emu10k1_card *card)
 	/* FIXME: this should be a macro */
 	--card->mpuacqcount;
 
-	return 0;
+	return CTSTATUS_SUCCESS;
 }

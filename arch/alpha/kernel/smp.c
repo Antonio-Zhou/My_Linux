@@ -7,12 +7,14 @@
 #include <linux/kernel_stat.h>
 #include <linux/sched.h>
 #include <linux/mm.h>
-#include <linux/tasks.h>
+#include <linux/threads.h>
 #include <linux/smp.h>
 #include <linux/smp_lock.h>
 #include <linux/interrupt.h>
 #include <linux/init.h>
 #include <linux/delay.h>
+#include <linux/spinlock.h>
+#include <linux/irq.h>
 
 #include <asm/hwrpb.h>
 #include <asm/ptrace.h>
@@ -22,15 +24,16 @@
 #include <asm/irq.h>
 #include <asm/bitops.h>
 #include <asm/pgtable.h>
-#include <asm/spinlock.h>
+#include <asm/pgalloc.h>
 #include <asm/hardirq.h>
 #include <asm/softirq.h>
+#include <asm/mmu_context.h>
 
 #define __KERNEL_SYSCALLS__
 #include <asm/unistd.h>
 
 #include "proto.h"
-#include "irq.h"
+#include "irq_impl.h"
 
 
 #define DEBUG_SMP 0
@@ -45,47 +48,55 @@ struct cpuinfo_alpha cpu_data[NR_CPUS];
 
 /* A collection of single bit ipi messages.  */
 static struct {
-	unsigned long bits __cacheline_aligned;
-} ipi_data[NR_CPUS];
+	unsigned long bits ____cacheline_aligned;
+} ipi_data[NR_CPUS] __cacheline_aligned;
 
 enum ipi_message_type {
-        IPI_RESCHEDULE,
-        IPI_CALL_FUNC,
-        IPI_CPU_STOP,
+	IPI_RESCHEDULE,
+	IPI_CALL_FUNC,
+	IPI_CPU_STOP,
 };
 
-spinlock_t kernel_flag __cacheline_aligned = SPIN_LOCK_UNLOCKED;
+spinlock_t kernel_flag = SPIN_LOCK_UNLOCKED;
 
 /* Set to a secondary's cpuid when it comes online.  */
 static unsigned long smp_secondary_alive;
 
-unsigned long cpu_present_mask;	/* Which cpus ids came online.  */
+/* Which cpus ids came online.  */
+unsigned long cpu_present_mask;
+
+/* cpus reported in the hwrpb */
+static unsigned long hwrpb_cpu_present_mask __initdata = 0;
 
 static int max_cpus = -1;	/* Command-line limitation.  */
-int smp_boot_cpuid;		/* Which processor we booted from.  */
 int smp_num_probed;		/* Internal processor count */
 int smp_num_cpus = 1;		/* Number that came online.  */
 int smp_threads_ready;		/* True once the per process idle is forked. */
 cycles_t cacheflush_time;
 
-int cpu_number_map[NR_CPUS];
+int __cpu_number_map[NR_CPUS];
 int __cpu_logical_map[NR_CPUS];
 
 extern void calibrate_delay(void);
 extern asmlinkage void entInt(void);
 
 
-/*
- * Process bootcommand SMP options, like "nosmp" and "maxcpus=".
- */
-void __init
-smp_setup(char *str, int *ints)
+static int __init nosmp(char *str)
 {
-	if (ints && ints[0] > 0)
-		max_cpus = ints[1];
-	else
-		max_cpus = 0;
+	max_cpus = 0;
+	return 1;
 }
+
+__setup("nosmp", nosmp);
+
+static int __init maxcpus(char *str)
+{
+	get_option(&str, &max_cpus);
+	return 1;
+}
+
+__setup("maxcpus", maxcpus);
+
 
 /*
  * Called by both boot and secondaries to move global data into
@@ -94,11 +105,11 @@ smp_setup(char *str, int *ints)
 static inline void __init
 smp_store_cpu_info(int cpuid)
 {
-	cpu_data[cpuid].loops_per_jiffy = loops_per_jiffy;
-	cpu_data[cpuid].last_asn = ASN_FIRST_VERSION;
-
-        cpu_data[cpuid].irq_count = 0;
-        cpu_data[cpuid].bh_count = 0;
+	cpu_data[cpuid].loops_per_sec = loops_per_sec;
+	cpu_data[cpuid].last_asn
+	  = (cpuid << WIDTH_HARDWARE_ASN) + ASN_FIRST_VERSION;
+	cpu_data[cpuid].irq_count = 0;
+	cpu_data[cpuid].bh_count = 0;
 }
 
 /*
@@ -133,6 +144,10 @@ smp_callin(void)
 	/* Setup the scheduler for this processor.  */
 	init_idle();
 
+	/* ??? This should be in init_idle.  */
+	atomic_inc(&init_mm.mm_count);
+	current->active_mm = &init_mm;
+
 	/* Get our local ticker going. */
 	smp_setup_percpu_timer(cpuid);
 
@@ -153,7 +168,7 @@ smp_callin(void)
 	      cpuid, current));
 
 	/* Do nothing.  */
-	cpu_idle(NULL);
+	cpu_idle();
 }
 
 
@@ -335,21 +350,21 @@ secondary_cpu_start(int cpuid, struct task_struct *idle)
 
 	/* Initialize the CPU's HWPCB to something just good enough for
 	   us to get started.  Immediately after starting, we'll swpctx
-	   to the target idle task's tss.  Reuse the stack in the mean
+	   to the target idle task's ptb.  Reuse the stack in the mean
 	   time.  Precalculate the target PCBB.  */
 	hwpcb->ksp = (unsigned long) idle + sizeof(union task_union) - 16;
 	hwpcb->usp = 0;
-	hwpcb->ptbr = idle->tss.ptbr;
+	hwpcb->ptbr = idle->thread.ptbr;
 	hwpcb->pcc = 0;
 	hwpcb->asn = 0;
-	hwpcb->unique = virt_to_phys(&idle->tss);
-	hwpcb->flags = idle->tss.pal_flags;
+	hwpcb->unique = virt_to_phys(&idle->thread);
+	hwpcb->flags = idle->thread.pal_flags;
 	hwpcb->res1 = hwpcb->res2 = 0;
 
 	DBGS(("KSP 0x%lx PTBR 0x%lx VPTBR 0x%lx UNIQUE 0x%lx\n",
-	      hwpcb->ksp, hwpcb->ptbr, hwrpb->vptb, hwpcb->unique));
+	      hwpcb->ksp, hwpcb->ptbr, hwrpb->vptb, hwcpb->unique));
 	DBGS(("Starting secondary cpu %d: state 0x%lx pal_flags 0x%lx\n",
-	      cpuid, idle->state, idle->tss.pal_flags));
+	      cpuid, idle->state, idle->thread.pal_flags));
 
 	/* Setup HWRPB fields that SRM uses to activate secondary CPU */
 	hwrpb->CPU_restart = __smp_callin;
@@ -385,6 +400,16 @@ started:
 	return 0;
 }
 
+static int __init fork_by_hand(void)
+{
+	struct pt_regs regs;
+	/*
+	 * don't care about the regs settings since
+	 * we'll never reschedule the forked task.
+	 */
+	return do_fork(CLONE_VM|CLONE_PID, 0, &regs);
+}
+
 /*
  * Bring one cpu online.
  */
@@ -398,15 +423,25 @@ smp_boot_one_cpu(int cpuid, int cpunum)
 	   to kernel_thread is irrelevant -- it's going to start where
 	   HWRPB.CPU_restart says to start.  But this gets all the other
 	   task-y sort of data structures set up like we wish.  */
-	kernel_thread((void *)__smp_callin, NULL, CLONE_PID|CLONE_VM);
-	idle = task[cpunum];
+	/*
+	 * We can't use kernel_thread since we must avoid to
+	 * reschedule the child.
+	 */
+	if (fork_by_hand() < 0)
+		panic("failed fork for CPU %d", cpuid);
+
+	idle = init_task.prev_task;
 	if (!idle)
 		panic("No idle process for CPU %d", cpuid);
-	idle->processor = cpuid;
 
-	/* Schedule the first task manually.  */
-	/* ??? Ingo, what is this?  */
-	idle->has_cpu = 1;
+	idle->processor = cpuid;
+	__cpu_logical_map[cpunum] = cpuid;
+	__cpu_number_map[cpuid] = cpunum;
+	idle->has_cpu = 1; /* we schedule the first task manually */
+ 
+	del_from_runqueue(idle);
+	unhash_process(idle);
+	init_tasks[cpunum] = idle;
 
 	DBGS(("smp_boot_one_cpu: CPU %d state 0x%lx flags 0x%lx\n",
 	      cpuid, idle->state, idle->flags));
@@ -428,13 +463,18 @@ smp_boot_one_cpu(int cpuid, int cpunum)
 		barrier();
 	}
 
+	/* we must invalidate our stuff as we failed to boot the CPU */
+	__cpu_logical_map[cpunum] = -1;
+	__cpu_number_map[cpuid] = -1;
+
+	/* the idle task is local to us so free it as we don't use it */
+	free_task_struct(idle);
+
 	printk(KERN_ERR "SMP: Processor %d is stuck.\n", cpuid);
 	return -1;
 
 alive:
 	/* Another "Red Snapper". */
-	cpu_number_map[cpuid] = cpunum;
-	__cpu_logical_map[cpunum] = cpuid;
 	return 0;
 }
 
@@ -448,10 +488,9 @@ setup_smp(void)
 	struct percpu_struct *cpubase, *cpu;
 	int i;
 
-	smp_boot_cpuid = hard_smp_processor_id();
-	if (smp_boot_cpuid != 0) {
+	if (boot_cpuid != 0) {
 		printk(KERN_WARNING "SMP: Booting off cpu %d instead of 0?\n",
-		       smp_boot_cpuid);
+		       boot_cpuid);
 	}
 
 	if (hwrpb->nr_processors > 1) {
@@ -470,7 +509,7 @@ setup_smp(void)
 			if ((cpu->flags & 0x1cc) == 0x1cc) {
 				smp_num_probed++;
 				/* Assume here that "whami" == index */
-				cpu_present_mask |= (1L << i);
+				hwrpb_cpu_present_mask |= (1L << i);
 				cpu->pal_revision = boot_cpu_palrev;
 			}
 
@@ -481,11 +520,12 @@ setup_smp(void)
 		}
 	} else {
 		smp_num_probed = 1;
-		cpu_present_mask = (1L << smp_boot_cpuid);
+		hwrpb_cpu_present_mask = (1L << boot_cpuid);
 	}
+	cpu_present_mask = 1L << boot_cpuid;
 
 	printk(KERN_INFO "SMP: %d CPUs probed -- cpu_present_mask = %lx\n",
-	       smp_num_probed, cpu_present_mask);
+	       smp_num_probed, hwrpb_cpu_present_mask);
 }
 
 /*
@@ -498,23 +538,27 @@ smp_boot_cpus(void)
 	unsigned long bogosum;
 
 	/* Take care of some initial bookkeeping.  */
-	memset(cpu_number_map, -1, sizeof(cpu_number_map));
+	memset(__cpu_number_map, -1, sizeof(__cpu_number_map));
 	memset(__cpu_logical_map, -1, sizeof(__cpu_logical_map));
 	memset(ipi_data, 0, sizeof(ipi_data));
 
-	cpu_number_map[smp_boot_cpuid] = 0;
-	__cpu_logical_map[0] = smp_boot_cpuid;
-	current->processor = smp_boot_cpuid;
+	__cpu_number_map[boot_cpuid] = 0;
+	__cpu_logical_map[0] = boot_cpuid;
+	current->processor = boot_cpuid;
 
-	smp_store_cpu_info(smp_boot_cpuid);
+	smp_store_cpu_info(boot_cpuid);
 	smp_tune_scheduling();
-	smp_setup_percpu_timer(smp_boot_cpuid);
+	smp_setup_percpu_timer(boot_cpuid);
 
 	init_idle();
 
+	/* ??? This should be in init_idle.  */
+	atomic_inc(&init_mm.mm_count);
+	current->active_mm = &init_mm;
+
 	/* Nothing to do on a UP box, or when told not to.  */
 	if (smp_num_probed == 1 || max_cpus == 0) {
-	        printk(KERN_INFO "SMP mode deactivated.\n");
+		printk(KERN_INFO "SMP mode deactivated.\n");
 		return;
 	}
 
@@ -522,15 +566,16 @@ smp_boot_cpus(void)
 
 	cpu_count = 1;
 	for (i = 0; i < NR_CPUS; i++) {
-		if (i == smp_boot_cpuid)
+		if (i == boot_cpuid)
 			continue;
 
-	        if (((cpu_present_mask >> i) & 1) == 0)
+		if (((hwrpb_cpu_present_mask >> i) & 1) == 0)
 			continue;
 
 		if (smp_boot_one_cpu(i, cpu_count))
 			continue;
 
+		cpu_present_mask |= 1L << i;
 		cpu_count++;
 	}
 
@@ -540,14 +585,14 @@ smp_boot_cpus(void)
 	}
 
 	bogosum = 0;
-        for (i = 0; i < NR_CPUS; i++) {
+	for (i = 0; i < NR_CPUS; i++) {
 		if (cpu_present_mask & (1L << i))
-			bogosum += cpu_data[i].loops_per_jiffy;
-        }
+			bogosum += cpu_data[i].loops_per_sec;
+	}
 	printk(KERN_INFO "SMP: Total of %d processors activated "
 	       "(%lu.%02lu BogoMIPS).\n",
-	       cpu_count, (bogosum + 2500) / (500000 / HZ),
-	       ((bogosum + 2500) / (5000 / HZ)) % 100);
+	       cpu_count, (bogosum + 2500) / 500000,
+	       ((bogosum + 2500) / 5000) % 100);
 
 	smp_num_cpus = cpu_count;
 }
@@ -563,19 +608,9 @@ smp_commence(void)
 	mb();
 }
 
-/*
- * Only broken Intel needs this, thus it should not even be
- * referenced globally.
- */
-
-void __init
-initialize_secondary(void)
-{
-}
-
 
 extern void update_one_process(struct task_struct *p, unsigned long ticks,
-	                       unsigned long user, unsigned long system,
+			       unsigned long user, unsigned long system,
 			       int cpu);
 
 void
@@ -585,7 +620,7 @@ smp_percpu_timer_interrupt(struct pt_regs *regs)
 	unsigned long user = user_mode(regs);
 	struct cpuinfo_alpha *data = &cpu_data[cpu];
 
-	/* Record kernel PC */
+	/* Record kernel PC.  */
 	if (!user)
 		alpha_do_profile(regs->pc);
 
@@ -593,16 +628,16 @@ smp_percpu_timer_interrupt(struct pt_regs *regs)
 		/* We need to make like a normal interrupt -- otherwise
 		   timer interrupts ignore the global interrupt lock,
 		   which would be a Bad Thing.  */
-		irq_enter(cpu, TIMER_IRQ);
+		irq_enter(cpu, RTC_IRQ);
 
 		update_one_process(current, 1, user, !user, cpu);
-	        if (current->pid) {
-	                if (--current->counter < 0) {
+		if (current->pid) {
+			if (--current->counter <= 0) {
 				current->counter = 0;
-	                        current->need_resched = 1;
-	                }
+				current->need_resched = 1;
+			}
 
-	                if (user) {
+			if (user) {
 				if (current->priority < DEF_PRIORITY) {
 					kstat.cpu_nice++;
 					kstat.per_cpu_nice[cpu]++;
@@ -610,14 +645,14 @@ smp_percpu_timer_interrupt(struct pt_regs *regs)
 					kstat.cpu_user++;
 					kstat.per_cpu_user[cpu]++;
 				}
-	                } else {
+			} else {
 				kstat.cpu_system++;
 				kstat.per_cpu_system[cpu]++;
-	                }
-	        }
+			}
+		}
 
 		data->prof_counter = data->prof_multiplier;
-		irq_exit(cpu, TIMER_IRQ);
+		irq_exit(cpu, RTC_IRQ);
 	}
 }
 
@@ -703,7 +738,7 @@ handle_ipi(struct pt_regs *regs)
 	unsigned long *pending_ipis = &ipi_data[this_cpu].bits;
 	unsigned long ops;
 
-	DBGS(("handle_ipi: on CPU %d ops 0x%lx PC 0x%lx\n",
+	DBGS(("handle_ipi: on CPU %d ops 0x%x PC 0x%lx\n",
 	      this_cpu, *pending_ipis, regs->pc));
 
 	mb();	/* Order interrupt and bit testing. */
@@ -738,14 +773,7 @@ handle_ipi(struct pt_regs *regs)
 
 			/* At this point the structure may be gone unless
 			   wait is true.  */
-			{
-			static void ipi_show_regs(void *);
-
-			if (func != ipi_show_regs)
-				(*func)(info);
-			else
-				(*func)((void *) regs);
-			}
+			(*func)(info);
 
 			/* Notify the sending CPU that the task is done.  */
 			mb();
@@ -853,27 +881,11 @@ ipi_imb(void *ignored)
 void
 smp_imb(void)
 {
-	/* Must wait for other processors to flush their icache
-	   before continuing. */
+	/* Must wait other processors to flush their icache before continue. */
 	if (smp_call_function(ipi_imb, NULL, 1, 1))
 		printk(KERN_CRIT "smp_imb: timed out\n");
 
 	imb();
-}
-
-static void
-ipi_show_regs(void * param)
-{
-	struct pt_regs *regs = (struct pt_regs *) param;
-
-	__show_regs(regs);
-}
-
-void
-smp_show_regs(void)
-{
-	if (smp_call_function(ipi_show_regs, NULL, 1, 1))
-		printk(KERN_CRIT "smp_show_regs: timed out\n");
 }
 
 static void
@@ -898,28 +910,19 @@ static void
 ipi_flush_tlb_mm(void *x)
 {
 	struct mm_struct *mm = (struct mm_struct *) x;
-	if (mm == current->mm)
+	if (mm == current->active_mm)
 		flush_tlb_current(mm);
-	else
-		flush_tlb_other(mm);
 }
 
 void
 flush_tlb_mm(struct mm_struct *mm)
 {
-	if (mm == current->mm) {
+	if (mm == current->active_mm) {
 		flush_tlb_current(mm);
-		if (atomic_read(&mm->count) == 1) {
-			int i, cpu, this_cpu = smp_processor_id();
-			for (i = 0; i < smp_num_cpus; i++) {
-				cpu = cpu_logical_map(i);
-				if (cpu == this_cpu)
-					continue;
-				mm->context[cpu] = 0;
-			}
+		if (atomic_read(&mm->mm_users) <= 1)
 			return;
-		}
-	}
+	} else
+		flush_tlb_other(mm);
 
 	if (smp_call_function(ipi_flush_tlb_mm, mm, 1, 1)) {
 		printk(KERN_CRIT "flush_tlb_mm: timed out\n");
@@ -936,12 +939,8 @@ static void
 ipi_flush_tlb_page(void *x)
 {
 	struct flush_tlb_page_struct *data = (struct flush_tlb_page_struct *)x;
-	struct mm_struct * mm = data->mm;
-
-	if (mm == current->mm)
-		flush_tlb_current_page(mm, data->vma, data->addr);
-	else
-		flush_tlb_other(mm);
+	if (data->mm == current->active_mm)
+		flush_tlb_current_page(data->mm, data->vma, data->addr);
 }
 
 void
@@ -950,20 +949,13 @@ flush_tlb_page(struct vm_area_struct *vma, unsigned long addr)
 	struct flush_tlb_page_struct data;
 	struct mm_struct *mm = vma->vm_mm;
 
-	if (mm == current->mm) {
+	if (mm == current->active_mm) {
 		flush_tlb_current_page(mm, vma, addr);
-		if (atomic_read(&current->mm->count) == 1) {
-			int i, cpu, this_cpu = smp_processor_id();
-			for (i = 0; i < smp_num_cpus; i++) {
-				cpu = cpu_logical_map(i);
-				if (cpu == this_cpu)
-					continue;
-				mm->context[cpu] = 0;
-			}
+		if (atomic_read(&mm->mm_users) <= 1)
 			return;
-		}
-	}
-       
+	} else
+		flush_tlb_other(mm);
+
 	data.vma = vma;
 	data.mm = mm;
 	data.addr = addr;
@@ -980,19 +972,42 @@ flush_tlb_range(struct mm_struct *mm, unsigned long start, unsigned long end)
 	flush_tlb_mm(mm);
 }
 
+static void
+ipi_flush_icache_page(void *x)
+{
+	struct mm_struct *mm = (struct mm_struct *) x;
+	if (mm == current->active_mm)
+		__load_new_mm_context(mm);
+}
+
+void
+flush_icache_page(struct vm_area_struct *vma, struct page *page)
+{
+	struct mm_struct *mm = vma->vm_mm;
+
+	if ((vma->vm_flags & VM_EXEC) == 0)
+		return;
+
+	mm->context = 0;
+	if (mm == current->active_mm) {
+		__load_new_mm_context(mm);
+		if (atomic_read(&mm->mm_users) <= 1)
+			return;
+	}
+
+	if (smp_call_function(ipi_flush_icache_page, mm, 1, 1)) {
+		printk(KERN_CRIT "flush_icache_page: timed out\n");
+	}
+}
 
 int
 smp_info(char *buffer)
 {
-	long i;
-	unsigned long sum = 0;
-	for (i = 0; i < NR_CPUS; i++)
-		sum += cpu_data[i].ipi_count;
-
-	return sprintf(buffer, "CPUs probed %d active %d map 0x%lx IPIs %ld\n",
-		       smp_num_probed, smp_num_cpus, cpu_present_mask, sum);
+	return sprintf(buffer,
+		       "cpus active\t\t: %d\n"
+		       "cpu active mask\t\t: %016lx\n",
+		       smp_num_cpus, cpu_present_mask);
 }
-
 
 #if DEBUG_SPINLOCK
 void
@@ -1032,7 +1047,7 @@ debug_spin_lock(spinlock_t * lock, const char *base_file, int line_no)
 	"	stl_c	%0,%1\n"
 	"	beq	%0,3f\n"
 	"4:	mb\n"
-	".section .text2,\"ax\"\n"
+	".subsection 2\n"
 	"2:	ldl	%0,%1\n"
 	"	subq	%2,1,%2\n"
 	"3:	blt	%2,4b\n"
@@ -1106,7 +1121,7 @@ void write_lock(rwlock_t * lock)
 	"	stl_c	%1,%0\n"
 	"	beq	%1,6f\n"
 	"4:	mb\n"
-	".section .text2,\"ax\"\n"
+	".subsection 2\n"
 	"6:	blt	%3,4b	# debug\n"
 	"	subl	%3,1,%3	# debug\n"
 	"	ldl	%1,%0\n"
@@ -1149,7 +1164,7 @@ void read_lock(rwlock_t * lock)
 	"	stl_c	%1,%0;"
 	"	beq	%1,6f;"
 	"4:	mb\n"
-	".section .text2,\"ax\"\n"
+	".subsection 2\n"
 	"6:	ldl	%1,%0;"
 	"	blt	%2,4b	# debug\n"
 	"	subl	%2,1,%2	# debug\n"

@@ -2,8 +2,8 @@
  *
  * Name:	skdrv1st.h
  * Project:	GEnesis, PCI Gigabit Ethernet Adapter
- * Version:	$Revision: 1.9 $
- * Date:	$Date: 2001/01/22 14:16:04 $
+ * Version:	$Revision: 1.6 $
+ * Date:	$Date: 1999/07/27 08:03:33 $
  * Purpose:	First header file for driver and all other modules
  *
  ******************************************************************************/
@@ -27,20 +27,6 @@
  * History:
  *
  *	$Log: skdrv1st.h,v $
- *	Revision 1.9  2001/01/22 14:16:04  mlindner
- *	added ProcFs functionality
- *	Dual Net functionality integrated
- *	Rlmt networks added
- *	
- *	Revision 1.8  2000/02/21 12:19:18  cgoos
- *	Added default for SK_DEBUG_CHKMOD/_CHKCAT
- *	
- *	Revision 1.7  1999/11/22 13:50:00  cgoos
- *	Changed license header to GPL.
- *	Added overwrite for several functions.
- *	Removed linux 2.0.x definitions.
- *	Removed PCI vendor ID definition (now in kernel).
- *	
  *	Revision 1.6  1999/07/27 08:03:33  cgoos
  *	Changed SK_IN/OUT macros to readX/writeX instead of memory
  *	accesses (necessary for ALPHA).
@@ -145,7 +131,6 @@ typedef struct s_AC	SK_AC;
 // #define SK_RLMT_SLOW_LOOKAHEAD
 
 #define SK_MAX_MACS		2
-#define SK_MAX_NETS		2
 
 #define SK_IOC			char*
 
@@ -190,12 +175,6 @@ typedef struct s_DrvRlmtMbuf SK_MBUF;
 
 #ifdef DEBUG
 #define SK_DBG_PRINTF		printk
-#ifndef SK_DEBUG_CHKMOD
-#define SK_DEBUG_CHKMOD		0
-#endif
-#ifndef SK_DEBUG_CHKCAT
-#define SK_DEBUG_CHKCAT		0
-#endif
 /* those come from the makefile */
 #define SK_DBG_CHKMOD(pAC)	(SK_DEBUG_CHKMOD)
 #define SK_DBG_CHKCAT(pAC)	(SK_DEBUG_CHKCAT)

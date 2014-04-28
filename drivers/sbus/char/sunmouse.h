@@ -1,4 +1,4 @@
-/* $Id: sunmouse.h,v 1.1.6.1 1999/10/14 08:44:33 davem Exp $
+/* $Id: sunmouse.h,v 1.2 1999/11/19 09:56:34 davem Exp $
  * sunmouse.h: Interface to the SUN mouse driver.
  *
  * Copyright (C) 1997  Eddie C. Dost  (ecd@skynet.be)

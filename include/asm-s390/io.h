@@ -16,6 +16,8 @@
 #include <linux/vmalloc.h>
 #include <asm/page.h>
 
+#define IO_SPACE_LIMIT 0xffffffff
+
 #define __io_virt(x)            ((void *)(PAGE_OFFSET | (unsigned long)(x)))
 #define __io_phys(x)            ((unsigned long)(x) & ~PAGE_OFFSET)
 /*
@@ -25,11 +27,11 @@
 extern inline unsigned long virt_to_phys(volatile void * address)
 {
 	unsigned long real_address;
-	__asm__ ("   lra    %0,0(%1)\n"
+	__asm__ ("   lra    %0,0(0,%1)\n"
                  "   jz     0f\n"
                  "   sr     %0,%0\n"
                  "0:"
-                 : "=a" (real_address) : "a" (address) : "cc" );
+                 : "=a" (real_address) : "a" (address) );
         return real_address;
 }
 

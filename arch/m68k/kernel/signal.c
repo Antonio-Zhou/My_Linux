@@ -37,6 +37,7 @@
 #include <linux/ptrace.h>
 #include <linux/unistd.h>
 #include <linux/stddef.h>
+#include <linux/highuid.h>
 
 #include <asm/setup.h>
 #include <asm/uaccess.h>
@@ -196,8 +197,8 @@ static inline int restore_fpu_state(struct sigcontext *sc)
 
 	if (FPU_IS_EMU) {
 	    /* restore registers */
-	    memcpy(current->tss.fpcntl, sc->sc_fpcntl, 12);
-	    memcpy(current->tss.fp, sc->sc_fpregs, 24);
+	    memcpy(current->thread.fpcntl, sc->sc_fpcntl, 12);
+	    memcpy(current->thread.fp, sc->sc_fpregs, 24);
 	    return 0;
 	}
 
@@ -255,11 +256,11 @@ static inline int rt_restore_fpu_state(struct ucontext *uc)
 
 	if (FPU_IS_EMU) {
 		/* restore fpu control register */
-		if (__copy_from_user(current->tss.fpcntl,
+		if (__copy_from_user(current->thread.fpcntl,
 				&uc->uc_mcontext.fpregs.f_pcr, 12))
 			goto out;
 		/* restore all other fpu register */
-		if (__copy_from_user(current->tss.fp,
+		if (__copy_from_user(current->thread.fp,
 				uc->uc_mcontext.fpregs.f_fpregs, 96))
 			goto out;
 		return 0;
@@ -564,8 +565,8 @@ static inline void save_fpu_state(struct sigcontext *sc, struct pt_regs *regs)
 {
 	if (FPU_IS_EMU) {
 		/* save registers */
-		memcpy(sc->sc_fpcntl, current->tss.fpcntl, 12);
-		memcpy(sc->sc_fpregs, current->tss.fp, 24);
+		memcpy(sc->sc_fpcntl, current->thread.fpcntl, 12);
+		memcpy(sc->sc_fpregs, current->thread.fp, 24);
 		return;
 	}
 
@@ -603,10 +604,10 @@ static inline int rt_save_fpu_state(struct ucontext *uc, struct pt_regs *regs)
 	if (FPU_IS_EMU) {
 		/* save fpu control register */
 		err |= copy_to_user(&uc->uc_mcontext.fpregs.f_pcr,
-				current->tss.fpcntl, 12);
+				current->thread.fpcntl, 12);
 		/* save all other fpu register */
 		err |= copy_to_user(uc->uc_mcontext.fpregs.f_fpregs,
-				current->tss.fp, 96);
+				current->thread.fp, 96);
 		return err;
 	}
 
@@ -994,7 +995,7 @@ asmlinkage int do_signal(sigset_t *oldset, struct pt_regs *regs)
 	siginfo_t info;
 	struct k_sigaction *ka;
 
-	current->tss.esp0 = (unsigned long) regs;
+	current->thread.esp0 = (unsigned long) regs;
 
 	if (!oldset)
 		oldset = &current->blocked;
@@ -1007,7 +1008,7 @@ asmlinkage int do_signal(sigset_t *oldset, struct pt_regs *regs)
 		if (!signr)
 			break;
 
-		if ((current->ptrace & PT_PTRACED) && signr != SIGKILL) {
+		if ((current->flags & PF_PTRACED) && signr != SIGKILL) {
 			current->exit_code = signr;
 			current->state = TASK_STOPPED;
 			regs->sr &= ~PS_T;
@@ -1048,6 +1049,7 @@ asmlinkage int do_signal(sigset_t *oldset, struct pt_regs *regs)
 				info.si_code = SI_USER;
 				info.si_pid = current->p_pptr->pid;
 				info.si_uid = current->p_pptr->uid;
+				info.si_uid16 = high2lowuid(current->p_pptr->uid);
 			}
 
 			/* If the (new) signal is now blocked, requeue it.  */
@@ -1074,7 +1076,8 @@ asmlinkage int do_signal(sigset_t *oldset, struct pt_regs *regs)
 				continue;
 
 			switch (signr) {
-			case SIGCONT: case SIGCHLD: case SIGWINCH:
+			case SIGCONT: case SIGCHLD:
+			case SIGWINCH: case SIGURG:
 				continue;
 
 			case SIGTSTP: case SIGTTIN: case SIGTTOU:
@@ -1093,6 +1096,7 @@ asmlinkage int do_signal(sigset_t *oldset, struct pt_regs *regs)
 
 			case SIGQUIT: case SIGILL: case SIGTRAP:
 			case SIGIOT: case SIGFPE: case SIGSEGV:
+			case SIGBUS: case SIGSYS: case SIGXCPU: case SIGXFSZ:
 				if (do_coredump(signr, regs))
 					exit_code |= 0x80;
 				/* FALLTHRU */

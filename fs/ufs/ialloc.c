@@ -275,7 +275,9 @@ cg_found:
 	inode->i_nlink = 1;
 	inode->i_dev = sb->s_dev;
 	inode->i_uid = current->fsuid;
-	if (dir->i_mode & S_ISGID) {
+	if (test_opt (sb, GRPID))
+		inode->i_gid = dir->i_gid;
+	else if (dir->i_mode & S_ISGID) {
 		inode->i_gid = dir->i_gid;
 		if (S_ISDIR(mode))
 			mode |= S_ISGID;
@@ -287,10 +289,7 @@ cg_found:
 	inode->i_blocks = 0;
 	inode->i_mtime = inode->i_atime = inode->i_ctime = CURRENT_TIME;
 	inode->u.ufs_i.i_flags = dir->u.ufs_i.i_flags;
-	inode->u.ufs_i.i_uid = inode->i_uid;
-	inode->u.ufs_i.i_gid = inode->i_gid;
 	inode->u.ufs_i.i_lastfrag = 0;
-	inode->i_op = NULL;
 
 	insert_inode_hash(inode);
 	mark_inode_dirty(inode);

@@ -12,18 +12,13 @@
 /*
  * This should be the same as the max(NUM_X_SOURCES) for all the
  * different m68k hosts compiled into the kernel.
- * Currently the Atari has 72, Mac has 64 and the Amiga 24; this
- * makes sure there is room for the largest table needed by the
- * architectures supported by the kernel.
+ * Currently the Atari has 72 and the Amiga 24, but if both are
+ * supported in the kernel it is better to make room for 72.
  */
-#if defined(CONFIG_ATARI)
+#if defined(CONFIG_ATARI) || defined(CONFIG_MAC)
 #define NR_IRQS (72+SYS_IRQS)
 #else
-#if defined(CONFIG_MAC)
-#define NR_IRQS (64+SYS_IRQS)
-#else
 #define NR_IRQS (24+SYS_IRQS)
-#endif
 #endif
 
 /*
@@ -74,7 +69,9 @@ static __inline__ int irq_cannonicalize(int irq)
 
 extern void (*enable_irq)(unsigned int);
 extern void (*disable_irq)(unsigned int);
-#define disable_irq_nosync(i) disable_irq(i)
+
+#define disable_irq_nosync	disable_irq
+#define enable_irq_nosync	enable_irq
 
 extern int sys_request_irq(unsigned int, 
 	void (*)(int, void *, struct pt_regs *), 
@@ -82,13 +79,17 @@ extern int sys_request_irq(unsigned int,
 extern void sys_free_irq(unsigned int, void *);
 
 /*
- * various flags for request_irq()
+ * various flags for request_irq() - the Amiga now uses the standard
+ * mechanism like all other architectures - SA_INTERRUPT and SA_SHIRQ
+ * are your friends.
  */
+#ifndef CONFIG_AMIGA
 #define IRQ_FLG_LOCK	(0x0001)	/* handler is not replaceable	*/
 #define IRQ_FLG_REPLACE	(0x0002)	/* replace existing handler	*/
 #define IRQ_FLG_FAST	(0x0004)
 #define IRQ_FLG_SLOW	(0x0008)
 #define IRQ_FLG_STD	(0x8000)	/* internally used		*/
+#endif
 
 /*
  * This structure is used to chain together the ISRs for a particular

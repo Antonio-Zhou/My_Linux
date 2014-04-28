@@ -131,10 +131,6 @@
 #include <linux/stat.h>
 #include <linux/init.h>
 
-struct proc_dir_entry proc_scsi_pas16 = {
-    PROC_SCSI_PAS16, 5, "pas16",
-    S_IFDIR | S_IRUGO | S_IXUGO, 2
-};
 static int pas_maxi = 0;
 static int pas_wmaxi = 0;
 static unsigned short pas16_addr = 0;
@@ -223,8 +219,8 @@ unsigned short  pas16_offset[ 8 ] =
  *
  */
 
-__initfunc(static void
-	enable_board( int  board_num,  unsigned short port ))
+static void __init
+	enable_board( int  board_num,  unsigned short port )
 {
     outb( 0xbc + board_num, MASTER_ADDRESS_PTR );
     outb( port >> 2, MASTER_ADDRESS_PTR );
@@ -243,8 +239,8 @@ __initfunc(static void
  *
  */
 
-__initfunc (static void
-	init_board( unsigned short io_port, int irq, int force_irq ))
+static void __init 
+	init_board( unsigned short io_port, int irq, int force_irq )
 {
 	unsigned int	tmp;
 	unsigned int	pas_irq_code;
@@ -292,8 +288,8 @@ __initfunc (static void
  * Returns : 0 if board not found, 1 if found.
  */
 
-__initfunc(static int
-     pas16_hw_detect( unsigned short  board_num ))
+static int __init 
+     pas16_hw_detect( unsigned short  board_num )
 {
     unsigned char	board_rev, tmp;
     unsigned short	io_port = bases[ board_num ].io_port;
@@ -352,7 +348,8 @@ __initfunc(static int
  *
  */
 
-__initfunc(void pas16_setup(char *str, int *ints)) {
+void __init pas16_setup(char *str, int *ints)
+{
     static int commandline_current = 0;
     int i;
     if (ints[0] != 2) 
@@ -383,14 +380,15 @@ __initfunc(void pas16_setup(char *str, int *ints)) {
  *
  */
 
-__initfunc(int pas16_detect(Scsi_Host_Template * tpnt)) {
+int __init pas16_detect(Scsi_Host_Template * tpnt)
+{
     static int current_override = 0;
     static unsigned short current_base = 0;
     struct Scsi_Host *instance;
     unsigned short io_port;
     int  count;
 
-    tpnt->proc_dir = &proc_scsi_pas16;
+    tpnt->proc_name = "pas16";
     tpnt->proc_info = &pas16_proc_info;
 
     if (pas16_addr != 0) {
@@ -602,11 +600,9 @@ static inline int NCR5380_pwrite (struct Scsi_Host *instance, unsigned char *src
 #ifdef MODULE
 /* Eventually this will go into an include file, but this will be later */
 Scsi_Host_Template driver_template = MV_PAS16;
-  
-#include <linux/module.h>
- 
-MODULE_PARM(pas16_addr, "h");
-MODULE_PARM(pas16_irq, "i");
 
 #include "scsi_module.c"
+
+MODULE_PARM(pas16_addr, "h");
+MODULE_PARM(pas16_irq, "i");
 #endif

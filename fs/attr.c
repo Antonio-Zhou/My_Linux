@@ -8,6 +8,7 @@
 #include <linux/sched.h>
 #include <linux/mm.h>
 #include <linux/string.h>
+#include <linux/smp_lock.h>
 
 /* Taken over from the old code... */
 
@@ -63,7 +64,7 @@ void inode_setattr(struct inode * inode, struct iattr * attr)
 	if (ia_valid & ATTR_GID)
 		inode->i_gid = attr->ia_gid;
 	if (ia_valid & ATTR_SIZE)
-		inode->i_size = attr->ia_size;
+		vmtruncate(inode, attr->ia_size);
 	if (ia_valid & ATTR_ATIME)
 		inode->i_atime = attr->ia_atime;
 	if (ia_valid & ATTR_MTIME)
@@ -91,13 +92,14 @@ int notify_change(struct dentry * dentry, struct iattr * attr)
 	if (!(ia_valid & ATTR_MTIME_SET))
 		attr->ia_mtime = now;
 
-	if (inode->i_sb && inode->i_sb->s_op &&
-	    inode->i_sb->s_op->notify_change) 
-		error = inode->i_sb->s_op->notify_change(dentry, attr);
+	lock_kernel();
+	if (inode && inode->i_op && inode->i_op->setattr) 
+		error = inode->i_op->setattr(dentry, attr);
 	else {
 		error = inode_change_ok(inode, attr);
 		if (!error)
 			inode_setattr(inode, attr);
 	}
+	unlock_kernel();
 	return error;
 }

@@ -37,11 +37,6 @@
 #include <asm/pgtable.h>
 #include <asm/machdep.h>
 #include <asm/siginfo.h>
-#ifdef CONFIG_KGDB
-#include <asm/kgdb.h>
-#endif
-
-/*#define DEBUG*/
 
 /* assembler routines */
 asmlinkage void system_call(void);
@@ -49,7 +44,7 @@ asmlinkage void buserr(void);
 asmlinkage void trap(void);
 asmlinkage void inthandler(void);
 asmlinkage void nmihandler(void);
-#ifdef CONFIG_FPU_EMU
+#ifdef CONFIG_M68KFPU_EMU
 asmlinkage void fpu_emu(void);
 #endif
 
@@ -70,10 +65,38 @@ asm(".text\n"
     __ALIGN_STR "\n"
     SYMBOL_NAME_STR(nmihandler) ": rte");
 
-__initfunc(void base_trap_init(void))
+/*
+ * this must be called very early as the kernel might
+ * use some instruction that are emulated on the 060
+ */
+void __init base_trap_init(void)
 {
 	/* setup the exception vector table */
 	__asm__ volatile ("movec %0,%%vbr" : : "r" ((void*)vectors));
+
+	if (CPU_IS_060) {
+		/* set up ISP entry points */
+		asmlinkage void unimp_vec(void) asm ("_060_isp_unimp");
+
+		vectors[VEC_UNIMPII] = unimp_vec;
+	}
+}
+
+void __init trap_init (void)
+{
+	int i;
+
+	for (i = 48; i < 64; i++)
+		if (!vectors[i])
+			vectors[i] = trap;
+
+	for (i = 64; i < 256; i++)
+		vectors[i] = inthandler;
+
+#ifdef CONFIG_M68KFPU_EMU
+	if (FPU_IS_EMU)
+		vectors[VEC_LINE11] = fpu_emu;
+#endif
 
 	if (CPU_IS_040 && !FPU_IS_EMU) {
 		/* set up FPSP entry points */
@@ -97,12 +120,7 @@ __initfunc(void base_trap_init(void))
 		vectors[VEC_LINE11] = fline_vec;
 		vectors[VEC_FPUNSUP] = unsupp_vec;
 	}
-	if (CPU_IS_060) {
-		/* set up ISP entry points */
-		asmlinkage void unimp_vec(void) asm ("_060_isp_unimp");
 
-		vectors[VEC_UNIMPII] = unimp_vec;
-	}
 	if (CPU_IS_060 && !FPU_IS_EMU) {
 		/* set up IFPSP entry points */
 		asmlinkage void snan_vec(void) asm ("_060_fpsp_snan");
@@ -125,34 +143,11 @@ __initfunc(void base_trap_init(void))
 		vectors[VEC_FPUNSUP] = unsupp_vec;
 		vectors[VEC_UNIMPEA] = effadd_vec;
 	}
-}
-
-__initfunc(void trap_init (void))
-{
-	int i;
-
-	for (i = 48; i < 64; i++)
-		if (!vectors[i])
-			vectors[i] = trap;
-
-	for (i = 64; i < 256; i++)
-		vectors[i] = inthandler;
-
-#ifdef CONFIG_FPU_EMU
-	if (FPU_IS_EMU)
-		vectors[VEC_LINE11] = fpu_emu;
-#endif
 
         /* if running on an amiga, make the NMI interrupt do nothing */
 	if (MACH_IS_AMIGA) {
 		vectors[VEC_INT7] = nmihandler;
 	}
-}
-
-void set_evector(int vecnum, void (*handler)(void))
-{
-	if (vecnum >= 0 && vecnum <= 256)
-		vectors[vecnum] = handler;
 }
 
 
@@ -161,6 +156,7 @@ static inline void console_verbose(void)
 	extern int console_loglevel;
 	console_loglevel = 15;
 }
+
 
 static char *vec_names[] = {
 	"RESET SP", "RESET PC", "BUS ERROR", "ADDRESS ERROR",
@@ -184,17 +180,21 @@ static char *vec_names[] = {
 	"MMU CONFIGURATION ERROR"
 	};
 
+#ifndef CONFIG_SUN3
 static char *space_names[] = {
 	"Space 0", "User Data", "User Program", "Space 3",
 	"Space 4", "Super Data", "Super Program", "CPU"
 	};
-
-
+#else
+static char *space_names[] = {
+	"Space 0", "User Data", "User Program", "Control",
+	"Space 4", "Super Data", "Super Program", "CPU"
+	};
+#endif
 
 void die_if_kernel(char *,struct pt_regs *,int);
-int do_page_fault(struct pt_regs *regs, unsigned long address,
-                  unsigned long error_code);
-int send_fault_sig(struct pt_regs *regs);
+asmlinkage int do_page_fault(struct pt_regs *regs, unsigned long address,
+                             unsigned long error_code);
 
 asmlinkage void trap_c(struct frame *fp);
 
@@ -243,141 +243,74 @@ static inline void access_error060 (struct frame *fp)
 #endif /* CONFIG_M68060 */
 
 #if defined (CONFIG_M68040)
-
-static inline unsigned long probe040(int iswrite, unsigned long addr)
+static inline unsigned long probe040 (int iswrite, int fc, unsigned long addr)
 {
 	unsigned long mmusr;
+	mm_segment_t fs = get_fs();
 
-	asm volatile (".chip 68040");
+	set_fs (MAKE_MM_SEG(fc));
 
 	if (iswrite)
-		asm volatile ("ptestw (%0)" : : "a" (addr));
+		/* write */
+		asm volatile (".chip 68040\n\t"
+			      "ptestw (%1)\n\t"
+			      "movec %%mmusr,%0\n\t"
+			      ".chip 68k"
+			      : "=r" (mmusr)
+			      : "a" (addr));
 	else
-		asm volatile ("ptestr (%0)" : : "a" (addr));
+		asm volatile (".chip 68040\n\t"
+			      "ptestr (%1)\n\t"
+			      "movec %%mmusr,%0\n\t"
+			      ".chip 68k"
+			      : "=r" (mmusr)
+			      : "a" (addr));
 
-	asm volatile ("movec %%mmusr,%0" : "=r" (mmusr));
-
-	asm volatile (".chip 68k");
+	set_fs (fs);
 
 	return mmusr;
 }
 
-static inline int do_040writeback1(unsigned short wbs, unsigned long wba,
-				   unsigned long wbd)
+static inline void do_040writeback (unsigned short ssw,
+			     unsigned short wbs,
+			     unsigned long wba,
+			     unsigned long wbd,
+			     struct frame *fp)
 {
-	mm_segment_t old_fs;
-	int res = 0;
+	mm_segment_t fs = get_fs ();
+	unsigned long mmusr;
+	unsigned long errorcode;
 
-	old_fs = get_fs();
-	set_fs(MAKE_MM_SEG(wbs));
+	/*
+	 * No special handling for the second writeback anymore.
+	 * It misinterpreted the misaligned status sometimes.
+	 * This way an extra page-fault may be caused (Martin Apel).
+	 */
 
+	mmusr = probe040 (1, wbs & WBTM_040,  wba);
+	errorcode = (mmusr & MMU_R_040) ? 3 : 2;
+	if (do_page_fault (&fp->ptregs, wba, errorcode))
+	  /* just return if we can't perform the writeback */
+	  return;
+
+	set_fs (MAKE_MM_SEG(wbs & WBTM_040));
 	switch (wbs & WBSIZ_040) {
-	case BA_SIZE_BYTE:
-		res = put_user(wbd & 0xff, (char *)wba);
+	    case BA_SIZE_BYTE:
+		put_user (wbd & 0xff, (char *)wba);
 		break;
-	case BA_SIZE_WORD:
-		res = put_user(wbd & 0xffff, (short *)wba);
+	    case BA_SIZE_WORD:
+		put_user (wbd & 0xffff, (short *)wba);
 		break;
-	case BA_SIZE_LONG:
-		res = put_user(wbd, (int *)wba);
+	    case BA_SIZE_LONG:
+		put_user (wbd, (int *)wba);
 		break;
 	}
-	set_fs(old_fs);
-
-#ifdef DEBUG
-	printk("do_040writeback1, res=%d\n",res);
-#endif
-
-	return res;
+	set_fs (fs);
 }
 
-#define FIX_XFRAME(fp,_faddr_,_set_ma_,_wbs_)           \
-     do{ (fp)->un.fmt7.faddr = (_faddr_);                 \
-         (fp)->un.fmt7.ssw &= ~( 0x7f | MA_040 | RW_040); \
-         (fp)->un.fmt7.ssw |= (~0x7f & (_wbs_));          \
-         (fp)->un.fmt7.ssw |= ((_set_ma_) ? MA_040 : 0);  \
-       } while(0)
-
-/* after an exception in a writeback the stack frame coresponding
- * to that exception is discarded, set a few bits in the old frame 
- * to simulate what it should look like       */
-
-inline void fix_xframe040(struct frame *fp, unsigned long faddr, unsigned short wbs)
-{
-  unsigned short ssw=(fp)->un.fmt7.ssw;
-
-  ssw &= ~( 0x7f | MA_040 | RW_040);
-  ssw |= (~0x7f & wbs);
-  if (faddr != (unsigned long)(current->buserr_info.si_addr) )
-    ssw |= MA_040;
-  (fp)->un.fmt7.faddr = faddr;
-  (fp)->un.fmt7.ssw = ssw;
-}
-
-inline void do_040writebacks(struct frame *fp)
-{
-        unsigned long wbaddr;
-	int xp=0;
-#if 0
-	if (fp->un.fmt7.wb1s & WBV_040)
-		printk("access_error040: cannot handle 1st writeback. oops.\n");
-#endif
-
-	if ((fp->un.fmt7.wb2s & WBV_040) &&
-	    !(fp->un.fmt7.wb2s & WBTT_040)) {
-		wbaddr = fp->un.fmt7.wb2a;
-		if (xp=do_040writeback1(fp->un.fmt7.wb2s, wbaddr,
-				     fp->un.fmt7.wb2d))
-		  {
-		    fix_xframe040(fp,wbaddr,fp->un.fmt7.wb2s);
-		  }
-		else 
-		  fp->un.fmt7.wb2s &= ~WBV_040;
-	}
-
-	if (fp->un.fmt7.wb3s & WBV_040) {
-		wbaddr= fp->un.fmt7.wb3a;
-		if (do_040writeback1(fp->un.fmt7.wb3s, wbaddr,
-				     fp->un.fmt7.wb3d))
-		  {
-		    if (!xp)
-		      {
-			fix_xframe040(fp,wbaddr,fp->un.fmt7.wb3s);
-			fp->un.fmt7.wb2s = fp->un.fmt7.wb3s;
-			fp->un.fmt7.wb3s &= (~WBV_040);
-			fp->un.fmt7.wb2a = wbaddr;
-			fp->un.fmt7.wb2d = fp->un.fmt7.wb3d;
-			xp=1;
-		      }
-		  }
-		else 
-		  fp->un.fmt7.wb3s &= ~WBV_040;
-	}
-
-	if (!xp) return;
-
-	send_fault_sig(&fp->ptregs);
-}
-
-/*
- * called from sigreturn(), must ensure userspace code didn't
- * manipulate exception frame to circumvent protection, then complete
- * pending writebacks
- * Theory is that setting TT1=0 and TM2=0 will avoid all trouble
- */
-asmlinkage void berr_040cleanup(struct frame *fp)
-{
-        fp->un.fmt7.ssw  &= ~(0x10 | 0x4);
-	fp->un.fmt7.wb2s &= ~(0x10 | 0x4);
-	fp->un.fmt7.wb3s &= ~(0x10 | 0x4);
-
-	do_040writebacks(fp);
-}
-
-static inline void access_error040(struct frame *fp)
+static inline void access_error040 (struct frame *fp)
 {
 	unsigned short ssw = fp->un.fmt7.ssw;
-	mm_segment_t old_fs = get_fs();
 	unsigned long mmusr;
 
 #ifdef DEBUG
@@ -401,46 +334,183 @@ static inline void access_error040(struct frame *fp)
 		if (ssw & MA_040)
 			addr = PAGE_ALIGN (addr);
 
-		set_fs(MAKE_MM_SEG(ssw));
 		/* MMU error, get the MMUSR info for this access */
-		mmusr = probe040(!(ssw & RW_040), addr);
-		set_fs(old_fs);
+		mmusr = probe040 (!(ssw & RW_040), ssw & TM_040, addr);
 #ifdef DEBUG
 		printk("mmusr = %lx\n", mmusr);
 #endif
-
 		errorcode = ((mmusr & MMU_R_040) ? 1 : 0) |
-			    ((ssw & RW_040) ? 0 : 2) |
-		            ((ssw & LK_040) ? 2 : 0);
+			((ssw & RW_040) ? 0 : 2);
+#ifdef CONFIG_FTRACE
+		{
+			unsigned long flags;
 
-		if (do_page_fault(&fp->ptregs, addr, errorcode)) {
-#ifdef DEBUG
-		        printk("do_page_fault() !=0 \n");
-#endif
-			if (user_mode(&fp->ptregs)){
-				/* delay writebacks after signal delivery */
-#ifdef DEBUG
-			        printk(".. was usermode - return\n");
-#endif
-				return;
-			}
-			/* disable writeback into user space from kernel */
-#ifdef DEBUG
-			printk(".. disabling wb2\n");
-#endif
-			if (fp->un.fmt7.wb2a == fp->un.fmt7.faddr)
-				fp->un.fmt7.wb2s &= ~WBV_040;
+			save_flags(flags);
+			cli();
+			do_ftrace(0xfa000000 | errorcode);
+			do_ftrace(mmusr);
+			restore_flags(flags);
 		}
-
+#endif
+		do_page_fault (&fp->ptregs, addr, errorcode);
 	} else {
-		printk("68040 access error, ssw=%x\n", ssw);
-		trap_c(fp);
+		printk ("68040 access error, ssw=%x\n", ssw);
+		trap_c (fp);
 	}
 
-	do_040writebacks(fp);
+#if 0
+	if (fp->un.fmt7.wb1s & WBV_040)
+		printk("access_error040: cannot handle 1st writeback. oops.\n");
+#endif
+
+/*
+ *  We may have to do a couple of writebacks here.
+ *
+ *  MR: we can speed up the thing a little bit and let do_040writeback()
+ *  not produce another page fault as wb2 corresponds to the address that
+ *  caused the fault. on write faults no second fault is generated, but
+ *  on read faults for security reasons (although per definitionem impossible)
+ */
+
+	if (fp->un.fmt7.wb2s & WBV_040 && (fp->un.fmt7.wb2s &
+					   WBTT_040) != BA_TT_MOVE16)
+		do_040writeback (ssw,
+				 fp->un.fmt7.wb2s, fp->un.fmt7.wb2a,
+				 fp->un.fmt7.wb2d, fp);
+
+	if (fp->un.fmt7.wb3s & WBV_040)
+		do_040writeback (ssw, fp->un.fmt7.wb3s,
+				 fp->un.fmt7.wb3a, fp->un.fmt7.wb3d,
+				 fp);
 }
 #endif /* CONFIG_M68040 */
 
+#if defined(CONFIG_SUN3)
+#include <asm/sun3mmu.h>
+
+extern int mmu_emu_handle_fault (unsigned long, int, int);
+
+/* sun3 version of bus_error030 */
+
+extern inline void bus_error030 (struct frame *fp)
+{
+	unsigned char buserr_type = sun3_get_buserr ();
+	unsigned long addr, errorcode;
+	unsigned short ssw = fp->un.fmtb.ssw;
+
+#if DEBUG
+	if (ssw & (FC | FB))
+		printk ("Instruction fault at %#010lx\n",
+			ssw & FC ?
+			fp->ptregs.format == 0xa ? fp->ptregs.pc + 2 : fp->un.fmtb.baddr - 2
+			:
+			fp->ptregs.format == 0xa ? fp->ptregs.pc + 4 : fp->un.fmtb.baddr);
+	if (ssw & DF) 
+		printk ("Data %s fault at %#010lx in %s (pc=%#lx)\n",
+			ssw & RW ? "read" : "write",
+			fp->un.fmtb.daddr,
+			space_names[ssw & DFC], fp->ptregs.pc);
+#endif
+
+	/*
+	 * Check if this page should be demand-mapped. This needs to go before
+	 * the testing for a bad kernel-space access (demand-mapping applies
+	 * to kernel accesses too).
+	 */
+	
+	if ((ssw & DF)
+	    && (buserr_type & (SUN3_BUSERR_PROTERR | SUN3_BUSERR_INVALID))) {
+		if (mmu_emu_handle_fault (fp->un.fmtb.daddr, ssw & RW, 0))
+			return;
+	}
+
+	/* Check for kernel-space pagefault (BAD). */
+	if (fp->ptregs.sr & PS_S) {
+		/* kernel fault must be a data fault to user space */
+		if (! ((ssw & DF) && ((ssw & DFC) == USER_DATA))) {
+		     // try checking the kernel mappings before surrender
+		     if (mmu_emu_handle_fault (fp->un.fmtb.daddr, ssw & RW, 1))
+			  return;
+			/* instruction fault or kernel data fault! */
+			if (ssw & (FC | FB))
+				printk ("Instruction fault at %#010lx\n",
+					fp->ptregs.pc);
+			if (ssw & DF) {
+				printk ("Data %s fault at %#010lx in %s (pc=%#lx)\n",
+					ssw & RW ? "read" : "write",
+					fp->un.fmtb.daddr,
+					space_names[ssw & DFC], fp->ptregs.pc);
+			}
+			printk ("BAD KERNEL BUSERR\n");
+
+			die_if_kernel("Oops", &fp->ptregs,0);
+			force_sig(SIGKILL, current);
+			return;
+		}
+	} else {
+		/* user fault */
+		if (!(ssw & (FC | FB)) && !(ssw & DF))
+			/* not an instruction fault or data fault! BAD */
+			panic ("USER BUSERR w/o instruction or data fault");
+	}
+
+
+	/* First handle the data fault, if any.  */
+	if (ssw & DF) {
+		addr = fp->un.fmtb.daddr;
+
+// errorcode bit 0:	0 -> no page		1 -> protection fault
+// errorcode bit 1:	0 -> read fault		1 -> write fault
+
+// (buserr_type & SUN3_BUSERR_PROTERR)	-> protection fault
+// (buserr_type & SUN3_BUSERR_INVALID)	-> invalid page fault
+
+		if (buserr_type & SUN3_BUSERR_PROTERR)
+			errorcode = 0x01;
+		else if (buserr_type & SUN3_BUSERR_INVALID)
+			errorcode = 0x00;
+		else {
+			printk ("*** unexpected busfault type=%#04x\n", buserr_type);
+			printk ("invalid %s access at %#lx from pc %#lx\n",
+				!(ssw & RW) ? "write" : "read", addr,
+				fp->ptregs.pc);
+			die_if_kernel ("Oops", &fp->ptregs, buserr_type);
+			force_sig (SIGSEGV, current);
+			return;
+		}
+
+//todo: wtf is RM bit? --m
+		if (!(ssw & RW) || ssw & RM)
+			errorcode |= 0x02;
+
+		/* Handle page fault. */
+		do_page_fault (&fp->ptregs, addr, errorcode);
+
+		/* Retry the data fault now. */
+		return;
+	}
+
+	/* Now handle the instruction fault. */
+
+	/* Get the fault address. */
+	if (fp->ptregs.format == 0xA)
+		addr = fp->ptregs.pc + 4;
+	else
+		addr = fp->un.fmtb.baddr;
+	if (ssw & FC)
+		addr -= 2;
+
+	if (buserr_type & SUN3_BUSERR_INVALID) {
+		if (!mmu_emu_handle_fault (fp->un.fmtb.daddr, 1, 0))
+			do_page_fault (&fp->ptregs, addr, 0);
+       } else {
+#ifdef DEBUG
+		printk ("protection fault on insn access (segv).\n");
+#endif
+		force_sig (SIGSEGV, current);
+       }	
+}
+#else
 #if defined(CPU_M68020_OR_M68030)
 static inline void bus_error030 (struct frame *fp)
 {
@@ -585,44 +655,6 @@ static inline void bus_error030 (struct frame *fp)
 	    else
 		    asm volatile ("ploadr %1,%0@" : /* no outputs */
 				  : "a" (addr), "d" (ssw));
-
-#if 0
-	    /* If this was a data fault due to an invalid page and a
-	       prefetch is pending on the same page, simulate it (but
-	       only if the page is now valid).  Otherwise we'll get an
-	       weird insn access.  */
-	    if ((ssw & RB) && (mmusr & MMU_I))
-	      {
-		unsigned long iaddr;
-
-		if ((fp->ptregs.format) == 0xB)
-		  iaddr = fp->un.fmtb.baddr;
-		else
-		  iaddr = fp->ptregs.pc + 4;
-		if (((addr ^ iaddr) & PAGE_MASK) == 0)
-		  {
-		    /* We only need to check the ATC as the entry has
-		       already been set up above.  */
-		    asm volatile ("ptestr #1,%1@,#0\n\t"
-				  "pmove %/psr,%0@"
-				  : : "a" (&temp), "a" (iaddr));
-		    mmusr = temp;
-#ifdef DEBUG
-		    printk ("prefetch iaddr=%#lx ssw=%#x mmusr=%#x\n",
-			    iaddr, ssw, mmusr);
-#endif
-		    if (!(mmusr & MMU_I))
-		      {
-			unsigned short insn;
-			asm volatile ("movesw %1@,%0"
-				      : "=r" (insn)
-				      : "a" (iaddr));
-			fp->un.fmtb.isb = insn;
-			fp->un.fmtb.ssw &= ~RB;
-		      }
-		  }
-	      }
-#endif
 	  }
 
 	/* Now handle the instruction fault. */
@@ -676,43 +708,6 @@ static inline void bus_error030 (struct frame *fp)
 		die_if_kernel("Oops",&fp->ptregs,mmusr);
 		force_sig(SIGSEGV, current);
 		return;
-	} else {
-#if 0 /* stale ATC entry??  Ignore it */
-
-#ifdef DEBUG
-		static volatile long tlong;
-#endif
-
-		printk ("weird insn access at %#lx from pc %#lx (ssw is %#x)\n",
-			addr, fp->ptregs.pc, ssw);
-		asm volatile ("ptestr #1,%1@,#0\n\t"
-			      "pmove %/psr,%0@"
-			      : /* no outputs */
-			      : "a" (&temp), "a" (addr));
-		mmusr = temp;
-		      
-		printk ("level 0 mmusr is %#x\n", mmusr);
-#ifdef DEBUG
-		if (m68k_cputype & CPU_68030) {
-			asm volatile ("pmove %/tt0,%0@"
-				      : /* no outputs */
-				      : "a" (&tlong));
-			printk ("tt0 is %#lx, ", tlong);
-			asm volatile ("pmove %/tt1,%0@"
-				      : /* no outputs */
-				      : "a" (&tlong));
-			printk ("tt1 is %#lx\n", tlong);
-		}
-
-#endif
-
-#if DEBUG
-		printk("Unknown SIGSEGV - 3\n");
-#endif
-		die_if_kernel("Oops",&fp->ptregs,mmusr);
-		force_sig(SIGSEGV, current);
-		return;
-#endif
 	}
 
 create_atc_entry:
@@ -721,14 +716,15 @@ create_atc_entry:
 		      : "a" (addr));
 }
 #endif /* CPU_M68020_OR_M68030 */
+#endif /* !CONFIG_SUN3 */
 
 asmlinkage void buserr_c(struct frame *fp)
 {
 	/* Only set esp0 if coming from user mode */
 	if (user_mode(&fp->ptregs))
-		current->tss.esp0 = (unsigned long) fp;
+		current->thread.esp0 = (unsigned long) fp;
 
-#if 0/*DEBUG*/
+#if DEBUG
 	printk ("*** Bus Error *** Format is %x\n", fp->ptregs.format);
 #endif
 
@@ -751,7 +747,7 @@ asmlinkage void buserr_c(struct frame *fp)
 #endif
 	default:
 	  die_if_kernel("bad frame format",&fp->ptregs,0);
-#if 0/*DEBUG*/
+#if DEBUG
 	  printk("Unknown SIGSEGV - 4\n");
 #endif
 	  force_sig(SIGSEGV, current);
@@ -767,11 +763,6 @@ int kstack_depth_to_print = 48;
 
 static void dump_stack(struct frame *fp)
 {
-#ifdef CONFIG_KGDB
-	/* This will never return to here, if kgdb has been initialized. And if
-	 * it returns from there, then to where the error happened... */
-	enter_kgdb( &fp->ptregs );
-#else
 	unsigned long *stack, *endstack, addr, module_start, module_end;
 	extern char _start, _etext;
 	int i;
@@ -869,15 +860,10 @@ static void dump_stack(struct frame *fp)
 	for (i = 0; i < 10; i++)
 		printk("%04x ", 0xffff & ((short *) fp->ptregs.pc)[i]);
 	printk ("\n");
-#endif
 }
 
 void bad_super_trap (struct frame *fp)
 {
-#ifdef CONFIG_KGDB
-	/* Save the register dump if we'll enter kgdb anyways */
-	if (!kgdb_initialized) {
-#endif
 	console_verbose();
 	if (fp->ptregs.vector < 4*sizeof(vec_names)/sizeof(vec_names[0]))
 		printk ("*** %s ***   FORMAT=%X\n",
@@ -907,9 +893,6 @@ void bad_super_trap (struct frame *fp)
 				fp->ptregs.pc);
 	}
 	printk ("Current process id is %d\n", current->pid);
-#ifdef CONFIG_KGDB
-	}
-#endif
 	die_if_kernel("BAD KERNEL TRAP", &fp->ptregs, 0);
 }
 
@@ -921,7 +904,7 @@ asmlinkage void trap_c(struct frame *fp)
 	if (fp->ptregs.sr & PS_S) {
 		if ((fp->ptregs.vector >> 2) == VEC_TRACE) {
 			/* traced a trapping instruction */
-			current->ptrace |= PT_DTRACE;
+			current->flags |= PF_DTRACE;
 		} else
 			bad_super_trap(fp);
 		return;
@@ -1038,10 +1021,6 @@ void die_if_kernel (char *str, struct pt_regs *fp, int nr)
 	if (!(fp->sr & PS_S))
 		return;
 
-#ifdef CONFIG_KGDB
-	/* Save the register dump if we'll enter kgdb anyways */
-	if (!kgdb_initialized) {
-#endif
 	console_verbose();
 	printk("%s: %08x\n",str,nr);
 	printk("PC: [<%08lx>]\nSR: %04x  SP: %p  a2: %08lx\n",
@@ -1053,9 +1032,6 @@ void die_if_kernel (char *str, struct pt_regs *fp, int nr)
 
 	printk("Process %s (pid: %d, stackpage=%08lx)\n",
 		current->comm, current->pid, PAGE_SIZE+(unsigned long)current);
-#ifdef CONFIG_KGDB
-	}
-#endif
 	dump_stack((struct frame *)fp);
 	do_exit(SIGSEGV);
 }
@@ -1069,7 +1045,7 @@ asmlinkage void fpsp040_die(void)
 	do_exit(SIGSEGV);
 }
 
-#ifdef CONFIG_FPU_EMU
+#ifdef CONFIG_M68KFPU_EMU
 asmlinkage void fpemu_signal(int signal, int code, void *addr)
 {
 	siginfo_t info;

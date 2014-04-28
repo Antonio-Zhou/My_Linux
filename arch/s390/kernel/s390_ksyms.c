@@ -3,18 +3,29 @@
  *
  *  S390 version
  */
+#include <linux/config.h>
 #include <linux/module.h>
-#include <linux/genhd.h>
+#include <asm/irq.h>
+#include <asm/string.h>
 #include <asm/checksum.h>
-#include <asm/delay.h>
-#if CONFIG_IP_MULTICAST
-#include <net/arp.h>
-#endif
+
+/*
+ * I/O subsystem
+ */
+EXPORT_SYMBOL(halt_IO);
+EXPORT_SYMBOL(do_IO);
+EXPORT_SYMBOL(resume_IO);
+EXPORT_SYMBOL(ioinfo);
+EXPORT_SYMBOL(get_dev_info_by_irq);
+EXPORT_SYMBOL(get_dev_info_by_devno);
+EXPORT_SYMBOL(get_irq_by_devno);
+EXPORT_SYMBOL(get_devno_by_irq);
+EXPORT_SYMBOL(get_irq_first);
+EXPORT_SYMBOL(get_irq_next);
 
 /*
  * memory management
  */
-EXPORT_SYMBOL(init_mm);
 EXPORT_SYMBOL(_oi_bitmap);
 EXPORT_SYMBOL(_ni_bitmap);
 EXPORT_SYMBOL(_zb_findmap);
@@ -34,19 +45,20 @@ EXPORT_SYMBOL_NOVERS(strnlen);
 EXPORT_SYMBOL_NOVERS(strrchr);
 EXPORT_SYMBOL_NOVERS(strtok);
 EXPORT_SYMBOL_NOVERS(strpbrk);
-EXPORT_SYMBOL_NOVERS(strstr);
 
 /*
  * misc.
  */
-EXPORT_SYMBOL(__copy_from_user_fixup);
-EXPORT_SYMBOL(__copy_to_user_fixup);
-EXPORT_SYMBOL(__udelay);
+#ifdef CONFIG_SMP
+#include <asm/smplock.h>
+EXPORT_SYMBOL(__global_cli);
+EXPORT_SYMBOL(__global_sti);
+EXPORT_SYMBOL(__global_save_flags);
+EXPORT_SYMBOL(__global_restore_flags);
+EXPORT_SYMBOL(global_bh_lock);
+EXPORT_SYMBOL(kernel_flag);
+#endif
 EXPORT_SYMBOL(kernel_thread);
 EXPORT_SYMBOL(csum_fold);
-EXPORT_SYMBOL(genhd_dasd_name);
 
-#ifdef CONFIG_IP_MULTICAST
-/* Required for lcs gigibit ethernet multicast support */
-EXPORT_SYMBOL(arp_mc_map);
-#endif
+

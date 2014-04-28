@@ -6,7 +6,7 @@
  * Status:        Stable.
  * Author:        Dag Brattli <dagb@cs.uit.no>
  * Created at:    Sun Aug 17 20:54:32 1997
- * Modified at:   Sun Jan  9 07:43:35 2000
+ * Modified at:   Wed Jan  5 11:26:03 2000
  * Modified by:   Dag Brattli <dagb@cs.uit.no>
  * 
  *     Copyright (c) 1998-2000 Dag Brattli <dagb@cs.uit.no>, 
@@ -63,7 +63,7 @@ char *lmp_reasons[] = {
 
 __u8 *irlmp_hint_to_service(__u8 *hint);
 #ifdef CONFIG_PROC_FS
-int irlmp_proc_read(char *buf, char **start, off_t offst, int len, int unused);
+int irlmp_proc_read(char *buf, char **start, off_t offst, int len);
 #endif
 
 /*
@@ -473,37 +473,21 @@ void irlmp_connect_indication(struct lsap_cb *self, struct sk_buff *skb)
  */
 int irlmp_connect_response(struct lsap_cb *self, struct sk_buff *userdata) 
 {
-	struct sk_buff *skb;
-
 	ASSERT(self != NULL, return -1;);
 	ASSERT(self->magic == LMP_LSAP_MAGIC, return -1;);
+	ASSERT(userdata != NULL, return -1;);
 
-	/* Any userdata supplied? */
-	if (!userdata) {
-		skb = dev_alloc_skb(64);
-		if (!skb)
-			return -ENOMEM;
-		
-		/* Reserve space for MUX_CONTROL and LAP header */
-		skb_reserve(skb, LMP_MAX_HEADER);
-	} else {
-		skb = userdata;
-		/*  
-		 *  Check that the client has reserved enough space for 
-		 *  headers
-		 */
-		ASSERT(skb_headroom(skb) >= LMP_CONTROL_HEADER, return -1;);
-	}
-	
 	self->connected = TRUE;
-	
+
 	IRDA_DEBUG(2, __FUNCTION__ "(), slsap_sel=%02x, dlsap_sel=%02x\n", 
 		   self->slsap_sel, self->dlsap_sel);
-	
+
 	/* Make room for MUX control header (3 bytes) */
-	skb_push(skb, LMP_CONTROL_HEADER);	
-	irlmp_do_lsap_event(self, LM_CONNECT_RESPONSE, skb);
+	ASSERT(skb_headroom(userdata) >= LMP_CONTROL_HEADER, return -1;);
+	skb_push(userdata, LMP_CONTROL_HEADER);
 	
+	irlmp_do_lsap_event(self, LM_CONNECT_RESPONSE, userdata);
+
 	return 0;
 }
 
@@ -1510,8 +1494,7 @@ __u32 irlmp_get_daddr(struct lsap_cb *self)
  *    Give some info to the /proc file system
  *
  */
-int irlmp_proc_read(char *buf, char **start, off_t offset, int len, 
-		    int unused)
+int irlmp_proc_read(char *buf, char **start, off_t offset, int len)
 {
 	struct lsap_cb *self;
 	struct lap_cb *lap;

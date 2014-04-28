@@ -12,6 +12,12 @@
  *        David S. Miller (davem@caip.rutgers.edu), 1995
  */
 
+#include <linux/config.h>
+#include <linux/fs.h>
+#include <linux/locks.h>
+#include <linux/quotaops.h>
+
+
 /*
  * ialloc.c contains the inodes allocation and deallocation routines
  */
@@ -27,16 +33,6 @@
  * when a file system is mounted (see ext2_read_super).
  */
 
-#include <linux/fs.h>
-#include <linux/ext2_fs.h>
-#include <linux/sched.h>
-#include <linux/stat.h>
-#include <linux/string.h>
-#include <linux/locks.h>
-#include <linux/quotaops.h>
-
-#include <asm/bitops.h>
-#include <asm/byteorder.h>
 
 /*
  * Read the inode allocation bitmap for a given block_group, reading
@@ -241,7 +237,7 @@ void ext2_free_inode (struct inode * inode)
 
 	/* Ok, now we can actually update the inode bitmaps.. */
 	if (!ext2_clear_bit (bit, bh->b_data))
-		ext2_warning (sb, "ext2_free_inode",
+		ext2_error (sb, "ext2_free_inode",
 			      "bit already cleared for inode %lu", ino);
 	else {
 		gdp = ext2_get_group_desc (sb, block_group, &bh2);
@@ -281,7 +277,7 @@ struct inode * ext2_new_inode (const struct inode * dir, int mode, int * err)
 {
 	struct super_block * sb;
 	struct buffer_head * bh;
-	struct buffer_head * bh2, * tmpbh2;
+	struct buffer_head * bh2;
 	int i, j, avefreei;
 	struct inode * inode;
 	int bitmap_nr;
@@ -316,11 +312,10 @@ repeat:
 /* I am not yet convinced that this next bit is necessary.
 		i = dir->u.ext2_i.i_block_group;
 		for (j = 0; j < sb->u.ext2_sb.s_groups_count; j++) {
-			tmp = ext2_get_group_desc (sb, i, &tmpbh2);
+			tmp = ext2_get_group_desc (sb, i, &bh2);
 			if (tmp &&
 			    (le16_to_cpu(tmp->bg_used_dirs_count) << 8) < 
 			     le16_to_cpu(tmp->bg_free_inodes_count)) {
-				bh2 = tmpbh2;
 				gdp = tmp;
 				break;
 			}
@@ -330,7 +325,7 @@ repeat:
 */
 		if (!gdp) {
 			for (j = 0; j < sb->u.ext2_sb.s_groups_count; j++) {
-				tmp = ext2_get_group_desc (sb, j, &tmpbh2);
+				tmp = ext2_get_group_desc (sb, j, &bh2);
 				if (tmp &&
 				    le16_to_cpu(tmp->bg_free_inodes_count) &&
 				    le16_to_cpu(tmp->bg_free_inodes_count) >= avefreei) {
@@ -338,7 +333,6 @@ repeat:
 					    (le16_to_cpu(tmp->bg_free_blocks_count) >
 					     le16_to_cpu(gdp->bg_free_blocks_count))) {
 						i = j;
-						bh2 = tmpbh2;
 						gdp = tmp;
 					}
 				}
@@ -351,11 +345,11 @@ repeat:
 		 * Try to place the inode in its parent directory
 		 */
 		i = dir->u.ext2_i.i_block_group;
-		tmp = ext2_get_group_desc (sb, i, &tmpbh2);
-		if (tmp && le16_to_cpu(tmp->bg_free_inodes_count)) {
-			bh2 = tmpbh2;
+		tmp = ext2_get_group_desc (sb, i, &bh2);
+		if (tmp && le16_to_cpu(tmp->bg_free_inodes_count))
 			gdp = tmp;
-		} else {
+		else
+		{
 			/*
 			 * Use a quadratic hash to find a group with a
 			 * free inode
@@ -364,10 +358,9 @@ repeat:
 				i += j;
 				if (i >= sb->u.ext2_sb.s_groups_count)
 					i -= sb->u.ext2_sb.s_groups_count;
-				tmp = ext2_get_group_desc (sb, i, &tmpbh2);
+				tmp = ext2_get_group_desc (sb, i, &bh2);
 				if (tmp &&
 				    le16_to_cpu(tmp->bg_free_inodes_count)) {
-					bh2 = tmpbh2;
 					gdp = tmp;
 					break;
 				}
@@ -381,10 +374,9 @@ repeat:
 			for (j = 2; j < sb->u.ext2_sb.s_groups_count; j++) {
 				if (++i >= sb->u.ext2_sb.s_groups_count)
 					i = 0;
-				tmp = ext2_get_group_desc (sb, i, &tmpbh2);
+				tmp = ext2_get_group_desc (sb, i, &bh2);
 				if (tmp &&
 				    le16_to_cpu(tmp->bg_free_inodes_count)) {
-					bh2 = tmpbh2;
 					gdp = tmp;
 					break;
 				}
@@ -410,7 +402,7 @@ repeat:
 				      EXT2_INODES_PER_GROUP(sb))) <
 	    EXT2_INODES_PER_GROUP(sb)) {
 		if (ext2_set_bit (j, bh->b_data)) {
-			ext2_warning (sb, "ext2_new_inode",
+			ext2_error (sb, "ext2_new_inode",
 				      "bit already set for inode %d", j);
 			goto repeat;
 		}
@@ -478,18 +470,10 @@ repeat:
 	inode->u.ext2_i.i_dir_acl = 0;
 	inode->u.ext2_i.i_dtime = 0;
 	inode->u.ext2_i.i_block_group = i;
-	inode->i_op = NULL;
 	if (inode->u.ext2_i.i_flags & EXT2_SYNC_FL)
 		inode->i_flags |= MS_SYNCHRONOUS;
 	insert_inode_hash(inode);
-	/* 
-	 *   dhXXX:
-	 *  To be really picky we should set i_generation to one more than
-	 *  whatever's on the disk, to ensure a monotonic advance of 
-	 *  generation for NFS.  But the odds of duplicating the last igen 
-	 *  are only 1 in 2^32...
-	 */
-	inode->i_generation = inode_generation_count++;
+	inode->i_generation = event++;
 	mark_inode_dirty(inode);
 
 	unlock_super (sb);
@@ -544,6 +528,8 @@ unsigned long ext2_count_free_inodes (struct super_block * sb)
 #endif
 }
 
+#ifdef CONFIG_EXT2_CHECK
+/* Called at mount-time, super-block is locked */
 void ext2_check_inodes_bitmap (struct super_block * sb)
 {
 	struct ext2_super_block * es;
@@ -552,7 +538,6 @@ void ext2_check_inodes_bitmap (struct super_block * sb)
 	struct ext2_group_desc * gdp;
 	int i;
 
-	lock_super (sb);
 	es = sb->u.ext2_sb.s_es;
 	desc_count = 0;
 	bitmap_count = 0;
@@ -581,5 +566,5 @@ void ext2_check_inodes_bitmap (struct super_block * sb)
 			    "stored = %lu, counted = %lu",
 			    (unsigned long) le32_to_cpu(es->s_free_inodes_count),
 			    bitmap_count);
-	unlock_super (sb);
 }
+#endif

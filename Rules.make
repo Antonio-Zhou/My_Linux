@@ -48,7 +48,7 @@ first_rule: sub_dirs
 	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) $(CFLAGS_$@) -S $< -o $@
 
 %.i: %.c
-	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) $(CFLAGS_$@) -E $< > $@
+	$(CPP) $(CFLAGS) $(EXTRA_CFLAGS) $(CFLAGS_$@) $< > $@
 
 %.o: %.c
 	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) $(CFLAGS_$@) -c -o $@ $<
@@ -61,9 +61,6 @@ first_rule: sub_dirs
 %.o: %.s
 	$(AS) $(ASFLAGS) $(EXTRA_CFLAGS) -o $@ $<
 
-%.lst: %.c
-	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) $(CFLAGS_$@) -g -c -o $*.o $<
-	$(TOPDIR)/scripts/makelst $* $(TOPDIR) $(OBJDUMP)
 #
 #
 #
@@ -76,11 +73,11 @@ ifdef O_TARGET
 ALL_O = $(OX_OBJS) $(O_OBJS)
 $(O_TARGET): $(ALL_O)
 	rm -f $@
-ifneq "$(strip $(ALL_O))" ""
+    ifneq "$(strip $(ALL_O))" ""
 	$(LD) $(EXTRA_LDFLAGS) -r -o $@ $(filter $(ALL_O), $^)
-else
-	$(AR) rcs $@
-endif
+    else
+	$(AR) rcs $@ $(filter $(ALL_O), $^)
+    endif
 	@ ( \
 	    echo 'ifeq ($(strip $(subst $(comma),:,$(EXTRA_LDFLAGS) $(ALL_O))),$$(strip $$(subst $$(comma),:,$$(EXTRA_LDFLAGS) $$(ALL_O))))' ; \
 	    echo 'FILES_FLAGS_UP_TO_DATE += $@' ; \
@@ -206,18 +203,6 @@ else
 	genksyms_smp_prefix := 
 endif
 
-#
-#	Differ 1 and 2Gig kernels to avoid module misload errors
-#
-
-ifdef CONFIG_2GB
-ifdef CONFIG_SMP
-	genksyms_smp_prefix := -p smp2gig_
-else
-	genksyms_smp_prefix := -p 2gig_
-endif
-endif
-
 $(MODINCL)/%.ver: %.c
 	@if [ ! -r $(MODINCL)/$*.stamp -o $(MODINCL)/$*.stamp -ot $< ]; then \
 		echo '$(CC) $(CFLAGS) -E -D__GENKSYMS__ $<'; \
@@ -230,16 +215,8 @@ $(MODINCL)/%.ver: %.c
 	
 $(addprefix $(MODINCL)/,$(SYMTAB_OBJS:.o=.ver)): $(TOPDIR)/include/linux/autoconf.h
 
-# updates .ver files but not modversions.h
-fastdep: $(addprefix $(MODINCL)/,$(SYMTAB_OBJS:.o=.ver))
-
-# updates .ver files and modversions.h like before (is this needed?)
-dep: fastdep update-modverfile
-
-endif # SYMTAB_OBJS 
-
-# update modversions.h, but only if it would change
-update-modverfile:
+$(TOPDIR)/include/linux/modversions.h: $(addprefix $(MODINCL)/,$(SYMTAB_OBJS:.o=.ver))
+	@echo updating $(TOPDIR)/include/linux/modversions.h
 	@(echo "#ifndef _LINUX_MODVERSIONS_H";\
 	  echo "#define _LINUX_MODVERSIONS_H"; \
 	  echo "#include <linux/modsetver.h>"; \
@@ -248,14 +225,11 @@ update-modverfile:
 	    if [ -f $$f ]; then echo "#include <linux/modules/$${f}>"; fi; \
 	  done; \
 	  echo "#endif"; \
-	) > $(TOPDIR)/include/linux/modversions.h.tmp
-	@if [ -r $(TOPDIR)/include/linux/modversions.h ] && cmp -s $(TOPDIR)/include/linux/modversions.h $(TOPDIR)/include/linux/modversions.h.tmp; then \
-		echo $(TOPDIR)/include/linux/modversions.h was not updated; \
-		rm -f $(TOPDIR)/include/linux/modversions.h.tmp; \
-	else \
-		echo $(TOPDIR)/include/linux/modversions.h was updated; \
-		mv -f $(TOPDIR)/include/linux/modversions.h.tmp $(TOPDIR)/include/linux/modversions.h; \
-	fi
+	) > $@
+
+dep fastdep: $(TOPDIR)/include/linux/modversions.h
+
+endif # SYMTAB_OBJS 
 
 $(M_OBJS): $(TOPDIR)/include/linux/modversions.h
 ifdef MAKING_MODULES
@@ -270,7 +244,7 @@ $(TOPDIR)/include/linux/modversions.h:
 endif # CONFIG_MODVERSIONS
 
 ifneq "$(strip $(SYMTAB_OBJS))" ""
-$(SYMTAB_OBJS): $(TOPDIR)/include/linux/modversions.h $(SYMTAB_OBJS:.o=.c)
+$(SYMTAB_OBJS): $(SYMTAB_OBJS:.o=.c) $(TOPDIR)/include/linux/modversions.h
 	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) $(CFLAGS_$@) -DEXPORT_SYMTAB -c $(@:.o=.c)
 	@ ( \
 	    echo 'ifeq ($(strip $(subst $(comma),:,$(CFLAGS) $(EXTRA_CFLAGS) $(CFLAGS_$@) -DEXPORT_SYMTAB)),$$(strip $$(subst $$(comma),:,$$(CFLAGS) $$(EXTRA_CFLAGS) $$(CFLAGS_$@) -DEXPORT_SYMTAB)))' ; \

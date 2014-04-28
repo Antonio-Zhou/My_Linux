@@ -11,6 +11,34 @@
 #include <asm/system.h>
 #include <asm/machvec.h>
 
+
+/*
+ * Force a context reload. This is needed when we change the page
+ * table pointer or when we update the ASN of the current process.
+ */
+
+/* Don't get into trouble with dueling __EXTERN_INLINEs.  */
+#ifndef __EXTERN_INLINE
+#include <asm/io.h>
+#endif
+
+extern inline unsigned long
+__reload_thread(struct thread_struct *pcb)
+{
+	register unsigned long a0 __asm__("$16");
+	register unsigned long v0 __asm__("$0");
+
+	a0 = virt_to_phys(pcb);
+	__asm__ __volatile__(
+		"call_pal %2 #__reload_thread"
+		: "=r"(v0), "=r"(a0)
+		: "i"(PAL_swpctx), "r"(a0)
+		: "$1", "$16", "$22", "$23", "$24", "$25");
+
+	return v0;
+}
+
+
 /*
  * The maximum ASN's the processor supports.  On the EV4 this is 63
  * but the PAL-code doesn't actually use this information.  On the
@@ -29,7 +57,7 @@
  * appropriate PALcode routine to invalidate the translation buffer (TB)". 
  *
  * In short, the EV4 has a "kind of" ASN capability, but it doesn't actually
- * work correctly and can thus not be used (explaining the lack of PALcode
+ * work correctly and can thus not be used (explaining the lack of PAL-code
  * support).
  */
 #define EV4_MAX_ASN 63
@@ -56,27 +84,33 @@
  * +-------------+----------------+--------------+
  */
 
-#ifdef __SMP__
+#ifdef CONFIG_SMP
 #include <asm/smp.h>
 #define cpu_last_asn(cpuid)	(cpu_data[cpuid].last_asn)
 #else
 extern unsigned long last_asn;
 #define cpu_last_asn(cpuid)	last_asn
-#endif /* __SMP__ */
+#endif /* CONFIG_SMP */
 
 #define WIDTH_HARDWARE_ASN	8
-#define ASN_FIRST_VERSION (1UL << WIDTH_HARDWARE_ASN)
+#ifdef CONFIG_SMP
+#define WIDTH_THIS_PROCESSOR	5
+#else
+#define WIDTH_THIS_PROCESSOR	0
+#endif
+#define ASN_FIRST_VERSION (1UL << (WIDTH_THIS_PROCESSOR + WIDTH_HARDWARE_ASN))
 #define HARDWARE_ASN_MASK ((1UL << WIDTH_HARDWARE_ASN) - 1)
 
 /*
  * NOTE! The way this is set up, the high bits of the "asn_cache" (and
- * "mm->context") are the ASN _version_ code. A version of 0 is always
- * considered invalid, so to invalidate another process you only need
- * to do "p->mm->context = 0".
+ * the "mm->context") are the ASN _version_ code. A version of 0 is
+ * always considered invalid, so to invalidate another process you only
+ * need to do "p->mm->context = 0".
  *
  * If we need more ASN's than the processor has, we invalidate the old
  * user TLB's (tbiap()) and start a new ASN version. That will automatically
- * force a new asn for any other processes the next time they want to run.
+ * force a new asn for any other processes the next time they want to
+ * run.
  */
 
 #ifndef __EXTERN_INLINE
@@ -84,83 +118,98 @@ extern unsigned long last_asn;
 #define __MMU_EXTERN_INLINE
 #endif
 
-extern void get_new_mmu_context(struct task_struct *p, struct mm_struct *mm);
-
 static inline unsigned long
-__get_new_mmu_context(void)
+__get_new_mm_context(struct mm_struct *mm, long cpu)
 {
-	unsigned long asn = cpu_last_asn(smp_processor_id());
+	unsigned long asn = cpu_last_asn(cpu);
 	unsigned long next = asn + 1;
 
-	/* If we've wrapped, flush the whole user TLB.  */
 	if ((asn & HARDWARE_ASN_MASK) >= MAX_ASN) {
 		tbiap();
 		imb();
 		next = (asn & ~HARDWARE_ASN_MASK) + ASN_FIRST_VERSION;
 	}
-	cpu_last_asn(smp_processor_id()) = next;
+	cpu_last_asn(cpu) = next;
 	return next;
 }
 
 __EXTERN_INLINE void
-ev4_get_mmu_context(struct task_struct *p)
+ev5_switch_mm(struct mm_struct *prev_mm, struct mm_struct *next_mm,
+	      struct task_struct *next, long cpu)
 {
-	/* As described, ASN's are broken.  But we can optimize for
-	   switching between threads -- if the mm is unchanged from
-	   current we needn't flush.  */
-	/* ??? May not be needed because EV4 PALcode recognizes that
-	   ASN's are broken and does a tbiap itself on swpctx, under
-	   the "Must set ASN or flush" rule.  At least this is true
-	   for a 1992 SRM, reports Joseph Martin (jmartin@hlo.dec.com).
-	   I'm going to leave this here anyway, just to Be Sure.  -- r~  */
+	/* Check if our ASN is of an older version, or on a different CPU,
+	   and thus invalid.  */
+	/* ??? If we have two threads on different cpus, we'll continually
+	   fight over the context.  Find a way to record a per-mm, per-cpu
+	   value for the asn.  */
 
-	if (current->mm != p->mm)
-		tbiap();
-}
-
-__EXTERN_INLINE void
-ev5_get_mmu_context(struct task_struct *p)
-{
-	/* Check if our ASN is of an older version, and thus invalid. */
-	int cpu;
-	unsigned long asn;
-	struct mm_struct *mm;
-	unsigned long mmc;
+	unsigned long asn = cpu_last_asn(cpu);
+	unsigned long mmc = next_mm->context;
 	
-	cpu = smp_processor_id();
-	mm = p->mm;
-	ctx_cli();
-	asn = cpu_last_asn(cpu);
-	mmc = mm->context[cpu];
-
 	if ((mmc ^ asn) & ~HARDWARE_ASN_MASK) {
-		mmc = __get_new_mmu_context();
-		mm->context[cpu] = mmc;
+		mmc = __get_new_mm_context(next_mm, cpu);
+		next_mm->context = mmc;
 	}
 
 	/* Always update the PCB ASN.  Another thread may have allocated
 	   a new mm->context (via flush_tlb_mm) without the ASN serial
 	   number wrapping.  We have no way to detect when this is needed.  */
-	p->tss.asn = mmc & HARDWARE_ASN_MASK;
+	next->thread.asn = mmc & HARDWARE_ASN_MASK;
+}
+
+__EXTERN_INLINE void
+ev4_switch_mm(struct mm_struct *prev_mm, struct mm_struct *next_mm,
+	      struct task_struct *next, long cpu)
+{
+	/* As described, ASN's are broken for TLB usage.  But we can
+	   optimize for switching between threads -- if the mm is
+	   unchanged from current we needn't flush.  */
+	/* ??? May not be needed because EV4 PALcode recognizes that
+	   ASN's are broken and does a tbiap itself on swpctx, under
+	   the "Must set ASN or flush" rule.  At least this is true
+	   for a 1992 SRM, reports Joseph Martin (jmartin@hlo.dec.com).
+	   I'm going to leave this here anyway, just to Be Sure.  -- r~  */
+	if (prev_mm != next_mm)
+		tbiap();
+
+	/* Do continue to allocate ASNs, because we can still use them
+	   to avoid flushing the icache.  */
+	ev5_switch_mm(prev_mm, next_mm, next, cpu);
+}
+
+extern void __load_new_mm_context(struct mm_struct *);
+
+__EXTERN_INLINE void
+ev5_activate_mm(struct mm_struct *prev_mm, struct mm_struct *next_mm)
+{
+	__load_new_mm_context(next_mm);
+}
+
+__EXTERN_INLINE void
+ev4_activate_mm(struct mm_struct *prev_mm, struct mm_struct *next_mm)
+{
+	__load_new_mm_context(next_mm);
+	tbiap();
 }
 
 #ifdef CONFIG_ALPHA_GENERIC
-# define get_mmu_context		(alpha_mv.mv_get_mmu_context)
+# define switch_mm(a,b,c,d)	alpha_mv.mv_switch_mm((a),(b),(c),(d))
+# define activate_mm(x,y)	alpha_mv.mv_activate_mm((x),(y))
 #else
 # ifdef CONFIG_ALPHA_EV4
-#  define get_mmu_context		ev4_get_mmu_context
+#  define switch_mm(a,b,c,d)	ev4_switch_mm((a),(b),(c),(d))
+#  define activate_mm(x,y)	ev4_activate_mm((x),(y))
 # else
-#  define get_mmu_context		ev5_get_mmu_context
+#  define switch_mm(a,b,c,d)	ev5_switch_mm((a),(b),(c),(d))
+#  define activate_mm(x,y)	ev5_activate_mm((x),(y))
 # endif
 #endif
 
 extern inline void
-init_new_context(struct mm_struct *mm)
+init_new_context(struct task_struct *tsk, struct mm_struct *mm)
 {
-	int i;
-
-	for (i = 0; i < smp_num_cpus; i++)
-		mm->context[cpu_logical_map(i)] = 0;
+	mm->context = 0;
+        tsk->thread.ptbr = ((unsigned long)mm->pgd - IDENT_ADDR) >> PAGE_SHIFT;
 }
 
 extern inline void
@@ -169,53 +218,15 @@ destroy_context(struct mm_struct *mm)
 	/* Nothing to do.  */
 }
 
+static inline void
+enter_lazy_tlb(struct mm_struct *mm, struct task_struct *tsk, unsigned cpu)
+{
+	tsk->thread.ptbr = ((unsigned long)mm->pgd - IDENT_ADDR) >> PAGE_SHIFT;
+}
+
 #ifdef __MMU_EXTERN_INLINE
 #undef __EXTERN_INLINE
 #undef __MMU_EXTERN_INLINE
 #endif
-
-/*
- * Force a context reload. This is needed when we change the page
- * table pointer or when we update the ASN of the current process.
- */
-
-/* Don't get into trouble with dueling __EXTERN_INLINEs.  */
-#ifndef __EXTERN_INLINE
-#include <asm/io.h>
-#endif
-
-extern inline unsigned long
-__reload_tss(struct thread_struct *tss)
-{
-	register unsigned long a0 __asm__("$16");
-	register unsigned long v0 __asm__("$0");
-
-	a0 = virt_to_phys(tss);
-	__asm__ __volatile__(
-		"call_pal %2 #__reload_tss"
-		: "=r"(v0), "=r"(a0)
-		: "i"(PAL_swpctx), "r"(a0)
-		: "$1", "$16", "$22", "$23", "$24", "$25");
-
-	return v0;
-}
-
-extern inline void
-reload_context(struct task_struct *task)
-{
-	__reload_tss(&task->tss);
-}
-
-/*
- * After setting current->mm to a new value, activate the context for the
- * new mm so we see the new mappings.
- */
-
-extern inline void
-activate_context(struct task_struct *task)
-{
-	get_new_mmu_context(task, task->mm);
-	reload_context(task);
-}
 
 #endif /* __ALPHA_MMU_CONTEXT_H */

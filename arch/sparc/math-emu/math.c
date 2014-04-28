@@ -70,10 +70,10 @@
 #include <asm/uaccess.h>
 
 #include "sfp-util.h"
-#include "soft-fp.h"
-#include "single.h"
-#include "double.h"
-#include "quad.h"
+#include <math-emu/soft-fp.h>
+#include <math-emu/single.h>
+#include <math-emu/double.h>
+#include <math-emu/quad.h>
 
 #define FLOATFUNC(x) extern int x(void *,void *,void *)
 
@@ -165,18 +165,18 @@ int do_mathemu(struct pt_regs *regs, struct task_struct *fpt)
 
 #ifdef DEBUG_MATHEMU
 	printk("In do_mathemu()... pc is %08lx\n", regs->pc);
-	printk("fpqdepth is %ld\n", fpt->tss.fpqdepth);
-	for (i = 0; i < fpt->tss.fpqdepth; i++)
-		printk("%d: %08lx at %08lx\n", i, fpt->tss.fpqueue[i].insn,
-		       (unsigned long)fpt->tss.fpqueue[i].insn_addr);
+	printk("fpqdepth is %ld\n", fpt->thread.fpqdepth);
+	for (i = 0; i < fpt->thread.fpqdepth; i++)
+		printk("%d: %08lx at %08lx\n", i, fpt->thread.fpqueue[i].insn,
+		       (unsigned long)fpt->thread.fpqueue[i].insn_addr);
 #endif
 
-	if (fpt->tss.fpqdepth == 0) {                   /* no queue, guilty insn is at regs->pc */
+	if (fpt->thread.fpqdepth == 0) {                   /* no queue, guilty insn is at regs->pc */
 #ifdef DEBUG_MATHEMU
 		printk("precise trap at %08lx\n", regs->pc);
 #endif
 		if (!get_user(insn, (u32 *)regs->pc)) {
-			retcode = do_one_mathemu(insn, &fpt->tss.fsr, fpt->tss.float_regs);
+			retcode = do_one_mathemu(insn, &fpt->thread.fsr, fpt->thread.float_regs);
 			if (retcode) {
 				/* in this case we need to fix up PC & nPC */
 				regs->pc = regs->npc;
@@ -187,17 +187,17 @@ int do_mathemu(struct pt_regs *regs, struct task_struct *fpt)
 	}
 
 	/* Normal case: need to empty the queue... */
-	for (i = 0; i < fpt->tss.fpqdepth; i++) {
-		retcode = do_one_mathemu(fpt->tss.fpqueue[i].insn, &(fpt->tss.fsr), fpt->tss.float_regs);
+	for (i = 0; i < fpt->thread.fpqdepth; i++) {
+		retcode = do_one_mathemu(fpt->thread.fpqueue[i].insn, &(fpt->thread.fsr), fpt->thread.float_regs);
 		if (!retcode)                               /* insn failed, no point doing any more */
 			break;
 	}
 	/* Now empty the queue and clear the queue_not_empty flag */
 	if(retcode)
-		fpt->tss.fsr &= ~(0x3000 | FSR_CEXC_MASK);
+		fpt->thread.fsr &= ~(0x3000 | FSR_CEXC_MASK);
 	else
-		fpt->tss.fsr &= ~0x3000;
-	fpt->tss.fpqdepth = 0;
+		fpt->thread.fsr &= ~0x3000;
+	fpt->thread.fpqdepth = 0;
 
 	return retcode;
 }
@@ -330,12 +330,12 @@ static int do_one_mathemu(u32 insn, unsigned long *pfsr, unsigned long *fregs)
 		}
 	} else if ((insn & 0xc1f80000) == 0x81a80000)	/* FPOP2 */ {
 		switch ((insn >> 5) & 0x1ff) {
-		case FCMPS: TYPE(3,0,0,1,0,1,0); break;
-		case FCMPES: TYPE(3,0,0,1,0,1,0); break;
-		case FCMPD: TYPE(3,0,0,2,0,2,0); break;
-		case FCMPED: TYPE(3,0,0,2,0,2,0); break;
-		case FCMPQ: TYPE(3,0,0,3,0,3,0); break;
-		case FCMPEQ: TYPE(3,0,0,3,0,3,0); break;
+		case FCMPS: TYPE(3,0,0,1,1,1,1); break;
+		case FCMPES: TYPE(3,0,0,1,1,1,1); break;
+		case FCMPD: TYPE(3,0,0,2,1,2,1); break;
+		case FCMPED: TYPE(3,0,0,2,1,2,1); break;
+		case FCMPQ: TYPE(3,0,0,3,1,3,1); break;
+		case FCMPEQ: TYPE(3,0,0,3,1,3,1); break;
 		default:
 #ifdef DEBUG_MATHEMU
 			printk("unknown FPop2: %03lx\n",(insn>>5)&0x1ff);
@@ -474,8 +474,6 @@ static int do_one_mathemu(u32 insn, unsigned long *pfsr, unsigned long *fregs)
 	/* comparison */
 	case FCMPS:
 	case FCMPES:
-		FP_UNPACK_RAW_SP (SA, rs1);
-		FP_UNPACK_RAW_SP (SB, rs2);
 		FP_CMP_S(IR, SB, SA, 3);
 		if (IR == 3 &&
 		    (((insn >> 5) & 0x1ff) == FCMPES ||
@@ -485,8 +483,6 @@ static int do_one_mathemu(u32 insn, unsigned long *pfsr, unsigned long *fregs)
 		break;
 	case FCMPD:
 	case FCMPED:
-		FP_UNPACK_RAW_DP (DA, rs1);
-		FP_UNPACK_RAW_DP (DB, rs2);
 		FP_CMP_D(IR, DB, DA, 3);
 		if (IR == 3 &&
 		    (((insn >> 5) & 0x1ff) == FCMPED ||
@@ -496,8 +492,6 @@ static int do_one_mathemu(u32 insn, unsigned long *pfsr, unsigned long *fregs)
 		break;
 	case FCMPQ:
 	case FCMPEQ:
-		FP_UNPACK_RAW_QP (QA, rs1);
-		FP_UNPACK_RAW_QP (QB, rs2);
 		FP_CMP_Q(IR, QB, QA, 3);
 		if (IR == 3 &&
 		    (((insn >> 5) & 0x1ff) == FCMPEQ ||

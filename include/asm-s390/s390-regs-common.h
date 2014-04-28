@@ -41,6 +41,8 @@ typedef struct
         __u32   addr;
 } psw_t __attribute__ ((aligned(8)));
 
+typedef __u32 gpr_t;
+
 /* 2 __u32's are used for floats instead to compile  with a __STRICT_ANSI__ defined */ 
 typedef union
 {
@@ -68,16 +70,6 @@ typedef struct
 	__u32   fpc;
 	freg_t  fprs[NUM_FPRS];              
 } s390_fp_regs;
-
-
-#define FPC_EXCEPTION_MASK      0xF8000000
-#define FPC_FLAGS_MASK          0x00F80000
-#define FPC_DXC_MASK            0x0000FF00
-#define FPC_RM_MASK             0x00000003
-#define FPC_VALID_MASK         ((FPC_EXCEPTION_MASK|FPC_FLAGS_MASK| \
-                                 FPC_DXC_MASK|FPC_RM_MASK))
-
-
 
 /*
   gdb structures & the kernel have this much always in common

@@ -1,4 +1,4 @@
-/* $Id: eicon_io.c,v 1.1.2.1 2001/12/31 13:26:44 kai Exp $
+/* $Id: eicon_io.c,v 1.10 2000/01/23 21:21:23 armin Exp $
  *
  * ISDN low-level module for Eicon active ISDN-Cards.
  * Code for communicating with hardware.
@@ -6,17 +6,69 @@
  * Copyright 1999,2000  by Armin Schindler (mac@melware.de)
  * Copyright 1999,2000  Cytronics & Melware (info@melware.de)
  *
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
- *
- * Thanks to	Eicon Networks for 
+ * Thanks to	Eicon Technology GmbH & Co. oHG for 
  *		documents, informations and hardware. 
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2, or (at your option)
+ * any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. 
+ *
+ * $Log: eicon_io.c,v $
+ * Revision 1.10  2000/01/23 21:21:23  armin
+ * Added new trace capability and some updates.
+ * DIVA Server BRI now supports data for ISDNLOG.
+ *
+ * Revision 1.9  1999/11/18 20:55:25  armin
+ * Ready_Int fix of ISA cards.
+ *
+ * Revision 1.8  1999/10/08 22:09:34  armin
+ * Some fixes of cards interface handling.
+ * Bugfix of NULL pointer occurence.
+ * Changed a few log outputs.
+ *
+ * Revision 1.7  1999/09/26 14:17:53  armin
+ * Improved debug and log via readstat()
+ *
+ * Revision 1.6  1999/09/21 20:35:43  armin
+ * added more error checking.
+ *
+ * Revision 1.5  1999/08/31 11:20:11  paul
+ * various spelling corrections (new checksums may be needed, Karsten!)
+ *
+ * Revision 1.4  1999/08/22 20:26:47  calle
+ * backported changes from kernel 2.3.14:
+ * - several #include "config.h" gone, others come.
+ * - "struct device" changed to "struct net_device" in 2.3.14, added a
+ *   define in isdn_compat.h for older kernel versions.
+ *
+ * Revision 1.3  1999/08/18 20:17:01  armin
+ * Added XLOG function for all cards.
+ * Bugfix of alloc_skb NULL pointer.
+ *
+ * Revision 1.2  1999/07/25 15:12:05  armin
+ * fix of some debug logs.
+ * enabled ISA-cards option.
+ *
+ * Revision 1.1  1999/03/29 11:19:45  armin
+ * I/O stuff now in seperate file (eicon_io.c)
+ * Old ISA type cards (S,SX,SCOM,Quadro,S2M) implemented.
+ *
  *
  */
 
+
 #include <linux/config.h>
 #include "eicon.h"
-#include "uxio.h"
 
 void
 eicon_io_rcv_dispatch(eicon_card *ccard) {
@@ -33,12 +85,12 @@ eicon_io_rcv_dispatch(eicon_card *ccard) {
 	while((skb = skb_dequeue(&ccard->rcvq))) {
         	ind = (eicon_IND *)skb->data;
 
-		spin_lock_irqsave(&eicon_lock, flags);
+		save_flags(flags);
+		cli();
         	if ((chan = ccard->IdTable[ind->IndId]) == NULL) {
-			spin_unlock_irqrestore(&eicon_lock, flags);
 			if (DebugVar & 1) {
 				switch(ind->Ind) {
-					case N_DISC_ACK: 
+					case IDI_N_DISC_ACK: 
 						/* doesn't matter if this happens */ 
 						break;
 					default: 
@@ -47,10 +99,11 @@ eicon_io_rcv_dispatch(eicon_card *ccard) {
 							ind->Ind,ind->IndId,ind->IndCh,ind->MInd,ind->MLength,ind->RBuffer.length);
 				}
 			}
+			restore_flags(flags);
 	                dev_kfree_skb(skb);
 	                continue;
 	        }
-		spin_unlock_irqrestore(&eicon_lock, flags);
+		restore_flags(flags);
 
 		if (chan->e.complete) { /* check for rec-buffer chaining */
 			if (ind->MLength == ind->RBuffer.length) {
@@ -66,9 +119,12 @@ eicon_io_rcv_dispatch(eicon_card *ccard) {
 			}
 		}
 		else {
+			save_flags(flags);
+			cli();
 			if (!(skb2 = skb_dequeue(&chan->e.R))) {
 				chan->e.complete = 1;
                 		eicon_log(ccard, 1, "eicon: buffer incomplete, but 0 in queue\n");
+				restore_flags(flags);
 	                	dev_kfree_skb(skb);
 				continue;	
 			}
@@ -77,6 +133,7 @@ eicon_io_rcv_dispatch(eicon_card *ccard) {
 					GFP_ATOMIC);
 			if (!skb_new) {
                 		eicon_log(ccard, 1, "eicon_io: skb_alloc failed in rcv_dispatch()\n");
+				restore_flags(flags);
 	                	dev_kfree_skb(skb);
 	                	dev_kfree_skb(skb2);
 				continue;	
@@ -95,12 +152,14 @@ eicon_io_rcv_dispatch(eicon_card *ccard) {
                 	dev_kfree_skb(skb2);
 			if (ind->MLength == ind->RBuffer.length) {
 				chan->e.complete = 2;
+				restore_flags(flags);
 				idi_handle_ind(ccard, skb_new);
 				continue;
 			}
 			else {
 				chan->e.complete = 0;
 				skb_queue_tail(&chan->e.R, skb_new);
+				restore_flags(flags);
 				continue;
 			}
 		}
@@ -122,120 +181,242 @@ eicon_io_ack_dispatch(eicon_card *ccard) {
 
 
 /*
- *  IO-Functions for ISA cards
+ *  IO-Functions for different card-types
  */
 
 u8 ram_inb(eicon_card *card, void *adr) {
+        eicon_pci_card *pcard;
+        eicon_isa_card *icard;
         u32 addr = (u32) adr;
 	
-	return(readb(addr));
+	pcard = &card->hwif.pci;
+	icard = &card->hwif.isa;
+
+        switch(card->type) {
+                case EICON_CTYPE_MAESTRA:
+                        outw((u16)addr, (u16)pcard->PCIreg + M_ADDR);
+                        return(inb((u16)pcard->PCIreg + M_DATA));
+                case EICON_CTYPE_MAESTRAP:
+                case EICON_CTYPE_S2M:
+		case EICON_CTYPE_S:
+		case EICON_CTYPE_SX:
+		case EICON_CTYPE_SCOM:
+		case EICON_CTYPE_QUADRO:
+                        return(readb(addr));
+        }
+ return(0);
 }
 
 u16 ram_inw(eicon_card *card, void *adr) {
+        eicon_pci_card *pcard;
+        eicon_isa_card *icard;
         u32 addr = (u32) adr;
+	
+	pcard = &card->hwif.pci;
+	icard = &card->hwif.isa;
 
-	return(readw(addr));
+        switch(card->type) {
+                case EICON_CTYPE_MAESTRA:
+                        outw((u16)addr, (u16)pcard->PCIreg + M_ADDR);
+                        return(inw((u16)pcard->PCIreg + M_DATA));
+                case EICON_CTYPE_MAESTRAP:
+                case EICON_CTYPE_S2M:
+		case EICON_CTYPE_S:
+		case EICON_CTYPE_SX:
+		case EICON_CTYPE_SCOM:
+		case EICON_CTYPE_QUADRO:
+                        return(readw(addr));
+        }
+ return(0);
 }
 
 void ram_outb(eicon_card *card, void *adr, u8 data) {
+        eicon_pci_card *pcard;
+        eicon_isa_card *icard;
         u32 addr = (u32) adr;
 
-	writeb(data, addr);
+	pcard = &card->hwif.pci;
+	icard = &card->hwif.isa;
+
+        switch(card->type) {
+                case EICON_CTYPE_MAESTRA:
+                        outw((u16)addr, (u16)pcard->PCIreg + M_ADDR);
+                        outb((u8)data, (u16)pcard->PCIreg + M_DATA);
+                        break;
+                case EICON_CTYPE_MAESTRAP:
+                case EICON_CTYPE_S2M:
+		case EICON_CTYPE_S:
+		case EICON_CTYPE_SX:
+		case EICON_CTYPE_SCOM:
+		case EICON_CTYPE_QUADRO:
+                        writeb(data, addr);
+                        break;
+        }
 }
 
 void ram_outw(eicon_card *card, void *adr , u16 data) {
+        eicon_pci_card *pcard;
+        eicon_isa_card *icard;
         u32 addr = (u32) adr;
 
-	writew(data, addr);
+	pcard = &card->hwif.pci;
+	icard = &card->hwif.isa;
+
+        switch(card->type) {
+                case EICON_CTYPE_MAESTRA:
+                        outw((u16)addr, (u16)pcard->PCIreg + M_ADDR);
+                        outw((u16)data, (u16)pcard->PCIreg + M_DATA);
+                        break;
+                case EICON_CTYPE_MAESTRAP:
+                case EICON_CTYPE_S2M:
+		case EICON_CTYPE_S:
+		case EICON_CTYPE_SX:
+		case EICON_CTYPE_SCOM:
+		case EICON_CTYPE_QUADRO:
+                        writew(data, addr);
+                        break;
+        }
 }
 
 void ram_copyfromcard(eicon_card *card, void *adrto, void *adr, int len) {
-	memcpy_fromio(adrto, adr, len);
+        int i;
+        switch(card->type) {
+                case EICON_CTYPE_MAESTRA:
+                        for(i = 0; i < len; i++) {
+                                writeb(ram_inb(card, adr + i), adrto + i);
+                        }
+                        break;
+                case EICON_CTYPE_MAESTRAP:
+                        memcpy(adrto, adr, len);
+                        break;
+                case EICON_CTYPE_S2M:
+		case EICON_CTYPE_S:
+		case EICON_CTYPE_SX:
+		case EICON_CTYPE_SCOM:
+		case EICON_CTYPE_QUADRO:
+                        memcpy_fromio(adrto, adr, len);
+                        break;
+        }
 }
 
 void ram_copytocard(eicon_card *card, void *adrto, void *adr, int len) {
-	memcpy_toio(adrto, adr, len);
+        int i;
+        switch(card->type) {
+                case EICON_CTYPE_MAESTRA:
+                        for(i = 0; i < len; i++) {
+                                ram_outb(card, adrto + i, readb(adr + i));
+                        }
+                        break;
+                case EICON_CTYPE_MAESTRAP:
+                        memcpy(adrto, adr, len);
+                        break;
+                case EICON_CTYPE_S2M:
+		case EICON_CTYPE_S:
+		case EICON_CTYPE_SX:
+		case EICON_CTYPE_SCOM:
+		case EICON_CTYPE_QUADRO:
+                        memcpy_toio(adrto, adr, len);
+                        break;
+        }
 }
 
-
-#ifdef CONFIG_ISDN_DRV_EICON_PCI
 /*
- *  IDI-Callback function
+ * XLOG
  */
-void
-eicon_idi_callback(ENTITY *de)
+int
+eicon_get_xlog(eicon_card *card, xlogreq_t *xlogreq)
 {
-	eicon_card *ccard = (eicon_card *)de->R;
-	struct sk_buff *skb;
-	eicon_RC *ack;
-	eicon_IND *ind;
+	int timeout, i;
+	int divas_shared_offset = 0;
 	int len = 0;
+	int stype = 0;
+	__u32 time = 0;
+	mi_pc_maint_t	*pcm = &xlogreq->pcm;
+        eicon_pci_card *pci_card = &card->hwif.pci;
+        eicon_isa_card *isa_card = &card->hwif.isa;
+	eicon_pr_ram  *prram = 0;
+        char *ram;
 
-	if (de->complete == 255) {
-		/* Return Code */
-		skb = alloc_skb(sizeof(eicon_RC), GFP_ATOMIC);
-		if (!skb) {
-			eicon_log(ccard, 1, "eicon_io: skb_alloc failed in _idi_callback()\n");
-		} else {
-			ack = (eicon_RC *)skb_put(skb, sizeof(eicon_RC));
-			ack->Rc = de->Rc;
-			if (de->Rc == ASSIGN_OK) {
-				ack->RcId = de->Id;
-				de->user[1] = de->Id;
-			} else {
-				ack->RcId = de->user[1];
-			}
-			ack->RcCh = de->RcCh;
-			ack->Reference = de->user[0];
-			skb_queue_tail(&ccard->rackq, skb);
-			eicon_schedule_ack(ccard);
-			eicon_log(ccard, 128, "idi_cbk: Ch%d: Rc=%x Id=%x RLen=%x compl=%x\n",
-				de->user[0], de->Rc, ack->RcId, de->RLength, de->complete);
-		}
-	} else {
-		/* Indication */
-		if (de->complete) {
-			len = de->RLength;
-		} else {
-			len = 270;
-			if (de->RLength <= 270)
-				eicon_log(ccard, 1, "eicon_cbk: ind not complete but <= 270\n");
-		}
-		skb = alloc_skb((sizeof(eicon_IND) + len - 1), GFP_ATOMIC);
-		if (!skb) {
-			eicon_log(ccard, 1, "eicon_io: skb_alloc failed in _idi_callback()\n");
-		} else {
-			ind = (eicon_IND *)skb_put(skb, (sizeof(eicon_IND) + len - 1));
-			ind->Ind = de->Ind;
-			ind->IndId = de->user[1];
-			ind->IndCh = de->IndCh;
-			ind->MInd  = de->Ind;
-			ind->RBuffer.length = len;
-			ind->MLength = de->RLength;
-			memcpy(&ind->RBuffer.P, &de->RBuffer->P, len);
-			skb_queue_tail(&ccard->rcvq, skb);
-			eicon_schedule_rx(ccard);
-			eicon_log(ccard, 128, "idi_cbk: Ch%d: Ind=%x Id=%x RLen=%x compl=%x\n",
-				de->user[0], de->Ind, ind->IndId, de->RLength, de->complete);
-		}
+	switch(card->type) {
+		case EICON_CTYPE_MAESTRAP:
+			ram = (char *)pci_card->PCIram;
+			prram = (eicon_pr_ram *)ram;
+			divas_shared_offset = DIVAS_SHARED_OFFSET;
+			len = sizeof(mi_pc_maint_t);
+			break;
+		case EICON_CTYPE_MAESTRA:
+			prram = 0;
+			divas_shared_offset = 0;
+			len = sizeof(mi_pc_maint_t);
+			break;
+		case EICON_CTYPE_S:
+		case EICON_CTYPE_SX:
+		case EICON_CTYPE_SCOM:
+		case EICON_CTYPE_QUADRO:
+		case EICON_CTYPE_S2M:
+			prram = (eicon_pr_ram *)isa_card->shmem;
+			divas_shared_offset = 0xfb80;
+			len = sizeof(mi_pc_maint_t) - 78;
+			stype = 1;
+			break;
+		default:
+			return -ENODEV;
 	}
 
-	de->RNum = 0;
-	de->RNR = 0;
-	de->Rc = 0;
-	de->Ind = 0;
+        memset(&(xlogreq->pcm), 0, sizeof(mi_pc_maint_t));
+
+        xlogreq->pcm.rc = 0;
+        xlogreq->pcm.req = 1; /* DO_LOG */
+
+        ram = ((char *)prram) + MIPS_MAINT_OFFS - divas_shared_offset;
+
+	ram_outb(card, ram+1, pcm->rc); 
+	ram_outb(card, ram+0, pcm->req); 
+
+        timeout = jiffies + 50;
+        while (timeout > jiffies) {
+		pcm->rc = ram_inb(card, ram+1);
+		pcm->req = ram_inb(card, ram+0);
+                if (!pcm->req) break;
+                SLEEP(10);
+        }
+
+	if (pcm->req) {
+		return XLOG_ERR_TIMEOUT;
+	}
+
+	if (pcm->rc != OK) {
+		return XLOG_ERR_DONE;
+	}
+	
+	ram_copyfromcard(card, pcm, ram, len);
+
+	if (stype) {
+		for (i=0; i<8; i++)
+			((__u8 *)pcm)[11-i] = ((__u8 *)pcm)[9-i];
+		time =	(__u32)pcm->data.w[2] * 3600 	* 1000 +
+			(__u32)pcm->data.w[1] 		* 1000 +
+			(__u32)pcm->data.b[1] 		* 20 +
+			(__u32)pcm->data.b[0]		;
+		pcm->data.w[1] = (__u16) (time >> 16);
+		pcm->data.w[2] = (__u16) (time & 0x0000ffff);
+		pcm->data.w[0] = 2;
+	}
+
+	return XLOG_OK;
 }
-#endif /* CONFIG_ISDN_DRV_EICON_PCI */
 
 /*
  *  Transmit-Function
  */
 void
 eicon_io_transmit(eicon_card *ccard) {
+        eicon_pci_card *pci_card;
         eicon_isa_card *isa_card;
         struct sk_buff *skb;
         struct sk_buff *skb2;
         unsigned long flags;
+        char *ram, *reg, *cfg;
 	eicon_pr_ram  *prram = 0;
 	eicon_isa_com	*com = 0;
 	eicon_REQ *ReqOut = 0;
@@ -245,11 +426,10 @@ eicon_io_transmit(eicon_card *ccard) {
 	int ReqCount;
 	int scom = 0;
 	int tmp = 0;
-	int tmpid = 0;
 	int quloop = 1;
 	int dlev = 0;
-	ENTITY *ep = 0;
 
+	pci_card = &ccard->hwif.pci;
 	isa_card = &ccard->hwif.isa;
 
         if (!ccard) {
@@ -271,17 +451,20 @@ eicon_io_transmit(eicon_card *ccard) {
 			prram = (eicon_pr_ram *)isa_card->shmem;
 			break;
 #endif
-#ifdef CONFIG_ISDN_DRV_EICON_PCI
 		case EICON_CTYPE_MAESTRAP:
-			scom = 2;
-			break;
-		case EICON_CTYPE_MAESTRAQ:
-			scom = 2;
+			scom = 0;
+        		ram = (char *)pci_card->PCIram;
+		        reg = (char *)pci_card->PCIreg;
+        		cfg = (char *)pci_card->PCIcfg;
+			prram = (eicon_pr_ram *)ram;
 			break;
 		case EICON_CTYPE_MAESTRA:
-			scom = 2;
+			scom = 0;
+        		ram = (char *)pci_card->PCIram;
+		        reg = (char *)pci_card->PCIreg;
+        		cfg = (char *)pci_card->PCIcfg;
+			prram = 0;
 			break;
-#endif
 		default:
                 	eicon_log(ccard, 1, "eicon_transmit: unsupported card-type!\n");
 			return;
@@ -291,91 +474,69 @@ eicon_io_transmit(eicon_card *ccard) {
 	if (!(skb2 = skb_dequeue(&ccard->sndq)))
 		quloop = 0; 
 	while(quloop) { 
-		spin_lock_irqsave(&eicon_lock, flags);
-		switch (scom) {
-		  case 1:
+                save_flags(flags);
+                cli();
+		if (scom) {
 			if ((ram_inb(ccard, &com->Req)) || (ccard->ReadyInt)) {
 				if (!ccard->ReadyInt) {
 					tmp = ram_inb(ccard, &com->ReadyInt) + 1;
 					ram_outb(ccard, &com->ReadyInt, tmp);
 					ccard->ReadyInt++;
 				}
-				spin_unlock_irqrestore(&eicon_lock, flags);
+        	                restore_flags(flags);
                 	        skb_queue_head(&ccard->sndq, skb2);
        	                	eicon_log(ccard, 32, "eicon: transmit: Card not ready\n");
 	                        return;
 			}
-			break;
-		  case 0:
+		} else {
 	                if (!(ram_inb(ccard, &prram->ReqOutput) - ram_inb(ccard, &prram->ReqInput))) {
-				spin_unlock_irqrestore(&eicon_lock, flags);
+        	                restore_flags(flags);
                 	        skb_queue_head(&ccard->sndq, skb2);
        	                	eicon_log(ccard, 32, "eicon: transmit: Card not ready\n");
 	                        return;
         	        }
-			break;
 		}
-		spin_unlock_irqrestore(&eicon_lock, flags);
-
+		restore_flags(flags);
 		chan2 = (eicon_chan_ptr *)skb2->data;
 		chan = chan2->ptr;
 		if (!chan->e.busy) {
 		 if((skb = skb_dequeue(&chan->e.X))) { 
-
+		  save_flags(flags);
+		  cli();
 		  reqbuf = (eicon_REQ *)skb->data;
 		  if ((reqbuf->Reference) && (chan->e.B2Id == 0) && (reqbuf->ReqId & 0x1f)) {
 			eicon_log(ccard, 16, "eicon: transmit: error Id=0 on %d (Net)\n", chan->No); 
 		  } else {
-			spin_lock_irqsave(&eicon_lock, flags);
-
-			switch (scom) {
-			  case 1:
+			if (scom) {
 				ram_outw(ccard, &com->XBuffer.length, reqbuf->XBuffer.length);
 				ram_copytocard(ccard, &com->XBuffer.P, &reqbuf->XBuffer.P, reqbuf->XBuffer.length);
 				ram_outb(ccard, &com->ReqCh, reqbuf->ReqCh);
-				break;	
-			  case 0:
+				
+			} else {
 				/* get address of next available request buffer */
 				ReqOut = (eicon_REQ *)&prram->B[ram_inw(ccard, &prram->NextReq)];
 				ram_outw(ccard, &ReqOut->XBuffer.length, reqbuf->XBuffer.length);
 				ram_copytocard(ccard, &ReqOut->XBuffer.P, &reqbuf->XBuffer.P, reqbuf->XBuffer.length);
 				ram_outb(ccard, &ReqOut->ReqCh, reqbuf->ReqCh);
 				ram_outb(ccard, &ReqOut->Req, reqbuf->Req); 
-				break;
 			}
-
 			dlev = 160;
-
 			if (reqbuf->ReqId & 0x1f) { /* if this is no ASSIGN */
 
 				if (!reqbuf->Reference) { /* Signal Layer */
-					switch (scom) {
-					  case 1:
+					if (scom)
 						ram_outb(ccard, &com->ReqId, chan->e.D3Id); 
-						break;
-					  case 0:
+					else
 						ram_outb(ccard, &ReqOut->ReqId, chan->e.D3Id); 
-						break;
-					  case 2:
-						ep = &chan->de;
-						break;
-					}
-					tmpid = chan->e.D3Id;
+
 					chan->e.ReqCh = 0; 
 				}
 				else {			/* Net Layer */
-					switch(scom) {
-					  case 1:
+					if (scom)
 						ram_outb(ccard, &com->ReqId, chan->e.B2Id); 
-						break;
-					  case 0:
+					else
 						ram_outb(ccard, &ReqOut->ReqId, chan->e.B2Id); 
-						break;
-					  case 2:
-						ep = &chan->be;
-						break;
-					}
-					tmpid = chan->e.B2Id;
+
 					chan->e.ReqCh = 1;
 					if (((reqbuf->Req & 0x0f) == 0x08) ||
 					   ((reqbuf->Req & 0x0f) == 0x01)) { /* Send Data */
@@ -387,106 +548,51 @@ eicon_io_transmit(eicon_card *ccard) {
 
 			} else {	/* It is an ASSIGN */
 
-				switch(scom) {
-				  case 1:
+				if (scom)
 					ram_outb(ccard, &com->ReqId, reqbuf->ReqId); 
-					break;
-				  case 0:
+				else
 					ram_outb(ccard, &ReqOut->ReqId, reqbuf->ReqId); 
-					break;
-				  case 2:
-					if (!reqbuf->Reference) 
-						ep = &chan->de;
-					else
-						ep = &chan->be;
-					ep->Id = reqbuf->ReqId;
-					break;
-				}
-				tmpid = reqbuf->ReqId;
 
 				if (!reqbuf->Reference) 
 					chan->e.ReqCh = 0; 
 				 else
 					chan->e.ReqCh = 1; 
 			} 
-
-			switch(scom) {
-			  case 1:
+			if (scom)
 			 	chan->e.ref = ccard->ref_out++;
-				break;
-			  case 0:
+			else
 			 	chan->e.ref = ram_inw(ccard, &ReqOut->Reference);
-				break;
-			  case 2:
-				chan->e.ref = chan->No;
-				break;
-			}
 
 			chan->e.Req = reqbuf->Req;
 			ReqCount++; 
-
-			switch (scom) {
-			  case 1:
+			if (scom)
 				ram_outb(ccard, &com->Req, reqbuf->Req); 
-				break;
-			  case 0:
+			else
 				ram_outw(ccard, &prram->NextReq, ram_inw(ccard, &ReqOut->next)); 
-				break;
-			  case 2:
-#ifdef CONFIG_ISDN_DRV_EICON_PCI
-				if (!ep) break;
-				ep->callback = eicon_idi_callback;
-				ep->R = (BUFFERS *)ccard;
-				ep->user[0] = (word)chan->No;
-				ep->user[1] = (word)tmpid;
-				ep->XNum = 1;
-				ep->RNum = 0;
-				ep->RNR = 0;
-				ep->Rc = 0;
-				ep->Ind = 0;
-				ep->X->PLength = reqbuf->XBuffer.length;
-				memcpy(ep->X->P, &reqbuf->XBuffer.P, reqbuf->XBuffer.length);
-				ep->ReqCh = reqbuf->ReqCh;
-				ep->Req = reqbuf->Req;
-#endif
-				break;
-			}
 
 			chan->e.busy = 1;
-			spin_unlock_irqrestore(&eicon_lock, flags);
 	               	eicon_log(ccard, dlev, "eicon: Req=%d Id=%x Ch=%d Len=%d Ref=%d\n", 
-					reqbuf->Req, tmpid, 
+					reqbuf->Req, 
+					(scom) ? ram_inb(ccard, &com->ReqId) :
+						ram_inb(ccard, &ReqOut->ReqId),
 					reqbuf->ReqCh, reqbuf->XBuffer.length,
 					chan->e.ref); 
-#ifdef CONFIG_ISDN_DRV_EICON_PCI
-			if (scom == 2) {
-				if (ep) {
-					ccard->d->request(ep);
-					if (ep->Rc)
-						eicon_idi_callback(ep);
-				}
-			}
-#endif
 		  }
+		  restore_flags(flags);
 		  dev_kfree_skb(skb);
 		 }
 		 dev_kfree_skb(skb2);
 		} 
 		else {
-			skb_queue_tail(&ccard->sackq, skb2);
-        	       	eicon_log(ccard, 128, "eicon: transmit: busy chan %d\n", chan->No); 
+		skb_queue_tail(&ccard->sackq, skb2);
+               	eicon_log(ccard, 128, "eicon: transmit: busy chan %d\n", chan->No); 
 		}
 
-		switch(scom) {
-			case 1:
+		if (scom)
+			quloop = 0;
+		else
+			if (!(skb2 = skb_dequeue(&ccard->sndq)))
 				quloop = 0;
-				break;
-			case 0:
-			case 2:
-				if (!(skb2 = skb_dequeue(&ccard->sndq)))
-					quloop = 0;
-				break;
-		}
 
 	}
 	if (!scom)
@@ -497,14 +603,18 @@ eicon_io_transmit(eicon_card *ccard) {
 	}
 }
 
-#ifdef CONFIG_ISDN_DRV_EICON_ISA
+
 /*
  * IRQ handler 
  */
 void
 eicon_irq(int irq, void *dev_id, struct pt_regs *regs) {
 	eicon_card *ccard = (eicon_card *)dev_id;
+        eicon_pci_card *pci_card;
         eicon_isa_card *isa_card;
+    	char *ram = 0;
+	char *reg = 0;
+	char *cfg = 0;	
 	eicon_pr_ram  *prram = 0;
 	eicon_isa_com	*com = 0;
         eicon_RC *RcIn;
@@ -536,9 +646,11 @@ eicon_irq(int irq, void *dev_id, struct pt_regs *regs) {
 		}
 	}
 
+	pci_card = &ccard->hwif.pci;
 	isa_card = &ccard->hwif.isa;
 
 	switch(ccard->type) {
+#ifdef CONFIG_ISDN_DRV_EICON_ISA
 		case EICON_CTYPE_S:
 		case EICON_CTYPE_SX:
 		case EICON_CTYPE_SCOM:
@@ -552,6 +664,23 @@ eicon_irq(int irq, void *dev_id, struct pt_regs *regs) {
 			prram = (eicon_pr_ram *)isa_card->shmem;
 			irqprobe = &isa_card->irqprobe;
 			break;
+#endif
+		case EICON_CTYPE_MAESTRAP:
+			scom = 0;
+			ram = (char *)pci_card->PCIram;
+			reg = (char *)pci_card->PCIreg;
+			cfg = (char *)pci_card->PCIcfg;
+			irqprobe = &pci_card->irqprobe;
+			prram = (eicon_pr_ram *)ram;
+			break;
+		case EICON_CTYPE_MAESTRA:
+			scom = 0;
+			ram = (char *)pci_card->PCIram;
+			reg = (char *)pci_card->PCIreg;
+			cfg = (char *)pci_card->PCIcfg;
+			irqprobe = &pci_card->irqprobe;
+			prram = 0;
+			break;
 		default:
                 	eicon_log(ccard, 1, "eicon_irq: unsupported card-type!\n");
 			return;
@@ -559,6 +688,7 @@ eicon_irq(int irq, void *dev_id, struct pt_regs *regs) {
 
 	if (*irqprobe) {
 		switch(ccard->type) {
+#ifdef CONFIG_ISDN_DRV_EICON_ISA
 			case EICON_CTYPE_S:
 			case EICON_CTYPE_SX:
 			case EICON_CTYPE_SCOM:
@@ -576,17 +706,46 @@ eicon_irq(int irq, void *dev_id, struct pt_regs *regs) {
 				}
 				(*irqprobe)++;
 				break;
+#endif
+			case EICON_CTYPE_MAESTRAP:
+	        		if (readb(&ram[0x3fe])) { 
+        		               	writeb(0, &prram->RcOutput);
+				        writew(MP_IRQ_RESET_VAL, &cfg[MP_IRQ_RESET]);
+				        writew(0, &cfg[MP_IRQ_RESET + 2]);
+					writeb(0, &ram[0x3fe]);
+       			        } 
+				*irqprobe = 0;
+				break;
+			case EICON_CTYPE_MAESTRA:
+				outb(0x08, pci_card->PCIreg + M_RESET);
+				*irqprobe = 0;
+				break;
 		}
 		return;
 	}
 
 	switch(ccard->type) {
+#ifdef CONFIG_ISDN_DRV_EICON_ISA
 		case EICON_CTYPE_S:
 		case EICON_CTYPE_SX:
 		case EICON_CTYPE_SCOM:
 		case EICON_CTYPE_QUADRO:
 		case EICON_CTYPE_S2M:
 			if (!(readb(isa_card->intack))) { /* card did not interrupt */
+				eicon_log(ccard, 1, "eicon: IRQ: card reports no interrupt!\n");
+				return;
+			} 
+			break;
+#endif
+		case EICON_CTYPE_MAESTRAP:
+			if (!(readb(&ram[0x3fe]))) { /* card did not interrupt */
+				eicon_log(ccard, 1, "eicon: IRQ: card reports no interrupt!\n");
+				return;
+			} 
+			break;
+		case EICON_CTYPE_MAESTRA:
+			outw(0x3fe, pci_card->PCIreg + M_ADDR);
+			if (!(inb(pci_card->PCIreg + M_DATA))) { /* card did not interrupt */
 				eicon_log(ccard, 1, "eicon: IRQ: card reports no interrupt!\n");
 				return;
 			} 
@@ -732,6 +891,7 @@ eicon_irq(int irq, void *dev_id, struct pt_regs *regs) {
 
 	/* clear interrupt */
 	switch(ccard->type) {
+#ifdef CONFIG_ISDN_DRV_EICON_ISA
 		case EICON_CTYPE_QUADRO:
 			writeb(0, isa_card->intack);
 			writeb(0, &com[0x401]);
@@ -742,8 +902,19 @@ eicon_irq(int irq, void *dev_id, struct pt_regs *regs) {
 		case EICON_CTYPE_S2M:
 			writeb(0, isa_card->intack);
 			break;
+#endif
+		case EICON_CTYPE_MAESTRAP:
+			writew(MP_IRQ_RESET_VAL, &cfg[MP_IRQ_RESET]);
+			writew(0, &cfg[MP_IRQ_RESET + 2]); 
+			writeb(0, &ram[0x3fe]); 
+			break;
+		case EICON_CTYPE_MAESTRA:
+			outb(0x08, pci_card->PCIreg + M_RESET);
+			outw(0x3fe, pci_card->PCIreg + M_ADDR);
+			outb(0, pci_card->PCIreg + M_DATA);
+			break;
 	}
 
   return;
 }
-#endif
+

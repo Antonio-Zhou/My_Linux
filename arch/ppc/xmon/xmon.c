@@ -3,10 +3,12 @@
  *
  * Copyright (C) 1996 Paul Mackerras.
  */
+#include <linux/config.h>
 #include <linux/errno.h>
 #include <linux/sched.h>
 #include <asm/ptrace.h>
 #include <asm/string.h>
+#include <asm/prom.h>
 #include "nonstdio.h"
 #include "privinst.h"
 
@@ -75,19 +77,20 @@ static void take_input(char *);
 static unsigned read_spr(int);
 static void write_spr(int, unsigned);
 static void super_regs(void);
+static void print_sysmap(void);
 static void remove_bpts(void);
 static void insert_bpts(void);
 static struct bpt *at_breakpoint(unsigned pc);
 static void bpt_cmds(void);
+static void cacheflush(void);
+static char *pretty_print_addr(unsigned long addr);
+static char *lookup_name(unsigned long addr);
 
 extern int print_insn_big_powerpc(FILE *, unsigned long, unsigned);
 extern void printf(const char *fmt, ...);
 extern int putchar(int ch);
 extern int setjmp(u_int *);
 extern void longjmp(u_int *, int);
-
-extern void xmon_enter(void);
-extern void xmon_leave(void);
 
 #define GETWORD(v)	(((v)[0] << 24) + ((v)[1] << 16) + ((v)[2] << 8) + (v)[3])
 
@@ -103,6 +106,7 @@ Commands:\n\
   mm	move a block of memory\n\
   ms	set a block of memory\n\
   md	compare two blocks of memory\n\
+  M	print System.map\n\
   r	print registers\n\
   S	print special registers\n\
   t	print backtrace\n\
@@ -118,12 +122,6 @@ xmon(struct pt_regs *excp)
 {
 	struct pt_regs regs;
 	int msr, cmd;
-	static int entered = 0;
-
-	if (!entered) {
-		entered = 1;
-		printk("Entering xmon kernel debugger.\n");
-	}
 
 	if (excp == NULL) {
 		asm volatile ("stw	0,0(%0)\n\
@@ -142,7 +140,6 @@ xmon(struct pt_regs *excp)
 	msr = get_msr();
 	set_msr(msr & ~0x8000);	/* disable interrupts */
 	remove_bpts();
-	xmon_enter();
 	excprint(excp);
 	cmd = cmds(excp);
 	if (cmd == 's') {
@@ -155,7 +152,6 @@ xmon(struct pt_regs *excp)
 		xmon_trace = 0;
 		insert_bpts();
 	}
-	xmon_leave();
 	set_msr(msr);		/* restore interrupt enable */
 }
 
@@ -239,7 +235,7 @@ at_breakpoint(unsigned pc)
 
 	if (dabr.enabled && pc == dabr.instr)
 		return &dabr;
-	if (iabr.enabled && ((pc ^ iabr.address) & ~3) == 0)
+	if (iabr.enabled && pc == iabr.address)
 		return &iabr;
 	bp = bpts;
 	for (i = 0; i < NBPTS; ++i, ++bp)
@@ -263,14 +259,14 @@ insert_bpts()
 			printf("Couldn't insert breakpoint at %x, disabling\n",
 			       bp->address);
 			bp->enabled = 0;
-			continue;
 		}
-		store_inst((void *) bp->address);
 	}
+#ifndef CONFIG_8xx
 	if (dabr.enabled)
 		set_dabr(dabr.address);
 	if (iabr.enabled)
 		set_iabr(iabr.address);
+#endif
 }
 
 static void
@@ -280,20 +276,19 @@ remove_bpts()
 	struct bpt *bp;
 	unsigned instr;
 
+#ifndef CONFIG_8xx
 	set_dabr(0);
 	set_iabr(0);
+#endif
 	bp = bpts;
 	for (i = 0; i < NBPTS; ++i, ++bp) {
 		if (!bp->enabled)
 			continue;
 		if (mread(bp->address, &instr, 4) == 4
 		    && instr == bpinstr
-		    && mwrite(bp->address, &bp->instr, 4) != 4) {
+		    && mwrite(bp->address, &bp->instr, 4) != 4)
 			printf("Couldn't remove breakpoint at %x\n",
 			       bp->address);
-			continue;
-		}
-		store_inst((void *) bp->address);
 	}
 }
 
@@ -352,17 +347,17 @@ cmds(struct pt_regs *excp)
 			else
 				excprint(excp);
 			break;
+		case 'M':
+			print_sysmap();
 		case 'S':
 			super_regs();
 			break;
 		case 't':
 			backtrace(excp);
 			break;
-#if 0
 		case 'f':
-			openforth();
+			cacheflush();
 			break;
-#endif
 		case 'h':
 			dump_hash_table();
 			break;
@@ -398,6 +393,7 @@ bpt_cmds(void)
 
 	cmd = inchar();
 	switch (cmd) {
+#ifndef CONFIG_8xx
 	case 'd':
 		mode = 7;
 		cmd = inchar();
@@ -422,6 +418,7 @@ bpt_cmds(void)
 			iabr.address |= 3;
 		scanhex(&iabr.count);
 		break;
+#endif
 	case 'c':
 		if (!scanhex(&a)) {
 			/* clear all breakpoints */
@@ -486,8 +483,9 @@ backtrace(struct pt_regs *excp)
 	unsigned sp;
 	unsigned stack[2];
 	struct pt_regs regs;
-	extern char int_return, syscall_ret_1, syscall_ret_2;
+	extern char ret_from_intercept, ret_from_syscall_1, ret_from_syscall_2;
 	extern char lost_irq_ret, do_bottom_half_ret, do_signal_ret;
+	extern char ret_from_except;
 
 	if (excp != NULL)
 		sp = excp->gpr[1];
@@ -499,9 +497,10 @@ backtrace(struct pt_regs *excp)
 		if (mread(sp, stack, sizeof(stack)) != sizeof(stack))
 			break;
 		printf("%x ", stack[1]);
-		if (stack[1] == (unsigned) &int_return
-		    || stack[1] == (unsigned) &syscall_ret_1
-		    || stack[1] == (unsigned) &syscall_ret_2
+		if (stack[1] == (unsigned) &ret_from_intercept
+		    || stack[1] == (unsigned) &ret_from_except
+		    || stack[1] == (unsigned) &ret_from_syscall_1
+		    || stack[1] == (unsigned) &ret_from_syscall_2
 		    || stack[1] == (unsigned) &lost_irq_ret
 		    || stack[1] == (unsigned) &do_bottom_half_ret
 		    || stack[1] == (unsigned) &do_signal_ret) {
@@ -529,8 +528,10 @@ getsp()
 void
 excprint(struct pt_regs *fp)
 {
-	printf("vector: %x at pc = %x, msr = %x, sp = %x [%x]\n",
-	       fp->trap, fp->nip, fp->msr, fp->gpr[1], fp);
+	printf("vector: %x at pc = %x",
+	       fp->trap, fp->nip);
+	printf(", lr = %x, msr = %x, sp = %x [%x]\n",
+	       fp->link, fp->msr, fp->gpr[1], fp);
 	if (fp->trap == 0x300 || fp->trap == 0x600)
 		printf("dar = %x, dsisr = %x\n", fp->dar, fp->dsisr);
 	if (current)
@@ -553,6 +554,30 @@ prregs(struct pt_regs *fp)
 	       fp->nip, fp->msr, fp->link, fp->ccr);
 	printf("ctr = %.8x   xer = %.8x   trap = %4x\n",
 	       fp->ctr, fp->xer, fp->trap);
+}
+
+void
+cacheflush(void)
+{
+	int cmd;
+	unsigned nflush;
+
+	cmd = inchar();
+	if (cmd != 'i')
+		termch = cmd;
+	scanhex(&adrs);
+	if (termch != '\n')
+		termch = 0;
+	nflush = 1;
+	scanhex(&nflush);
+	nflush = (nflush + 31) / 32;
+	if (cmd != 'i') {
+		for (; nflush > 0; --nflush, adrs += 0x20)
+			cflush((void *) adrs);
+	} else {
+		for (; nflush > 0; --nflush, adrs += 0x20)
+			cinval((void *) adrs);
+	}
 }
 
 unsigned int
@@ -586,6 +611,14 @@ write_spr(int n, unsigned int val)
 static unsigned int regno;
 extern char exc_prolog;
 extern char dec_exc;
+
+void
+print_sysmap(void)
+{
+	extern char *sysmap;
+	if ( sysmap )
+		printf("System.map: \n%s", sysmap);
+}
 
 void
 super_regs()
@@ -1335,3 +1368,37 @@ char *str;
 {
 	lineptr = str;
 }
+
+static char *pretty_print_addr(unsigned long addr)
+{
+	printf("%08x", addr);
+	if ( lookup_name(addr) )
+		printf(" %s", lookup_name(addr) );
+	return NULL;
+}
+
+static char *lookup_name(unsigned long addr)
+{
+	extern char *sysmap;
+	extern unsigned long sysmap_size;
+	char *c = sysmap;
+	unsigned long cmp;
+
+	if ( !sysmap || !sysmap_size )
+		return NULL;
+return NULL;	
+#if 0
+	cmp = simple_strtoul(c, &c, 8);
+	/* XXX crap, we don't want the whole of the rest of the map - paulus */
+	strcpy( last, strsep( &c, "\n"));
+	while ( c < (sysmap+sysmap_size) )
+	{
+		cmp = simple_strtoul(c, &c, 8);
+		if ( cmp < addr )
+			break;
+		strcpy( last, strsep( &c, "\n"));
+	}
+	return last;
+#endif	
+}
+

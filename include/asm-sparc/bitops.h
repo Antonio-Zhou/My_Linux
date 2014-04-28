@@ -1,4 +1,4 @@
-/* $Id: bitops.h,v 1.54.2.1 2000/08/10 23:50:04 davem Exp $
+/* $Id: bitops.h,v 1.56 2000/05/09 17:40:15 davem Exp $
  * bitops.h: Bit string operations on the Sparc.
  *
  * Copyright 1995 David S. Miller (davem@caip.rutgers.edu)
@@ -8,6 +8,7 @@
 #ifndef _SPARC_BITOPS_H
 #define _SPARC_BITOPS_H
 
+#include <linux/config.h>
 #include <linux/kernel.h>
 #include <asm/byteorder.h>
 
@@ -82,7 +83,7 @@ extern __inline__ void change_bit(unsigned long nr, void *addr)
 
 #include <asm/system.h>
 
-#ifdef __SMP__
+#ifdef CONFIG_SMP
 #define __SMPVOL volatile
 #else
 #define __SMPVOL
@@ -94,7 +95,7 @@ extern __inline__ void change_bit(unsigned long nr, void *addr)
  * all bit-ops return 0 if bit was previously clear and != 0 otherwise.
  */
 
-extern __inline__ unsigned long test_and_set_bit(unsigned long nr, __SMPVOL void *addr)
+extern __inline__ int test_and_set_bit(unsigned long nr, __SMPVOL void *addr)
 {
 	register unsigned long mask asm("g2");
 	register unsigned long *ADDR asm("g1");
@@ -116,7 +117,7 @@ extern __inline__ void set_bit(unsigned long nr, __SMPVOL void *addr)
 	(void) test_and_set_bit(nr, addr);
 }
 
-extern __inline__ unsigned long test_and_clear_bit(unsigned long nr, __SMPVOL void *addr)
+extern __inline__ int test_and_clear_bit(unsigned long nr, __SMPVOL void *addr)
 {
 	register unsigned long mask asm("g2");
 	register unsigned long *ADDR asm("g1");
@@ -139,7 +140,7 @@ extern __inline__ void clear_bit(unsigned long nr, __SMPVOL void *addr)
 	(void) test_and_clear_bit(nr, addr);
 }
 
-extern __inline__ unsigned long test_and_change_bit(unsigned long nr, __SMPVOL void *addr)
+extern __inline__ int test_and_change_bit(unsigned long nr, __SMPVOL void *addr)
 {
 	register unsigned long mask asm("g2");
 	register unsigned long *ADDR asm("g1");
@@ -165,9 +166,9 @@ extern __inline__ void change_bit(unsigned long nr, __SMPVOL void *addr)
 #endif /* __KERNEL__ */
 
 /* The following routine need not be atomic. */
-extern __inline__ unsigned long test_bit(int nr, __const__ __SMPVOL void *addr)
+extern __inline__ int test_bit(int nr, __const__ __SMPVOL void *addr)
 {
-	return 1UL & (((__const__ unsigned int *) addr)[nr >> 5] >> (nr & 31));
+	return (1 & (((__const__ unsigned int *) addr)[nr >> 5] >> (nr & 31))) != 0;
 }
 
 /* The easy/cheese version for now. */
@@ -240,8 +241,6 @@ extern __inline__ unsigned long find_next_zero_bit(void *addr, unsigned long siz
 
 found_first:
 	tmp |= ~0UL << size;
-	if (tmp == ~0UL)        /* Are any bits zero? */
-		return result + size; /* Nope. */
 found_middle:
 	return result + ffz(tmp);
 }
@@ -389,11 +388,7 @@ extern __inline__ unsigned long find_next_zero_le_bit(void *addr, unsigned long 
 	tmp = *p;
 
 found_first:
-	tmp = __swab32(tmp) | (~0UL << size);
-	if (tmp == ~0UL)        /* Are any bits zero? */
-		return result + size; /* Nope. */
-	return result + ffz(tmp);
-
+	return result + ffz(__swab32(tmp) | (~0UL << size));
 found_middle:
 	return result + ffz(__swab32(tmp));
 }

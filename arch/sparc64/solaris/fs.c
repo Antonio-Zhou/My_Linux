@@ -1,7 +1,10 @@
-/* $Id: fs.c,v 1.12.2.1 1999/05/29 04:03:23 davem Exp $
+/* $Id: fs.c,v 1.19 2000/05/09 04:48:35 davem Exp $
  * fs.c: fs related syscall emulation for Solaris
  *
  * Copyright (C) 1997,1998 Jakub Jelinek (jj@sunsite.mff.cuni.cz)
+ *
+ * 1999-08-19 Implemented solaris F_FREESP (truncate)
+ *            fcntl, by Jason Rappleye (rappleye@ccr.buffalo.edu)
  */
 
 #include <linux/types.h>
@@ -407,17 +410,10 @@ struct sol_statvfs64 {
 static int report_statvfs(struct inode *inode, u32 buf)
 {
 	struct statfs s;
-	mm_segment_t old_fs = get_fs();
 	int error;
 	struct sol_statvfs *ss = (struct sol_statvfs *)A(buf);
 
-	if (!inode->i_sb)
-		return -ENODEV;
-	if (!inode->i_sb->s_op->statfs)
-		return -ENOSYS;
-	set_fs (KERNEL_DS);
-	error = inode->i_sb->s_op->statfs(inode->i_sb, &s, sizeof(struct statfs));
-	set_fs (old_fs);
+	error = vfs_statfs(inode->i_sb, &s);
 	if (!error) {
 		const char *p = inode->i_sb->s_type->name;
 		int i = 0;
@@ -448,17 +444,10 @@ static int report_statvfs(struct inode *inode, u32 buf)
 static int report_statvfs64(struct inode *inode, u32 buf)
 {
 	struct statfs s;
-	mm_segment_t old_fs = get_fs();
 	int error;
 	struct sol_statvfs64 *ss = (struct sol_statvfs64 *)A(buf);
 			
-	if (!inode->i_sb)
-		return -ENODEV;
-	if (!inode->i_sb->s_op->statfs)
-		return -ENOSYS;
-	set_fs (KERNEL_DS);
-	error = inode->i_sb->s_op->statfs(inode->i_sb, &s, sizeof(struct statfs));
-	set_fs (old_fs);
+	error = vfs_statfs(inode->i_sb, &s);
 	if (!error) {
 		const char *p = inode->i_sb->s_type->name;
 		int i = 0;
@@ -488,17 +477,15 @@ static int report_statvfs64(struct inode *inode, u32 buf)
 
 asmlinkage int solaris_statvfs(u32 path, u32 buf)
 {
-	struct dentry * dentry;
+	struct nameidata nd;
 	int error;
 
 	lock_kernel();
-	dentry = namei((const char *)A(path));
-	error = PTR_ERR(dentry);
-	if (!IS_ERR(dentry)) {
-		struct inode * inode = dentry->d_inode;
-
+	error = user_path_walk((const char *)A(path),&nd);
+	if (!error) {
+		struct inode * inode = nd.dentry->d_inode;
 		error = report_statvfs(inode, buf);
-		dput(dentry);
+		path_release(&nd);
 	}
 	unlock_kernel();
 	return error;
@@ -506,42 +493,32 @@ asmlinkage int solaris_statvfs(u32 path, u32 buf)
 
 asmlinkage int solaris_fstatvfs(unsigned int fd, u32 buf)
 {
-	struct inode * inode;
-	struct dentry * dentry;
 	struct file * file;
 	int error;
 
-	lock_kernel();
 	error = -EBADF;
 	file = fget(fd);
-	if (!file)
-		goto out;
+	if (file) {
+		lock_kernel();
+		error = report_statvfs(file->f_dentry->d_inode, buf);
+		unlock_kernel();
+		fput(file);
+	}
 
-	if (!(dentry = file->f_dentry))
-		error = -ENOENT;
-	else if (!(inode = dentry->d_inode))
-		error = -ENOENT;
-	else
-		error = report_statvfs(inode, buf);
-	fput(file);
-out:
-	unlock_kernel();
 	return error;
 }
 
 asmlinkage int solaris_statvfs64(u32 path, u32 buf)
 {
-	struct dentry * dentry;
+	struct nameidata nd;
 	int error;
 
 	lock_kernel();
-	dentry = namei((const char *)A(path));
-	error = PTR_ERR(dentry);
-	if (!IS_ERR(dentry)) {
-		struct inode * inode = dentry->d_inode;
-
+	error = user_path_walk((const char *)A(path), &nd);
+	if (!error) {
+		struct inode * inode = nd.dentry->d_inode;
 		error = report_statvfs64(inode, buf);
-		dput(dentry);
+		path_release(&nd);
 	}
 	unlock_kernel();
 	return error;
@@ -549,43 +526,38 @@ asmlinkage int solaris_statvfs64(u32 path, u32 buf)
 
 asmlinkage int solaris_fstatvfs64(unsigned int fd, u32 buf)
 {
-	struct inode * inode;
-	struct dentry * dentry;
 	struct file * file;
 	int error;
 
-	lock_kernel();
 	error = -EBADF;
 	file = fget(fd);
-	if (!file)
-		goto out;
-
-	if (!(dentry = file->f_dentry))
-		error = -ENOENT;
-	else if (!(inode = dentry->d_inode))
-		error = -ENOENT;
-	else
-		error = report_statvfs64(inode, buf);
-	fput(file);
-out:
-	unlock_kernel();
+	if (file) {
+		lock_kernel();
+		error = report_statvfs64(file->f_dentry->d_inode, buf);
+		unlock_kernel();
+		fput(file);
+	}
 	return error;
 }
 
-asmlinkage int solaris_open(u32 filename, int flags, u32 mode)
+extern asmlinkage long sparc32_open(const char * filename, int flags, int mode);
+
+asmlinkage int solaris_open(u32 fname, int flags, u32 mode)
 {
-	int (*sys_open)(const char *,int,int) = 
-		(int (*)(const char *,int,int))SYS(open);
+	const char *filename = (const char *)(long)fname;
 	int fl = flags & 0xf;
 
-/*	if (flags & 0x2000) - allow LFS			*/
+	/* Translate flags first. */
+	if (flags & 0x2000) fl |= O_LARGEFILE;
 	if (flags & 0x8050) fl |= O_SYNC;
 	if (flags & 0x80) fl |= O_NONBLOCK;
 	if (flags & 0x100) fl |= O_CREAT;
 	if (flags & 0x200) fl |= O_TRUNC;
 	if (flags & 0x400) fl |= O_EXCL;
 	if (flags & 0x800) fl |= O_NOCTTY;
-	return sys_open((const char *)A(filename), fl, mode);
+	flags = fl;
+
+	return sparc32_open(filename, flags, mode);
 }
 
 #define SOL_F_SETLK	6
@@ -661,7 +633,16 @@ asmlinkage int solaris_fcntl(unsigned fd, unsigned cmd, u32 arg)
 			__put_user_ret (0, &((struct sol_flock *)A(arg))->l_sysid, -EFAULT);
 			return ret;
 		}
-	}
+	case SOL_F_FREESP:
+	        { 
+		    int length;
+		    int (*sys_newftruncate)(unsigned int, unsigned long)=
+			    (int (*)(unsigned int, unsigned long))SYS(ftruncate);
+
+		    get_user_ret(length, &((struct sol_flock*)A(arg))->l_start, -EFAULT);
+		    return sys_newftruncate(fd, length);
+		}
+	};
 	return -EINVAL;
 }
 
@@ -690,71 +671,6 @@ asmlinkage int solaris_ulimit(int cmd, int val)
 		return NR_OPEN;
 	}
 	return -EINVAL;
-}
-
-static int chown_common(struct dentry * dentry, uid_t user, gid_t group)
-{
-	struct inode * inode;
-	struct iattr newattrs;
-	int error;
-
-	error = -ENOENT;
-	if (!(inode = dentry->d_inode)) {
-		printk("chown_common: NULL inode\n");
-		goto out;
-	}
-	error = -EROFS;
-	if (IS_RDONLY(inode))
-		goto out;
-	error = -EPERM;
-	if (IS_IMMUTABLE(inode) || IS_APPEND(inode))
-		goto out;
-	if (user == (uid_t) -1)
-		user = inode->i_uid;
-	if (group == (gid_t) -1)
-		group = inode->i_gid;
-	newattrs.ia_mode = inode->i_mode;
-	newattrs.ia_uid = user;
-	newattrs.ia_gid = group;
-	newattrs.ia_valid =  ATTR_UID | ATTR_GID | ATTR_CTIME;
-	/*
-	 * If the owner has been changed, remove the setuid bit
-	 */
-	if (inode->i_mode & S_ISUID) {
-		newattrs.ia_mode &= ~S_ISUID;
-		newattrs.ia_valid |= ATTR_MODE;
-	}
-	/*
-	 * If the group has been changed, remove the setgid bit
-	 *
-	 * Don't remove the setgid bit if no group execute bit.
-	 * This is a file marked for mandatory locking.
-	 */
-	if (((inode->i_mode & (S_ISGID | S_IXGRP)) == (S_ISGID | S_IXGRP))) {
-		newattrs.ia_mode &= ~S_ISGID;
-		newattrs.ia_valid |= ATTR_MODE;
-	}
-	error = DQUOT_TRANSFER(dentry, &newattrs);
-out:
-	return error;
-}
-
-/* Linux chown works like Solaris lchown. Solaris chown does follow symlink */
-asmlinkage int solaris_chown(u32 filename, s32 user, s32 group)
-{
-	struct dentry * dentry;
-	int error;
-
-	lock_kernel();
-	dentry = namei((const char *)A(filename));
-
-	error = PTR_ERR(dentry);
-	if (!IS_ERR(dentry)) {
-		error = chown_common(dentry, user, group);
-		dput(dentry);
-	}
-	unlock_kernel();
-	return error;
 }
 
 /* At least at the time I'm writing this, Linux doesn't have ACLs, so we

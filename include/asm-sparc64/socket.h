@@ -1,4 +1,4 @@
-/* $Id: socket.h,v 1.5.2.2 2000/11/12 13:16:14 davem Exp $ */
+/* $Id: socket.h,v 1.6 2000/02/27 19:47:58 davem Exp $ */
 #ifndef _ASM_SOCKET_H
 #define _ASM_SOCKET_H
 
@@ -40,23 +40,11 @@
 #define SO_ATTACH_FILTER	0x001a
 #define SO_DETACH_FILTER        0x001b
 
+#define SO_PEERNAME		0x001c
+
 /* Security levels - as per NRL IPv6 - don't actually do anything */
 #define SO_SECURITY_AUTHENTICATION		0x5001
 #define SO_SECURITY_ENCRYPTION_TRANSPORT	0x5002
 #define SO_SECURITY_ENCRYPTION_NETWORK		0x5004
-
-/* Socket types. */
-#if defined(__KERNEL__)
-#define SOCK_STREAM	1		/* stream (connection) socket	*/
-#define SOCK_DGRAM	2		/* datagram (conn.less) socket	*/
-#define SOCK_RAW	3		/* raw socket			*/
-#define SOCK_RDM	4		/* reliably-delivered message	*/
-#define SOCK_SEQPACKET	5		/* sequential packet socket	*/
-#define SOCK_PACKET	10		/* linux specific way of	*/
-					/* getting packets at the dev	*/
-					/* level.  For writing rarp and	*/
-					/* other similar things on the	*/
-					/* user level.			*/
-#endif
 
 #endif /* _ASM_SOCKET_H */

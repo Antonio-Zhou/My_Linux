@@ -1,24 +1,168 @@
-/* $Id: callc.c,v 1.1.2.1 2001/12/31 13:26:45 kai Exp $
+/* $Id: callc.c,v 2.41 2000/03/17 07:07:42 kai Exp $
+
+ * Author       Karsten Keil (keil@isdn4linux.de)
+ *              based on the teles driver from Jan den Ouden
  *
- * Author       Karsten Keil
- * Copyright    by Karsten Keil      <keil@isdn4linux.de>
- * 
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
- *
- * For changes and modifications please read
- * ../../../Documentation/isdn/HiSax.cert
- *
- * based on the teles driver from Jan den Ouden
+ *		This file is (c) under GNU PUBLIC LICENSE
+ *		For changes and modifications please read
+ *		../../../Documentation/isdn/HiSax.cert
  *
  * Thanks to    Jan den Ouden
  *              Fritz Elfert
  *
+ * $Log: callc.c,v $
+ * Revision 2.41  2000/03/17 07:07:42  kai
+ * fixed oops when dialing out without l3 protocol selected
+ *
+ * Revision 2.40  1999/12/19 12:59:56  keil
+ * fix leased line handling
+ * and cosmetics
+ *
+ * Revision 2.39  1999/10/14 20:25:28  keil
+ * add a statistic for error monitoring
+ *
+ * Revision 2.38  1999/10/11 22:16:27  keil
+ * Suspend/Resume is possible without explicit ID too
+ *
+ * Revision 2.37  1999/09/20 19:49:47  keil
+ * Fix wrong init of PStack
+ *
+ * Revision 2.36  1999/09/20 12:13:13  keil
+ * Fix hang if no protocol was selected
+ *
+ * Revision 2.35  1999/09/04 06:20:05  keil
+ * Changes from kernel set_current_state()
+ *
+ * Revision 2.34  1999/08/25 20:02:34  werner
+ * Changed return values for stat_icall(w) from 3->4 and 4->5 because of conflicts
+ * with existing software definitions. (PtP incomplete called party number)
+ *
+ * Revision 2.33  1999/08/25 17:00:09  keil
+ * Make ISAR V32bis modem running
+ * Make LL->HL interface open for additional commands
+ *
+ * Revision 2.32  1999/08/22 20:27:01  calle
+ * backported changes from kernel 2.3.14:
+ * - several #include "config.h" gone, others come.
+ * - "struct device" changed to "struct net_device" in 2.3.14, added a
+ *   define in isdn_compat.h for older kernel versions.
+ *
+ * Revision 2.31  1999/08/05 20:43:10  keil
+ * ISAR analog modem support
+ *
+ * Revision 2.30  1999/07/25 16:24:04  keil
+ * Fixed TEI now working again
+ *
+ * Revision 2.29  1999/07/13 21:05:41  werner
+ * Modified set_channel_limit to use new callback ISDN_STAT_DISCH.
+ *
+ * Revision 2.28  1999/07/09 08:30:02  keil
+ * cosmetics
+ *
+ * Revision 2.27  1999/07/05 23:51:38  werner
+ * Allow limiting of available HiSax B-chans per card. Controlled by hisaxctrl
+ * hisaxctrl id 10 <nr. of chans 0-2>
+ *
+ * Revision 2.26  1999/07/01 08:11:21  keil
+ * Common HiSax version for 2.0, 2.1, 2.2 and 2.3 kernel
+ *
+ * Revision 2.25  1999/01/02 11:17:20  keil
+ * Changes for 2.2
+ *
+ * Revision 2.24  1998/11/15 23:54:24  keil
+ * changes from 2.0
+ *
+ * Revision 2.23  1998/09/30 22:21:57  keil
+ * cosmetics
+ *
+ * Revision 2.22  1998/08/20 13:50:29  keil
+ * More support for hybrid modem (not working yet)
+ *
+ * Revision 2.21  1998/08/13 23:36:15  keil
+ * HiSax 3.1 - don't work stable with current LinkLevel
+ *
+ * Revision 2.20  1998/06/26 15:13:05  fritz
+ * Added handling of STAT_ICALL with incomplete CPN.
+ * Added AT&L for ttyI emulator.
+ * Added more locking stuff in tty_write.
+ *
+ * Revision 2.19  1998/05/25 14:08:06  keil
+ * HiSax 3.0
+ * fixed X.75 and leased line to work again
+ * Point2Point and fixed TEI are runtime options now:
+ *    hisaxctrl <id> 7 1  set PTP
+ *    hisaxctrl <id> 8 <TEIVALUE *2 >
+ *    set fixed TEI to TEIVALUE (0-63)
+ *
+ * Revision 2.18  1998/05/25 12:57:40  keil
+ * HiSax golden code from certification, Don't use !!!
+ * No leased lines, no X75, but many changes.
+ *
+ * Revision 2.17  1998/04/15 16:46:06  keil
+ * RESUME support
+ *
+ * Revision 2.16  1998/04/10 10:35:17  paul
+ * fixed (silly?) warnings from egcs on Alpha.
+ *
+ * Revision 2.15  1998/03/19 13:18:37  keil
+ * Start of a CAPI like interface for supplementary Service
+ * first service: SUSPEND
+ *
+ * Revision 2.14  1998/03/07 22:56:54  tsbogend
+ * made HiSax working on Linux/Alpha
+ *
+ * Revision 2.13  1998/02/12 23:07:16  keil
+ * change for 2.1.86 (removing FREE_READ/FREE_WRITE from [dev]_kfree_skb()
+ *
+ * Revision 2.12  1998/02/09 10:55:54  keil
+ * New leased line mode
+ *
+ * Revision 2.11  1998/02/02 13:35:19  keil
+ * config B-channel delay
+ *
+ * Revision 2.10  1997/11/06 17:09:15  keil
+ * New 2.1 init code
+ *
+ * Revision 2.9  1997/10/29 19:01:58  keil
+ * new LL interface
+ *
+ * Revision 2.8  1997/10/10 20:56:44  fritz
+ * New HL interface.
+ *
+ * Revision 2.7  1997/10/01 09:21:28  fritz
+ * Removed old compatibility stuff for 2.0.X kernels.
+ * From now on, this code is for 2.1.X ONLY!
+ * Old stuff is still in the separate branch.
+ *
+ * Revision 2.6  1997/09/11 17:26:58  keil
+ * Open B-channel if here are incomming packets
+ *
+ * Revision 2.5  1997/08/07 17:46:05  keil
+ * Fix Incomming Call without broadcast
+ *
+ * Revision 2.4  1997/08/03 14:37:58  keil
+ * Activate Layer2 in PtP mode
+ *
+ * Revision 2.3  1997/07/31 19:23:40  keil
+ * LAYER2_WATCHING for PtP
+ *
+ * Revision 2.2  1997/07/31 11:48:18  keil
+ * experimental REJECT after ALERTING
+ *
+ * Revision 2.1  1997/07/30 17:12:59  keil
+ * more changes for 'One TEI per card'
+ *
+ * Revision 2.0  1997/07/27 21:12:21  keil
+ * CRef based L3; new channel handling; many other stuff
+ *
+ * Revision 1.31  1997/06/26 11:09:23  keil
+ * New managment and minor changes
+ *
+ * old logs removed /KKe
+ *
  */
 
 #define __NO_VERSION__
-#include <linux/module.h>
-#include <linux/init.h>
 #include "hisax.h"
 #include "../avmb1/capicmd.h"  /* this should be moved in a common place */
 
@@ -26,7 +170,7 @@
 #define MOD_USE_COUNT ( GET_USE_COUNT (&__this_module))
 #endif	/* MODULE */
 
-const char *lli_revision = "$Revision: 1.1.2.1 $";
+const char *lli_revision = "$Revision: 2.41 $";
 
 extern struct IsdnCard cards[];
 extern int nrcards;
@@ -36,8 +180,10 @@ extern void HiSax_mod_inc_use_count(void);
 static int init_b_st(struct Channel *chanp, int incoming);
 static void release_b_st(struct Channel *chanp);
 
-static struct Fsm callcfsm;
-static int chancount;
+static struct Fsm callcfsm =
+{NULL, 0, 0, NULL, NULL};
+
+static int chancount = 0;
 
 /* experimental REJECT after ALERTING for CALLBACK to beat the 4s delay */
 #define ALERT_REJECT 0
@@ -70,6 +216,19 @@ hisax_findcard(int driverid)
 			if (cards[i].cs->myid == driverid)
 				return (cards[i].cs);
 	return (struct IsdnCardState *) 0;
+}
+
+int
+discard_queue(struct sk_buff_head *q)
+{
+	struct sk_buff *skb;
+	int ret=0;
+
+	while ((skb = skb_dequeue(q))) {
+		dev_kfree_skb(skb);
+		ret++;
+	}
+	return(ret);
 }
 
 static void
@@ -330,7 +489,7 @@ lli_go_active(struct FsmInst *fi, int event, void *arg)
  * RESUME
  */
 
-/* incoming call */
+/* incomming call */
 
 static void
 lli_deliver_call(struct FsmInst *fi, int event, void *arg)
@@ -357,7 +516,7 @@ lli_deliver_call(struct FsmInst *fi, int event, void *arg)
 		 * No need to return "unknown" for calls without OAD,
 		 * cause that's handled in linklevel now (replaced by '0')
 		 */
-		memcpy(&ic.parm.setup, &chanp->proc->para.setup, sizeof(setup_parm));
+		ic.parm.setup = chanp->proc->para.setup;
 		ret = chanp->cs->iif.statcallb(&ic);
 		if (chanp->debug & 1)
 			link_debug(chanp, 1, "statcallb ret=%d", ret);
@@ -374,15 +533,11 @@ lli_deliver_call(struct FsmInst *fi, int event, void *arg)
 				FsmChangeState(fi, ST_IN_PROCEED_SEND);
 				chanp->d_st->lli.l4l3(chanp->d_st, CC_PROCEED_SEND | REQUEST, chanp->proc);
 				if (ret == 5) {
-					memcpy(&chanp->setup, &ic.parm.setup, sizeof(setup_parm));
+					chanp->setup = ic.parm.setup;
 					chanp->d_st->lli.l4l3(chanp->d_st, CC_REDIR | REQUEST, chanp->proc);
 				}
 				break;
 			case 2:	/* Rejecting Call */
-				break;
-			case 3:	/* incomplete number */
-				FsmDelTimer(&chanp->drel_timer, 61);
-				chanp->d_st->lli.l4l3(chanp->d_st, CC_MORE_INFO | REQUEST, chanp->proc);
 				break;
 			case 0:	/* OK, nobody likes this call */
 			default:	/* statcallb problems */
@@ -773,7 +928,7 @@ lli_failure_a(struct FsmInst *fi, int event, void *arg)
 }
 
 /* *INDENT-OFF* */
-static struct FsmNode fnlist[] __initdata =
+static struct FsmNode fnlist[] HISAX_INITDATA =
 {
         {ST_NULL,               EV_DIAL,                lli_prep_dialout},
         {ST_NULL,               EV_RESUME,              lli_resume},
@@ -790,8 +945,6 @@ static struct FsmNode fnlist[] __initdata =
         {ST_IN_WAIT_LL,         EV_HANGUP,              lli_reject_req},
         {ST_IN_WAIT_LL,         EV_DISCONNECT_IND,      lli_release_req},
         {ST_IN_WAIT_LL,         EV_RELEASE,             lli_dhup_close},
-        {ST_IN_WAIT_LL,         EV_SETUP_IND,           lli_deliver_call},
-        {ST_IN_WAIT_LL,         EV_SETUP_ERR,           lli_error},
         {ST_IN_ALERT_SENT,      EV_SETUP_CMPL_IND,      lli_init_bchan_in},
         {ST_IN_ALERT_SENT,      EV_ACCEPTD,             lli_send_dconnect},
         {ST_IN_ALERT_SENT,      EV_HANGUP,              lli_disconnect_reject},
@@ -843,14 +996,14 @@ static struct FsmNode fnlist[] __initdata =
 
 #define FNCOUNT (sizeof(fnlist)/sizeof(struct FsmNode))
 
-int __init
-CallcNew(void)
+HISAX_INITFUNC(void
+CallcNew(void))
 {
 	callcfsm.state_count = STATE_COUNT;
 	callcfsm.event_count = EVENT_COUNT;
 	callcfsm.strEvent = strEvent;
 	callcfsm.strState = strState;
-	return FsmNew(&callcfsm, fnlist, FNCOUNT);
+	FsmNew(&callcfsm, fnlist, FNCOUNT);
 }
 
 void
@@ -871,7 +1024,6 @@ release_b_st(struct Channel *chanp)
 				releasestack_isdnl2(st);
 				break;
 			case (ISDN_PROTO_L2_HDLC):
-			case (ISDN_PROTO_L2_HDLC_56K):
 			case (ISDN_PROTO_L2_TRANS):
 			case (ISDN_PROTO_L2_MODEM):
 			case (ISDN_PROTO_L2_FAX):
@@ -954,9 +1106,6 @@ dchan_l3l4(struct PStack *st, int pr, void *arg)
 		return;
 
 	switch (pr) {
-		case (CC_MORE_INFO | INDICATION):
-			FsmEvent(&chanp->fi, EV_SETUP_IND, NULL);
-			break;
 		case (CC_DISCONNECT | INDICATION):
 			FsmEvent(&chanp->fi, EV_DISCONNECT_IND, NULL);
 			break;
@@ -1019,11 +1168,9 @@ dummy_pstack(struct PStack *st, int pr, void *arg) {
 	printk(KERN_WARNING"call to dummy_pstack pr=%04x arg %lx\n", pr, (long)arg);
 }
 
-static int
+static void
 init_PStack(struct PStack **stp) {
 	*stp = kmalloc(sizeof(struct PStack), GFP_ATOMIC);
-	if (!*stp)
-		return -ENOMEM;
 	(*stp)->next = NULL;
 	(*stp)->l1.l1l2 = dummy_pstack;
 	(*stp)->l1.l1hw = dummy_pstack;
@@ -1036,20 +1183,16 @@ init_PStack(struct PStack **stp) {
 	(*stp)->l3.l3l4 = dummy_pstack;
 	(*stp)->lli.l4l3 = dummy_pstack;
 	(*stp)->ma.layer = dummy_pstack;
-	return 0;
 }
 
-static int
+static void
 init_d_st(struct Channel *chanp)
 {
 	struct PStack *st;
 	struct IsdnCardState *cs = chanp->cs;
 	char tmp[16];
-	int err;
 
-	err = init_PStack(&chanp->d_st);
-	if (err)
-		return err;
+	init_PStack(&chanp->d_st);
 	st = chanp->d_st;
 	st->next = NULL;
 	HiSax_addlist(cs, st);
@@ -1074,8 +1217,6 @@ init_d_st(struct Channel *chanp)
 	st->lli.userdata = chanp;
 	st->lli.l2writewakeup = NULL;
 	st->l3.l3l4 = dchan_l3l4;
-
-	return 0;
 }
 
 static void
@@ -1091,11 +1232,10 @@ callc_debug(struct FsmInst *fi, char *fmt, ...)
 	va_end(args);
 }
 
-static int
+static void
 init_chan(int chan, struct IsdnCardState *csta)
 {
 	struct Channel *chanp = csta->channel + chan;
-	int err;
 
 	chanp->cs = csta;
 	chanp->bcs = csta->bcs + chan;
@@ -1104,9 +1244,7 @@ init_chan(int chan, struct IsdnCardState *csta)
 	chanp->debug = 0;
 	chanp->Flags = 0;
 	chanp->leased = 0;
-	err = init_PStack(&chanp->b_st);
-	if (err)
-		return err;
+	init_PStack(&chanp->b_st);
 	chanp->b_st->l1.delay = DEFAULT_B_DELAY;
 	chanp->fi.fsm = &callcfsm;
 	chanp->fi.state = ST_NULL;
@@ -1115,42 +1253,32 @@ init_chan(int chan, struct IsdnCardState *csta)
 	chanp->fi.printdebug = callc_debug;
 	FsmInitTimer(&chanp->fi, &chanp->dial_timer);
 	FsmInitTimer(&chanp->fi, &chanp->drel_timer);
-	if (!chan || (test_bit(FLG_TWO_DCHAN, &csta->HW_Flags) && chan < 2)) {
-		err = init_d_st(chanp);
-		if (err)
-			return err;
+	if (!chan || test_bit(FLG_TWO_DCHAN, &csta->HW_Flags)) {
+		init_d_st(chanp);
 	} else {
 		chanp->d_st = csta->channel->d_st;
 	}
 	chanp->data_open = 0;
-	return 0;
 }
 
 int
 CallcNewChan(struct IsdnCardState *csta) {
-	int i, err;
+	int i;
 
 	chancount += 2;
-	err = init_chan(0, csta);
-	if (err)
-		return err;
-	err = init_chan(1, csta);
-	if (err)
-		return err;
+	init_chan(0, csta);
+	init_chan(1, csta);
 	printk(KERN_INFO "HiSax: 2 channels added\n");
 
-	for (i = 0; i < MAX_WAITING_CALLS; i++) { 
-		err = init_chan(i+2,csta);
-		if (err)
-			return err;
-	}
+	for (i = 0; i < MAX_WAITING_CALLS; i++) 
+		init_chan(i+2,csta);
 	printk(KERN_INFO "HiSax: MAX_WAITING_CALLS added\n");
 	if (test_bit(FLG_PTP, &csta->channel->d_st->l2.flag)) {
 		printk(KERN_INFO "LAYER2 WATCHING ESTABLISH\n");
 		csta->channel->d_st->lli.l4l3(csta->channel->d_st,
 			DL_ESTABLISH | REQUEST, NULL);
 	}
-	return (0);
+	return (2);
 }
 
 static void
@@ -1198,12 +1326,9 @@ lldata_handler(struct PStack *st, int pr, void *arg)
 
 	switch (pr) {
 		case (DL_DATA  | INDICATION):
-			if (chanp->data_open) {
-				if (chanp->debug & 0x800)
-					link_debug(chanp, 0, "lldata: %d", skb->len);
+			if (chanp->data_open)
 				chanp->cs->iif.rcvcallb_skb(chanp->cs->myid, chanp->chan, skb);
-			} else {
-				link_debug(chanp, 0, "lldata: channel not open");
+			else {
 				dev_kfree_skb(skb);
 			}
 			break;
@@ -1230,12 +1355,10 @@ lltrans_handler(struct PStack *st, int pr, void *arg)
 
 	switch (pr) {
 		case (PH_DATA | INDICATION):
-			if (chanp->data_open) {
-				if (chanp->debug & 0x800)
-					link_debug(chanp, 0, "lltrans: %d", skb->len);
+			if (chanp->data_open)
 				chanp->cs->iif.rcvcallb_skb(chanp->cs->myid, chanp->chan, skb);
-			} else {
-				link_debug(chanp, 0, "lltrans: channel not open");
+			else {
+				link_debug(chanp, 0, "channel not open");
 				dev_kfree_skb(skb);
 			}
 			break;
@@ -1260,8 +1383,6 @@ ll_writewakeup(struct PStack *st, int len)
 	struct Channel *chanp = st->lli.userdata;
 	isdn_ctrl ic;
 
-	if (chanp->debug & 0x800)
-		link_debug(chanp, 0, "llwakeup: %d", len);
 	ic.driver = chanp->cs->myid;
 	ic.command = ISDN_STAT_BSENT;
 	ic.arg = chanp->chan;
@@ -1285,9 +1406,6 @@ init_b_st(struct Channel *chanp, int incoming)
 		case (ISDN_PROTO_L2_X75I):
 		case (ISDN_PROTO_L2_HDLC):
 			st->l1.mode = L1_MODE_HDLC;
-			break;
-		case (ISDN_PROTO_L2_HDLC_56K):
-			st->l1.mode = L1_MODE_HDLC_56K;
 			break;
 		case (ISDN_PROTO_L2_TRANS):
 			st->l1.mode = L1_MODE_TRANS;
@@ -1325,7 +1443,6 @@ init_b_st(struct Channel *chanp, int incoming)
 			st->l2.debug = chanp->debug & 64;
 			break;
 		case (ISDN_PROTO_L2_HDLC):
-		case (ISDN_PROTO_L2_HDLC_56K):
 		case (ISDN_PROTO_L2_TRANS):
 		case (ISDN_PROTO_L2_MODEM):
 		case (ISDN_PROTO_L2_FAX):
@@ -1539,7 +1656,7 @@ HiSax_command(isdn_ctrl * ic)
 				link_debug(chanp, 1, "DIAL %s -> %s (%d,%d)",
 					ic->parm.setup.eazmsn, ic->parm.setup.phone,
 					ic->parm.setup.si1, ic->parm.setup.si2);
-			memcpy(&chanp->setup, &ic->parm.setup, sizeof(setup_parm));
+			chanp->setup = ic->parm.setup;
 			if (!strcmp(chanp->setup.eazmsn, "0"))
 				chanp->setup.eazmsn[0] = '\0';
 			/* this solution is dirty and may be change, if
@@ -1559,7 +1676,6 @@ HiSax_command(isdn_ctrl * ic)
 			break;
 		case (ISDN_CMD_ACCEPTD):
 			chanp = csta->channel + ic->arg;
-			memcpy(&chanp->setup, &ic->parm.setup, sizeof(setup_parm));
 			if (chanp->debug & 1)
 				link_debug(chanp, 1, "ACCEPTD");
 			FsmEvent(&chanp->fi, EV_ACCEPTD, NULL);
@@ -1756,7 +1872,7 @@ HiSax_command(isdn_ctrl * ic)
 			chanp = csta->channel + ic->arg;
 			if (chanp->debug & 1)
 				link_debug(chanp, 1, "REDIR");
-			memcpy(&chanp->setup, &ic->parm.setup, sizeof(setup_parm));
+			chanp->setup = ic->parm.setup;
 			FsmEvent(&chanp->fi, EV_REDIR, NULL);
 			break;
 

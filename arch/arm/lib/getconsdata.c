@@ -6,7 +6,7 @@
 #include <linux/config.h>
 #include <linux/sched.h>
 #include <linux/mm.h>
-#include <linux/unistd.h>
+
 #include <asm/pgtable.h>
 #include <asm/uaccess.h>
 
@@ -29,20 +29,16 @@ unsigned long TSK_STATE = OFF_TSK(state);
 unsigned long TSK_FLAGS = OFF_TSK(flags);
 unsigned long TSK_NEED_RESCHED = OFF_TSK(need_resched);
 unsigned long TSK_SIGPENDING = OFF_TSK(sigpending);
+unsigned long TSK_ADDR_LIMIT = OFF_TSK(addr_limit);
 unsigned long TSK_USED_MATH = OFF_TSK(used_math);
 
 unsigned long MM = OFF_TSK(mm);
 unsigned long PGD = OFF_MM(pgd);
 
-unsigned long TSS_MEMMAP = OFF_TSK(tss.memmap);
-unsigned long TSS_SAVE = OFF_TSK(tss.save);
-unsigned long TSS_FPESAVE = OFF_TSK(tss.fpstate.soft.save);
-#ifdef CONFIG_CPU_26
-unsigned long ADDR_LIMIT  = OFF_TSK(addr_limit);
-unsigned long TSS_MEMCMAP = OFF_TSK(tss.memcmap);
-#endif
+unsigned long TSS_SAVE = OFF_TSK(thread.save);
+unsigned long TSS_FPESAVE = OFF_TSK(thread.fpstate.soft.save);
 #ifdef CONFIG_CPU_32
-unsigned long TSS_DOMAIN = OFF_TSK(tss.domain);
+unsigned long TSS_DOMAIN = OFF_TSK(thread.domain);
 #endif
 
 #ifdef _PAGE_PRESENT
@@ -95,3 +91,5 @@ unsigned long PAGE_SZ = PAGE_SIZE;
 unsigned long KSWI_BASE = 0x900000;
 unsigned long KSWI_SYS_BASE = 0x9f0000;
 unsigned long SYS_ERROR0 = 0x9f0000;
+unsigned long PGOFF_SHIFT = PAGE_SHIFT - 12;
+unsigned long PGOFF_MASK = (1 << (PAGE_SHIFT - 12)) - 1;

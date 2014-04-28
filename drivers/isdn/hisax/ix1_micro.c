@@ -1,31 +1,94 @@
-/* $Id: ix1_micro.c,v 1.1.2.1 2001/12/31 13:26:45 kai Exp $
+/* $Id: ix1_micro.c,v 2.8 1999/07/12 21:05:19 keil Exp $
+
+ * ix1_micro.c  low level stuff for ITK ix1-micro Rev.2 isdn cards
+ *              derived from the original file teles3.c from Karsten Keil
  *
- * low level stuff for ITK ix1-micro Rev.2 isdn cards
- * derived from the original file teles3.c from Karsten Keil
+ * Copyright (C) 1997 Klaus-Peter Nischke (ITK AG) (for the modifications to
+ *                                                  the original file teles.c)
  *
- * Author       Klaus-Peter Nischke
- * Copyright    by Klaus-Peter Nischke, ITK AG
- *                                   <klaus@nischke.do.eunet.de>
- *              by Karsten Keil      <keil@isdn4linux.de>
- * 
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
+ * Thanks to    Jan den Ouden
+ *              Fritz Elfert
+ *              Beat Doebeli
  *
- * Klaus-Peter Nischke
- * Deusener Str. 287
- * 44369 Dortmund
- * Germany
+ * $Log: ix1_micro.c,v $
+ * Revision 2.8  1999/07/12 21:05:19  keil
+ * fix race in IRQ handling
+ * added watchdog for lost IRQs
+ *
+ * Revision 2.7  1998/04/15 16:44:31  keil
+ * new init code
+ *
+ * Revision 2.6  1998/02/11 17:28:09  keil
+ * Niccy PnP/PCI support
+ *
+ * Revision 2.5  1998/02/02 13:29:42  keil
+ * fast io
+ *
+ * Revision 2.4  1997/11/08 21:35:50  keil
+ * new l1 init
+ *
+ * Revision 2.3  1997/11/06 17:09:35  keil
+ * New 2.1 init code
+ *
+ * Revision 2.2  1997/10/29 18:55:51  keil
+ * changes for 2.1.60 (irq2dev_map)
+ *
+ * Revision 2.1  1997/07/27 21:47:09  keil
+ * new interface structures
+ *
+ * Revision 2.0  1997/06/26 11:02:50  keil
+ * New Layer and card interface
+ *
+ * Revision 1.3  1997/04/13 19:54:02  keil
+ * Change in IRQ check delay for SMP
+ *
+ * Revision 1.2  1997/04/06 22:54:21  keil
+ * Using SKB's
+ *
+ * Revision 1.1  1997/01/27 15:43:10  keil
+ * first version
+ *
+ *
  */
 
+/*
+   For the modification done by the author the following terms and conditions
+   apply (GNU PUBLIC LICENSE)
+
+
+   This program is free software; you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation; either version 2 of the License, or
+   (at your option) any later version.
+
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with this program; if not, write to the Free Software
+   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+
+
+   You may contact Klaus-Peter Nischke by email: klaus@nischke.do.eunet.de
+   or by conventional mail:
+
+   Klaus-Peter Nischke
+   Deusener Str. 287
+   44369 Dortmund
+   Germany
+ */
+
+
 #define __NO_VERSION__
-#include <linux/init.h>
 #include "hisax.h"
 #include "isac.h"
 #include "hscx.h"
 #include "isdnl1.h"
 
 extern const char *CardType[];
-const char *ix1_revision = "$Revision: 1.1.2.1 $";
+const char *ix1_revision = "$Revision: 2.8 $";
 
 #define byteout(addr,val) outb(val,addr)
 #define bytein(addr) inb(addr)
@@ -219,8 +282,8 @@ ix1_card_msg(struct IsdnCardState *cs, int mt, void *arg)
 }
 
 
-int __init
-setup_ix1micro(struct IsdnCard *card)
+__initfunc(int
+setup_ix1micro(struct IsdnCard *card))
 {
 	struct IsdnCardState *cs = card->cs;
 	char tmp[64];

@@ -1,22 +1,20 @@
 /******************************************************************************
  *
- * Name:    skge.c
+ * Name:      	skge.c
  * Project:	GEnesis, PCI Gigabit Ethernet Adapter
- * Version:	$Revision: 1.37 $
- * Date:	$Date: 2001/05/08 11:25:40 $
+ * Version:	$Revision: 1.27 $
+ * Date:       	$Date: 1999/11/25 09:06:28 $
  * Purpose:	The main driver source module
  *
  ******************************************************************************/
-
  
 /******************************************************************************
  *
- *	(C)Copyright 1998-2001 SysKonnect GmbH.
+ *	(C)Copyright 1998,1999 SysKonnect,
+ *	a business unit of Schneider & Koch & Co. Datensysteme GmbH.
  *
  *	Driver for SysKonnect Gigabit Ethernet Server Adapters:
  *
- *	SK-9861 (single link 1000Base-SX, VF45 Volition Plug)
- *	SK-9862 (dual link   1000Base-SX, VF45 Volition Plug)
  *	SK-9841 (single link 1000Base-LX)
  *	SK-9842 (dual link   1000Base-LX)
  *	SK-9843 (single link 1000Base-SX)
@@ -27,7 +25,6 @@
  *	Created 10-Feb-1999, based on Linux' acenic.c, 3c59x.c and 
  *	SysKonnects GEnesis Solaris driver
  *	Author: Christoph Goos (cgoos@syskonnect.de)
- *	        Mirko Lindner (mlindner@syskonnect.de)
  *
  *	Address all question to: linux@syskonnect.de
  *
@@ -44,50 +41,11 @@
  *
  ******************************************************************************/
 
-
 /******************************************************************************
  *
  * History:
  *
  *	$Log: skge.c,v $
- *	Revision 1.37  2001/05/08 11:25:40  mlindner
- *	fix: removed VLAN error message
- *	
- *	Revision 1.36  2001/05/04 12:02:25  gklug
- *	fix: compilation bug
- *	
- *	Revision 1.35  2001/05/04 11:42:12  gklug
- *	fix: receive IRQ can now handle invalid frames correctly
- *	
- *	Revision 1.34  2001/05/04 11:13:49  gklug
- *	fix: do not free meassage if ring is full on entry.
- *	
- *	Revision 1.33  2001/03/20 12:26:08  mlindner
- *	Fix: Memory problem
- *	Fix: proc_unregister fixed
- *	
- *	Revision 1.32  2001/03/01 12:50:52  mlindner
- *	Fixed ring size
- *	
- *	Revision 1.31  2001/02/19 13:14:16  mlindner
- *	Changed PNMI parameter values
- *	Corrected ProcFs functionality
- *	
- *	Revision 1.30  2001/01/22 14:15:29  mlindner
- *	added ProcFs functionality
- *	Dual Net functionality integrated
- *	Rlmt networks added
- *	
- *	Revision 1.29  2000/02/21 13:31:56  cgoos
- *	Fixed "unused" warning for UltraSPARC change.
- *	
- *	Revision 1.28  2000/02/21 10:32:36  cgoos
- *	Added fixes for UltraSPARC.
- *	Now printing RlmtMode and PrefPort setting at startup.
- *	Changed XmitFrame return value.
- *	Fixed rx checksum calculation for BIG ENDIAN systems.
- *	Fixed rx jumbo frames counted as ierrors.
- *	
  *	Revision 1.27  1999/11/25 09:06:28  cgoos
  *	Changed base_addr to unsigned long.
  *	
@@ -265,15 +223,23 @@
  *
  ******************************************************************************/
 
-#include	"h/skversion.h"
+static const char SysKonnectFileId[] = "@(#)" __FILE__ " (C) SysKonnect.";
+static const char SysKonnectBuildNumber[] =
+	"@(#)SK-BUILD: 3.02 (19991111) PL: 01"; 
 
 #include	<linux/module.h>
-#include 	<linux/proc_fs.h>
+#include	<linux/init.h>
 
 #include	"h/skdrv1st.h"
 #include	"h/skdrv2nd.h"
 
 /* defines ******************************************************************/
+
+#define BOOT_STRING	"sk98lin: Network Device Driver v3.02\n" \
+			"Copyright (C) 1999 SysKonnect"
+
+#define VER_STRING	"3.02"
+
 
 /* for debuging on x86 only */
 /* #define BREAKPOINT() asm(" int $3"); */
@@ -294,7 +260,6 @@
 /* number of adapters that can be configured via command line params */
 #define SK_MAX_CARD_PARAM	16
 
-
 /*
  * use those defines for a compile-in version of the driver instead 
  * of command line parameters
@@ -308,17 +273,18 @@
 // #define ROLE_A	{"Auto", }
 // #define ROLE_B	{"Auto", }
 // #define PREF_PORT	{"A", }
-// #define RLMT_MODE	{"CheckLinkState", }
+// #define RLMT_MODE	{"CheckLink", }
 
 
-
-#define DEV_KFREE_SKB(skb) dev_kfree_skb(skb);
+#define DEV_KFREE_SKB(skb) dev_kfree_skb(skb)
+#define DEV_KFREE_SKB_IRQ(skb) dev_kfree_skb_irq(skb)
+#define DEV_KFREE_SKB_ANY(skb) dev_kfree_skb_any(skb)
 
 /* function prototypes ******************************************************/
-static void	FreeResources(struct device *dev);
+static void	FreeResources(struct net_device *dev);
 int		init_module(void);
 void		cleanup_module(void);
-static int	SkGeBoardInit(struct device *dev, SK_AC *pAC);
+static int	SkGeBoardInit(struct net_device *dev, SK_AC *pAC);
 static SK_BOOL	BoardAllocMem(SK_AC *pAC);
 static void	BoardFreeMem(SK_AC *pAC);
 static void	BoardInitMem(SK_AC *pAC);
@@ -327,13 +293,13 @@ static void	SetupRing(SK_AC*, void*, uintptr_t, RXD**, RXD**, RXD**,
 
 static void	SkGeIsr(int irq, void *dev_id, struct pt_regs *ptregs);
 static void	SkGeIsrOnePort(int irq, void *dev_id, struct pt_regs *ptregs);
-static int	SkGeOpen(struct device *dev);
-static int	SkGeClose(struct device *dev);
-static int	SkGeXmit(struct sk_buff *skb, struct device *dev);
-static int	SkGeSetMacAddr(struct device *dev, void *p);
-static void	SkGeSetRxMode(struct device *dev);
-static struct net_device_stats *SkGeStats(struct device *dev);
-static int	SkGeIoctl(struct device *dev, struct ifreq *rq, int cmd);
+static int	SkGeOpen(struct net_device *dev);
+static int	SkGeClose(struct net_device *dev);
+static int	SkGeXmit(struct sk_buff *skb, struct net_device *dev);
+static int	SkGeSetMacAddr(struct net_device *dev, void *p);
+static void	SkGeSetRxMode(struct net_device *dev);
+static struct net_device_stats *SkGeStats(struct net_device *dev);
+static int	SkGeIoctl(struct net_device *dev, struct ifreq *rq, int cmd);
 static void	GetConfiguration(SK_AC*);
 static void	ProductStr(SK_AC*);
 static int	XmitFrame(SK_AC*, TX_PORT*, struct sk_buff*);
@@ -341,23 +307,14 @@ static void	FreeTxDescriptors(SK_AC*pAC, TX_PORT*);
 static void	FillRxRing(SK_AC*, RX_PORT*);
 static SK_BOOL	FillRxDescriptor(SK_AC*, RX_PORT*);
 static void	ReceiveIrq(SK_AC*, RX_PORT*);
-void	ClearAndStartRx(SK_AC*, int);
+static void	ClearAndStartRx(SK_AC*, int);
 static void	ClearTxIrq(SK_AC*, int, int);
 static void	ClearRxRing(SK_AC*, RX_PORT*);
 static void	ClearTxRing(SK_AC*, TX_PORT*);
 static void	SetQueueSizes(SK_AC	*pAC);
-static int	SkGeChangeMtu(struct device *dev, int new_mtu);
+static int	SkGeChangeMtu(struct net_device *dev, int new_mtu);
 static void	PortReInitBmu(SK_AC*, int);
-static int	SkGeIocMib(DEV_NET*, unsigned int, int);
-static struct dentry *SkgeProcLookup(struct inode *dir, struct dentry *dentry);
-static int	SkgeProcFileOpen(struct inode *inode, struct file *file);
-static int	SkgeProcFileRelease(struct inode *inode, struct file *file);
-
-/*Extern */
-extern struct proc_dir_entry Our_Proc_Dir;
-extern int proc_read(char *buffer, char **buffer_location,
-	off_t offset, int buffer_length, int *eof, void *data);
-
+static int	SkGeIocMib(SK_AC*, unsigned int, int);
 #ifdef DEBUG
 static void	DumpMsg(struct sk_buff*, char*);
 static void	DumpData(char*, int);
@@ -367,26 +324,12 @@ static void	DumpLong(char*, int);
 
 /* global variables *********************************************************/
 static const char *BootString = BOOT_STRING;
-struct device *root_dev = NULL;
+static struct net_device *root_dev = NULL;
 static int probed __initdata = 0;
-struct inode_operations SkInodeOps;
-static struct file_operations SkFileOps;  /* with open/relase */
 
 /* local variables **********************************************************/
 static uintptr_t TxQueueAddr[SK_MAX_MACS][2] = {{0x680, 0x600},{0x780, 0x700}};
 static uintptr_t RxQueueAddr[SK_MAX_MACS] = {0x400, 0x480};
-
-
-
-void proc_fill_inode(struct inode *inode, int fill)
-{
-	if (fill)
-		MOD_INC_USE_COUNT;
-	else
-		MOD_DEC_USE_COUNT;
-}
-
-
 
 /*****************************************************************************
  *
@@ -401,93 +344,56 @@ void proc_fill_inode(struct inode *inode, int fill)
  *	0, if everything is ok
  *	!=0, on error
  */
-__initfunc(int skge_probe (struct device *dev))
+static int __init skge_probe (void)
 {
-int 			boards_found = 0;
-int 			DeviceFound = SK_FALSE;
-SK_AC			*pAC;
-DEV_NET			*pNet = NULL;
-struct 			pci_dev	*pdev = NULL;
-unsigned long		base_address;
-struct proc_dir_entry	*pProcFile;
-#ifdef __sparc_v9__
-unsigned short	tmp;
-#endif
+	int boards_found = 0;
+	int		version_disp = 0;
+	SK_AC		*pAC;
+	struct pci_dev	*pdev = NULL;
+	unsigned long	base_address;
+	struct net_device *dev = NULL;
 
 	if (probed)
 		return -ENODEV;
 	probed++;
 	
+	/* display driver info */
+	if (!version_disp)
+	{
+		/* set display flag to TRUE so that */
+		/* we only display this string ONCE */
+		version_disp = 1;
+		printk("%s\n", BootString);
+	}
+
 	if (!pci_present())		/* is PCI support present? */
 		return -ENODEV;
 
 	while((pdev = pci_find_class(PCI_CLASS_NETWORK_ETHERNET << 8, pdev)))
 	{
 		dev = NULL;
-		pNet = NULL;
 
 		if (pdev->vendor != PCI_VENDOR_ID_SYSKONNECT || 
 			pdev->device != PCI_DEVICE_ID_SYSKONNECT_GE) {
 			continue;
-		} 
-		
-		if ((dev = init_etherdev(dev, sizeof(DEV_NET))) == 0) {
+		}
+		dev = init_etherdev(dev, sizeof(SK_AC));
+
+		if (dev == NULL || dev->priv == NULL){
 			printk(KERN_ERR "Unable to allocate etherdev "
 			       "structure!\n");
 			break;
 		}
 
-		if (dev->priv == NULL)
-			dev->priv = kmalloc(sizeof(DEV_NET), GFP_KERNEL);
-		
-		if (dev->priv == NULL) {
-			printk(KERN_ERR "Unable to allocate adapter "
-			       "structure!\n");
-			break;
-		}
+		memset(dev->priv, 0, sizeof(SK_AC));
 
-		pNet = dev->priv;
-		pNet->pAC = kmalloc(sizeof(SK_AC), GFP_KERNEL);
-		if (pNet->pAC == NULL){
-			kfree(dev->priv);
-			printk(KERN_ERR "Unable to allocate adapter "
-			       "structure!\n");
-			break;
-		}
-
-		if (!DeviceFound) {
-			/* set display flag to TRUE so that */
-			/* we only display this string ONCE */
-			printk("%s\n", BootString);
-
-			DeviceFound = SK_TRUE;
-
-	       	        /*Create proc (directory)*/
-			proc_register(proc_net, &Our_Proc_Dir);
-
-			memcpy(&SkInodeOps, &proc_dir_inode_operations, 
-			sizeof(struct inode_operations));
-			SkInodeOps.lookup = &SkgeProcLookup;
-			SkInodeOps.default_file_ops = &SkFileOps;
-
-			memcpy(&SkFileOps, proc_net_inode_operations.default_file_ops,
-				sizeof(struct file_operations));
-			SkFileOps.open = &SkgeProcFileOpen;
-			SkFileOps.release = &SkgeProcFileRelease;
-		}
-		
-		memset(pNet->pAC, 0, sizeof(SK_AC));
-		pAC = pNet->pAC;
+		pAC = dev->priv;
 		pAC->PciDev = *pdev;
 		pAC->PciDevId = pdev->device;
-		pAC->dev[0] = dev;
-		pAC->dev[1] = dev;
+		pAC->dev = dev;
 		sprintf(pAC->Name, "SysKonnect SK-98xx");
 		pAC->CheckQueue = SK_FALSE;
 
-		
-		pNet->Mtu = 1500;
-		pNet->Up = 0;
 		dev->irq = pdev->irq;
 
 		dev->open =		&SkGeOpen;
@@ -498,16 +404,7 @@ unsigned short	tmp;
 		dev->set_mac_address =	&SkGeSetMacAddr;
 		dev->do_ioctl =		&SkGeIoctl;
 		dev->change_mtu =	&SkGeChangeMtu;
-
-		pProcFile = create_proc_entry(dev->name, 
-			S_IFREG | 0444, &Our_Proc_Dir);
-		pProcFile->ops = &SkInodeOps;
-		pProcFile->read_proc = proc_read;
-		pProcFile->write_proc = NULL;
-		pProcFile->nlink = 1;
-		pProcFile->size = sizeof(dev->name+1);
-		pProcFile->data = (void*)pProcFile;
-
+		
 		/*
 		 * Dummy value.
 		 */
@@ -515,18 +412,7 @@ unsigned short	tmp;
 
 		pci_set_master(pdev);
 
-		base_address = pdev->base_address[0];
-		base_address &= PCI_BASE_ADDRESS_MEM_MASK;
-
-
-#ifdef __sparc_v9__
-		/* SPARC machines do not initialize the cache line size */
-                pci_write_config_byte(pdev, PCI_CACHE_LINE_SIZE, 64);
-		/* SPARC machines do not set "Memory write and invalidate" */
-                pci_read_config_word(pdev, PCI_COMMAND, &tmp);
-		tmp |= PCI_COMMAND_INVALIDATE;
-                pci_write_config_word(pdev, PCI_COMMAND, tmp);
-#endif 
+		base_address = pdev->resource[0].start;
 
 #ifdef SK_BIG_ENDIAN
 		/*
@@ -546,12 +432,7 @@ unsigned short	tmp;
 		 */
 
 
-#ifndef __sparc_v9__
 		pAC->IoBase = (char*)ioremap(base_address, 0x4000);
-#else
-		/* workaround for bug in 2.2 kernel for sparcv9 */
-		pAC->IoBase = (char*)base_address;
-#endif
 		if (!pAC->IoBase){
 			printk(KERN_ERR "%s:  Unable to map I/O register, "
 			       "SK 98xx No. %i will be disabled.\n",
@@ -559,75 +440,16 @@ unsigned short	tmp;
 			break;
 		}
 		pAC->Index = boards_found;
+
 		if (SkGeBoardInit(dev, pAC)) {
 			FreeResources(dev);
 			continue;
 		}
 
-		memcpy((caddr_t) &dev->dev_addr,
-			(caddr_t) &pAC->Addr.Net[0].CurrentMacAddress, 6);
-		
-		pNet->PortNr = 0;
-		pNet->NetNr = 0;
-
+                memcpy((caddr_t) &dev->dev_addr,
+			(caddr_t) &pAC->Addr.CurrentMacAddress, 6);
+ 
 		boards_found++;
-
-		/* More then one port found */
-		if ((pAC->GIni.GIMacsFound == 2 ) && (pAC->RlmtNets == 2)) {
-			if ((dev = init_etherdev(NULL, sizeof(DEV_NET))) == 0) {
-				printk(KERN_ERR "Unable to allocate etherdev "
-					"structure!\n");
-				break;
-			}
-			
-			if (dev->priv == NULL)
-				dev->priv = kmalloc(sizeof(DEV_NET), GFP_KERNEL);
-		
-			if (dev->priv == NULL) {
-				printk(KERN_ERR "Unable to allocate adapter "
-					"structure!\n");
-				break;
-			}
-
-			pAC->dev[1] = dev;
-			pNet = dev->priv;
-			pNet->PortNr = 1;
-			pNet->NetNr = 1;
-			pNet->pAC = pAC;
-			pNet->Mtu = 1500;
-			pNet->Up = 0;
-
-			dev->open =		&SkGeOpen;
-			dev->stop =		&SkGeClose;
-			dev->hard_start_xmit =	&SkGeXmit;
-			dev->get_stats =	&SkGeStats;
-			dev->set_multicast_list = &SkGeSetRxMode;
-			dev->set_mac_address =	&SkGeSetMacAddr;
-			dev->do_ioctl =		&SkGeIoctl;
-			dev->change_mtu =	&SkGeChangeMtu;
-	
-
-			pProcFile = create_proc_entry(dev->name, 
-				S_IFREG | 0444, &Our_Proc_Dir);
-			pProcFile->ops = &SkInodeOps;
-			pProcFile->read_proc = proc_read;
-			pProcFile->write_proc = NULL;
-			pProcFile->nlink = 1;
-			pProcFile->size = sizeof(dev->name);
-			pProcFile->data = (void*)pProcFile;
-	
-			memcpy((caddr_t) &dev->dev_addr,
-			(caddr_t) &pAC->Addr.Net[1].CurrentMacAddress, 6);
-	
-			printk("%s: %s\n", dev->name, pAC->DeviceStr);
-			printk("      PrefPort:B  RlmtMode:Dual Check Link State\n");
-
-			SkCsSetReceiveFlags(pAC,
-				SKCS_PROTO_IP | SKCS_PROTO_TCP | SKCS_PROTO_UDP,
-				&pAC->CsOfs1, &pAC->CsOfs2, 1);
-	
-		}
-
 
 		/*
 		 * This is bollocks, but we need to tell the net-init
@@ -638,23 +460,13 @@ unsigned short	tmp;
 #endif
 	}
 
-
-
-
 	/*
 	 * If we're at this point we're going through skge_probe() for
 	 * the first time.  Return success (0) if we've initialized 1
 	 * or more boards. Otherwise, return failure (-ENODEV).
 	 */
 
-#ifdef MODULE
 	return boards_found;
-#else
-	if (boards_found > 0)
-		return 0;
-	else
-		return -ENODEV;
-#endif
 } /* skge_probe */
 
 
@@ -669,16 +481,13 @@ unsigned short	tmp;
  * Returns: N/A
  *	
  */
-static void FreeResources(struct device *dev)
+static void FreeResources(struct net_device *dev)
 {
 SK_U32 AllocFlag;
-
-DEV_NET		*pNet;
-SK_AC		*pAC;
+SK_AC	*pAC;
 
 	if (dev->priv) {
-		pNet = (DEV_NET*) dev->priv;
-		pAC = pNet->pAC;
+		pAC = (SK_AC*) dev->priv;
 		AllocFlag = pAC->AllocFlag;
 		if (AllocFlag & SK_ALLOC_IRQ) {
 			free_irq(dev->irq, dev);
@@ -693,26 +502,6 @@ SK_AC		*pAC;
 	
 } /* FreeResources */
 
-static struct dentry *SkgeProcLookup(struct inode *dir, struct dentry *dentry)
-{
-	return NULL;
-}
-
-static int SkgeProcFileOpen(struct inode *inode, struct file *file)
-{
-	MOD_INC_USE_COUNT;
-	return 0;
-}
-
-static int SkgeProcFileRelease(struct inode *inode, struct file *file)
-{
-	MOD_DEC_USE_COUNT;
-	return 0;
-}
-
-
-
-#ifdef MODULE
 
 MODULE_AUTHOR("Christoph Goos <cgoos@syskonnect.de>");
 MODULE_DESCRIPTION("SysKonnect SK-NET Gigabit Ethernet SK-98xx driver");
@@ -729,8 +518,6 @@ MODULE_PARM(RlmtMode,   "1-" __MODULE_STRING(SK_MAX_CARD_PARAM) "s");
 /* not used, just there because every driver should have them: */
 MODULE_PARM(options,    "1-" __MODULE_STRING(SK_MAX_CARD_PARAM) "i");
 MODULE_PARM(debug,      "i");
-
-#endif // MODULE
 
 
 #ifdef AUTO_NEG_A
@@ -794,14 +581,13 @@ static char *RlmtMode[SK_MAX_CARD_PARAM] = {"", };
 #endif
 
 
-#ifdef MODULE
-
 static int debug = 0; /* not used */
 static int options[SK_MAX_CARD_PARAM] = {0, }; /* not used */
 
+
 /*****************************************************************************
  *
- * 	init_module - module initialization function
+ * 	skge_init_module - module initialization function
  *
  * Description:
  *	Very simple, only call skge_probe and return approriate result.
@@ -810,23 +596,27 @@ static int options[SK_MAX_CARD_PARAM] = {0, }; /* not used */
  *	0, if everything is ok
  *	!=0, on error
  */
-int init_module(void)
+static int __init skge_init_module(void)
 {
-int cards;
+	int cards;
+
 	root_dev = NULL;
 	
 	/* just to avoid warnings ... */
 	debug = 0;
 	options[0] = 0;
 
-	cards = skge_probe(NULL);
+	cards = skge_probe();
+	if (cards == 0) {
+		printk("No adapter found\n");
+	}
 	return cards ? 0 : -ENODEV;
-} /* init_module */
+} /* skge_init_module */
 
 
 /*****************************************************************************
  *
- * 	cleanup_module - module unload function
+ * 	skge_cleanup_module - module unload function
  *
  * Description:
  *	Disable adapter if it is still running, free resources,
@@ -834,31 +624,23 @@ int cards;
  *
  * Returns: N/A
  */
-void cleanup_module(void)
+static void __exit skge_cleanup_module(void)
 {
-DEV_NET		*pNet;
-SK_AC		*pAC;
-struct device *next;
+SK_AC	*pAC;
+struct net_device *next;
 unsigned long Flags;
 SK_EVPARA EvPara;
 
 	while (root_dev) {
-		pNet = (DEV_NET*) root_dev->priv;
-		pAC = pNet->pAC;
+		pAC = (SK_AC*)root_dev->priv;
 		next = pAC->Next;
 
-		root_dev->tbusy = 1;
+		netif_stop_queue(root_dev);
 		SkGeYellowLED(pAC, pAC->IoBase, 0);
-		remove_proc_entry(pAC->dev[0]->name, &Our_Proc_Dir);
 		
 		if(pAC->BoardLevel == 2) {
 			/* board is still alive */
 			spin_lock_irqsave(&pAC->SlowPathLock, Flags);
-			EvPara.Para32[0] = 0;
-			EvPara.Para32[1] = -1;
-			SkEventQueue(pAC, SKGE_RLMT, SK_RLMT_STOP, EvPara);
-			EvPara.Para32[0] = 1;
-			EvPara.Para32[1] = -1;
 			SkEventQueue(pAC, SKGE_RLMT, SK_RLMT_STOP, EvPara);
 			SkEventDispatcher(pAC, pAC->IoBase);
 			/* disable interrupts */
@@ -868,39 +650,29 @@ SK_EVPARA EvPara;
 			pAC->BoardLevel = 0;
 			/* We do NOT check here, if IRQ was pending, of course*/
 		}
-
+	
 		if(pAC->BoardLevel == 1) {
 			/* board is still alive */
 			SkGeDeInit(pAC, pAC->IoBase); 
 			pAC->BoardLevel = 0;
 		}
-
-		if ((pAC->GIni.GIMacsFound == 2) && pAC->RlmtNets == 2){
-			remove_proc_entry(pAC->dev[1]->name, &Our_Proc_Dir);
-			unregister_netdev(pAC->dev[1]);
-			kfree(pAC->dev[1]);
-		}
-
+		
 		FreeResources(root_dev);
-
+		
 		root_dev->get_stats = NULL;
 		/* 
 		 * otherwise unregister_netdev calls get_stats with
 		 * invalid IO ...  :-(
 		 */
-
 		unregister_netdev(root_dev);
 		kfree(root_dev);
-		kfree(pAC);
+
 		root_dev = next;
 	}
+} /* skge_cleanup_module */
 
-	/* clear proc-dir */
-	proc_unregister(proc_net, Our_Proc_Dir.low_ino); 	
-
-}
-#endif /* cleanup_module */
-
+module_init(skge_init_module);
+module_exit(skge_cleanup_module);
 
 /*****************************************************************************
  *
@@ -915,7 +687,7 @@ SK_EVPARA EvPara;
  *	0, if everything is ok
  *	!=0, on error
  */
-__initfunc(static int SkGeBoardInit(struct device *dev, SK_AC *pAC))
+static int __init SkGeBoardInit(struct net_device *dev, SK_AC *pAC)
 {
 short	i;
 unsigned long Flags;
@@ -964,6 +736,8 @@ int	Ret;			/* return code of request_irq */
 
 	spin_unlock_irqrestore(&pAC->SlowPathLock, Flags);
 
+	GetConfiguration(pAC);
+
 	/* level 1 init common modules here (HW init) */
 	spin_lock_irqsave(&pAC->SlowPathLock, Flags);
 	if (SkGeInit(pAC, pAC->IoBase, 1) != 0) {
@@ -980,12 +754,6 @@ int	Ret;			/* return code of request_irq */
 
 	pAC->BoardLevel = 1;
 	spin_unlock_irqrestore(&pAC->SlowPathLock, Flags);
-
-	GetConfiguration(pAC);
-	if (pAC->RlmtNets == 2) {
-		pAC->GIni.GIPortUsage = SK_MUL_LINK;
-	}
-	
 
 	if (pAC->GIni.GIMacsFound == 2) {
 		 Ret = request_irq(dev->irq, SkGeIsr, SA_SHIRQ, pAC->Name, dev);
@@ -1012,7 +780,7 @@ int	Ret;			/* return code of request_irq */
 
 	SkCsSetReceiveFlags(pAC,
 		SKCS_PROTO_IP | SKCS_PROTO_TCP | SKCS_PROTO_UDP,
-		&pAC->CsOfs1, &pAC->CsOfs2, 0);
+		&pAC->CsOfs1, &pAC->CsOfs2);
 	pAC->CsOfs = (pAC->CsOfs2 << 16) | pAC->CsOfs1;
 
 	BoardInitMem(pAC);
@@ -1023,17 +791,7 @@ int	Ret;			/* return code of request_irq */
 	ProductStr(pAC);
 	printk("%s: %s\n", dev->name, pAC->DeviceStr);
 
-	/* Print configuration settings */
-	printk("      PrefPort:%c  RlmtMode:%s\n",
-		'A' + pAC->Rlmt.Net[0].Port[pAC->Rlmt.Net[0].PrefPort]->PortNumber,
-		(pAC->RlmtMode==0)  ? "Check Link State" :
-		((pAC->RlmtMode==1) ? "Check Link State" : 
-		((pAC->RlmtMode==3) ? "Check Local Port" : 
-		((pAC->RlmtMode==7) ? "Check Segmentation" : 
-		((pAC->RlmtMode==17) ? "Dual Check Link State" :"Error")))));
-
-	SkGeYellowLED(pAC, pAC->IoBase, 1);	
-	
+	SkGeYellowLED(pAC, pAC->IoBase, 1);
 
 	/*
 	 * Register the device here
@@ -1076,41 +834,35 @@ unsigned long	BusAddr;
 	AllocLength = (RX_RING_SIZE + TX_RING_SIZE) * pAC->GIni.GIMacsFound
 		+ RX_RING_SIZE + 8;
 #endif
-	pDescrMem = kmalloc(AllocLength, GFP_KERNEL);
+	pDescrMem = pci_alloc_consistent(&pAC->PciDev, AllocLength,
+					 &pAC->pDescrMemDMA);
 	if (pDescrMem == NULL) {
 		return (SK_FALSE);
 	}
 	pAC->pDescrMem = pDescrMem;
-	memset(pDescrMem, 0, AllocLength);
-	/* Descriptors need 8 byte alignment */
-	BusAddr = virt_to_bus(pDescrMem);
-	if (BusAddr & (DESCR_ALIGN-1)) {
-		pDescrMem += DESCR_ALIGN - (BusAddr & (DESCR_ALIGN-1));
-	}
+
+	/* Descriptors need 8 byte alignment, and this is ensured
+	 * by pci_alloc_consistent.
+	 */
+	BusAddr = (unsigned long) pAC->pDescrMemDMA;
 	for (i=0; i<pAC->GIni.GIMacsFound; i++) {
-		if ((virt_to_bus(pDescrMem) & ~0xFFFFFFFFULL) != 
-		    (virt_to_bus(pDescrMem+TX_RING_SIZE) & ~0xFFFFFFFFULL)) {
-			pDescrMem += TX_RING_SIZE;
-		}
 		SK_DBG_MSG(NULL, SK_DBGMOD_DRV, SK_DBGCAT_DRV_TX_PROGRESS,
 			("TX%d/A: pDescrMem: %lX,   PhysDescrMem: %lX\n",
 			i, (unsigned long) pDescrMem,
-			(unsigned long)virt_to_bus(pDescrMem)));
+			BusAddr));
 		pAC->TxPort[i][0].pTxDescrRing = pDescrMem;
-		pAC->TxPort[i][0].VTxDescrRing = virt_to_bus(pDescrMem);
+		pAC->TxPort[i][0].VTxDescrRing = BusAddr;
 		pDescrMem += TX_RING_SIZE;
+		BusAddr += TX_RING_SIZE;
 	
-		if ((virt_to_bus(pDescrMem) & ~0xFFFFFFFFULL) != 
-		    (virt_to_bus(pDescrMem+RX_RING_SIZE) & ~0xFFFFFFFFULL)) {
-			pDescrMem += RX_RING_SIZE;
-		}
 		SK_DBG_MSG(NULL, SK_DBGMOD_DRV, SK_DBGCAT_DRV_TX_PROGRESS,
 			("RX%d: pDescrMem: %lX,   PhysDescrMem: %lX\n",
 			i, (unsigned long) pDescrMem,
-			(unsigned long)(virt_to_bus(pDescrMem))));
+			(unsigned long)BusAddr));
 		pAC->RxPort[i].pRxDescrRing = pDescrMem;
-		pAC->RxPort[i].VRxDescrRing = virt_to_bus(pDescrMem);
+		pAC->RxPort[i].VRxDescrRing = BusAddr;
 		pDescrMem += RX_RING_SIZE;
+		BusAddr += RX_RING_SIZE;
 	} /* for */
 	
 	return (SK_TRUE);
@@ -1130,9 +882,19 @@ unsigned long	BusAddr;
 static void BoardFreeMem(
 SK_AC		*pAC)
 {
+size_t		AllocLength;	/* length of complete descriptor area */
+
 	SK_DBG_MSG(NULL, SK_DBGMOD_DRV, SK_DBGCAT_DRV_ENTRY,
 		("BoardFreeMem\n"));
-	kfree(pAC->pDescrMem);
+#if (BITS_PER_LONG == 32)
+	AllocLength = (RX_RING_SIZE + TX_RING_SIZE) * pAC->GIni.GIMacsFound + 8;
+#else
+	AllocLength = (RX_RING_SIZE + TX_RING_SIZE) * pAC->GIni.GIMacsFound
+		+ RX_RING_SIZE + 8;
+#endif
+	pci_free_consistent(&pAC->PciDev, AllocLength,
+			    pAC->pDescrMem, pAC->pDescrMemDMA);
+	pAC->pDescrMem = NULL;
 } /* BoardFreeMem */
 
 
@@ -1217,7 +979,8 @@ uintptr_t VNextDescr;	/* the virtual bus address of the next descriptor */
 		DescrSize = (((sizeof(TXD) - 1) / DESCR_ALIGN) + 1) *
 			DESCR_ALIGN;
 		DescrNum = TX_RING_SIZE / DescrSize;
-	} else {
+	}
+	else {
 		DescrSize = (((sizeof(RXD) - 1) / DESCR_ALIGN) + 1) *
 			DESCR_ALIGN;
 		DescrNum = RX_RING_SIZE / DescrSize;
@@ -1236,8 +999,7 @@ uintptr_t VNextDescr;	/* the virtual bus address of the next descriptor */
 		pDescr->VNextRxd = VNextDescr & 0xffffffffULL;
 		pDescr->pNextRxd = pNextDescr;
 		pDescr->TcpSumStarts = pAC->CsOfs;
-
-		/* advance one step */
+		/* advance on step */
 		pPrevDescr = pDescr;
 		pDescr = pNextDescr;
 		pNextDescr = (RXD*) (((char*)pDescr) + DescrSize);
@@ -1311,13 +1073,11 @@ int	PortIndex)	/* index of the port for which to re-init */
  */
 static void SkGeIsr(int irq, void *dev_id, struct pt_regs *ptregs)
 {
-struct device *dev = (struct device *)dev_id;
-DEV_NET		*pNet;
+struct net_device *dev = (struct net_device *)dev_id;
 SK_AC		*pAC;
 SK_U32		IntSrc;		/* interrupts source register contents */	
 
-	pNet = (DEV_NET*) dev->priv;
-	pAC = pNet->pAC;
+	pAC = (SK_AC*) dev->priv;
 	
 	/*
 	 * Check and process if its our interrupt
@@ -1340,21 +1100,21 @@ SK_U32		IntSrc;		/* interrupts source register contents */
 				SK_DBGCAT_DRV_INT_SRC,
 				("EOF RX1 IRQ\n"));
 			ReceiveIrq(pAC, &pAC->RxPort[0]);
-			SK_PNMI_CNT_RX_INTR(pAC, 0);
+			SK_PNMI_CNT_RX_INTR(pAC);
 		}
 		if (IntSrc & IRQ_EOF_RX2) {
 			SK_DBG_MSG(NULL, SK_DBGMOD_DRV,
 				SK_DBGCAT_DRV_INT_SRC,
 				("EOF RX2 IRQ\n"));
 			ReceiveIrq(pAC, &pAC->RxPort[1]);
-			SK_PNMI_CNT_RX_INTR(pAC, 1);
+			SK_PNMI_CNT_RX_INTR(pAC);
 		}
 #ifdef USE_TX_COMPLETE /* only if tx complete interrupt used */
 		if (IntSrc & IRQ_EOF_AS_TX1) {
 			SK_DBG_MSG(NULL, SK_DBGMOD_DRV,
 				SK_DBGCAT_DRV_INT_SRC,
 				("EOF AS TX1 IRQ\n"));
-			SK_PNMI_CNT_TX_INTR(pAC, 0);
+			SK_PNMI_CNT_TX_INTR(pAC);
 			spin_lock(&pAC->TxPort[0][TX_PRIO_LOW].TxDesRingLock);
 			FreeTxDescriptors(pAC, &pAC->TxPort[0][TX_PRIO_LOW]);
 			spin_unlock(&pAC->TxPort[0][TX_PRIO_LOW].TxDesRingLock);
@@ -1363,7 +1123,7 @@ SK_U32		IntSrc;		/* interrupts source register contents */
 			SK_DBG_MSG(NULL, SK_DBGMOD_DRV,
 				SK_DBGCAT_DRV_INT_SRC,
 				("EOF AS TX2 IRQ\n"));
-			SK_PNMI_CNT_TX_INTR(pAC, 1);
+			SK_PNMI_CNT_TX_INTR(pAC);
 			spin_lock(&pAC->TxPort[1][TX_PRIO_LOW].TxDesRingLock);
 			FreeTxDescriptors(pAC, &pAC->TxPort[1][TX_PRIO_LOW]);
 			spin_unlock(&pAC->TxPort[1][TX_PRIO_LOW].TxDesRingLock);
@@ -1373,7 +1133,7 @@ SK_U32		IntSrc;		/* interrupts source register contents */
 			SK_DBG_MSG(NULL, SK_DBGMOD_DRV,
 				SK_DBGCAT_DRV_INT_SRC,
 				("EOF SY TX1 IRQ\n"));
-			SK_PNMI_CNT_TX_INTR(pAC, 1);
+			SK_PNMI_CNT_TX_INTR(pAC);
 			spin_lock(&pAC->TxPort[0][TX_PRIO_HIGH].TxDesRingLock);
 			FreeTxDescriptors(pAC, 0, TX_PRIO_HIGH);
 			spin_unlock(&pAC->TxPort[0][TX_PRIO_HIGH].TxDesRingLock);
@@ -1383,7 +1143,7 @@ SK_U32		IntSrc;		/* interrupts source register contents */
 			SK_DBG_MSG(NULL, SK_DBGMOD_DRV,
 				SK_DBGCAT_DRV_INT_SRC,
 				("EOF SY TX2 IRQ\n"));
-			SK_PNMI_CNT_TX_INTR(pAC, 1);
+			SK_PNMI_CNT_TX_INTR(pAC);
 			spin_lock(&pAC->TxPort[1][TX_PRIO_HIGH].TxDesRingLock);
 			FreeTxDescriptors(pAC, 1, TX_PRIO_HIGH);
 			spin_unlock(&pAC->TxPort[1][TX_PRIO_HIGH].TxDesRingLock);
@@ -1408,12 +1168,11 @@ SK_U32		IntSrc;		/* interrupts source register contents */
 
 	if ((IntSrc & SPECIAL_IRQS) || pAC->CheckQueue) {
 		SK_DBG_MSG(NULL, SK_DBGMOD_DRV, SK_DBGCAT_DRV_INT_SRC,
-			("SPECIAL IRQ DP-Cards => %x\n", IntSrc));
+			("SPECIAL IRQ\n"));
 		pAC->CheckQueue = SK_FALSE;
 		spin_lock(&pAC->SlowPathLock);
-		if (IntSrc & SPECIAL_IRQS)		
+		if (IntSrc & SPECIAL_IRQS)
 			SkGeSirqIsr(pAC, pAC->IoBase, IntSrc);
-
 		SkEventDispatcher(pAC, pAC->IoBase);
 		spin_unlock(&pAC->SlowPathLock);
 	}
@@ -1422,10 +1181,29 @@ SK_U32		IntSrc;		/* interrupts source register contents */
 	 * came in after handling the ring (OUTs may be delayed
 	 * in hardware buffers, but are through after IN)
 	 */
-//	ReceiveIrq(pAC, &pAC->RxPort[pAC->ActivePort]);
-	ReceiveIrq(pAC, &pAC->RxPort[0]);
-	ReceiveIrq(pAC, &pAC->RxPort[1]);
+	ReceiveIrq(pAC, &pAC->RxPort[pAC->ActivePort]);
+//	ReceiveIrq(pAC, &pAC->RxPort[1]);
 
+#if 0
+// #ifdef USE_TX_COMPLETE /* only if tx complete interrupt used */
+	spin_lock(&pAC->TxPort[0][TX_PRIO_LOW].TxDesRingLock);
+	FreeTxDescriptors(pAC, &pAC->TxPort[0][TX_PRIO_LOW]);
+	spin_unlock(&pAC->TxPort[0][TX_PRIO_LOW].TxDesRingLock);
+
+	spin_lock(&pAC->TxPort[1][TX_PRIO_LOW].TxDesRingLock);
+	FreeTxDescriptors(pAC, &pAC->TxPort[1][TX_PRIO_LOW]);
+	spin_unlock(&pAC->TxPort[1][TX_PRIO_LOW].TxDesRingLock);
+
+#if 0	/* only if sync. queues used */
+	spin_lock(&pAC->TxPort[0][TX_PRIO_HIGH].TxDesRingLock);
+	FreeTxDescriptors(pAC, 0, TX_PRIO_HIGH);
+	spin_unlock(&pAC->TxPort[0][TX_PRIO_HIGH].TxDesRingLock);
+	
+	spin_lock(&pAC->TxPort[1][TX_PRIO_HIGH].TxDesRingLock);
+	FreeTxDescriptors(pAC, 1, TX_PRIO_HIGH);
+	spin_unlock(&pAC->TxPort[1][TX_PRIO_HIGH].TxDesRingLock);
+#endif /* 0 */
+#endif /* USE_TX_COMPLETE */
 
 	/* IRQ is processed - Enable IRQs again*/
 	SK_OUT32(pAC->IoBase, B0_IMSK, IRQ_MASK);
@@ -1449,13 +1227,11 @@ SK_U32		IntSrc;		/* interrupts source register contents */
  */
 static void SkGeIsrOnePort(int irq, void *dev_id, struct pt_regs *ptregs)
 {
-struct device *dev = (struct device *)dev_id;
-DEV_NET		*pNet;
+struct net_device *dev = (struct net_device *)dev_id;
 SK_AC		*pAC;
 SK_U32		IntSrc;		/* interrupts source register contents */	
 
-	pNet = (DEV_NET*) dev->priv;
-	pAC = pNet->pAC;
+	pAC = (SK_AC*) dev->priv;
 	
 	/*
 	 * Check and process if its our interrupt
@@ -1478,14 +1254,14 @@ SK_U32		IntSrc;		/* interrupts source register contents */
 				SK_DBGCAT_DRV_INT_SRC,
 				("EOF RX1 IRQ\n"));
 			ReceiveIrq(pAC, &pAC->RxPort[0]);
-			SK_PNMI_CNT_RX_INTR(pAC, 0);
+			SK_PNMI_CNT_RX_INTR(pAC);
 		}
 #ifdef USE_TX_COMPLETE /* only if tx complete interrupt used */
 		if (IntSrc & IRQ_EOF_AS_TX1) {
 			SK_DBG_MSG(NULL, SK_DBGMOD_DRV,
 				SK_DBGCAT_DRV_INT_SRC,
 				("EOF AS TX1 IRQ\n"));
-			SK_PNMI_CNT_TX_INTR(pAC, 0);
+			SK_PNMI_CNT_TX_INTR(pAC);
 			spin_lock(&pAC->TxPort[0][TX_PRIO_LOW].TxDesRingLock);
 			FreeTxDescriptors(pAC, &pAC->TxPort[0][TX_PRIO_LOW]);
 			spin_unlock(&pAC->TxPort[0][TX_PRIO_LOW].TxDesRingLock);
@@ -1495,7 +1271,7 @@ SK_U32		IntSrc;		/* interrupts source register contents */
 			SK_DBG_MSG(NULL, SK_DBGMOD_DRV,
 				SK_DBGCAT_DRV_INT_SRC,
 				("EOF SY TX1 IRQ\n"));
-			SK_PNMI_CNT_TX_INTR(pAC, 0);
+			SK_PNMI_CNT_TX_INTR(pAC);
 			spin_lock(&pAC->TxPort[0][TX_PRIO_HIGH].TxDesRingLock);
 			FreeTxDescriptors(pAC, 0, TX_PRIO_HIGH);
 			spin_unlock(&pAC->TxPort[0][TX_PRIO_HIGH].TxDesRingLock);
@@ -1516,12 +1292,11 @@ SK_U32		IntSrc;		/* interrupts source register contents */
 	
 	if ((IntSrc & SPECIAL_IRQS) || pAC->CheckQueue) {
 		SK_DBG_MSG(NULL, SK_DBGMOD_DRV, SK_DBGCAT_DRV_INT_SRC,
-			("SPECIAL IRQ SP-Cards => %x\n", IntSrc));
+			("SPECIAL IRQ\n"));
 		pAC->CheckQueue = SK_FALSE;
 		spin_lock(&pAC->SlowPathLock);
-		if (IntSrc & SPECIAL_IRQS)	
+		if (IntSrc & SPECIAL_IRQS)
 			SkGeSirqIsr(pAC, pAC->IoBase, IntSrc);
-
 		SkEventDispatcher(pAC, pAC->IoBase);
 		spin_unlock(&pAC->SlowPathLock);
 	}
@@ -1531,6 +1306,20 @@ SK_U32		IntSrc;		/* interrupts source register contents */
 	 * in hardware buffers, but are through after IN)
 	 */
 	ReceiveIrq(pAC, &pAC->RxPort[0]);
+
+#if 0
+// #ifdef USE_TX_COMPLETE /* only if tx complete interrupt used */
+	spin_lock(&pAC->TxPort[0][TX_PRIO_LOW].TxDesRingLock);
+	FreeTxDescriptors(pAC, &pAC->TxPort[0][TX_PRIO_LOW]);
+	spin_unlock(&pAC->TxPort[0][TX_PRIO_LOW].TxDesRingLock);
+
+#if 0	/* only if sync. queues used */
+	spin_lock(&pAC->TxPort[0][TX_PRIO_HIGH].TxDesRingLock);
+	FreeTxDescriptors(pAC, 0, TX_PRIO_HIGH);
+	spin_unlock(&pAC->TxPort[0][TX_PRIO_HIGH].TxDesRingLock);
+	
+#endif /* 0 */
+#endif /* USE_TX_COMPLETE */
 
 	/* IRQ is processed - Enable IRQs again*/
 	SK_OUT32(pAC->IoBase, B0_IMSK, IRQ_MASK);
@@ -1556,16 +1345,14 @@ SK_U32		IntSrc;		/* interrupts source register contents */
  *	!= 0 on error
  */
 static int SkGeOpen(
-struct device	*dev)
+struct net_device	*dev)
 {
-DEV_NET		*pNet;
-SK_AC		*pAC;
+SK_AC		*pAC;		/* pointer to adapter context struct */
 unsigned int	Flags;		/* for spin lock */
 int		i;
-SK_EVPARA	EvPara;			/* an event parameter union */
+SK_EVPARA	EvPara;		/* an event parameter union */
 
-	pNet = (DEV_NET*) dev->priv;
-	pAC = pNet->pAC;
+	pAC = (SK_AC*) dev->priv;
 	
 	SK_DBG_MSG(NULL, SK_DBGMOD_DRV, SK_DBGCAT_DRV_ENTRY,
 		("SkGeOpen: pAC=0x%lX:\n", (unsigned long)pAC));
@@ -1573,7 +1360,7 @@ SK_EVPARA	EvPara;			/* an event parameter union */
 	if (pAC->BoardLevel == 0) {
 		/* level 1 init common modules here */
 		if (SkGeInit(pAC, pAC->IoBase, 1) != 0) {
-			printk("%s: HWInit(1) failed\n", pAC->dev[pNet->PortNr]->name);
+			printk("%s: HWInit(1) failed\n", pAC->dev->name);
 			return (-1);
 		}
 		SkI2cInit	(pAC, pAC->IoBase, 1);
@@ -1584,30 +1371,26 @@ SK_EVPARA	EvPara;			/* an event parameter union */
 		SkTimerInit	(pAC, pAC->IoBase, 1);
 		pAC->BoardLevel = 1;
 	}
-
-	if (pAC->BoardLevel != 2) {		
-		/* level 2 init modules here */
-		SkGeInit	(pAC, pAC->IoBase, 2);
-		SkI2cInit	(pAC, pAC->IoBase, 2);
-		SkEventInit	(pAC, pAC->IoBase, 2);
-		SkPnmiInit	(pAC, pAC->IoBase, 2);
-		SkAddrInit	(pAC, pAC->IoBase, 2);
-		SkRlmtInit	(pAC, pAC->IoBase, 2);
-		SkTimerInit	(pAC, pAC->IoBase, 2);
-		pAC->BoardLevel = 2;
-	}
+		
+	/* level 2 init modules here */
+	SkGeInit	(pAC, pAC->IoBase, 2);
+	SkI2cInit	(pAC, pAC->IoBase, 2);
+	SkEventInit	(pAC, pAC->IoBase, 2);
+	SkPnmiInit	(pAC, pAC->IoBase, 2);
+	SkAddrInit	(pAC, pAC->IoBase, 2);
+	SkRlmtInit	(pAC, pAC->IoBase, 2);
+	SkTimerInit	(pAC, pAC->IoBase, 2);
+	pAC->BoardLevel = 2;
 	
 	for (i=0; i<pAC->GIni.GIMacsFound; i++) {
-		/* Enable transmit descriptor polling. */
+		// Enable transmit descriptor polling.
 		SkGePollTxD(pAC, pAC->IoBase, i, SK_TRUE);
 		FillRxRing(pAC, &pAC->RxPort[i]);
-		// Enable rx pad byte stripping
-		SkXmSetRxCmd(pAC, pAC->IoBase, i, SK_STRIP_PAD_ON);
 	}
 	SkGeYellowLED(pAC, pAC->IoBase, 1);
 
 #ifdef USE_INT_MOD
-/* moderate only TX complete interrupts (these are not time critical) */
+// moderate only TX complete interrupts (these are not time critical)
 #define IRQ_MOD_MASK (IRQ_EOF_AS_TX1 | IRQ_EOF_AS_TX2)
 	{
 		unsigned long ModBase;
@@ -1623,32 +1406,17 @@ SK_EVPARA	EvPara;			/* an event parameter union */
 	SK_OUT32(pAC->IoBase, B0_HWE_IMSK, IRQ_HWE_MASK);
 
 	spin_lock_irqsave(&pAC->SlowPathLock, Flags);
-
-	if ((pAC->RlmtMode != 0) && (pAC->MaxPorts == 0)) {
-		EvPara.Para32[0] = pAC->RlmtNets;
-		EvPara.Para32[1] = -1;
-		SkEventQueue(pAC, SKGE_RLMT, SK_RLMT_SET_NETS,
-			EvPara);
+	SkEventQueue(pAC, SKGE_RLMT, SK_RLMT_START, EvPara);
+	if (pAC->RlmtMode != 0) {
 		EvPara.Para32[0] = pAC->RlmtMode;
-		EvPara.Para32[1] = 0;
 		SkEventQueue(pAC, SKGE_RLMT, SK_RLMT_MODE_CHANGE,
 			EvPara);
 	}
-
-	EvPara.Para32[0] = pNet->NetNr;
-	EvPara.Para32[1] = -1;
-	SkEventQueue(pAC, SKGE_RLMT, SK_RLMT_START, EvPara);
 	SkEventDispatcher(pAC, pAC->IoBase);
 	spin_unlock_irqrestore(&pAC->SlowPathLock, Flags);
 	
-	pAC->MaxPorts++;
-	pNet->Up = 1;
-	dev->tbusy = 0;
-	dev->interrupt = 0;
-	dev->start = 1;
-
 	MOD_INC_USE_COUNT;
-
+	
 	SK_DBG_MSG(NULL, SK_DBGMOD_DRV, SK_DBGCAT_DRV_ENTRY,
 		("SkGeOpen suceeded\n"));
 
@@ -1668,92 +1436,54 @@ SK_EVPARA	EvPara;			/* an event parameter union */
  *	error code - on error
  */
 static int SkGeClose(
-struct device	*dev)
+struct net_device	*dev)
 {
-DEV_NET		*pNet;
 SK_AC		*pAC;
-
 unsigned int	Flags;		/* for spin lock */
 int		i;
 SK_EVPARA	EvPara;
-int		PortIdx;
 
-	dev->start = 0;
-	set_bit(0, (void*)&dev->tbusy);
-	
-	pNet = (DEV_NET*) dev->priv;
-	pAC = pNet->pAC;
+	netif_stop_queue(dev);
+
+	pAC = (SK_AC*) dev->priv;
 	
 	SK_DBG_MSG(NULL, SK_DBGMOD_DRV, SK_DBGCAT_DRV_ENTRY,
 		("SkGeClose: pAC=0x%lX ", (unsigned long)pAC));
 
-	if (pAC->RlmtNets == 1) {
-		PortIdx = pAC->ActivePort;
-	}
-	else {
-		PortIdx = pNet->NetNr;
-	}
 	/* 
 	 * Clear multicast table, promiscuous mode ....
 	 */
-	SkAddrMcClear(pAC, pAC->IoBase, PortIdx, 0);
-	SkAddrPromiscuousChange(pAC, pAC->IoBase, PortIdx,
+	SkAddrMcClear(pAC, pAC->IoBase, pAC->ActivePort, 0);
+	SkAddrPromiscuousChange(pAC, pAC->IoBase, pAC->ActivePort,
 		SK_PROM_MODE_NONE);
 
-	if (pAC->MaxPorts == 1) {
-		spin_lock_irqsave(&pAC->SlowPathLock, Flags);
-		/* disable interrupts */
-		SK_OUT32(pAC->IoBase, B0_IMSK, 0);
-		EvPara.Para32[0] = pNet->NetNr;
-		EvPara.Para32[1] = -1;
-		SkEventQueue(pAC, SKGE_RLMT, SK_RLMT_STOP, EvPara);
-		SkEventDispatcher(pAC, pAC->IoBase);
-		SK_OUT32(pAC->IoBase, B0_IMSK, 0);
-		/* stop the hardware */
-		SkGeDeInit(pAC, pAC->IoBase);
-		pAC->BoardLevel = 0;
-		spin_unlock_irqrestore(&pAC->SlowPathLock, Flags);
-	} else {
 
-		spin_lock_irqsave(&pAC->SlowPathLock, Flags);
-		EvPara.Para32[0] = pNet->NetNr;
-		EvPara.Para32[1] = -1;
-		SkEventQueue(pAC, SKGE_RLMT, SK_RLMT_STOP, EvPara);
-		SkEventDispatcher(pAC, pAC->IoBase);
-		spin_unlock_irqrestore(&pAC->SlowPathLock, Flags);
-		
-		/* Stop port */
-		spin_lock_irqsave(&pAC->TxPort[pNet->PortNr]
-			[TX_PRIO_LOW].TxDesRingLock, Flags);
-		SkGeStopPort(pAC, pAC->IoBase, pNet->PortNr, 
-			SK_STOP_ALL, SK_HARD_RST);
-		spin_unlock_irqrestore(&pAC->TxPort[pNet->PortNr]
-			[TX_PRIO_LOW].TxDesRingLock, Flags);
-	}
+	spin_lock_irqsave(&pAC->SlowPathLock, Flags);
+	/* disable interrupts */
+	SK_OUT32(pAC->IoBase, B0_IMSK, 0);
+	SkEventQueue(pAC, SKGE_RLMT, SK_RLMT_STOP, EvPara);
+	SkEventDispatcher(pAC, pAC->IoBase);
+	SK_OUT32(pAC->IoBase, B0_IMSK, 0);
+	/* stop the hardware */
+	SkGeDeInit(pAC, pAC->IoBase);
+	pAC->BoardLevel = 0;
+	
+	spin_unlock_irqrestore(&pAC->SlowPathLock, Flags);
 
-	if (pAC->RlmtNets == 1) {
+	for (i=0; i<pAC->GIni.GIMacsFound; i++) {
 		/* clear all descriptor rings */
-		for (i=0; i<pAC->GIni.GIMacsFound; i++) {
-			ReceiveIrq(pAC, &pAC->RxPort[i]);
-			ClearRxRing(pAC, &pAC->RxPort[i]);
-			ClearTxRing(pAC, &pAC->TxPort[i][TX_PRIO_LOW]);
-		}
-	} else {
-		/* clear port descriptor rings */
-		ReceiveIrq(pAC, &pAC->RxPort[pNet->PortNr]);
-		ClearRxRing(pAC, &pAC->RxPort[pNet->PortNr]);
-		ClearTxRing(pAC, &pAC->TxPort[pNet->PortNr][TX_PRIO_LOW]);
+		ReceiveIrq(pAC, &pAC->RxPort[i]);
+		ClearRxRing(pAC, &pAC->RxPort[i]);
+		ClearTxRing(pAC, &pAC->TxPort[i][TX_PRIO_LOW]);
 	}
 
-	SK_DBG_MSG(NULL, SK_DBGMOD_DRV, SK_DBGCAT_DRV_ENTRY,("SkGeClose: done "));
+	SK_DBG_MSG(NULL, SK_DBGMOD_DRV, SK_DBGCAT_DRV_ENTRY,
+		("SkGeClose: done "));
 
-	pAC->MaxPorts--;
-	pNet->Up = 0;
 	MOD_DEC_USE_COUNT;
 	
 	return (0);
 } /* SkGeClose */
-
 
 /*****************************************************************************
  *
@@ -1770,29 +1500,25 @@ int		PortIdx;
  * WARNING: returning 1 in 'tbusy' case caused system crashes (double
  *	allocated skb's) !!!
  */
-static int SkGeXmit(struct sk_buff *skb, struct device *dev)
+static int SkGeXmit(struct sk_buff *skb, struct net_device *dev)
 {
-DEV_NET		*pNet;
 SK_AC		*pAC;
-int			Rc;	/* return code of XmitFrame */
+int		Rc;	/* return code of XmitFrame */
+	
+	pAC = (SK_AC*) dev->priv;
 
+	Rc = XmitFrame(pAC, &pAC->TxPort[pAC->ActivePort][TX_PRIO_LOW], skb);
 
-	pNet = (DEV_NET*) dev->priv;
-	pAC = pNet->pAC;
+	/* Transmitter out of resources? */
+	if (Rc <= 0)
+		netif_stop_queue(dev);
 
-	if (pAC->RlmtNets == 2)
-		Rc = XmitFrame(pAC, &pAC->TxPort[pNet->PortNr][TX_PRIO_LOW], skb);
-	else
-		Rc = XmitFrame(pAC, &pAC->TxPort[pAC->ActivePort][TX_PRIO_LOW], skb);
+	/* If not taken, give buffer ownership back to the
+	 * queueing layer.
+	 */
+	if (Rc < 0)
+		return (1);
 
-	if (Rc <= 0) {
-		/* transmitter out of resources */
-		set_bit(0, (void*) &dev->tbusy);
-		if (Rc == 0)
-			return (0);
-		else
-			return (-EBUSY);
-	} 
 	dev->trans_start = jiffies;
 	return (0);
 } /* SkGeXmit */
@@ -1816,9 +1542,9 @@ int			Rc;	/* return code of XmitFrame */
  *
  * Returns:
  *	> 0 - on succes: the number of bytes in the message
- *	= 0 - on resource shortage: this frame was sent, now
+ *	= 0 - on resource shortage: this frame sent or dropped, now
  *        the ring is full ( -> set tbusy)
- *	< 0 - on resource shortage: this frame could not be sent
+ *	< 0 - on failure: other problems ( -> return failure to upper layers)
  */
 static int XmitFrame(
 SK_AC 		*pAC,		/* pointer to adapter context */
@@ -1840,13 +1566,11 @@ int		BytesSend;
 		FreeTxDescriptors(pAC, pTxPort);
 		if (pTxPort->TxdRingFree == 0) {
 			spin_unlock_irqrestore(&pTxPort->TxDesRingLock, Flags);
-			SK_PNMI_CNT_NO_TX_BUF(pAC, pTxPort->PortIndex);
+			SK_PNMI_CNT_NO_TX_BUF(pAC);
 			SK_DBG_MSG(NULL, SK_DBGMOD_DRV,
 				SK_DBGCAT_DRV_TX_PROGRESS,
 				("XmitFrame failed\n"));
 			/* this message can not be sent now */
-			/* Because tbusy seems to be set, the message should not be freed here */
-			/* It will be used by the scheduler of the ethernet handler */
 			return (-1);
 		}
 	}
@@ -1865,7 +1589,10 @@ int		BytesSend;
 #endif
 
 	/* set up descriptor and CONTROL dword */
-	PhysAddr = virt_to_bus(pMessage->data);
+	PhysAddr = (SK_U64) pci_map_single(&pAC->PciDev,
+					   pMessage->data,
+					   pMessage->len,
+					   PCI_DMA_TODEVICE);
 	pTxd->VDataLow = (SK_U32)  (PhysAddr & 0xffffffff);
 	pTxd->VDataHigh = (SK_U32) (PhysAddr >> 32);
 	pTxd->pMBuf = pMessage;
@@ -1924,11 +1651,10 @@ TX_PORT	*pTxPort)	/* pointer to destination port structure */
 TXD	*pTxd;		/* pointer to the checked descriptor */
 TXD	*pNewTail;	/* pointer to 'end' of the ring */
 SK_U32	Control;	/* TBControl field of descriptor */
-DEV_NET	*pNet;
+SK_U64	PhysAddr;	/* address of DMA mapping */
 
 	pNewTail = pTxPort->pTxdRingTail;
 	pTxd = pNewTail;
-	pNet = (DEV_NET*) pAC->dev[pTxPort->PortIndex]->priv;
 	
 	/* 
 	 * loop forever; exits if TX_CTRL_SOFTWARE bit not set in start frame
@@ -1944,21 +1670,28 @@ DEV_NET	*pNet;
 			 * freed ( -> ring completely free now).
 			 */
 			pTxPort->pTxdRingTail = pTxd;
-			pAC->dev[pTxPort->PortIndex]->tbusy = 0;
+			netif_start_queue(pAC->dev);
 			return;
 		}
 		if (Control & TX_CTRL_OWN_BMU) {
 			pTxPort->pTxdRingTail = pTxd;
 			if (pTxPort->TxdRingFree > 0) {
-				pAC->dev[pTxPort->PortIndex]->tbusy = 0;
+				netif_start_queue(pAC->dev);
 			}
 			return;
 		}
+		
+		/* release the DMA mapping */
+		PhysAddr = ((SK_U64) pTxd->VDataHigh) << (SK_U64) 32;
+		PhysAddr |= (SK_U64) pTxd->VDataLow;
+		pci_unmap_single(&pAC->PciDev, PhysAddr,
+				 pTxd->pMBuf->len,
+				 PCI_DMA_TODEVICE);
 
-		DEV_KFREE_SKB(pTxd->pMBuf); /* free message */
-
+		/* free message */
+		DEV_KFREE_SKB_ANY(pTxd->pMBuf);
 		pTxPort->TxdRingFree++;
-		pTxd->TBControl = 0; /* reset TX_CTRL_SOFTWARE */
+		pTxd->TBControl &= ~TX_CTRL_SOFTWARE;
 		pTxd = pTxd->pNextTxd; /* point behind fragment with EOF */
 	} /* while(forever) */
 } /* FreeTxDescriptors */
@@ -2022,8 +1755,8 @@ SK_U64		PhysAddr;	/* physical address of a rx buffer */
 		SK_DBG_MSG(NULL, SK_DBGMOD_DRV,
 			SK_DBGCAT_DRV_ENTRY,
 			("%s: Allocation of rx buffer failed !\n",
-			pAC->dev[pRxPort->PortIndex]->name));
-		SK_PNMI_CNT_NO_RX_BUF(pAC, pRxPort->PortIndex);
+			pAC->dev->name));
+		SK_PNMI_CNT_NO_RX_BUF(pAC);
 		return(SK_FALSE);
 	}
 	skb_reserve(pMsgBlock, 2); /* to align IP frames */
@@ -2032,7 +1765,10 @@ SK_U64		PhysAddr;	/* physical address of a rx buffer */
 	pRxPort->pRxdRingTail = pRxd->pNextRxd;
 	pRxPort->RxdRingFree--;
 	Length = pAC->RxBufSize;
-	PhysAddr = virt_to_bus(pMsgBlock->data);
+	PhysAddr = (SK_U64) pci_map_single(&pAC->PciDev,
+					   pMsgBlock->data,
+					   pAC->RxBufSize - 2,
+					   PCI_DMA_FROMDEVICE);
 	pRxd->VDataLow = (SK_U32) (PhysAddr & 0xffffffff);
 	pRxd->VDataHigh = (SK_U32) (PhysAddr >> 32);
 	pRxd->pMBuf = pMsgBlock;
@@ -2110,88 +1846,53 @@ unsigned short	Csum1;
 unsigned short	Csum2;
 unsigned short	Type;
 int		Result;
+SK_U64		PhysAddr;
+
 
 rx_start:	
 	/* do forever; exit if RX_CTRL_OWN_BMU found */
-	for ( pRxd = pRxPort->pRxdRingHead ;
-		  pRxPort->RxdRingFree < pAC->RxDescrPerRing ;
-		  pRxd = pRxd->pNextRxd,
-		  pRxPort->pRxdRingHead = pRxd,
-		  pRxPort->RxdRingFree ++) {
-
-		/*
-		 * For a better understanding of this loop 
-		 * Go through every descriptor beginning at the head 
-		 * Please note: the ring might be completely received so the OWN bit
-		 * set is not a good crirteria to leave that loop.
-		 * Therefore the RingFree counter is used.
-		 * On entry of this loop pRxd is a pointer to the Rxd that needs
-		 * to be checked next.
-		 */
-
+	while (pRxPort->RxdRingFree < pAC->RxDescrPerRing) {
+		pRxd = pRxPort->pRxdRingHead;
+		
 		Control = pRxd->RBControl;
-	
+		
 		/* check if this descriptor is ready */
 		if ((Control & RX_CTRL_OWN_BMU) != 0) {
 			/* this descriptor is not yet ready */
-			/* This is the usual end of the loop */
-			/* We don't need to start the ring again */
 			FillRxRing(pAC, pRxPort);
 			return;
 		}
-
+		
 		/* get length of frame and check it */
 		FrameLength = Control & RX_CTRL_LEN_MASK;
-		if (FrameLength > pAC->RxBufSize) {
+		if (FrameLength > pAC->RxBufSize)
 			goto rx_failed;
-		}
 
 		/* check for STF and EOF */
 		if ((Control & (RX_CTRL_STF | RX_CTRL_EOF)) !=
-			(RX_CTRL_STF | RX_CTRL_EOF)) {
+			(RX_CTRL_STF | RX_CTRL_EOF))
 			goto rx_failed;
-		}
 		
 		/* here we have a complete frame in the ring */
 		pMsg = pRxd->pMBuf;
-
-		FrameStat = pRxd->FrameStat;
-		SK_DBG_MSG(NULL, SK_DBGMOD_DRV, 0,
-			("Received frame of length %d on port %d\n",
-			FrameLength, PortIndex));
-		SK_DBG_MSG(NULL, SK_DBGMOD_DRV, 0,
-			("Number of free rx descriptors: %d\n",
-			pRxPort->RxdRingFree));
-/*DumpMsg(pMsg, "Rx");	*/	
 		
-		if ((Control & RX_CTRL_STAT_VALID) != RX_CTRL_STAT_VALID ||
-			(FrameStat & (XMR_FS_ANY_ERR | XMR_FS_2L_VLAN)) != 0) {
-			/* there is a receive error in this frame */
-			SK_DBG_MSG(NULL, SK_DBGMOD_DRV,
-				SK_DBGCAT_DRV_RX_PROGRESS,
-				("skge: Error in received frame, dropped!\n"
-				"Control: %x\nRxStat: %x\n",
-				Control, FrameStat));
-			ReQueueRxBuffer(pAC, pRxPort, pMsg,
-				pRxd->VDataHigh, pRxd->VDataLow);
-
-			continue;
-		}
-
 		/*
 		 * if short frame then copy data to reduce memory waste
 		 */
+		pNewMsg = NULL;
 		if (FrameLength < SK_COPY_THRESHOLD) {
 			pNewMsg = alloc_skb(FrameLength+2, GFP_ATOMIC);
-			if (pNewMsg == NULL) {
-				/* use original skb */
-				/* set length in message */
-				skb_put(pMsg, FrameLength);
-			}
-			else {
-				/* alloc new skb and copy data */
+			if (pNewMsg != NULL) {
+				PhysAddr = ((SK_U64) pRxd->VDataHigh) << (SK_U64)32;
+				PhysAddr |= (SK_U64) pRxd->VDataLow;
+
+				/* use new skb and copy data */
 				skb_reserve(pNewMsg, 2);
 				skb_put(pNewMsg, FrameLength);
+				pci_dma_sync_single(&pAC->PciDev,
+						    (dma_addr_t) PhysAddr,
+						    FrameLength,
+						    PCI_DMA_FROMDEVICE);
 				eth_copy_and_sum(pNewMsg, pMsg->data,
 					FrameLength, 0);
 				ReQueueRxBuffer(pAC, pRxPort, pMsg,
@@ -2199,20 +1900,32 @@ rx_start:
 				pMsg = pNewMsg;
 			}
 		}
-		else {
+
+		/*
+		 * if large frame, or SKB allocation failed, pass
+		 * the SKB directly to the networking
+		 */
+		if (pNewMsg == NULL) {
+			PhysAddr = ((SK_U64) pRxd->VDataHigh) << (SK_U64)32;
+			PhysAddr |= (SK_U64) pRxd->VDataLow;
+
+			/* release the DMA mapping */
+			pci_unmap_single(&pAC->PciDev,
+					 PhysAddr,
+					 pAC->RxBufSize - 2,
+					 PCI_DMA_FROMDEVICE);
+
 			/* set length in message */
 			skb_put(pMsg, FrameLength);
 			/* hardware checksum */
 			Type = ntohs(*((short*)&pMsg->data[12]));
 			if (Type == 0x800) {
-				/* the hardware calculates the checksums in LITTLE ENDIAN */
-				/* so turn them around for BIG ENDIAN machines */
-				Csum1= le16_to_cpu(pRxd->TcpSums & 0xffff);
-				Csum2= le16_to_cpu((pRxd->TcpSums >> 16) & 0xffff);
+				Csum1=le16_to_cpu(pRxd->TcpSums & 0xffff);
+				Csum2=le16_to_cpu((pRxd->TcpSums >> 16) & 0xffff);
 				if ((Csum1 & 0xfffe) && (Csum2 & 0xfffe)) {
 					Result = SkCsGetReceiveInfo(pAC,
 						&pMsg->data[14], 
-						Csum1, Csum2, pRxPort->PortIndex);
+						Csum1, Csum2);
 					if (Result == 
 						SKCS_STATUS_IP_FRAGMENT ||
 						Result ==
@@ -2228,85 +1941,119 @@ rx_start:
 			} /* IP frame */
 		} /* frame > SK_COPY_TRESHOLD */
 		
-		SK_DBG_MSG(NULL, SK_DBGMOD_DRV,	1,("V"));
-		ForRlmt = SK_RLMT_RX_PROTOCOL;
-		IsBc = (FrameStat & XMR_FS_BC)==XMR_FS_BC;
-		SK_RLMT_PRE_LOOKAHEAD(pAC, PortIndex, FrameLength,
-			IsBc, &Offset, &NumBytes);
-		if (NumBytes != 0) {
-			IsMc = (FrameStat & XMR_FS_MC)==XMR_FS_MC;
-			SK_RLMT_LOOKAHEAD(pAC, PortIndex, 
-				&pMsg->data[Offset],
-				IsBc, IsMc, &ForRlmt);
-		}
-		if (ForRlmt == SK_RLMT_RX_PROTOCOL) {
-					SK_DBG_MSG(NULL, SK_DBGMOD_DRV,	1,("W"));
-/* send up only frames from active port */
-			if ((PortIndex == pAC->ActivePort) ||
-				(pAC->RlmtNets == 2)) {
-				/* frame for upper layer */
-				SK_DBG_MSG(NULL, SK_DBGMOD_DRV, 1,("U"));
-#ifdef xDEBUG
-				DumpMsg(pMsg, "Rx");
+		FrameStat = pRxd->FrameStat;
+		pRxd = pRxd->pNextRxd;
+		pRxPort->pRxdRingHead = pRxd;
+		pRxPort->RxdRingFree ++;
+		SK_DBG_MSG(NULL, SK_DBGMOD_DRV, SK_DBGCAT_DRV_RX_PROGRESS,
+			("Received frame of length %d on port %d\n",
+			FrameLength, PortIndex));
+		SK_DBG_MSG(NULL, SK_DBGMOD_DRV, SK_DBGCAT_DRV_RX_PROGRESS,
+			("Number of free rx descriptors: %d\n",
+			pRxPort->RxdRingFree));
+		
+		if ((Control & RX_CTRL_STAT_VALID) == RX_CTRL_STAT_VALID &&
+			(FrameStat & 
+			(XMR_FS_ANY_ERR | XMR_FS_1L_VLAN | XMR_FS_2L_VLAN))
+ 			 == 0) {
+			SK_DBG_MSG(NULL, SK_DBGMOD_DRV,
+				SK_DBGCAT_DRV_RX_PROGRESS,("V"));
+			ForRlmt = SK_RLMT_RX_PROTOCOL;
+			IsBc = (FrameStat & XMR_FS_BC)==XMR_FS_BC;
+			SK_RLMT_PRE_LOOKAHEAD(pAC, PortIndex, FrameLength,
+				IsBc, &Offset, &NumBytes);
+			if (NumBytes != 0) {
+				IsMc = (FrameStat & XMR_FS_MC)==XMR_FS_MC;
+				SK_RLMT_LOOKAHEAD(pAC, PortIndex, 
+					&pMsg->data[Offset],
+					IsBc, IsMc, &ForRlmt);
+			}
+			if (ForRlmt == SK_RLMT_RX_PROTOCOL) {
+				/* send up only frames from active port */
+			    	if (PortIndex == pAC->ActivePort) {
+					/* frame for upper layer */
+					SK_DBG_MSG(NULL, SK_DBGMOD_DRV, 
+						SK_DBGCAT_DRV_RX_PROGRESS,
+						("U"));
+#ifdef DUMP_RX
+					DumpMsg(pMsg, "Rx");
 #endif
-				SK_PNMI_CNT_RX_OCTETS_DELIVERED(pAC,
-					FrameLength, pRxPort->PortIndex);
-
-				pMsg->dev = pAC->dev[pRxPort->PortIndex];
-				pMsg->protocol = eth_type_trans(pMsg,
-					pAC->dev[pRxPort->PortIndex]);
-				netif_rx(pMsg);
-				pAC->dev[pRxPort->PortIndex]->last_rx = jiffies;
-			}
+					pMsg->dev = pAC->dev;
+					pMsg->protocol = eth_type_trans(pMsg,
+						pAC->dev);
+					SK_PNMI_CNT_RX_OCTETS_DELIVERED(pAC,
+						FrameLength);
+					netif_rx(pMsg);
+					pAC->dev->last_rx = jiffies;
+				}
+				else {
+					/* drop frame */
+					SK_DBG_MSG(NULL, SK_DBGMOD_DRV, 
+						SK_DBGCAT_DRV_RX_PROGRESS,
+						("D"));
+					DEV_KFREE_SKB_IRQ(pMsg);
+				}
+			} /* if not for rlmt */
 			else {
-				/* drop frame */
+				/* packet for rlmt */
 				SK_DBG_MSG(NULL, SK_DBGMOD_DRV, 
-					SK_DBGCAT_DRV_RX_PROGRESS,
-					("D"));
-				DEV_KFREE_SKB(pMsg);
-			}
-			
-		} /* if not for rlmt */
+					SK_DBGCAT_DRV_RX_PROGRESS, ("R"));
+				pRlmtMbuf = SkDrvAllocRlmtMbuf(pAC,
+					pAC->IoBase, FrameLength);
+				if (pRlmtMbuf != NULL) {
+					pRlmtMbuf->pNext = NULL;
+					pRlmtMbuf->Length = FrameLength;
+					pRlmtMbuf->PortIdx = PortIndex;
+					EvPara.pParaPtr = pRlmtMbuf;
+					memcpy((char*)(pRlmtMbuf->pData),
+					       (char*)(pMsg->data),
+					       FrameLength);
+					SkEventQueue(pAC, SKGE_RLMT,
+						SK_RLMT_PACKET_RECEIVED,
+						EvPara);
+					pAC->CheckQueue = SK_TRUE;
+					SK_DBG_MSG(NULL, SK_DBGMOD_DRV, 
+						SK_DBGCAT_DRV_RX_PROGRESS,
+						("Q"));
+				}
+				if ((pAC->dev->flags & 
+					(IFF_PROMISC | IFF_ALLMULTI)) != 0 ||
+					(ForRlmt & SK_RLMT_RX_PROTOCOL) == 
+					SK_RLMT_RX_PROTOCOL) { 
+					pMsg->dev = pAC->dev;
+					pMsg->protocol = eth_type_trans(pMsg,
+						pAC->dev);
+					netif_rx(pMsg);
+					pAC->dev->last_rx = jiffies;
+				}
+				else {
+					DEV_KFREE_SKB_IRQ(pMsg);
+				}
+
+			} /* if packet for rlmt */
+		} /* if valid frame */
 		else {
-			/* packet for rlmt */
-			SK_DBG_MSG(NULL, SK_DBGMOD_DRV, 
-				SK_DBGCAT_DRV_RX_PROGRESS, ("R"));
-			pRlmtMbuf = SkDrvAllocRlmtMbuf(pAC,
-				pAC->IoBase, FrameLength);
-			if (pRlmtMbuf != NULL) {
-				pRlmtMbuf->pNext = NULL;
-				pRlmtMbuf->Length = FrameLength;
-				pRlmtMbuf->PortIdx = PortIndex;
-				EvPara.pParaPtr = pRlmtMbuf;
-				memcpy((char*)(pRlmtMbuf->pData),
-					   (char*)(pMsg->data),
-					   FrameLength);
-				SkEventQueue(pAC, SKGE_RLMT,
-					SK_RLMT_PACKET_RECEIVED,
-					EvPara);
-				pAC->CheckQueue = SK_TRUE;
-				SK_DBG_MSG(NULL, SK_DBGMOD_DRV, 
-					SK_DBGCAT_DRV_RX_PROGRESS,
-					("Q"));
+			/* there is a receive error in this frame */
+			if ((FrameStat & XMR_FS_1L_VLAN) != 0) {
+				printk("%s: Received frame"
+					" with VLAN Level 1 header, check"
+					" switch configuration\n",
+					pAC->dev->name);
 			}
-			if ((pAC->dev[pRxPort->PortIndex]->flags & 
-				(IFF_PROMISC | IFF_ALLMULTI)) != 0 ||
-				(ForRlmt & SK_RLMT_RX_PROTOCOL) == 
-				SK_RLMT_RX_PROTOCOL) { 
-				pMsg->dev = pAC->dev[pRxPort->PortIndex];
-				pMsg->protocol = eth_type_trans(pMsg,
-					pAC->dev[pRxPort->PortIndex]);
-				netif_rx(pMsg);
-				pAC->dev[pRxPort->PortIndex]->last_rx = jiffies;
+			if ((FrameStat & XMR_FS_2L_VLAN) != 0) {
+				printk("%s: Received frame"
+					" with VLAN Level 2 header, check"
+					" switch configuration\n",
+					pAC->dev->name);
 			}
-			else {
-				DEV_KFREE_SKB(pMsg);
-			}
-
-		} /* if packet for rlmt */
-	} /* for ... scanning the RXD ring */
-
-	/* RXD ring is empty -> fill and restart */
+			SK_DBG_MSG(NULL, SK_DBGMOD_DRV,
+				SK_DBGCAT_DRV_RX_PROGRESS,
+				("skge: Error in received frame, dropped!\n"
+				"Control: %x\nRxStat: %x\n",
+				Control, FrameStat));
+			DEV_KFREE_SKB_IRQ(pMsg);
+		}
+	} /* while */
 	FillRxRing(pAC, pRxPort);
 	/* do not start if called from Close */
 	if (pAC->BoardLevel > 0) {
@@ -2318,7 +2065,15 @@ rx_failed:
 	/* remove error frame */
 	SK_DBG_MSG(NULL, SK_DBGMOD_DRV, SK_DBGCAT_DRV_ERROR,
 		("Schrottdescriptor, length: 0x%x\n", FrameLength));
-	DEV_KFREE_SKB(pRxd->pMBuf);
+
+	/* release the DMA mapping */
+	PhysAddr = ((SK_U64) pRxd->VDataHigh) << (SK_U64)32;
+	PhysAddr |= (SK_U64) pRxd->VDataLow;
+	pci_unmap_single(&pAC->PciDev,
+			 PhysAddr,
+			 pAC->RxBufSize - 2,
+			 PCI_DMA_FROMDEVICE);
+	DEV_KFREE_SKB_IRQ(pRxd->pMBuf);
 	pRxd->pMBuf = NULL;
 	pRxPort->RxdRingFree++;
 	pRxPort->pRxdRingHead = pRxd->pNextRxd;
@@ -2338,7 +2093,7 @@ rx_failed:
  * Returns: N/A
  *	none
  */
-void ClearAndStartRx(
+static void ClearAndStartRx(
 SK_AC	*pAC,		/* pointer to the adapter context */
 int	PortIndex)	/* index of the receive port (XMAC) */
 {
@@ -2383,6 +2138,7 @@ RX_PORT	*pRxPort)	/* pointer to rx port struct */
 {
 RXD		*pRxd;	/* pointer to the current descriptor */
 unsigned int	Flags;
+ SK_U64		PhysAddr;
 
 	if (pRxPort->RxdRingFree == pAC->RxDescrPerRing) {
 		return;
@@ -2391,6 +2147,12 @@ unsigned int	Flags;
 	pRxd = pRxPort->pRxdRingHead;
 	do {
 		if (pRxd->pMBuf != NULL) {
+			PhysAddr = ((SK_U64) pRxd->VDataHigh) << (SK_U64)32;
+			PhysAddr |= (SK_U64) pRxd->VDataLow;
+			pci_unmap_single(&pAC->PciDev,
+					 PhysAddr,
+					 pAC->RxBufSize - 2,
+					 PCI_DMA_FROMDEVICE);
 			DEV_KFREE_SKB(pRxd->pMBuf);
 			pRxd->pMBuf = NULL;
 		}
@@ -2459,7 +2221,6 @@ int	RemainingRam;	/* adapter RAM available for the active port */
 int	RxRam;		/* RAM used for the active port receive queue */
 int	i;		/* loop counter */
 
-if (pAC->RlmtNets == 1) {
 	StandbyRam = SK_RLMT_STANDBY_QRXSIZE + SK_RLMT_STANDBY_QXASIZE +
 		SK_RLMT_STANDBY_QXSSIZE;
 	RemainingRam = pAC->GIni.GIRamSize - 
@@ -2480,40 +2241,21 @@ if (pAC->RlmtNets == 1) {
 	SK_DBG_MSG(NULL, SK_DBGMOD_DRV, SK_DBGCAT_DRV_ENTRY,
 		("queue sizes settings - rx:%d  txA:%d txS:%d\n",
 		pAC->RxQueueSize,pAC->TxAQueueSize, pAC->TxSQueueSize));
-} else {
-	RemainingRam = pAC->GIni.GIRamSize/pAC->GIni.GIMacsFound;
-	RxRam = (RemainingRam * 8 / 10) & ~7;
-	for (i=0; i<pAC->GIni.GIMacsFound; i++) {
-		pAC->GIni.GP[i].PRxQSize = RxRam;
-		pAC->GIni.GP[i].PXSQSize = 0;
-		pAC->GIni.GP[i].PXAQSize = (RemainingRam - RxRam) & ~7;
-	}
 	
-	pAC->RxQueueSize = RxRam;
-	pAC->TxSQueueSize = 0;
-	pAC->TxAQueueSize = (RemainingRam - RxRam) & ~7;
-}	
 	for (i=0; i<SK_MAX_MACS; i++) {
 		pAC->RxPort[i].RxFillLimit = pAC->RxDescrPerRing;
 	}
-	if (pAC->RlmtNets == 2) {
-		for (i=0; i<pAC->GIni.GIMacsFound; i++) {
-			pAC->RxPort[i].RxFillLimit = 1;
-		}
-	} else {
-		for (i=0; i<pAC->GIni.GIMacsFound; i++) {
-			pAC->RxPort[i].RxFillLimit = pAC->RxDescrPerRing - 100;
-		}
-		/*
-	 	* Do not set the Limit to 0, because this could cause
-		 * wrap around with ReQueue'ed buffers (a buffer could
-		 * be requeued in the same position, made accessable to
-		 * the hardware, and the hardware could change its
-		 * contents!
-		 */
-		pAC->RxPort[pAC->ActivePort].RxFillLimit = 1;
+	for (i=0; i<pAC->GIni.GIMacsFound; i++) {
+		pAC->RxPort[i].RxFillLimit = pAC->RxDescrPerRing - 100;
 	}
-
+	/*
+	 * Do not set the Limit to 0, because this could cause
+	 * wrap around with ReQueue'ed buffers (a buffer could
+	 * be requeued in the same position, made accessable to
+	 * the hardware, and the hardware could change its
+	 * contents!
+	 */
+	pAC->RxPort[pAC->ActivePort].RxFillLimit = 1;
 
 #ifdef DEBUG
 	for (i=0; i<pAC->GIni.GIMacsFound; i++) {
@@ -2539,33 +2281,21 @@ if (pAC->RlmtNets == 1) {
  *	0, if everything is ok
  *	!=0, on error
  */
-static int SkGeSetMacAddr(struct device *dev, void *p)
+static int SkGeSetMacAddr(struct net_device *dev, void *p)
 {
-
-DEV_NET *pNet = (DEV_NET*) dev->priv;
-SK_AC	*pAC = pNet->pAC;
-
+SK_AC		*pAC = (SK_AC*) dev->priv;
 struct sockaddr	*addr = p;
 unsigned int	Flags;
-int		PortIdx;
 	
 	SK_DBG_MSG(NULL, SK_DBGMOD_DRV, SK_DBGCAT_DRV_ENTRY,
 		("SkGeSetMacAddr starts now...\n"));
-	if(dev->start) {
+	if(netif_running(dev)) {
 		return -EBUSY;
 	}
-
-	if (pAC->RlmtNets == 1) {
-		PortIdx = pAC->ActivePort;
-	}
-	else {
-		PortIdx = pNet->NetNr;
-	}
-
 	memcpy(dev->dev_addr, addr->sa_data,dev->addr_len);
 	
 	spin_lock_irqsave(&pAC->SlowPathLock, Flags);
-	SkAddrOverride(pAC, pAC->IoBase, PortIdx,
+	SkAddrOverride(pAC, pAC->IoBase, pAC->ActivePort,
 		(SK_MAC_ADDR*)dev->dev_addr, SK_ADDR_VIRTUAL_ADDRESS);
 	
 	spin_unlock_irqrestore(&pAC->SlowPathLock, Flags);
@@ -2587,51 +2317,39 @@ int		PortIdx;
  *	0, if everything is ok
  *	!=0, on error
  */
-static void SkGeSetRxMode(struct device *dev)
+static void SkGeSetRxMode(struct net_device *dev)
 {
-
-DEV_NET		*pNet;
-SK_AC		*pAC;
-
+SK_AC			*pAC;
 struct dev_mc_list	*pMcList;
 int			i;
 unsigned int		Flags;
-int			PortIdx;
 
 	SK_DBG_MSG(NULL, SK_DBGMOD_DRV, SK_DBGCAT_DRV_ENTRY,
 		("SkGeSetRxMode starts now... "));
-
-	pNet = (DEV_NET*) dev->priv;
-	pAC = pNet->pAC;
-	if (pAC->RlmtNets == 1) {
-		PortIdx = pAC->ActivePort;
-	}
-	else {
-		PortIdx = pNet->NetNr;
-	}
+	pAC = (SK_AC*) dev->priv;
 	
 	spin_lock_irqsave(&pAC->SlowPathLock, Flags);
 	if (dev->flags & IFF_PROMISC) {
 		SK_DBG_MSG(NULL, SK_DBGMOD_DRV, SK_DBGCAT_DRV_ENTRY,
 			("PROMISCUOUS mode\n"));
-		SkAddrPromiscuousChange(pAC, pAC->IoBase, PortIdx,
+		SkAddrPromiscuousChange(pAC, pAC->IoBase, pAC->ActivePort,
 			SK_PROM_MODE_LLC);
 	} else if (dev->flags & IFF_ALLMULTI) {
 		SK_DBG_MSG(NULL, SK_DBGMOD_DRV, SK_DBGCAT_DRV_ENTRY,
 			("ALLMULTI mode\n"));
-		SkAddrPromiscuousChange(pAC, pAC->IoBase, PortIdx,
+		SkAddrPromiscuousChange(pAC, pAC->IoBase, pAC->ActivePort,
 			SK_PROM_MODE_ALL_MC);
 	} else {
-		SkAddrPromiscuousChange(pAC, pAC->IoBase, PortIdx,
+		SkAddrPromiscuousChange(pAC, pAC->IoBase, pAC->ActivePort,
 			SK_PROM_MODE_NONE);
-		SkAddrMcClear(pAC, pAC->IoBase, PortIdx, 0);
+		SkAddrMcClear(pAC, pAC->IoBase, pAC->ActivePort, 0);
 
 		SK_DBG_MSG(NULL, SK_DBGMOD_DRV, SK_DBGCAT_DRV_ENTRY,
 			("Number of MC entries: %d ", dev->mc_count));
 		
 		pMcList = dev->mc_list;
 		for (i=0; i<dev->mc_count; i++, pMcList = pMcList->next) {
-			SkAddrMcAdd(pAC, pAC->IoBase, PortIdx,
+			SkAddrMcAdd(pAC, pAC->IoBase, pAC->ActivePort,
 				(SK_MAC_ADDR*)pMcList->dmi_addr, 0);
 			SK_DBG_MSG(NULL, SK_DBGMOD_DRV, SK_DBGCAT_DRV_MCA,
 				("%02x:%02x:%02x:%02x:%02x:%02x\n",
@@ -2642,7 +2360,8 @@ int			PortIdx;
 				pMcList->dmi_addr[4],
 				pMcList->dmi_addr[5]));
 		}
-		SkAddrMcUpdate(pAC, pAC->IoBase, PortIdx);
+		SkAddrMcUpdate(pAC, pAC->IoBase, pAC->ActivePort);					
+	
 	}
 	spin_unlock_irqrestore(&pAC->SlowPathLock, Flags);
 	
@@ -2663,10 +2382,8 @@ int			PortIdx;
  *	0, if everything is ok
  *	!=0, on error
  */
-static int SkGeChangeMtu(struct device *dev, int NewMtu)
+static int SkGeChangeMtu(struct net_device *dev, int NewMtu)
 {
-DEV_NET		*pNet;
-DEV_NET		*pOtherNet;
 SK_AC		*pAC;
 unsigned int	Flags;
 int		i;
@@ -2675,21 +2392,10 @@ SK_EVPARA 	EvPara;
 	SK_DBG_MSG(NULL, SK_DBGMOD_DRV, SK_DBGCAT_DRV_ENTRY,
 		("SkGeChangeMtu starts now...\n"));
  
-	pNet = (DEV_NET*) dev->priv;
-	pAC = pNet->pAC;
-
+	pAC = (SK_AC*) dev->priv;
 	if ((NewMtu < 68) || (NewMtu > SK_JUMBO_MTU)) {
 		return -EINVAL;
 	}
-
-	pNet->Mtu = NewMtu;
-	pOtherNet = (DEV_NET*)pAC->dev[1 - pNet->NetNr]->priv;
-	if ((pOtherNet->Mtu > 1500) && (NewMtu <= 1500) && (pOtherNet->Up==1)) {
-		return(0);
-	}
-
-	EvPara.Para32[0] = pNet->NetNr;
-	EvPara.Para32[1] = -1;
 
 	pAC->RxBufSize = NewMtu + 32;
 	dev->mtu = NewMtu;
@@ -2702,27 +2408,14 @@ SK_EVPARA 	EvPara;
 	/* disable interrupts */
 	SK_OUT32(pAC->IoBase, B0_IMSK, 0);
 	spin_lock_irqsave(&pAC->SlowPathLock, Flags);
-
-	/* Found more than one port */
-	if ((pAC->GIni.GIMacsFound == 2 ) && 
-		(pAC->RlmtNets == 2)) {
-			/* Stop both ports */
-			EvPara.Para32[0] = 0;
-			SkEventQueue(pAC, SKGE_RLMT, SK_RLMT_STOP, EvPara);
-			EvPara.Para32[0] = 1;
-			SkEventQueue(pAC, SKGE_RLMT, SK_RLMT_STOP, EvPara);
-	} else {
-		SkEventQueue(pAC, SKGE_RLMT, SK_RLMT_STOP, EvPara);
-	}
-
+	SkEventQueue(pAC, SKGE_RLMT, SK_RLMT_STOP, EvPara);
 	SkEventDispatcher(pAC, pAC->IoBase);
 
 	for (i=0; i<pAC->GIni.GIMacsFound; i++) {
 		spin_lock_irqsave(
 			&pAC->TxPort[i][TX_PRIO_LOW].TxDesRingLock, Flags);
-			pAC->dev[i]->tbusy = 1;
 	}
-
+	netif_stop_queue(pAC->dev);
 
 	/* 
 	 * adjust number of rx buffers allocated
@@ -2730,35 +2423,23 @@ SK_EVPARA 	EvPara;
 	if (NewMtu > 1500) {
 		/* use less rx buffers */
 		for (i=0; i<pAC->GIni.GIMacsFound; i++) {
-			/* Found more than one port */
-			if ((pAC->GIni.GIMacsFound == 2 ) && 
-				(pAC->RlmtNets == 2)) {
-					pAC->RxPort[i].RxFillLimit = 
-						pAC->RxDescrPerRing - 100;
-			} else {
-				if (i == pAC->ActivePort)
-					pAC->RxPort[i].RxFillLimit =
-						pAC->RxDescrPerRing - 100;
-				else
-					pAC->RxPort[i].RxFillLimit =
-						pAC->RxDescrPerRing - 10;
-			}
+			if (i == pAC->ActivePort)
+				pAC->RxPort[i].RxFillLimit =
+					pAC->RxDescrPerRing - 100;
+			else
+				pAC->RxPort[i].RxFillLimit =
+					pAC->RxDescrPerRing - 10;
+
 		}
 	}
 	else {
 		/* use normal anoumt of rx buffers */
 		for (i=0; i<pAC->GIni.GIMacsFound; i++) {
-			/* Found more than one port */
-			if ((pAC->GIni.GIMacsFound == 2 ) && 
-				(pAC->RlmtNets == 2)) {
-					pAC->RxPort[i].RxFillLimit = 1;
-			} else {
-				if (i == pAC->ActivePort)
-					pAC->RxPort[i].RxFillLimit = 1;
-				else
-					pAC->RxPort[i].RxFillLimit =
-						pAC->RxDescrPerRing - 100;
-			}
+			if (i == pAC->ActivePort)
+				pAC->RxPort[i].RxFillLimit = 1;
+			else
+				pAC->RxPort[i].RxFillLimit =
+					pAC->RxDescrPerRing - 100;
 		}
 	}
 	 
@@ -2768,7 +2449,6 @@ SK_EVPARA 	EvPara;
 	 * enable/disable hardware support for long frames
 	 */
 	if (NewMtu > 1500) {
-		pAC->JumboActivated = SK_TRUE; /* is never set back !!! */
 		pAC->GIni.GIPortUsage = SK_JUMBO_LINK;
 		for (i=0; i<pAC->GIni.GIMacsFound; i++) {
 			pAC->GIni.GP[i].PRxCmd = 
@@ -2776,14 +2456,10 @@ SK_EVPARA 	EvPara;
 		}
 	}
 	else {
-		if ((pAC->GIni.GIMacsFound == 2 ) && 
-			(pAC->RlmtNets == 2)) {
-			pAC->GIni.GIPortUsage = SK_MUL_LINK;
-		} else {
-			pAC->GIni.GIPortUsage = SK_RED_LINK;
-		}
+		pAC->GIni.GIPortUsage = SK_RED_LINK;
 		for (i=0; i<pAC->GIni.GIMacsFound; i++) {
-			pAC->GIni.GP[i].PRxCmd = XM_RX_STRIP_FCS;
+			pAC->GIni.GP[i].PRxCmd =
+				XM_RX_STRIP_FCS | XM_RX_LENERR_OK;
 		}
 	}
 
@@ -2811,8 +2487,9 @@ SK_EVPARA 	EvPara;
 		ClearRxRing(pAC, &pAC->RxPort[i]);
 		FillRxRing(pAC, &pAC->RxPort[i]);
 
-		/* Enable transmit descriptor polling. */
+		// Enable transmit descriptor polling.
 		SkGePollTxD(pAC, pAC->IoBase, i, SK_TRUE);
+		FillRxRing(pAC, &pAC->RxPort[i]);
 	};
 
 	SkGeYellowLED(pAC, pAC->IoBase, 1);
@@ -2827,7 +2504,7 @@ SK_EVPARA 	EvPara;
 	}
 #endif
 
-	pAC->dev[pNet->PortNr]->tbusy = 0;
+	netif_start_queue(pAC->dev);
 	for (i=pAC->GIni.GIMacsFound-1; i>=0; i--) {
 		spin_unlock_irqrestore(
 			&pAC->TxPort[i][TX_PRIO_LOW].TxDesRingLock, Flags);
@@ -2837,31 +2514,7 @@ SK_EVPARA 	EvPara;
 	SK_OUT32(pAC->IoBase, B0_IMSK, IRQ_MASK);
 	SK_OUT32(pAC->IoBase, B0_HWE_IMSK, IRQ_HWE_MASK);
 
-/*++++++++++++++++++++++++++++++++++++*/
-
-	/* Found more than one port */
-	if ((pAC->GIni.GIMacsFound == 2 ) && 
-		(pAC->RlmtNets == 2)) {
-			/* Start both ports */
-			EvPara.Para32[0] = pAC->RlmtNets;
-			EvPara.Para32[1] = -1;
-			SkEventQueue(pAC, SKGE_RLMT, SK_RLMT_SET_NETS,
-				EvPara);
-			
-			
-			EvPara.Para32[1] = -1;
-			EvPara.Para32[0] = pNet->PortNr;
-			SkEventQueue(pAC, SKGE_RLMT, SK_RLMT_START, EvPara);
-			
-			if (pOtherNet->Up) {
-				EvPara.Para32[0] = pOtherNet->PortNr;
-				SkEventQueue(pAC, SKGE_RLMT, 
-					SK_RLMT_START, EvPara);
-			}
-	} else {
-		SkEventQueue(pAC, SKGE_RLMT, SK_RLMT_START, EvPara);
-	}
-
+	SkEventQueue(pAC, SKGE_RLMT, SK_RLMT_START, EvPara);
 	SkEventDispatcher(pAC, pAC->IoBase);
 
 
@@ -2882,13 +2535,11 @@ SK_EVPARA 	EvPara;
  * Returns:
  *	pointer to the statistic structure.
  */
-static struct net_device_stats *SkGeStats(struct device *dev)
+static struct net_device_stats *SkGeStats(struct net_device *dev)
 {
-DEV_NET *pNet = (DEV_NET*) dev->priv;
-SK_AC	*pAC = pNet->pAC;
+SK_AC	*pAC = (SK_AC*) dev->priv;
 SK_PNMI_STRUCT_DATA *pPnmiStruct;       /* structure for all Pnmi-Data */
-SK_PNMI_STAT    *pPnmiStat;             /* pointer to virtual XMAC stat. data */
-SK_PNMI_CONF    *pPnmiConf;             /* pointer to virtual link config. */
+SK_PNMI_STAT    *pPnmiStat;             /* pointer to virtual XMAC stat. data */SK_PNMI_CONF    *pPnmiConf;             /* pointer to virtual link config. */
 unsigned int    Size;                   /* size of pnmi struct */
 unsigned int	Flags;			/* for spin lock */
 
@@ -2898,22 +2549,16 @@ unsigned int	Flags;			/* for spin lock */
         memset(pPnmiStruct, 0, sizeof(SK_PNMI_STRUCT_DATA));
         spin_lock_irqsave(&pAC->SlowPathLock, Flags);
         Size = SK_PNMI_STRUCT_SIZE;
-        SkPnmiGetStruct(pAC, pAC->IoBase, pPnmiStruct, &Size, pNet->NetNr);
+        SkPnmiGetStruct(pAC, pAC->IoBase, pPnmiStruct, &Size);
         spin_unlock_irqrestore(&pAC->SlowPathLock, Flags);
         pPnmiStat = &pPnmiStruct->Stat[0];
         pPnmiConf = &pPnmiStruct->Conf[0];
 
-	pAC->stats.rx_packets = (SK_U32) pPnmiStat->StatRxOkCts & 0xFFFFFFFF;
+	pAC->stats.rx_packets = (SK_U32) pPnmiStruct->RxDeliveredCts & 0xFFFFFFFF;
 	pAC->stats.tx_packets = (SK_U32) pPnmiStat->StatTxOkCts & 0xFFFFFFFF;
-	pAC->stats.rx_bytes = (SK_U32) pPnmiStat->StatRxOctetsOkCts;
+	pAC->stats.rx_bytes = (SK_U32) pPnmiStruct->RxOctetsDeliveredCts;
 	pAC->stats.tx_bytes = (SK_U32) pPnmiStat->StatTxOctetsOkCts;
-	if (!pAC->JumboActivated) {
-		pAC->stats.rx_errors = (SK_U32) pPnmiStruct->InErrorsCts & 0xFFFFFFFF;
-	}
-	else {
-		pAC->stats.rx_errors = (SK_U32) ((pPnmiStruct->InErrorsCts -
-			pPnmiStat->StatRxTooLongCts) & 0xFFFFFFFF);
-	}
+	pAC->stats.rx_errors = (SK_U32) pPnmiStruct->InErrorsCts & 0xFFFFFFFF;
 	pAC->stats.tx_errors = (SK_U32) pPnmiStat->StatTxSingleCollisionCts & 0xFFFFFFFF;
 	pAC->stats.rx_dropped = (SK_U32) pPnmiStruct->RxNoBufCts & 0xFFFFFFFF;
 	pAC->stats.tx_dropped = (SK_U32) pPnmiStruct->TxNoBufCts & 0xFFFFFFFF;
@@ -2952,20 +2597,16 @@ unsigned int	Flags;			/* for spin lock */
  *	0, if everything is ok
  *	!=0, on error
  */
-static int SkGeIoctl(struct device *dev, struct ifreq *rq, int cmd)
+static int SkGeIoctl(struct net_device *dev, struct ifreq *rq, int cmd)
 {
-DEV_NET		*pNet;
 SK_AC		*pAC;
-
 SK_GE_IOCTL	Ioctl;
 unsigned int	Err = 0;
 int		Size;
 
 	SK_DBG_MSG(NULL, SK_DBGMOD_DRV, SK_DBGCAT_DRV_ENTRY,
 		("SkGeIoctl starts now...\n"));
-
-	pNet = (DEV_NET*) dev->priv;
-	pAC = pNet->pAC;
+	pAC = (SK_AC*) dev->priv;
 	
 	if(copy_from_user(&Ioctl, rq->ifr_data, sizeof(SK_GE_IOCTL))) {
 		return -EFAULT;
@@ -2981,7 +2622,7 @@ int		Size;
 			Ioctl.Len : sizeof(pAC->PnmiStruct))) {
 			return -EFAULT;
 		}
-		Size = SkGeIocMib(pNet, Ioctl.Len, cmd);
+		Size = SkGeIocMib(pAC, Ioctl.Len, cmd);
 		if(copy_to_user(Ioctl.pData, &pAC->PnmiStruct,
 			Ioctl.Len<Size? Ioctl.Len : Size)) {
 			return -EFAULT;
@@ -3016,27 +2657,25 @@ int		Size;
  *	returned size from PNMI call
  */
 static int SkGeIocMib(
-DEV_NET		*pNet,	/* pointer to the adapter context */
+SK_AC		*pAC,	/* pointer to the adapter context */
 unsigned int	Size,	/* length of ioctl data */
 int		mode)	/* flag for set/preset */
 {
 unsigned int	Flags;	/* for spin lock */
-SK_AC		*pAC;
 	
 	SK_DBG_MSG(NULL, SK_DBGMOD_DRV, SK_DBGCAT_DRV_ENTRY,
 		("SkGeIocMib starts now...\n"));
-	pAC = pNet->pAC;
 	/* access MIB */
 	spin_lock_irqsave(&pAC->SlowPathLock, Flags);
 	switch(mode) {
 	case SK_IOCTL_GETMIB:
-		SkPnmiGetStruct(pAC, pAC->IoBase, &pAC->PnmiStruct, &Size, pNet->NetNr);
+		SkPnmiGetStruct(pAC, pAC->IoBase, &pAC->PnmiStruct, &Size);
 		break;
 	case SK_IOCTL_PRESETMIB:
-		SkPnmiPreSetStruct(pAC, pAC->IoBase, &pAC->PnmiStruct, &Size, pNet->NetNr);
+		SkPnmiPreSetStruct(pAC, pAC->IoBase, &pAC->PnmiStruct, &Size);
 		break;
 	case SK_IOCTL_SETMIB:
-		SkPnmiSetStruct(pAC, pAC->IoBase, &pAC->PnmiStruct, &Size, pNet->NetNr);
+		SkPnmiSetStruct(pAC, pAC->IoBase, &pAC->PnmiStruct, &Size);
 		break;
 	default:
 		break;
@@ -3110,7 +2749,7 @@ int	Capabilities[3][3] =
 			AutoNeg = AN_SENS;
 		}
 		else printk("%s: Illegal value for AutoNeg_A\n",
-			pAC->dev[0]->name);
+			pAC->dev->name);
 	}
 
 	DuplexCap = DC_BOTH;
@@ -3131,18 +2770,18 @@ int	Capabilities[3][3] =
 			DuplexCap = DC_HALF;
 		}
 		else printk("%s: Illegal value for DupCap_A\n",
-			pAC->dev[0]->name);
+			pAC->dev->name);
 	}
 	
 	/* check for illegal combinations */
 	if (AutoSet && AutoNeg==AN_SENS && DupSet) {
 		printk("%s, Port A: DuplexCapabilities"
-			" ignored using Sense mode\n", pAC->dev[0]->name);
+			" ignored using Sense mode\n", pAC->dev->name);
 	}
 	if (AutoSet && AutoNeg==AN_OFF && DupSet && DuplexCap==DC_BOTH){
 		printk("%s, Port A: Illegal combination"
 			" of values AutoNeg. and DuplexCap.\n    Using "
-			"Full Duplex\n", pAC->dev[0]->name);
+			"Full Duplex\n", pAC->dev->name);
 
 		DuplexCap = DC_FULL;
 	}
@@ -3154,7 +2793,7 @@ int	Capabilities[3][3] =
 		printk("%s, Port A: Duplex setting not"
 			" possible in\n    default AutoNegotiation mode"
 			" (Sense).\n    Using AutoNegotiation On\n",
-			pAC->dev[0]->name);
+			pAC->dev->name);
 		AutoNeg = AN_ON;
 	}
 	
@@ -3189,7 +2828,7 @@ int	Capabilities[3][3] =
 		SK_FLOW_MODE_NONE) {
 		printk("%s, Port A: FlowControl"
 			" impossible without AutoNegotiation,"
-			" disabled\n", pAC->dev[0]->name);
+			" disabled\n", pAC->dev->name);
 		pAC->GIni.GP[0].PFlowCtrlMode = SK_FLOW_MODE_NONE;
 	}
 
@@ -3208,7 +2847,7 @@ int	Capabilities[3][3] =
 			MSMode = SK_MS_MODE_SLAVE;
 		}
 		else printk("%s: Illegal value for Role_A\n",
-			pAC->dev[0]->name);
+			pAC->dev->name);
 	}
 	pAC->GIni.GP[0].PMSMode = MSMode;
 	
@@ -3257,12 +2896,12 @@ int	Capabilities[3][3] =
 	/* check for illegal combinations */
 	if (AutoSet && AutoNeg==AN_SENS && DupSet) {
 		printk("%s, Port B: DuplexCapabilities"
-			" ignored using Sense mode\n", pAC->dev[1]->name);
+			" ignored using Sense mode\n", pAC->dev->name);
 	}
 	if (AutoSet && AutoNeg==AN_OFF && DupSet && DuplexCap==DC_BOTH){
 		printk("%s, Port B: Illegal combination"
 			" of values AutoNeg. and DuplexCap.\n    Using "
-			"Full Duplex\n", pAC->dev[1]->name);
+			"Full Duplex\n", pAC->dev->name);
 
 		DuplexCap = DC_FULL;
 	}
@@ -3274,14 +2913,14 @@ int	Capabilities[3][3] =
 		printk("%s, Port B: Duplex setting not"
 			" possible in\n    default AutoNegotiation mode"
 			" (Sense).\n    Using AutoNegotiation On\n",
-			pAC->dev[1]->name);
+			pAC->dev->name);
 		AutoNeg = AN_ON;
 	}
-
+	
 	/* set the desired mode */
 	pAC->GIni.GP[1].PLinkModeConf =
 		Capabilities[AutoNeg][DuplexCap];
-
+	
 	pAC->GIni.GP[1].PFlowCtrlMode = SK_FLOW_MODE_SYM_OR_REM;
 	if (FlowCtrl_B != NULL && pAC->Index<SK_MAX_CARD_PARAM &&
 		FlowCtrl_B[pAC->Index] != NULL) {
@@ -3309,7 +2948,7 @@ int	Capabilities[3][3] =
 		SK_FLOW_MODE_NONE) {
 		printk("%s, Port B: FlowControl"
 			" impossible without AutoNegotiation,"
-			" disabled\n", pAC->dev[1]->name);
+			" disabled\n", pAC->dev->name);
 		pAC->GIni.GP[1].PFlowCtrlMode = SK_FLOW_MODE_NONE;
 	}
 
@@ -3328,7 +2967,7 @@ int	Capabilities[3][3] =
 			MSMode = SK_MS_MODE_SLAVE;
 		}
 		else printk("%s: Illegal value for Role_B\n",
-			pAC->dev[1]->name);
+			pAC->dev->name);
 	}
 	pAC->GIni.GP[1].PMSMode = MSMode;
 	
@@ -3339,8 +2978,8 @@ int	Capabilities[3][3] =
 		PrefPort[pAC->Index] != NULL) {
 		if (strcmp(PrefPort[pAC->Index],"") == 0) { /* Auto */
 			pAC->ActivePort = 0;
-			pAC->Rlmt.Net[0].Preference = -1; /* auto */
-			pAC->Rlmt.Net[0].PrefPort = 0;
+			pAC->Rlmt.MacPreferred = -1; /* auto */
+			pAC->Rlmt.PrefPort = 0;
 		}
 		else if (strcmp(PrefPort[pAC->Index],"A") == 0) {
 			/*
@@ -3348,8 +2987,8 @@ int	Capabilities[3][3] =
 			 * switch is issued after net up.
 			 */
 			Port = 0;
-			pAC->Rlmt.Net[0].Preference = Port;
-			pAC->Rlmt.Net[0].PrefPort = Port;
+			pAC->Rlmt.MacPreferred = Port;
+			pAC->Rlmt.PrefPort = Port;
 		}
 		else if (strcmp(PrefPort[pAC->Index],"B") == 0) {
 			/*
@@ -3357,16 +2996,13 @@ int	Capabilities[3][3] =
 			 * switch is issued after net up.
 			 */
 			Port = 1;
-			pAC->Rlmt.Net[0].Preference = Port;
-			pAC->Rlmt.Net[0].PrefPort = Port;
+			pAC->Rlmt.MacPreferred = Port;
+			pAC->Rlmt.PrefPort = Port;
 		}
 		else printk("%s: Illegal value for PrefPort\n",
-			pAC->dev[0]->name);
+			pAC->dev->name);
 	}
-
-
-	pAC->RlmtNets = 1;
-
+	
 	if (RlmtMode != NULL && pAC->Index<SK_MAX_CARD_PARAM &&
 		RlmtMode[pAC->Index] != NULL) {
 		if (strcmp(RlmtMode[pAC->Index], "") == 0) {
@@ -3384,14 +3020,9 @@ int	Capabilities[3][3] =
 				SK_RLMT_CHECK_LOC_LINK | 
 				SK_RLMT_CHECK_SEG;
 		}
-		else if ((strcmp(RlmtMode[pAC->Index], "DualNet") == 0) &&
-			(pAC->GIni.GIMacsFound == 2)) {
-				pAC->RlmtMode = SK_RLMT_CHECK_LINK;
-				pAC->RlmtNets = 2;
-		}
 		else {
 			printk("%s: Illegal value for"
-				" RlmtMode, using default\n", pAC->dev[0]->name);
+				" RlmtMode, using default\n", pAC->dev->name);
 			pAC->RlmtMode = 0;
 		}
 	}
@@ -3502,7 +3133,7 @@ SK_MBUF		*pNextMbuf;
 	pFreeMbuf = pMbuf;
 	do {
 		pNextMbuf = pFreeMbuf->pNext;
-		DEV_KFREE_SKB(pFreeMbuf->pOs);
+		DEV_KFREE_SKB_ANY(pFreeMbuf->pOs);
 		pFreeMbuf = pNextMbuf;
 	} while ( pFreeMbuf != NULL );
 } /* SkDrvFreeRlmtMbuf */
@@ -3693,7 +3324,7 @@ unsigned int	Flags;
 	case SK_DRV_ADAP_FAIL:
 		SK_DBG_MSG(NULL, SK_DBGMOD_DRV, SK_DBGCAT_DRV_EVENT,
 			("ADAPTER FAIL EVENT\n"));
-		printk("%s: Adapter failed.\n", pAC->dev[0]->name);
+		printk("%s: Adapter failed.\n", pAC->dev->name);
 		/* disable interrupts */
 		SK_OUT32(pAC->IoBase, B0_IMSK, 0);
 		/* cgoos */
@@ -3703,9 +3334,9 @@ unsigned int	Flags;
 		SK_DBG_MSG(NULL, SK_DBGMOD_DRV, SK_DBGCAT_DRV_EVENT,
 			("PORT FAIL EVENT, Port: %d\n", FromPort));
 		if (FromPort == 0) {
-			printk("%s: Port A failed.\n", pAC->dev[0]->name);
+			printk("%s: Port A failed.\n", pAC->dev->name);
 		} else {
-			printk("%s: Port B failed.\n", pAC->dev[1]->name);
+			printk("%s: Port B failed.\n", pAC->dev->name);
 		}
 		/* cgoos */
 		break;
@@ -3746,7 +3377,7 @@ unsigned int	Flags;
 		SK_DBG_MSG(NULL, SK_DBGMOD_DRV, SK_DBGCAT_DRV_EVENT,
 			("NET UP EVENT, Port: %d ", Param.Para32[0]));
 		printk("%s: network connection up using"
-			" port %c\n", pAC->dev[Param.Para32[0]]->name, 'A'+Param.Para32[0]);
+			" port %c\n", pAC->dev->name, 'A'+Param.Para32[0]);
 		printk("    speed:           1000\n");
 		Stat = pAC->GIni.GP[FromPort].PLinkModeStatus;
 		if (Stat == SK_LMODE_STAT_AUTOHALF ||
@@ -3789,8 +3420,7 @@ unsigned int	Flags;
 			}
 		}
 		
-		if ((Param.Para32[0] != pAC->ActivePort) && 
-			(pAC->RlmtNets == 1)) {
+		if (Param.Para32[0] != pAC->ActivePort) {
 			NewPara.Para32[0] = pAC->ActivePort;
 			NewPara.Para32[1] = Param.Para32[0];
 			SkEventQueue(pAC, SKGE_DRV, SK_DRV_SWITCH_INTERN,
@@ -3801,21 +3431,21 @@ unsigned int	Flags;
 		/* action list 7 */
 		SK_DBG_MSG(NULL, SK_DBGMOD_DRV, SK_DBGCAT_DRV_EVENT,
 			("NET DOWN EVENT "));
-		printk("%s: network connection down\n", pAC->dev[Param.Para32[1]]->name);
+		printk("%s: network connection down\n", pAC->dev->name);
 		break;
 	case SK_DRV_SWITCH_HARD: /* SK_U32 FromPortIdx SK_U32 ToPortIdx */
 		SK_DBG_MSG(NULL, SK_DBGMOD_DRV, SK_DBGCAT_DRV_EVENT,
 			("PORT SWITCH HARD "));
 	case SK_DRV_SWITCH_SOFT: /* SK_U32 FromPortIdx SK_U32 ToPortIdx */
 	/* action list 6 */
-		printk("%s: switching to port %c\n", pAC->dev[0]->name,
+		printk("%s: switching to port %c\n", pAC->dev->name,
 			'A'+Param.Para32[1]);
 	case SK_DRV_SWITCH_INTERN: /* SK_U32 FromPortIdx SK_U32 ToPortIdx */
 		FromPort = Param.Para32[0];
 		ToPort = Param.Para32[1];
 		SK_DBG_MSG(NULL, SK_DBGMOD_DRV, SK_DBGCAT_DRV_EVENT,
 			("PORT SWITCH EVENT, From: %d  To: %d (Pref %d) ",
-			FromPort, ToPort, pAC->Rlmt.Net[0].PrefPort));
+			FromPort, ToPort, pAC->Rlmt.PrefPort));
 		NewPara.Para64 = FromPort;
 		SkPnmiEvent(pAC, IoC, SK_PNMI_EVT_XMAC_RESET, NewPara);
 		NewPara.Para64 = ToPort;
@@ -3867,16 +3497,14 @@ unsigned int	Flags;
 			Flags);
 		break;
 	case SK_DRV_RLMT_SEND:	 /* SK_MBUF *pMb */
-
 		SK_DBG_MSG(NULL, SK_DBGMOD_DRV, SK_DBGCAT_DRV_EVENT,
 			("RLS "));
 		pRlmtMbuf = (SK_MBUF*) Param.pParaPtr;
 		pMsg = (struct sk_buff*) pRlmtMbuf->pOs;
 		skb_put(pMsg, pRlmtMbuf->Length);
 		if (XmitFrame(pAC, &pAC->TxPort[pRlmtMbuf->PortIdx][TX_PRIO_LOW],
-			pMsg) < 0) {
-			dev_kfree_skb(pMsg);
-		}
+			      pMsg) < 0)
+			DEV_KFREE_SKB_ANY(pMsg);
 		break;
 	default:
 		break;
@@ -3932,7 +3560,7 @@ char	ClassStr[80];
 		break;
 	}
 	printk(KERN_INFO "%s: -- ERROR --\n        Class:  %s\n"
-		"        Nr:  0x%x\n        Msg:  %s\n", pAC->dev[0]->name,
+		"        Nr:  0x%x\n        Msg:  %s\n", pAC->dev->name,
 		ClassStr, ErrNum, pErrorMsg);
 
 } /* SkErrorLog */

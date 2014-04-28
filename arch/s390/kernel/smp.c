@@ -20,22 +20,20 @@
  * cpu_number_map in other architectures.
  */
 
-#include <asm/sigp.h>
-#include <asm/timex.h>
-#include <asm/init.h>
-#include <asm/spinlock.h>
-#include <linux/module.h>
-#include <linux/stddef.h>
-#include <linux/kernel.h>
-#include <linux/kernel_stat.h>
-#include <linux/smp.h>
+#include <linux/init.h>
+
 #include <linux/mm.h>
-#include <asm/pgtable.h>
-#include <asm/string.h>
-#include <asm/s390_ext.h>
+#include <linux/spinlock.h>
+#include <linux/kernel_stat.h>
+#include <linux/smp_lock.h>
+
+#include <linux/delay.h>
+
+#include <asm/sigp.h>
+#include <asm/pgalloc.h>
+#include <asm/irq.h>
 
 #include "cpcmd.h"
-#include <asm/irq.h>
 
 /* prototypes */
 extern void update_one_process( struct task_struct *p,
@@ -44,7 +42,6 @@ extern void update_one_process( struct task_struct *p,
 extern int cpu_idle(void * unused);
 
 extern __u16 boot_cpu_addr;
-extern volatile int __cpu_logical_map[];
 
 /*
  * An array with a pointer the lowcore of every CPU.
@@ -53,8 +50,9 @@ static int       max_cpus = NR_CPUS;	  /* Setup configured maximum number of CPU
 int              smp_num_cpus;
 struct _lowcore *lowcore_ptr[NR_CPUS];
 unsigned int     prof_multiplier[NR_CPUS];
+unsigned int     prof_old_multiplier[NR_CPUS];
 unsigned int     prof_counter[NR_CPUS];
-volatile int     cpu_number_map[NR_CPUS];
+volatile int     __cpu_logical_map[NR_CPUS]; /* logical cpu to cpu address */
 cycles_t         cacheflush_time=0;
 int              smp_threads_ready=0;      /* Set when the idlers are all forked. */
 unsigned long    ipi_count=0;              /* Number of IPIs delivered. */
@@ -73,25 +71,34 @@ spinlock_t       kernel_flag = SPIN_LOCK_UNLOCKED;
  *      SMP mode to <NUM>.
  */
 
-void __init smp_setup(char *str, int *ints)
+static int __init nosmp(char *str)
 {
-   if (ints && ints[0] > 0)
-      max_cpus = ints[1];
-   else
-      max_cpus = 0;
+	max_cpus = 0;
+	return 1;
 }
+
+__setup("nosmp", nosmp);
+
+static int __init maxcpus(char *str)
+{
+	get_option(&str, &max_cpus);
+	return 1;
+}
+
+__setup("maxcpus=", maxcpus);
 
 /*
  * Reboot, halt and power_off routines for SMP.
  */
 extern char vmhalt_cmd[];
 extern char vmpoff_cmd[];
-extern void reipl(int ipl_device);
+
+extern void reipl(unsigned long devno);
 
 void do_machine_restart(void)
 {
         smp_send_stop();
-	reipl(S390_lowcore.ipl_device); 
+	reipl(S390_lowcore.ipl_device);
 }
 
 void machine_restart(char * __unused) 
@@ -106,9 +113,9 @@ void machine_restart(char * __unused)
 void do_machine_halt(void)
 {
         smp_send_stop();
-        if (MACHINE_IS_VM && strlen(vmhalt_cmd) > 0) 
+        if (MACHINE_IS_VM && strlen(vmhalt_cmd) > 0)
                 cpcmd(vmhalt_cmd, NULL, 0);
-        signal_processor(smp_processor_id(), sigp_stop_and_store_status);
+        disabled_wait(0);
 }
 
 void machine_halt(void)
@@ -125,7 +132,7 @@ void do_machine_power_off(void)
         smp_send_stop();
         if (MACHINE_IS_VM && strlen(vmpoff_cmd) > 0)
                 cpcmd(vmpoff_cmd, NULL, 0);
-        signal_processor(smp_processor_id(), sigp_stop_and_store_status);
+        disabled_wait(0);
 }
 
 void machine_power_off(void)
@@ -142,7 +149,7 @@ void machine_power_off(void)
  * cpus are handled.
  */
 
-void do_ext_call_interrupt(struct pt_regs *regs, __u16 source_cpu_addr)
+void do_ext_call_interrupt(__u16 source_cpu_addr)
 {
         ec_ext_call *ec, *next;
         int bits;
@@ -177,7 +184,7 @@ void do_ext_call_interrupt(struct pt_regs *regs, __u16 source_cpu_addr)
                 return;   /* no command signals */
 
         /* Make a fifo out of the lifo */
-        next = ec->next;
+        next = ec;
         ec->next = NULL;
         while (next != NULL) {
                 ec_ext_call *tmp = next->next;
@@ -241,19 +248,6 @@ void do_ext_call_interrupt(struct pt_regs *regs, __u16 source_cpu_addr)
                                 : : "a" (cregs+pp->start_ctl),
                                 "a" ((pp->start_ctl<<4) + pp->end_ctl)
                                 : "memory", "1" );
-                        atomic_set(&ec->status,ec_done);
-                        return;
-                }
-		case ec_ptlb:
-			atomic_set(&ec->status, ec_executing);
-			__flush_tlb();
-			atomic_set(&ec->status, ec_done);
-		        return;
-                case ec_callback: {
-                        ec_callback_parms *cbp;
-                        cbp = (ec_callback_parms *) ec->parms;
-                        atomic_set(&ec->status,ec_executing);
-                        (cbp->callback)(cbp->data);
                         atomic_set(&ec->status,ec_done);
                         return;
                 }
@@ -384,12 +378,12 @@ void smp_ext_call_async_others(ec_bit_sig sig)
  * do
  * {
  *    info->cpu=next_cpu;
- *    next_cpu=smp_signal_others(order_code,parameter,TRUE,info);
+ *    next_cpu=smp_signal_others(order_code,parameter,1,info);
  *    ... check info here
  * } while(next_cpu<=smp_num_cpus)
  *
  *  if you are lazy just use it like
- * smp_signal_others(order_code,parameter,0,TRUE,NULL);
+ * smp_signal_others(order_code,parameter,0,1,NULL);
  */
 int smp_signal_others(sigp_order_code order_code, u32 parameter,
                       int spin, sigp_info *info)
@@ -399,7 +393,7 @@ int smp_signal_others(sigp_order_code order_code, u32 parameter,
         u16          i;
 
         if (info)
-                info->intresting = FALSE;
+                info->intresting = 0;
         for (i = (info ? info->cpu : 0); i < smp_num_cpus; i++) {
                 if (smp_processor_id() != i) {
                         do {
@@ -408,7 +402,7 @@ int smp_signal_others(sigp_order_code order_code, u32 parameter,
                                         parameter, i, order_code);
                         } while(spin && ccode == sigp_busy);
                         if (info && ccode != sigp_order_code_accepted) {
-                                info->intresting = TRUE;
+                                info->intresting = 1;
                                 info->cpu = i;
                                 info->ccode = ccode;
                                 i++;
@@ -426,33 +420,7 @@ int smp_signal_others(sigp_order_code order_code, u32 parameter,
 
 void smp_send_stop(void)
 {
-        int i;
-        u32 dummy;
-        unsigned long low_core_addr;
-
-        /* write magic number to zero page (absolute 0) */
-
-        get_cpu_lowcore(smp_processor_id()).panic_magic = __PANIC_MAGIC;
-
-        /* stop all processors */
-
-        smp_signal_others(sigp_stop, 0, TRUE, NULL);
-
-        /* store status of all processors in their lowcores (real 0) */
-
-        for (i =  0; i < smp_num_cpus; i++) {
-                if (smp_processor_id() != i) {
-                        int ccode;
-                        low_core_addr = (unsigned long)&get_cpu_lowcore(i);
-                        do {
-                                ccode = signal_processor_ps(
-                                   &dummy,
-                                   low_core_addr,
-                                   i,
-                                   sigp_store_status_at_address);
-                        } while(ccode == sigp_busy);
-                }
-        }
+        smp_signal_others(sigp_stop, 0, 1, NULL);
 }
 
 /*
@@ -498,19 +466,6 @@ void smp_ctl_clear_bit(int cr, int bit) {
         __ctl_clear_bit(cr, bit);
 }
 
-/*
- * Execute a callback function on all cpus
- */
-void smp_do_callback_all(void (*callback)(void *), void *data) {
-        ec_callback_parms parms;
-
-        if (atomic_read(&smp_commenced) != 0) {
-                parms.callback = callback;
-                parms.data = data;
-                smp_ext_call_sync_others(ec_callback, &parms);
-        }
-        (callback)(data);
-}
 
 /*
  * Lets check how many CPUs we have.
@@ -520,6 +475,7 @@ void smp_count_cpus(void)
 {
         int curr_cpu;
 
+        __cpu_logical_map[0] = boot_cpu_addr;
         current->processor = 0;
         smp_num_cpus = 1;
         for (curr_cpu = 0;
@@ -541,7 +497,6 @@ void smp_count_cpus(void)
  *      Activate a secondary processor.
  */
 extern void init_100hz_timer(void);
-extern void cpu_init (void);
 
 int __init start_secondary(void *cpuvoid)
 {
@@ -567,28 +522,47 @@ void __init initialize_secondary(void)
 {
 }
 
+static int __init fork_by_hand(void)
+{
+       struct pt_regs regs;
+       /* don't care about the psw and regs settings since we'll never
+          reschedule the forked task. */
+       memset(&regs,sizeof(pt_regs),0);
+       return do_fork(CLONE_VM|CLONE_PID, 0, &regs);
+}
+
 static void __init do_boot_cpu(int cpu)
 {
         struct task_struct *idle;
         struct _lowcore    *cpu_lowcore;
+
+        /* We can't use kernel_thread since we must _avoid_ to reschedule
+           the child. */
+        if (fork_by_hand() < 0)
+                panic("failed fork for CPU %d", cpu);
+
         /*
-         *	We need an idle process for each processor.
+         * We remove it from the pidhash and the runqueue
+         * once we got the process:
          */
-        
-        kernel_thread(start_secondary,(void *)cpu, CLONE_PID);
-        idle = task[cpu];
+        idle = init_task.prev_task;
         if (!idle)
                 panic("No idle process for CPU %d",cpu);
         idle->processor = cpu;
-        cpu_number_map[cpu] = cpu;
+        idle->has_cpu = 1; /* we schedule the first task manually */
+
+        del_from_runqueue(idle);
+        unhash_process(idle);
+        init_tasks[cpu] = idle;
+
         cpu_lowcore=&get_cpu_lowcore(cpu);
-        cpu_lowcore->kernel_stack=idle->tss.ksp;
+        cpu_lowcore->kernel_stack=idle->thread.ksp;
         __asm__ __volatile__("stctl 0,15,%0\n\t"
                              "stam  0,15,%1"
-                             : "=m" (cpu_lowcore->cregs_save_area[0]), 
+                             : "=m" (cpu_lowcore->cregs_save_area[0]),
                                "=m" (cpu_lowcore->access_regs_save_area[0])
                              : : "memory");
-        
+
         eieio();
         signal_processor(cpu,sigp_restart);
 }
@@ -619,12 +593,8 @@ void __init smp_boot_cpus(void)
 {
         struct _lowcore *curr_lowcore;
         sigp_ccode   ccode;
-        int curr_cpu;
         int i;
-
-        /* request the 0x1202 external interrupt */
-        if (register_external_interrupt(0x1202, do_ext_call_interrupt) != 0)
-                panic("Couldn't request external interrupt 0x1202");
+        
         smp_count_cpus();
         memset(lowcore_ptr,0,sizeof(lowcore_ptr));  
         
@@ -634,42 +604,41 @@ void __init smp_boot_cpus(void)
          */
         
         for (i = 0; i < NR_CPUS; i++) {
-                cpu_number_map[i] = -1;
                 prof_counter[i] = 1;
+                prof_old_multiplier[i] = 1;
                 prof_multiplier[i] = 1;
         }
 
-        cpu_number_map[0] = 0;
-	print_cpu_info(&safe_get_cpu_lowcore(0).cpu_data);
+        print_cpu_info(&safe_get_cpu_lowcore(0).cpu_data);
 
-        for(curr_cpu = 0; curr_cpu < smp_num_cpus; curr_cpu++)
+        for(i = 0; i < smp_num_cpus; i++)
         {
                 curr_lowcore = (struct _lowcore *)
                                     __get_free_page(GFP_KERNEL|GFP_DMA);
                 if (curr_lowcore == NULL) {
-                        printk("smp_boot_cpus failed to allocate prefix memory\n"); 
+                        printk("smp_boot_cpus failed to allocate prefix memory\n");
                         break;
                 }
-                lowcore_ptr[curr_cpu] = curr_lowcore;
+                lowcore_ptr[i] = curr_lowcore;
                 memcpy(curr_lowcore, &S390_lowcore, sizeof(struct _lowcore));
                 /*
                  * Most of the parameters are set up when the cpu is
                  * started up.
                  */
-                if(smp_processor_id()==curr_cpu)
-                        set_prefix((u32)curr_lowcore);
+                if (smp_processor_id() == i)
+                        set_prefix((u32) curr_lowcore);
                 else {
-                        ccode=signal_processor_p((u32)(curr_lowcore),
-                                                 curr_cpu,sigp_set_prefix);
+                        ccode = signal_processor_p((u32)(curr_lowcore),
+                                                   i, sigp_set_prefix);
                         if(ccode) {
-                                /* if this gets troublesome I'll have to do 
+                                /* if this gets troublesome I'll have to do
                                  * something about it. */
                                 printk("ccode %d for cpu %d  returned when "
                                        "setting prefix in smp_boot_cpus not good.\n",
-                                       (int)ccode,(int)curr_cpu);
+                                       (int) ccode, (int) i);
                         }
                         else
-                                do_boot_cpu(curr_cpu);
+                                do_boot_cpu(i);
                 }
         }
 }
@@ -697,6 +666,7 @@ int setup_profiling_timer(unsigned int multiplier)
 
 void smp_local_timer_interrupt(struct pt_regs * regs)
 {
+	int user = (user_mode(regs) != 0);
         int cpu = smp_processor_id();
 
         /*
@@ -709,8 +679,23 @@ void smp_local_timer_interrupt(struct pt_regs * regs)
                 s390_do_profile(regs->psw.addr);
 
         if (!--prof_counter[cpu]) {
-                int user=0,system=0;
+                int system = 1-user;
                 struct task_struct * p = current;
+
+                /*
+                 * The multiplier may have changed since the last time we got
+                 * to this point as a result of the user writing to
+                 * /proc/profile.  In this case we need to adjust the APIC
+                 * timer accordingly.
+                 *
+                 * Interrupts are already masked off at this point.
+                 */
+                prof_counter[cpu] = prof_multiplier[cpu];
+                if (prof_counter[cpu] != prof_old_multiplier[cpu]) {
+			/* FIXME setup_APIC_timer(calibration_result/prof_counter[cpu]
+			   ); */
+                  prof_old_multiplier[cpu] = prof_counter[cpu];
+                }
 
                 /*
                  * After doing the above, we need to make like
@@ -719,16 +704,11 @@ void smp_local_timer_interrupt(struct pt_regs * regs)
                  * WrongThing (tm) to do.
                  */
 
-                if (user_mode(regs))
-                        user=1;
-                else
-                        system=1;
-
                 irq_enter(cpu, 0);
                 update_one_process(p, 1, user, system, cpu);
                 if (p->pid) {
                         p->counter -= 1;
-                        if (p->counter < 0) {
+                        if (p->counter <= 0) {
                                 p->counter = 0;
                                 p->need_resched = 1;
                         }
@@ -743,12 +723,7 @@ void smp_local_timer_interrupt(struct pt_regs * regs)
                         kstat.per_cpu_system[cpu] += system;
 
                 }
-                prof_counter[cpu]=prof_multiplier[cpu];
                 irq_exit(cpu, 0);
         }
 }
 
-EXPORT_SYMBOL(kernel_flag);
-EXPORT_SYMBOL(smp_ctl_set_bit);
-EXPORT_SYMBOL(smp_ctl_clear_bit);
-EXPORT_SYMBOL(smp_do_callback_all);

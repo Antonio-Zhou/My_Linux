@@ -1,17 +1,42 @@
-/* $Id: isdn_v110.c,v 1.1.2.1 2001/12/31 13:26:34 kai Exp $
- *
+/* $Id: isdn_v110.c,v 1.4 2000/03/16 16:34:12 kai Exp $
+
  * Linux ISDN subsystem, V.110 related functions (linklevel).
  *
  * Copyright by Thomas Pfeiffer (pfeiffer@pds.de)
  *
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2, or (at your option)
+ * any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ *
+ * $Log: isdn_v110.c,v $
+ * Revision 1.4  2000/03/16 16:34:12  kai
+ * some translation work
+ *
+ * there shouldn't be any German comments lurking around anymore ;-)
+ *
+ * Revision 1.3  1999/10/30 09:49:28  keil
+ * Reinit of v110 structs
+ *
+ * Revision 1.2  1998/02/22 19:44:25  fritz
+ * Bugfixes and improvements regarding V.110, V.110 now running.
+ *
+ * Revision 1.1  1998/02/20 17:32:09  fritz
+ * First checkin (not yet completely functionable).
  *
  */
-
 #include <linux/string.h>
 #include <linux/kernel.h>
-#include <linux/slab.h>
+#include <linux/malloc.h>
 #include <linux/mm.h>
 
 #include <linux/isdn.h>
@@ -19,7 +44,7 @@
 
 #undef ISDN_V110_DEBUG
 
-char *isdn_v110_revision = "$Revision: 1.1.2.1 $";
+char *isdn_v110_revision = "$Revision: 1.4 $";
 
 #define V110_38400 255
 #define V110_19200  15
@@ -59,7 +84,7 @@ static unsigned char V110_OffMatrix_38400[] =
  * FlipBits reorders sequences of keylen bits in one byte.
  * E.g. source order 7654321 will be converted to 45670123 when keylen = 4,
  * and to 67452301 when keylen = 2. This is necessary because ordering on
- * the isdn line is the other way.
+ * the isdn line is the the other way.
  */
 static __inline unsigned char
 FlipBits(unsigned char c, int keylen)
@@ -91,7 +116,7 @@ isdn_v110_open(unsigned char key, int hdrlen, int maxsize)
 	int i;
 	isdn_v110_stream *v;
 
-	if ((v = kmalloc(sizeof(isdn_v110_stream), GFP_ATOMIC)) == NULL)
+	if ((v = kmalloc(sizeof(isdn_v110_stream), GFP_KERNEL)) == NULL)
 		return NULL;
 	memset(v, 0, sizeof(isdn_v110_stream));
 	v->key = key;
@@ -123,7 +148,7 @@ isdn_v110_open(unsigned char key, int hdrlen, int maxsize)
 	v->b = 0;
 	v->skbres = hdrlen;
 	v->maxsize = maxsize - hdrlen;
-	if ((v->encodebuf = kmalloc(maxsize, GFP_ATOMIC)) == NULL) {
+	if ((v->encodebuf = kmalloc(maxsize, GFP_KERNEL)) == NULL) {
 		kfree(v);
 		return NULL;
 	}
@@ -589,7 +614,7 @@ isdn_v110_stat_callback(int idx, isdn_ctrl * c)
 					case ISDN_PROTO_L2_V11038:
 						dev->v110[idx] = isdn_v110_open(V110_38400, hdrlen, maxsize);
 						break;
-					default:;
+					default:
 				}
 				if ((v = dev->v110[idx])) {
 					while (v->SyncInit) {

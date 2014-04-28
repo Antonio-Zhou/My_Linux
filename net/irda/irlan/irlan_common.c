@@ -6,10 +6,10 @@
  * Status:        Experimental.
  * Author:        Dag Brattli <dagb@cs.uit.no>
  * Created at:    Sun Aug 31 20:14:37 1997
- * Modified at:   Fri Apr 21 14:55:31 2000
+ * Modified at:   Sun Dec 26 21:53:10 1999
  * Modified by:   Dag Brattli <dagb@cs.uit.no>
  * 
- *     Copyright (c) 1997, 1999-2000 Dag Brattli <dagb@cs.uit.no>, 
+ *     Copyright (c) 1997, 1999 Dag Brattli <dagb@cs.uit.no>, 
  *     All Rights Reserved.
  *     
  *     This program is free software; you can redistribute it and/or 
@@ -50,13 +50,6 @@
 #include <net/irda/irlan_eth.h>
 #include <net/irda/irlan_filter.h>
 
-/* 
- * Send gratuitous ARP when connected to a new AP or not. May be a clever
- * thing to do, but for some reason the machine crashes if you use DHCP. So
- * lets not use it by default.
- */
-#undef CONFIG_IRLAN_SEND_GRATUITOUS_ARP
-
 /* extern char sysctl_devname[]; */
 
 /*
@@ -72,7 +65,7 @@ static int access = ACCESS_PEER; /* PEER, DIRECT or HOSTED */
 static char *irlan_state[] = {
 	"IRLAN_IDLE",
 	"IRLAN_QUERY",
-	"IRLAN_CONN",
+	"IRLAN_CONN", 
 	"IRLAN_INFO",
 	"IRLAN_MEDIA",
 	"IRLAN_OPEN",
@@ -103,11 +96,63 @@ static int __irlan_insert_param(struct sk_buff *skb, char *param, int type,
 void irlan_close_tsaps(struct irlan_cb *self);
 
 #ifdef CONFIG_PROC_FS
-static int irlan_proc_read(char *buf, char **start, off_t offset, int len, 
-			   int unused);
+static int irlan_proc_read(char *buf, char **start, off_t offset, int len);
 
 extern struct proc_dir_entry *proc_irda;
 #endif /* CONFIG_PROC_FS */
+
+/*
+ * Function irlan_watchdog_timer_expired (data)
+ *
+ *    Something has gone wrong during the connection establishment
+ *
+ */
+void irlan_watchdog_timer_expired(void *data)
+{
+	struct irmanager_event mgr_event;
+	struct irlan_cb *self;
+	
+	IRDA_DEBUG(0, __FUNCTION__ "()\n");
+
+	self = (struct irlan_cb *) data;
+
+	ASSERT(self != NULL, return;);
+	ASSERT(self->magic == IRLAN_MAGIC, return;);
+
+	/* Check if device still configured */
+	if (netif_running(&self->dev)) {
+		IRDA_DEBUG(0, __FUNCTION__ 
+		      "(), notifying irmanager to stop irlan!\n");
+		mgr_event.event = EVENT_IRLAN_STOP;
+		sprintf(mgr_event.devname, "%s", self->dev.name);
+		irmanager_notify(&mgr_event);
+
+		/*
+		 *  We set this to false, so that irlan_dev_close known that
+		 *  notify_irmanager should actually be set to TRUE again 
+		 *  instead of FALSE, since this close has not been initiated
+		 *  by the user.
+		 */
+		self->notify_irmanager = FALSE;
+	} else {
+		IRDA_DEBUG(0, __FUNCTION__ "(), closing instance!\n");
+		/*irlan_close(self);*/
+	}
+}
+
+/*
+ * Function irlan_start_watchdog_timer (self, timeout)
+ *
+ *    
+ *
+ */
+void irlan_start_watchdog_timer(struct irlan_cb *self, int timeout)
+{
+	IRDA_DEBUG(4, __FUNCTION__ "()\n");
+	
+	irda_start_timer(&self->watchdog_timer, timeout, (void *) self,
+			 irlan_watchdog_timer_expired);
+}
 
 /*
  * Function irlan_init (void)
@@ -129,9 +174,11 @@ int __init irlan_init(void)
 		return -ENOMEM;
 	}
 #ifdef CONFIG_PROC_FS
-	create_proc_entry("irlan", 0, proc_irda)->get_info = irlan_proc_read;
+	create_proc_info_entry("irlan", 0, proc_irda, irlan_proc_read);
 #endif /* CONFIG_PROC_FS */
 
+	IRDA_DEBUG(4, __FUNCTION__ "()\n");
+	
 	hints = irlmp_service_to_hint(S_LAN);
 
 	/* Register with IrLMP as a client */
@@ -141,11 +188,12 @@ int __init irlan_init(void)
 	/* Register with IrLMP as a service */
  	skey = irlmp_register_service(hints);
 
-	/* Start the master IrLAN instance (the only one for now) */
- 	new = irlan_open(DEV_ADDR_ANY, DEV_ADDR_ANY);
+	/* Start the master IrLAN instance */
+ 	new = irlan_open(DEV_ADDR_ANY, DEV_ADDR_ANY, FALSE);
 
 	/* The master will only open its (listen) control TSAP */
 	irlan_provider_open_ctrl_tsap(new);
+	new->master = TRUE;
 
 	/* Do some fast discovery! */
 	irlmp_discovery_request(DISCOVERY_DEFAULT_SLOTS);
@@ -158,6 +206,7 @@ void irlan_cleanup(void)
 	IRDA_DEBUG(4, __FUNCTION__ "()\n");
 
 	irlmp_unregister_client(ckey);
+
 	irlmp_unregister_service(skey);
 
 #ifdef CONFIG_PROC_FS
@@ -185,15 +234,16 @@ int irlan_register_netdev(struct irlan_cb *self)
 	if (!eth) {
 		/* Get the first free irlan<x> name */
 		do {
-			sprintf(self->ifname, "%s%d", "irlan", i++);
-		} while (dev_get(self->ifname));
+			sprintf(self->dev.name, "%s%d", "irlan", i++);
+		} while (dev_get(self->dev.name));
 	}
-	self->dev.name = self->ifname;
 	
 	if (register_netdev(&self->dev) != 0) {
 		IRDA_DEBUG(2, __FUNCTION__ "(), register_netdev() failed!\n");
 		return -1;
 	}
+	self->netdev_registered = TRUE;
+	
 	return 0;
 }
 
@@ -203,7 +253,7 @@ int irlan_register_netdev(struct irlan_cb *self)
  *    Open new instance of a client/provider, we should only register the 
  *    network device if this instance is ment for a particular client/provider
  */
-struct irlan_cb *irlan_open(__u32 saddr, __u32 daddr)
+struct irlan_cb *irlan_open(__u32 saddr, __u32 daddr, int netdev)
 {
 	struct irlan_cb *self;
 
@@ -225,7 +275,7 @@ struct irlan_cb *irlan_open(__u32 saddr, __u32 daddr)
 
 	ASSERT(irlan != NULL, return NULL;);
 	
-	sprintf(self->ifname, "%s", "unknown");
+	sprintf(self->dev.name, "%s", "unknown");
 
 	self->dev.priv = (void *) self;
 	self->dev.next = NULL;
@@ -238,6 +288,8 @@ struct irlan_cb *irlan_open(__u32 saddr, __u32 daddr)
 	self->provider.access_type = access;
 	self->media = MEDIA_802_3;
 
+	self->notify_irmanager = TRUE;
+
 	init_timer(&self->watchdog_timer);
 	init_timer(&self->client.kick_timer);
 
@@ -248,16 +300,19 @@ struct irlan_cb *irlan_open(__u32 saddr, __u32 daddr)
 	irlan_next_client_state(self, IRLAN_IDLE);
 	irlan_next_provider_state(self, IRLAN_IDLE);
 
-	irlan_register_netdev(self);
+	/* Register network device now, or wait until some later time? */
+	if (netdev)
+		irlan_register_netdev(self);
 
 	return self;
 }
 /*
- * Function __irlan_close (self)
+ * Function irlan_close (self)
  *
  *    This function closes and deallocates the IrLAN client instances. Be 
  *    aware that other functions which calles client_close() must call 
  *    hashbin_remove() first!!!
+ *
  */
 static void __irlan_close(struct irlan_cb *self)
 {
@@ -278,13 +333,49 @@ static void __irlan_close(struct irlan_cb *self)
 		iriap_close(self->client.iriap);
 
 	/* Remove frames queued on the control channel */
-	while ((skb = skb_dequeue(&self->client.txq)))
+	while ((skb = skb_dequeue(&self->client.txq))) {
 		dev_kfree_skb(skb);
-	
-	unregister_netdev(&self->dev);
+	}
+
+	if (self->netdev_registered) {
+		unregister_netdev(&self->dev);
+		self->netdev_registered = FALSE;
+	}
 	
 	self->magic = 0;
-	kfree(self);
+ 	kfree(self);
+}
+
+/*
+ * Function irlan_close (self)
+ *
+ *    Close instance
+ *
+ */
+void irlan_close(struct irlan_cb *self)
+{
+	struct irlan_cb *entry;
+
+	IRDA_DEBUG(0, __FUNCTION__ "()\n");
+
+        ASSERT(self != NULL, return;);
+	ASSERT(self->magic == IRLAN_MAGIC, return;);
+
+	/* Check if device is still configured */
+	if (netif_running(&self->dev)) {
+		IRDA_DEBUG(0, __FUNCTION__ 
+		       "(), Device still configured, closing later!\n");
+
+		/* Give it a chance to reconnect */
+		irlan_start_watchdog_timer(self, IRLAN_TIMEOUT);
+		return;
+	}
+	IRDA_DEBUG(2, __FUNCTION__ "(), daddr=%08x\n", self->daddr);
+	entry = hashbin_remove(irlan, self->daddr, NULL);
+
+	ASSERT(entry == self, return;);
+	
+        __irlan_close(self);
 }
 
 /*
@@ -328,8 +419,7 @@ void irlan_connect_indication(void *instance, void *sap, struct qos_info *qos,
 		irlan_open_unicast_addr(self);
 	}
 	/* Ready to transfer Ethernet frames (at last) */
-	self->dev.tbusy = 0;
-	self->disconnect_reason = 0; /* Clear reason */
+	netif_start_queue(&self->dev);
 }
 
 void irlan_connect_confirm(void *instance, void *sap, struct qos_info *qos, 
@@ -363,13 +453,8 @@ void irlan_connect_confirm(void *instance, void *sap, struct qos_info *qos,
  	irlan_set_multicast_filter(self, TRUE);
 
 	/* Ready to transfer Ethernet frames */
-	self->dev.tbusy = 0;
-	self->dev.start = 1;
-	self->disconnect_reason = 0; /* Clear reason */
-
-#ifdef CONFIG_IRLAN_SEND_GRATUITOUS_ARP
+	netif_start_queue(&self->dev);
 	irlan_eth_send_gratuitous_arp(&self->dev);
-#endif
 }
 
 /*
@@ -398,29 +483,26 @@ void irlan_disconnect_indication(void *instance, void *sap, LM_REASON reason,
 
 	IRDA_DEBUG(2, "IrLAN, data channel disconnected by peer!\n");
 
-	/* Save reason, so we know if we should try to reconnect or not */
-	self->disconnect_reason = reason;
-
-	switch (reason) {
+	switch(reason) {
 	case LM_USER_REQUEST: /* User request */
-		IRDA_DEBUG(2, __FUNCTION__ "(), user request\n");
+		irlan_close(self);
 		break;
 	case LM_LAP_DISCONNECT: /* Unexpected IrLAP disconnect */
-		IRDA_DEBUG(2, __FUNCTION__ "(), Unexpected IrLAP disconnect\n");
+		irlan_start_watchdog_timer(self, IRLAN_TIMEOUT);
 		break;
 	case LM_CONNECT_FAILURE: /* Failed to establish IrLAP connection */
-		IRDA_DEBUG(2, __FUNCTION__ "(), IrLAP connect failed\n");
+		IRDA_DEBUG(2, __FUNCTION__ "(), LM_CONNECT_FAILURE not impl\n");
 		break;
 	case LM_LAP_RESET:  /* IrLAP reset */
-		IRDA_DEBUG(2, __FUNCTION__ "(), IrLAP reset\n");
+		IRDA_DEBUG(2, __FUNCTION__ "(), LM_CONNECT_FAILURE not impl\n");
 		break;
 	case LM_INIT_DISCONNECT:
-		IRDA_DEBUG(2, __FUNCTION__ "(), IrLMP connect failed\n");
+		IRDA_DEBUG(2, __FUNCTION__ "(), LM_CONNECT_FAILURE not impl\n");
 		break;
 	default:
-		ERROR(__FUNCTION__ "(), Unknown disconnect reason\n");
 		break;
-	}	
+	}
+	
 	irlan_do_client_event(self, IRLAN_LMP_DISCONNECT, NULL);
 	irlan_do_provider_event(self, IRLAN_LMP_DISCONNECT, NULL);
 }
@@ -471,7 +553,9 @@ void irlan_close_tsaps(struct irlan_cb *self)
 	ASSERT(self != NULL, return;);
 	ASSERT(self->magic == IRLAN_MAGIC, return;);
 
-	/* Disconnect and close all open TSAP connections */
+	/* 
+	 *  Disconnect and close all open TSAP connections
+	 */
 	if (self->tsap_data) {
 		irttp_disconnect_request(self->tsap_data, NULL, P_NORMAL);
 		irttp_close_tsap(self->tsap_data);
@@ -549,7 +633,7 @@ int irlan_run_ctrl_tx_queue(struct irlan_cb *self)
 {
 	struct sk_buff *skb;
 
-	IRDA_DEBUG(2, __FUNCTION__ "()\n");
+	IRDA_DEBUG(3, __FUNCTION__ "()\n");
 
 	if (irda_lock(&self->client.tx_busy) == FALSE)
 		return -EBUSY;
@@ -568,7 +652,7 @@ int irlan_run_ctrl_tx_queue(struct irlan_cb *self)
 		dev_kfree_skb(skb);
 		return -1;
 	}
-	IRDA_DEBUG(2, __FUNCTION__ "(), sending ...\n");
+	IRDA_DEBUG(3, __FUNCTION__ "(), sending ...\n");
 
 	return irttp_data_request(self->client.tsap_ctrl, skb);
 }
@@ -657,6 +741,7 @@ void irlan_open_data_channel(struct irlan_cb *self)
 
 /* 	self->use_udata = TRUE; */
 
+	/* irttp_data_request(self->client.tsap_ctrl, skb); */
 	irlan_ctrl_data_request(self, skb);
 }
 
@@ -725,6 +810,7 @@ void irlan_open_unicast_addr(struct irlan_cb *self)
  	irlan_insert_string_param(skb, "FILTER_TYPE", "DIRECTED");
  	irlan_insert_string_param(skb, "FILTER_MODE", "FILTER"); 
 	
+	/* irttp_data_request(self->client.tsap_ctrl, skb); */
 	irlan_ctrl_data_request(self, skb);
 }
 
@@ -766,6 +852,7 @@ void irlan_set_broadcast_filter(struct irlan_cb *self, int status)
 	else
 		irlan_insert_string_param(skb, "FILTER_MODE", "NONE"); 
 
+	/* irttp_data_request(self->client.tsap_ctrl, skb); */
 	irlan_ctrl_data_request(self, skb);
 }
 
@@ -805,6 +892,7 @@ void irlan_set_multicast_filter(struct irlan_cb *self, int status)
 	else
 		irlan_insert_string_param(skb, "FILTER_MODE", "NONE"); 
 
+	/* irttp_data_request(self->client.tsap_ctrl, skb); */
 	irlan_ctrl_data_request(self, skb);
 }
 
@@ -842,6 +930,7 @@ void irlan_get_unicast_addr(struct irlan_cb *self)
  	irlan_insert_string_param(skb, "FILTER_TYPE", "DIRECTED");
  	irlan_insert_string_param(skb, "FILTER_OPERATION", "DYNAMIC"); 
 	
+	/* irttp_data_request(self->client.tsap_ctrl, skb); */
 	irlan_ctrl_data_request(self, skb);
 }
 
@@ -877,6 +966,7 @@ void irlan_get_media_char(struct irlan_cb *self)
 	
 	irlan_insert_string_param(skb, "MEDIA", "802.3");
 	
+	/* irttp_data_request(self->client.tsap_ctrl, skb); */
 	irlan_ctrl_data_request(self, skb);
 }
 
@@ -1061,8 +1151,7 @@ int irlan_extract_param(__u8 *buf, char *name, char *value, __u16 *len)
  *
  *    Give some info to the /proc file system
  */
-static int irlan_proc_read(char *buf, char **start, off_t offset, int len, 
-			   int unused)
+static int irlan_proc_read(char *buf, char **start, off_t offset, int len)
 {
  	struct irlan_cb *self;
 	unsigned long flags;
@@ -1080,35 +1169,35 @@ static int irlan_proc_read(char *buf, char **start, off_t offset, int len,
 	while (self != NULL) {
 		ASSERT(self->magic == IRLAN_MAGIC, return len;);
 		
-		len += sprintf(buf+len, "ifname: %s,\n",
-			       self->ifname);
-		len += sprintf(buf+len, "client state: %s, ",
-			       irlan_state[ self->client.state]);
-		len += sprintf(buf+len, "provider state: %s,\n",
-			       irlan_state[ self->provider.state]);
-		len += sprintf(buf+len, "saddr: %#08x, ",
-			       self->saddr);
-		len += sprintf(buf+len, "daddr: %#08x\n",
-			       self->daddr);
-		len += sprintf(buf+len, "version: %d.%d,\n",
-			       self->version[1], self->version[0]);
-		len += sprintf(buf+len, "access type: %s\n", 
-			       irlan_access[self->client.access_type]);
-		len += sprintf(buf+len, "media: %s\n", 
-			       irlan_media[self->media]);
-		
-		len += sprintf(buf+len, "local filter:\n");
-		len += sprintf(buf+len, "remote filter: ");
-		len += irlan_print_filter(self->client.filter_type, 
-					  buf+len);
-		
-		len += sprintf(buf+len, "client tx busy: %s\n", 
-			       self->client.tx_busy ? "TRUE" : "FALSE");
-		
-		len += sprintf(buf+len, "dev tx busy: %s\n", 
-			       self->dev.tbusy ? "TRUE" : "FALSE");
-		
-		len += sprintf(buf+len, "\n");
+		/* Don't display the master server */
+		if (self->master == 0) {
+			len += sprintf(buf+len, "ifname: %s,\n",
+				       self->dev.name);
+			len += sprintf(buf+len, "client state: %s, ",
+				       irlan_state[ self->client.state]);
+			len += sprintf(buf+len, "provider state: %s,\n",
+				       irlan_state[ self->provider.state]);
+			len += sprintf(buf+len, "saddr: %#08x, ",
+				       self->saddr);
+			len += sprintf(buf+len, "daddr: %#08x\n",
+				       self->daddr);
+			len += sprintf(buf+len, "version: %d.%d,\n",
+				       self->version[1], self->version[0]);
+			len += sprintf(buf+len, "access type: %s\n", 
+				       irlan_access[self->client.access_type]);
+			len += sprintf(buf+len, "media: %s\n", 
+				       irlan_media[self->media]);
+			
+			len += sprintf(buf+len, "local filter:\n");
+			len += sprintf(buf+len, "remote filter: ");
+			len += irlan_print_filter(self->client.filter_type, 
+						  buf+len);
+			
+			len += sprintf(buf+len, "tx busy: %s\n", 
+				       netif_queue_stopped(&self->dev) ? "TRUE" : "FALSE");
+			
+			len += sprintf(buf+len, "\n");
+		}
 
 		self = (struct irlan_cb *) hashbin_get_next(irlan);
  	} 

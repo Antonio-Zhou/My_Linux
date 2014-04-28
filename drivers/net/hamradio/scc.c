@@ -1,7 +1,7 @@
 #define RCS_ID "$Id: scc.c,v 1.75 1998/11/04 15:15:01 jreuter Exp jreuter $"
 
 #define VERSION "3.0"
-#define BANNER  "Z8530 SCC driver version "VERSION".dl1bke (experimental) by DL1BKE / patch F6FBB\n"
+#define BANNER  "AX.25: Z8530 SCC driver version "VERSION".dl1bke\n"
 
 /*
  * Please use z8530drv-utils-3.0 with this version.
@@ -104,7 +104,9 @@
    		flags that aren't... Restarting the DPLL does not help
    		either, it resynchronizes too slow and the first received
    		frame gets lost.
-   2001-10-05   Set skb to NULL when it is freed in scc_spint. (PE1RXQ)
+   2000-02-13	Fixed for new network driver interface changes, still
+   		does TX timeouts itself since it uses its own queue
+   		scheme.
 
    Thanks to all who contributed to this driver with ideas and bug
    reports!
@@ -118,8 +120,8 @@
    please (!) contact me first.
    
    New versions of the driver will be announced on the linux-hams
-   mailing list on vger.kernel.org. To subscribe send an e-mail
-   to majordomo@vger.kernel.org with the following line in
+   mailing list on vger.rutgers.edu. To subscribe send an e-mail
+   to majordomo@vger.rutgers.edu with the following line in
    the body of the mail:
    
 	   subscribe linux-hams
@@ -128,9 +130,9 @@
 
    vy 73,
    Joerg Reuter	ampr-net: dl1bke@db0pra.ampr.org
-		AX-25   : DL1BKE @ DB0ABH.#BAY.DEU.EU
-		Internet: jreuter@yaina.de
-		www     : http://yaina.de/jreuter/
+		AX-25   : DL1BKE @ DB0ACH.#NRW.DEU.EU
+		Internet: jreuter@poboxes.com
+		www     : http://poboxes.com/jreuter/
 */
 
 /* ----------------------------------------------------------------------- */
@@ -211,19 +213,19 @@ static void scc_isr(int irq, void *dev_id, struct pt_regs *regs);
 static void scc_init_timer(struct scc_channel *scc);
 
 static int scc_net_setup(struct scc_channel *scc, unsigned char *name, int addev);
-static int scc_net_init(struct device *dev);
-static int scc_net_open(struct device *dev);
-static int scc_net_close(struct device *dev);
+static int scc_net_init(struct net_device *dev);
+static int scc_net_open(struct net_device *dev);
+static int scc_net_close(struct net_device *dev);
 static void scc_net_rx(struct scc_channel *scc, struct sk_buff *skb);
-static int scc_net_tx(struct sk_buff *skb, struct device *dev);
-static int scc_net_ioctl(struct device *dev, struct ifreq *ifr, int cmd);
-static int scc_net_set_mac_address(struct device *dev, void *addr);
-static int scc_net_header(struct sk_buff *skb, struct device *dev, unsigned short type, void *daddr, void *saddr, unsigned len);
-static struct net_device_stats * scc_net_get_stats(struct device *dev);
+static int scc_net_tx(struct sk_buff *skb, struct net_device *dev);
+static int scc_net_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd);
+static int scc_net_set_mac_address(struct net_device *dev, void *addr);
+static int scc_net_header(struct sk_buff *skb, struct net_device *dev, unsigned short type, void *daddr, void *saddr, unsigned len);
+static struct net_device_stats * scc_net_get_stats(struct net_device *dev);
 
 static unsigned char *SCC_DriverName = "scc";
 
-static struct irqflags { unsigned char used : 1; } Ivec[NR_IRQS];
+static struct irqflags { unsigned char used : 1; } Ivec[16];
 	
 static struct scc_channel SCC_Info[2 * SCC_MAXCHIPS];	/* information per channel */
 
@@ -237,9 +239,6 @@ static unsigned char Driver_Initialized = 0;
 static int Nchips = 0;
 static io_port Vector_Latch = 0;
 
-MODULE_AUTHOR("Joerg Reuter <jreuter@yaina.de>");
-MODULE_DESCRIPTION("Network Device Driver for Z8530 based HDLC cards for Amateur Packet Radio");
-MODULE_SUPPORTED_DEVICE("scc");
 
 /* ******************************************************************** */
 /* *			Port Access Functions			      * */
@@ -315,17 +314,6 @@ static inline void scc_sti(int irq)
 /* *			Some useful macros			      * */
 /* ******************************************************************** */
 
-
-static inline void scc_lock_dev(struct scc_channel *scc)
-{
-	scc->dev->tbusy = 1;
-}
-
-static inline void scc_unlock_dev(struct scc_channel *scc)
-{
-	scc->dev->tbusy = 0;
-}
-
 static inline void scc_discard_buffers(struct scc_channel *scc)
 {
 	unsigned long flags;
@@ -383,7 +371,7 @@ static inline void flush_rx_FIFO(struct scc_channel *scc)
 	if(scc->rx_buff != NULL)		/* did we receive something? */
 	{
 		scc->stat.rxerrs++;  /* then count it as an error */
-		kfree_skb(scc->rx_buff);
+		dev_kfree_skb_irq(scc->rx_buff);
 		scc->rx_buff = NULL;
 	}
 }
@@ -412,23 +400,21 @@ static inline void scc_txint(struct scc_channel *scc)
 	{
 		skb = skb_dequeue(&scc->tx_queue);
 		scc->tx_buff = skb;
-		scc_unlock_dev(scc);
+		netif_wake_queue(scc->dev);
 
 		if (skb == NULL)
 		{
 			scc_tx_done(scc);
 			Outb(scc->ctrl, RES_Tx_P);
-			del_timer(&scc->fs_wdog);	/* Stop failsafe watchdog */
 			return;
 		}
 		
 		if (skb->len == 0)		/* Paranoia... */
 		{
-			dev_kfree_skb(skb);
+			dev_kfree_skb_irq(skb);
 			scc->tx_buff = NULL;
 			scc_tx_done(scc);
 			Outb(scc->ctrl, RES_Tx_P);
-			del_timer(&scc->fs_wdog);	/* Stop failsafe watchdog */
 			return;
 		}
 
@@ -451,10 +437,9 @@ static inline void scc_txint(struct scc_channel *scc)
 	{
 		Outb(scc->ctrl, RES_Tx_P);	/* reset pending int */
 		cl(scc, R10, ABUNDER);		/* send CRC */
-		dev_kfree_skb(skb);
+		dev_kfree_skb_irq(skb);
 		scc->tx_buff = NULL;
 		scc->stat.tx_state = TXS_NEWFRAME; /* next frame... */
-		mod_timer(&scc->fs_wdog, jiffies + HZ*60);	/* restart failsafe watchdog */
 		return;
 	} 
 	
@@ -537,7 +522,7 @@ static inline void scc_exint(struct scc_channel *scc)
 
 		if (scc->tx_buff != NULL)
 		{
-			dev_kfree_skb(scc->tx_buff);
+			dev_kfree_skb_irq(scc->tx_buff);
 			scc->tx_buff = NULL;
 		}
 		
@@ -587,7 +572,7 @@ static inline void scc_rxint(struct scc_channel *scc)
 #ifdef notdef
 		printk(KERN_DEBUG "z8530drv: oops, scc_rxint() received huge frame...\n");
 #endif
-		kfree_skb(skb);
+		dev_kfree_skb_irq(skb);
 		scc->rx_buff = NULL;
 		Inb(scc->data);
 		or(scc, R3, ENT_HM);
@@ -617,9 +602,8 @@ static inline void scc_spint(struct scc_channel *scc)
 		or(scc,R3,ENT_HM);               /* enter hunt mode for next flag */
 		
 		if (skb != NULL) 
-			kfree_skb(skb);
+			dev_kfree_skb_irq(skb);
 		scc->rx_buff = NULL;
-		skb=NULL;                        /* prevent reuse of skb */
 	}
 
 	if(status & END_FR && skb != NULL)	/* end of frame */
@@ -634,7 +618,7 @@ static inline void scc_spint(struct scc_channel *scc)
 			scc->rx_buff = NULL;
 			scc->stat.rxframes++;
 		} else {				/* a bad frame */
-			kfree_skb(skb);
+			dev_kfree_skb_irq(skb);
 			scc->rx_buff = NULL;
 			scc->stat.rxerrs++;
 		}
@@ -828,7 +812,6 @@ static void init_channel(struct scc_channel *scc)
 {
 	del_timer(&scc->tx_t);
 	del_timer(&scc->tx_wdog);
-	del_timer(&scc->fs_wdog);
 
 	disable_irq(scc->irq);
 
@@ -1118,7 +1101,7 @@ static void scc_tx_done(struct scc_channel *scc)
 			scc_start_tx_timer(scc, t_tail, scc->kiss.tailtime);
 	}
 
-	scc_unlock_dev(scc);
+	netif_wake_queue(scc->dev);
 }
 
 
@@ -1169,7 +1152,7 @@ static void t_dwait(unsigned long channel)
 		if (skb_queue_len(&scc->tx_queue) == 0)	/* nothing to send */
 		{
 			scc->stat.tx_state = TXS_IDLE;
-			scc_unlock_dev(scc);	/* t_maxkeyup locked it. */
+			netif_wake_queue(scc->dev);	/* t_maxkeyup locked it. */
 			return;
 		}
 
@@ -1249,7 +1232,7 @@ static void t_tail(unsigned long channel)
  	}
  	
  	scc->stat.tx_state = TXS_IDLE;
-	scc_unlock_dev(scc);
+	netif_wake_queue(scc->dev);
 }
 
 
@@ -1263,14 +1246,13 @@ static void t_busy(unsigned long channel)
 	struct scc_channel *scc = (struct scc_channel *) channel;
 
 	del_timer(&scc->tx_t);
-	scc_lock_dev(scc);
+	netif_stop_queue(scc->dev);	/* don't pile on the wabbit! */
 
 	scc_discard_buffers(scc);
-
 	scc->stat.txerrs++;
 	scc->stat.tx_state = TXS_IDLE;
-	
-	scc_unlock_dev(scc);
+
+	netif_wake_queue(scc->dev);	
 }
 
 /* MAXKEYUP timeout
@@ -1291,7 +1273,7 @@ static void t_maxkeyup(unsigned long channel)
 	 * accept new data.
 	 */
 
-	scc_lock_dev(scc);
+	netif_stop_queue(scc->dev);
 	scc_discard_buffers(scc);
 
 	del_timer(&scc->tx_t);
@@ -1339,29 +1321,6 @@ static void scc_init_timer(struct scc_channel *scc)
 	restore_flags(flags);
 }
 
-
-/* FailSafe timeout
- *
- * Fall into this timeout if a buffer is waiting
- * and nothing has been sent during 1 minute
- */
-
-static void t_failsafe(unsigned long channel)
-{
-	struct scc_channel *scc = (struct scc_channel *) channel;
-	
-	del_timer(&scc->fs_wdog);
-
-	/* Kernel message */
-	printk(KERN_ERR "z8530drv: scc port %s failed. Re-init done.\n", scc->dev->name);
-
-	/* Add 1000 to the tx-underrun counter */
-	scc->stat.tx_under += 1000;
-	
-	/* re-initialize the port */
-	scc_net_close(scc->dev);
-	scc_net_open(scc->dev);
-}
 
 /* ******************************************************************** */
 /* *			Set/get L1 parameters			      * */
@@ -1489,8 +1448,7 @@ static void scc_stop_calibrate(unsigned long channel)
 	Outb(scc->ctrl,RES_EXT_INT);	/* reset ext/status interrupts */
 	Outb(scc->ctrl,RES_EXT_INT);
 
-	scc_unlock_dev(scc);
-	
+	netif_wake_queue(scc->dev);
 	restore_flags(flags);
 }
 
@@ -1503,7 +1461,7 @@ scc_start_calibrate(struct scc_channel *scc, int duration, unsigned char pattern
 	save_flags(flags);
 	cli();
 
-	scc_lock_dev(scc);
+	netif_stop_queue(scc->dev);
 	scc_discard_buffers(scc);
 
 	del_timer(&scc->tx_wdog);
@@ -1526,7 +1484,6 @@ scc_start_calibrate(struct scc_channel *scc, int duration, unsigned char pattern
 	Outb(scc->ctrl,RES_EXT_INT);
 
 	scc_key_trx(scc, TX_ON);
-	
 	restore_flags(flags);
 }
 
@@ -1549,7 +1506,7 @@ static void z8530_init(void)
 	printk(KERN_INFO "Init Z8530 driver: %u channels, IRQ", Nchips*2);
 	
 	flag=" ";
-	for (k = 0; k < NR_IRQS; k++)
+	for (k = 0; k < 16; k++)
 		if (Ivec[k].used) 
 		{
 			printk("%s%d", flag, k);
@@ -1597,26 +1554,22 @@ static void z8530_init(void)
 
 static int scc_net_setup(struct scc_channel *scc, unsigned char *name, int addev)
 {
-	unsigned char *buf;
-	struct device *dev;
+	struct net_device *dev;
 
-	if (dev_get(name) != NULL)
+	if (dev_get(name))
 	{
 		printk(KERN_INFO "Z8530drv: device %s already exists.\n", name);
 		return -EEXIST;
 	}
 
-	if ((scc->dev = (struct device *) kmalloc(sizeof(struct device), GFP_KERNEL)) == NULL)
+	if ((scc->dev = (struct net_device *) kmalloc(sizeof(struct net_device), GFP_KERNEL)) == NULL)
 		return -ENOMEM;
 
 	dev = scc->dev;
-	memset(dev, 0, sizeof(struct device));
+	memset(dev, 0, sizeof(struct net_device));
 
-	buf = (unsigned char *) kmalloc(10, GFP_KERNEL);
-	strcpy(buf, name);
-
+	strcpy(dev->name, name);
 	dev->priv = (void *) scc;
-	dev->name = buf;
 	dev->init = scc_net_init;
 
 	if ((addev? register_netdevice(dev) : register_netdev(dev)) != 0)
@@ -1641,7 +1594,7 @@ static unsigned char ax25_nocall[AX25_ADDR_LEN] =
 
 /* ----> Initialize device <----- */
 
-static int scc_net_init(struct device *dev)
+static int scc_net_init(struct net_device *dev)
 {
 	dev_init_buffers(dev);
 	
@@ -1656,6 +1609,7 @@ static int scc_net_init(struct device *dev)
 	dev->set_mac_address = scc_net_set_mac_address;
 	dev->get_stats       = scc_net_get_stats;
 	dev->do_ioctl        = scc_net_ioctl;
+	dev->tx_timeout      = NULL;
 
 	memcpy(dev->broadcast, ax25_bcast,  AX25_ADDR_LEN);
 	memcpy(dev->dev_addr,  ax25_nocall, AX25_ADDR_LEN);
@@ -1672,40 +1626,32 @@ static int scc_net_init(struct device *dev)
 
 /* ----> open network device <---- */
 
-static int scc_net_open(struct device *dev)
+static int scc_net_open(struct net_device *dev)
 {
 	struct scc_channel *scc = (struct scc_channel *) dev->priv;
-
-	if (scc == NULL || scc->magic != SCC_MAGIC)
-		return -ENODEV;
 
  	if (!scc->init)
 		return -EINVAL;
 
 	MOD_INC_USE_COUNT;
-	
+
 	scc->tx_buff = NULL;
 	skb_queue_head_init(&scc->tx_queue);
  
 	init_channel(scc);
 
-	dev->tbusy = 0;
-	dev->start = 1;
-
+	netif_start_queue(dev);
 	return 0;
 }
 
 /* ----> close network device <---- */
 
-static int scc_net_close(struct device *dev)
+static int scc_net_close(struct net_device *dev)
 {
 	struct scc_channel *scc = (struct scc_channel *) dev->priv;
 	unsigned long flags;
 
-	if (scc == NULL || scc->magic != SCC_MAGIC)
-		return -ENODEV;
-
-	MOD_DEC_USE_COUNT;
+	netif_stop_queue(dev);
 
 	save_flags(flags); 
 	cli();
@@ -1716,15 +1662,12 @@ static int scc_net_close(struct device *dev)
 
 	del_timer(&scc->tx_t);
 	del_timer(&scc->tx_wdog);
-	del_timer(&scc->fs_wdog);
 
 	restore_flags(flags);
 	
 	scc_discard_buffers(scc);
 
-	dev->tbusy = 1;
-	dev->start = 0;
-
+	MOD_DEC_USE_COUNT;
 	return 0;
 }
 
@@ -1734,7 +1677,7 @@ static void scc_net_rx(struct scc_channel *scc, struct sk_buff *skb)
 {
 	if (skb->len == 0)
 	{
-		kfree_skb(skb);
+		dev_kfree_skb_irq(skb);
 		return;
 	}
 		
@@ -1751,18 +1694,11 @@ static void scc_net_rx(struct scc_channel *scc, struct sk_buff *skb)
 
 /* ----> transmit frame <---- */
 
-static int scc_net_tx(struct sk_buff *skb, struct device *dev)
+static int scc_net_tx(struct sk_buff *skb, struct net_device *dev)
 {
 	struct scc_channel *scc = (struct scc_channel *) dev->priv;
 	unsigned long flags;
 	char kisscmd;
-	int nbbuf;
-	
-	if (scc == NULL || scc->magic != SCC_MAGIC || dev->tbusy)
-	{
-		dev_kfree_skb(skb);
-		return 0;
-	}
 
 	if (skb->len > scc->stat.bufsize || skb->len < 2)
 	{
@@ -1786,27 +1722,16 @@ static int scc_net_tx(struct sk_buff *skb, struct device *dev)
 
 	save_flags(flags);
 	cli();
-
-	nbbuf = skb_queue_len(&scc->tx_queue);
-	if (nbbuf > scc->dev->tx_queue_len)
+	
+	if (skb_queue_len(&scc->tx_queue) > scc->dev->tx_queue_len)
 	{
 		struct sk_buff *skb_del;
-		skb_del = __skb_dequeue(&scc->tx_queue);
+		skb_del = skb_dequeue(&scc->tx_queue);
 		dev_kfree_skb(skb_del);
 	}
-	__skb_queue_tail(&scc->tx_queue, skb);
-
+	skb_queue_tail(&scc->tx_queue, skb);
 	dev->trans_start = jiffies;
-
-	if (nbbuf == 0)
-	{
-		del_timer(&scc->fs_wdog);
-		/* Arm the failsafe timer for 1 minute */
-		scc->fs_wdog.data = (unsigned long) scc;
-		scc->fs_wdog.function = t_failsafe;
-		scc->fs_wdog.expires = jiffies + HZ*60;
-		add_timer(&scc->fs_wdog);
-	}
+	
 
 	/*
 	 * Start transmission if the trx state is idle or
@@ -1823,8 +1748,7 @@ static int scc_net_tx(struct sk_buff *skb, struct device *dev)
 			scc_start_tx_timer(scc, t_dwait, 0);
 	}
 
-	restore_flags(flags);
-
+	restore_flags(flags);	
 	return 0;
 }
 
@@ -1841,7 +1765,7 @@ static int scc_net_tx(struct sk_buff *skb, struct device *dev)
  * SIOCSCCCAL		- send calib. pattern	arg: (struct scc_calibrate *) arg
  */
 
-static int scc_net_ioctl(struct device *dev, struct ifreq *ifr, int cmd)
+static int scc_net_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 {
 	struct scc_kiss_cmd kiss_cmd;
 	struct scc_mem_config memcfg;
@@ -1853,9 +1777,6 @@ static int scc_net_ioctl(struct device *dev, struct ifreq *ifr, int cmd)
 	struct scc_channel *scc;
 	
 	scc = (struct scc_channel *) dev->priv;
-	if (scc == NULL || scc->magic != SCC_MAGIC)
-		return -EINVAL;
-		
 	arg = (void *) ifr->ifr_data;
 	
 	if (!Driver_Initialized)
@@ -1864,7 +1785,7 @@ static int scc_net_ioctl(struct device *dev, struct ifreq *ifr, int cmd)
 		{
 			int found = 1;
 
-			if (!suser()) return -EPERM;
+			if (!capable(CAP_SYS_RAWIO)) return -EPERM;
 			if (!arg) return -EFAULT;
 
 			if (Nchips >= SCC_MAXCHIPS) 
@@ -1875,9 +1796,6 @@ static int scc_net_ioctl(struct device *dev, struct ifreq *ifr, int cmd)
 
 			if (hwcfg.irq == 2) hwcfg.irq = 9;
 
-			if (hwcfg.irq <0 || hwcfg.irq > NR_IRQS)
-				return -EINVAL;
-				
 			if (!Ivec[hwcfg.irq].used && hwcfg.irq)
 			{
 				if (request_irq(hwcfg.irq, scc_isr, SA_INTERRUPT, "AX.25 SCC", NULL))
@@ -1963,7 +1881,7 @@ static int scc_net_ioctl(struct device *dev, struct ifreq *ifr, int cmd)
 		
 		if (cmd == SIOCSCCINI)
 		{
-			if (!suser())
+			if (!capable(CAP_SYS_RAWIO))
 				return -EPERM;
 				
 			if (Nchips == 0)
@@ -1980,7 +1898,7 @@ static int scc_net_ioctl(struct device *dev, struct ifreq *ifr, int cmd)
 	{
 		if (cmd == SIOCSCCCHANINI)
 		{
-			if (!suser()) return -EPERM;
+			if (!capable(CAP_NET_ADMIN)) return -EPERM;
 			if (!arg) return -EINVAL;
 			
 			scc->stat.bufsize   = SCC_BUFSIZE;
@@ -2033,7 +1951,7 @@ static int scc_net_ioctl(struct device *dev, struct ifreq *ifr, int cmd)
 			return -ENOIOCTLCMD;
 
 		case SIOCSCCSMEM:
-			if (!suser()) return -EPERM;
+			if (!capable(CAP_SYS_RAWIO)) return -EPERM;
 			if (!arg || copy_from_user(&memcfg, arg, sizeof(memcfg)))
 				return -EINVAL;
 			scc->stat.bufsize   = memcfg.bufsize;
@@ -2053,13 +1971,13 @@ static int scc_net_ioctl(struct device *dev, struct ifreq *ifr, int cmd)
 			return 0;
 		
 		case SIOCSCCSKISS:
-			if (!suser()) return -EPERM;
+			if (!capable(CAP_NET_ADMIN)) return -EPERM;
 			if (!arg || copy_from_user(&kiss_cmd, arg, sizeof(kiss_cmd)))
 				return -EINVAL;
 			return scc_set_param(scc, kiss_cmd.command, kiss_cmd.param);
 		
 		case SIOCSCCCAL:
-			if (!suser()) return -EPERM;
+			if (!capable(CAP_SYS_RAWIO)) return -EPERM;
 			if (!arg || copy_from_user(&cal, arg, sizeof(cal)) || cal.time == 0)
 				return -EINVAL;
 
@@ -2076,7 +1994,7 @@ static int scc_net_ioctl(struct device *dev, struct ifreq *ifr, int cmd)
 
 /* ----> set interface callsign <---- */
 
-static int scc_net_set_mac_address(struct device *dev, void *addr)
+static int scc_net_set_mac_address(struct net_device *dev, void *addr)
 {
 	struct sockaddr *sa = (struct sockaddr *) addr;
 	memcpy(dev->dev_addr, sa->sa_data, dev->addr_len);
@@ -2085,7 +2003,7 @@ static int scc_net_set_mac_address(struct device *dev, void *addr)
 
 /* ----> "hard" header <---- */
 
-static int  scc_net_header(struct sk_buff *skb, struct device *dev, 
+static int  scc_net_header(struct sk_buff *skb, struct net_device *dev, 
 	unsigned short type, void *daddr, void *saddr, unsigned len)
 {
 	return ax25_encapsulate(skb, dev, type, daddr, saddr, len);
@@ -2093,13 +2011,10 @@ static int  scc_net_header(struct sk_buff *skb, struct device *dev,
 
 /* ----> get statistics <---- */
 
-static struct net_device_stats *scc_net_get_stats(struct device *dev)
+static struct net_device_stats *scc_net_get_stats(struct net_device *dev)
 {
 	struct scc_channel *scc = (struct scc_channel *) dev->priv;
 	
-	if (scc == NULL || scc->magic != SCC_MAGIC)
-		return NULL;
-		
 	scc->dev_stat.rx_errors = scc->stat.rxerrs + scc->stat.rx_over;
 	scc->dev_stat.tx_errors = scc->stat.txerrs + scc->stat.tx_under;
 	scc->dev_stat.rx_fifo_errors = scc->stat.rx_over;
@@ -2113,7 +2028,7 @@ static struct net_device_stats *scc_net_get_stats(struct device *dev)
 /* ******************************************************************** */
 
 
-static int scc_net_get_info(char *buffer, char **start, off_t offset, int length, int dummy)
+static int scc_net_get_info(char *buffer, char **start, off_t offset, int length)
 {
 	struct scc_channel *scc;
 	struct scc_kiss *kiss;
@@ -2219,15 +2134,8 @@ done:
 }
 
 #ifdef CONFIG_PROC_FS
-
-struct proc_dir_entry scc_proc_dir_entry = 
-{ 
-	PROC_NET_Z8530, 8, "z8530drv", S_IFREG | S_IRUGO, 1, 0, 0, 0, 
-	&proc_net_inode_operations, scc_net_get_info 
-};
-
-#define scc_net_procfs_init()   proc_net_register(&scc_proc_dir_entry);
-#define scc_net_procfs_remove() proc_net_unregister(PROC_NET_Z8530);
+#define scc_net_procfs_init() proc_net_create("z8530drv",0,scc_net_get_info)
+#define scc_net_procfs_remove() proc_net_remove("z8530drv")
 #else
 #define scc_net_procfs_init()
 #define scc_net_procfs_remove()
@@ -2238,7 +2146,7 @@ struct proc_dir_entry scc_proc_dir_entry =
 /* * 			Init SCC driver 			      * */
 /* ******************************************************************** */
 
-__initfunc(int scc_init (void))
+static int __init scc_init_driver (void)
 {
 	int chip, chan, k, result;
 	char devname[10];
@@ -2274,25 +2182,7 @@ __initfunc(int scc_init (void))
 	return 0;
 }
 
-/* ******************************************************************** */
-/* *			    Module support 			      * */
-/* ******************************************************************** */
-
-
-#ifdef MODULE
-int init_module(void)
-{
-	int result = 0;
-	
-	result = scc_init();
-
-	if (result == 0)
-		printk(KERN_INFO "Copyright 1993,2000 Joerg Reuter DL1BKE (jreuter@yaina.de)\n");
-		
-	return result;
-}
-
-void cleanup_module(void)
+static void __exit scc_cleanup_driver(void)
 {
 	long flags;
 	io_port ctrl;
@@ -2328,11 +2218,16 @@ void cleanup_module(void)
 		}
 	}
 	
-	for (k=0; k < NR_IRQS ; k++)
+	for (k=0; k < 16 ; k++)
 		if (Ivec[k].used) free_irq(k, NULL);
 		
 	restore_flags(flags);
 
 	scc_net_procfs_remove();
 }
-#endif
+
+MODULE_AUTHOR("Joerg Reuter <jreuter@poboxes.com>");
+MODULE_DESCRIPTION("AX.25 Device Driver for Z8530 based HDLC cards");
+MODULE_SUPPORTED_DEVICE("scc");
+module_init(scc_init_driver);
+module_exit(scc_cleanup_driver);

@@ -25,20 +25,19 @@ enum sis900_registers {
 	ier=0x18,               //Interrupt Enable Register
 	epar=0x18,              //Enhanced PHY Access Register
 	txdp=0x20,              //Transmit Descriptor Pointer Register
-        txcfg=0x24,             //Transmit Configuration Register
-        rxdp=0x30,              //Receive Descriptor Pointer Register
-        rxcfg=0x34,             //Receive Configuration Register
-        flctrl=0x38,            //Flow Control Register
-        rxlen=0x3c,             //Receive Packet Length Register
-        rfcr=0x48,              //Receive Filter Control Register
-        rfdr=0x4C,              //Receive Filter Data Register
-        pmctrl=0xB0,            //Power Management Control Register
-        pmer=0xB4               //Power Management Wake-up Event Register
+	txcfg=0x24,             //Transmit Configuration Register
+	rxdp=0x30,              //Receive Descriptor Pointer Register
+	rxcfg=0x34,             //Receive Configuration Register
+	flctrl=0x38,            //Flow Control Register
+	rxlen=0x3c,             //Receive Packet Length Register
+	rfcr=0x48,              //Receive Filter Control Register
+	rfdr=0x4C,              //Receive Filter Data Register
+	pmctrl=0xB0,            //Power Management Control Register
+	pmer=0xB4               //Power Management Wake-up Event Register
 };
 
 /* Symbolic names for bits in various registers */
 enum sis900_command_register_bits {
-	RELOAD  = 0x00000400, ACCESSMODE = 0x00000200,/* ET */
 	RESET   = 0x00000100, SWI = 0x00000080, RxRESET = 0x00000020,
 	TxRESET = 0x00000010, RxDIS = 0x00000008, RxENA = 0x00000004,
 	TxDIS   = 0x00000002, TxENA = 0x00000001
@@ -47,10 +46,7 @@ enum sis900_command_register_bits {
 enum sis900_configuration_register_bits {
 	DESCRFMT = 0x00000100 /* 7016 specific */, REQALG = 0x00000080,
 	SB    = 0x00000040, POW = 0x00000020, EXD = 0x00000010, 
-	PESEL = 0x00000008, LPM = 0x00000004, BEM = 0x00000001,
-	/* 635 & 900B Specific */
-        RND_CNT = 0x00000400, FAIR_BACKOFF = 0x00000200,
-        EDB_MASTER_EN = 0x00002000
+	PESEL = 0x00000008, LPM = 0x00000004, BEM = 0x00000001
 };
 
 enum sis900_eeprom_access_reigster_bits {
@@ -77,11 +73,9 @@ enum sis900_interrupt_enable_reigster_bits {
 /* maximum dma burst fro transmission and receive*/
 #define MAX_DMA_RANGE	7	/* actually 0 means MAXIMUM !! */
 #define TxMXDMA_shift   	20
-#define RxMXDMA_shift    	20
-
-enum sis900_tx_rx_dma{
-        DMA_BURST_512 = 0,      DMA_BURST_64 = 5
-};
+#define RxMXDMA_shift    20
+#define TX_DMA_BURST    	0
+#define RX_DMA_BURST    	0
 
 /* transmit FIFO threshholds */
 #define TX_FILL_THRESH   16	/* 1/4 FIFO size */
@@ -132,11 +126,6 @@ enum sis900_eeprom_command {
 	EEaddrMask = 0x013F, EEcmdShift = 16
 };
 
-/* For SiS962, request the eeprom software access */
-enum sis962_eeprom_command {
-	EEREQ = 0x00000400, EEDONE = 0x00000200, EEGNT = 0x00000100
-};
-
 /* Manamgement Data I/O (mdio) frame */
 #define MIIread         0x6000
 #define MIIwrite        0x5002
@@ -175,13 +164,7 @@ enum mii_registers {
 /* mii registers specific to SiS 900 */
 enum sis_mii_registers {
 	MII_CONFIG1 = 0x0010, MII_CONFIG2 = 0x0011, MII_STSOUT = 0x0012,
-	MII_MASK    = 0x0013, MII_RESV    = 0x0014
-};
-
-/* mii registers specific to ICS 1893 */
-enum ics_mii_registers {
-	MII_EXTCTRL  = 0x0010, MII_QPDSTS = 0x0011, MII_10BTOP = 0x0012,
-	MII_EXTCTRL2 = 0x0013
+	MII_MASK    = 0x0013
 };
 
 /* mii registers specific to AMD 79C901 */
@@ -228,27 +211,10 @@ enum mii_stsout_register_bits {
 	MII_STSOUT_SPD       = 0x0080, MII_STSOUT_DPLX = 0x0040
 };
 
-enum mii_stsics_register_bits {
-	MII_STSICS_SPD  = 0x8000, MII_STSICS_DPLX = 0x4000,
-	MII_STSICS_LINKSTS = 0x0001
-};
-
 enum mii_stssum_register_bits {
 	MII_STSSUM_LINK = 0x0008, MII_STSSUM_DPLX = 0x0004,
 	MII_STSSUM_AUTO = 0x0002, MII_STSSUM_SPD  = 0x0001
 };
-
-enum sis900_revision_id {
-	SIS630A_900_REV = 0x80, 	SIS630E_900_REV = 0x81,
-	SIS630S_900_REV = 0x82,		SIS630EA1_900_REV = 0x83,
-	SIS630ET_900_REV = 0x84,        SIS635A_900_REV = 0x90,
-	SIS962_900_REV = 0X91,		SIS900B_900_REV = 0x03
-};
-
-enum sis630_revision_id {
-        SIS630A0    = 0x00, SIS630A1      = 0x01,
-        SIS630B0    = 0x10, SIS630B1      = 0x11
-};                
 
 #define FDX_CAPABLE_DUPLEX_UNKNOWN      0
 #define FDX_CAPABLE_HALF_SELECTED       1
@@ -275,8 +241,6 @@ enum sis630_revision_id {
 /* PCI stuff, should be move to pic.h */
 #define PCI_DEVICE_ID_SI_900	0x900   
 #define PCI_DEVICE_ID_SI_7016	0x7016  
-#define SIS630_VENDOR_ID        0x1039
-#define SIS630_DEVICE_ID        0x0630
 
 /* ioctl for accessing MII transveiver */
 #define SIOCGMIIPHY (SIOCDEVPRIVATE)		/* Get the PHY in use. */

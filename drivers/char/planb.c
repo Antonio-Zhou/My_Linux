@@ -327,11 +327,11 @@ static volatile struct dbdma_cmd *cmd_geo_setup(
 
 static void __planb_wait(struct planb *pb)
 {
-	struct wait_queue wait = { current, NULL };
+	DECLARE_WAITQUEUE(wait, current);
 
 	add_wait_queue(&pb->lockq, &wait);
 repeat:
-	current->state = TASK_UNINTERRUPTIBLE;
+	set_current_state(TASK_UNINTERRUPTIBLE);
 	if (pb->lock) {
 		schedule();
 		goto repeat;
@@ -1750,11 +1750,6 @@ static int planb_ioctl(struct video_device *dev, unsigned int cmd, void *arg)
 			/* Reset clip mask */
 			memset ((void *) pb->mask, 0xff, (pb->maxlines
 					* ((PLANB_MAXPIXELS + 7) & ~7)) / 8);
-			/* XXX: The first check may be optimized away if the
-			 * compiler thinks a pointer can't wraparound */
-			if (vw.clips + vw.clipcount < vw.clips ||
-			    vw.clipcount < 0 || vw.clipcount > 2048)
-				return -EINVAL;
 			/* Add any clip rects */
 			for (i = 0; i < vw.clipcount; i++) {
 				if (copy_from_user(&clip, vw.clips + i,
@@ -2116,7 +2111,7 @@ static int init_planb(struct planb *pb)
 	pb->tab_size = PLANB_MAXLINES + 40;
 	pb->suspend = 0;
 	pb->lock = 0;
-	pb->lockq = NULL;
+	init_waitqueue_head(&pb->lockq);
 	pb->ch1_cmd = 0;
 	pb->ch2_cmd = 0;
 	pb->mask = 0;
@@ -2124,7 +2119,7 @@ static int init_planb(struct planb *pb)
 	pb->offset = 0;
 	pb->user = 0;
 	pb->overlay = 0;
-	pb->suspendq = NULL;
+	init_waitqueue_head(&pb->suspendq);
 	pb->cmd_buff_inited = 0;
 	pb->frame_buffer_phys = 0;
 
@@ -2166,7 +2161,7 @@ static int init_planb(struct planb *pb)
 	pb->picture.depth = pb->win.depth;
 
 	pb->frame_stat=NULL;
-	pb->capq=NULL;
+	init_waitqueue_head(&pb->capq);
 	for(i=0; i<MAX_GBUFFERS; i++) {
 		pb->gbuf_idx[i] = PLANB_MAX_FBUF * i / PAGE_SIZE;
 		pb->gwidth[i]=0;
@@ -2205,6 +2200,7 @@ static int find_planb(void)
 	unsigned char		dev_fn, confreg, bus;
 	unsigned int		old_base, new_base;
 	unsigned int		irq;
+	struct pci_dev 		*pdev;
 
 	if (_machine != _MACH_Pmac)
 		return 0;
@@ -2256,17 +2252,23 @@ static int find_planb(void)
 		"membase 0x%x (base reg. 0x%x)\n",
 		bus, PCI_SLOT(dev_fn), PCI_FUNC(dev_fn), old_base, confreg);
 
+	pdev = pci_find_slot (bus, dev_fn);
+	if (!pdev) {
+		printk(KERN_ERR "cannot find slot\n");
+		/* XXX handle error */
+	}
+
 	/* Enable response in memory space, bus mastering,
 	   use memory write and invalidate */
-	pcibios_write_config_word (bus, dev_fn, PCI_COMMAND,
+	pci_write_config_word (pdev, PCI_COMMAND,
 		PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER |
 		PCI_COMMAND_INVALIDATE);
 	/* Set PCI Cache line size & latency timer */
-	pcibios_write_config_byte (bus, dev_fn, PCI_CACHE_LINE_SIZE, 0x8);
-	pcibios_write_config_byte (bus, dev_fn, PCI_LATENCY_TIMER, 0x40);
+	pci_write_config_byte (pdev, PCI_CACHE_LINE_SIZE, 0x8);
+	pci_write_config_byte (pdev, PCI_LATENCY_TIMER, 0x40);
 
 	/* Set the new base address */
-	pcibios_write_config_dword (bus, dev_fn, confreg, new_base);
+	pci_write_config_dword (pdev, confreg, new_base);
 
 	planb_regs = (volatile struct planb_registers *)
 						ioremap (new_base, 0x400);
@@ -2311,7 +2313,7 @@ static void release_planb(void)
 int init_module(void)
 {
 #else
-__initfunc(int init_planbs(struct video_init *unused))
+int __init init_planbs(struct video_init *unused)
 {
 #endif
 	int i;

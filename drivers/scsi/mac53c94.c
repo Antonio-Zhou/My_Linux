@@ -7,7 +7,6 @@
  * Paul Mackerras, August 1996.
  * Copyright (C) 1996 Paul Mackerras.
  */
-#include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/delay.h>
 #include <linux/types.h>
@@ -16,21 +15,16 @@
 #include <linux/blk.h>
 #include <linux/proc_fs.h>
 #include <linux/stat.h>
+#include <linux/spinlock.h>
 #include <asm/dbdma.h>
 #include <asm/io.h>
 #include <asm/pgtable.h>
 #include <asm/prom.h>
 #include <asm/system.h>
-#include <asm/spinlock.h>
 
 #include "scsi.h"
 #include "hosts.h"
 #include "mac53c94.h"
-
-struct proc_dir_entry proc_scsi_mac53c94 = {
-	PROC_SCSI_53C94, 5, "53c94",
-	S_IFDIR | S_IRUGO | S_IXUGO, 2
-};
 
 enum fsc_phase {
 	idle,
@@ -543,9 +537,3 @@ data_goes_out(Scsi_Cmnd *cmd)
 		return 0;
 	}
 }
-
-#ifdef MODULE
-Scsi_Host_Template driver_template = SCSI_MAC53C94;
-
-#include "scsi_module.c"
-#endif /* MODULE */

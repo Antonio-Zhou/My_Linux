@@ -47,34 +47,25 @@ typedef struct _ioinfo {
            unsigned int  s_pend    : 1;  /* status pending condition */
            unsigned int  pgid      : 1;  /* "path group ID" is valid */
            unsigned int  pgid_supp : 1;  /* "path group ID" command is supported */
-           unsigned int  esid      : 1;  /* Ext. SenseID supported by HW */
-           unsigned int  rcd       : 1;  /* RCD supported by HW */
-           unsigned int  repnone   : 1;  /* don't call IRQ handler on interrupt */
-           unsigned int  newreq    : 1;  /* new register interface */
-           unsigned int  dval      : 1;  /* device number valid */
-           unsigned int  unknown   : 1;  /* unknown device - if SenseID failed */
-           unsigned int  unused    : (sizeof(unsigned int)*8 - 24); /* unused */
+           unsigned int  unused    : (sizeof(unsigned int)*8 - 18); /* unused */
               } __attribute__ ((packed)) flags;
         } ui;
 
      unsigned long u_intparm;     /* user interruption parameter */
      senseid_t     senseid;       /* SenseID info */
      irq_desc_t    irq_desc;      /* irq descriptor */
-     not_oper_handler_func_t nopfunc; 	/* not oper handler */		
      __u8          ulpm;          /* logical path mask used for I/O */
      __u8          opm;           /* path mask of operational paths */
-     __u16         devno;         /* device number */
      pgid_t        pgid;          /* path group ID */
      schib_t       schib;         /* subchannel information block */
      orb_t         orb;           /* operation request block */
      devstat_t     devstat;       /* device status */
      ccw1_t       *qcpa;          /* queued channel program */
      ccw1_t        senseccw;      /* ccw for sense command */
-     __u8          sense_data[32];/* buffer for basic sense */
      unsigned int  stctl;         /* accumulated status control from irb */
      unsigned long qintparm;      /* queued interruption parameter  */
      unsigned long qflag;         /* queued flags */
-     __u8          qlpm;          /* queued logical path mask */
+     unsigned char qlpm;          /* queued logical path mask */
 
    } __attribute__ ((aligned(8))) ioinfo_t;
 

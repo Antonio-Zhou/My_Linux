@@ -29,8 +29,6 @@
 #define RIO_PORTSPERBOARD 128
 #define RIO_NPORTS        (RIO_NBOARDS * RIO_PORTSPERBOARD)
 
-#define MODEM_SUPPORT
-
 #ifdef __KERNEL__
 
 #define RIO_MAGIC 0x12345678
@@ -87,34 +85,31 @@ struct vpd_prom {
 #endif
 
 
-void rio_dec_mod_count (void);
-void rio_inc_mod_count (void);
-
 /* Allow us to debug "in the field" without requiring clients to
    recompile.... */
 #if 1
 #define rio_spin_lock_irqsave(sem, flags) do { \
-	spin_lock_irqsave(sem, flags);\
-	rio_dprintk (RIO_DEBUG_SPINLOCK, "spinlockirqsave: %p %s:%d\n", \
-					sem, __FILE__, __LINE__);\
+	rio_dprint(RIO_DEBUG_SPINLOCK, ("spinlockirqsave: %p %s:%d\n", \
+					sem, __FILE__, __LINE__));\
+        spin_lock_irqsave(sem, flags);\
         } while (0)
 
 #define rio_spin_unlock_irqrestore(sem, flags) do { \
-	rio_dprintk (RIO_DEBUG_SPINLOCK, "spinunlockirqrestore: %p %s:%d\n",\
-					sem, __FILE__, __LINE__);\
-	spin_unlock_irqrestore(sem, flags);\
+	rio_dprint(RIO_DEBUG_SPINLOCK, ("spinunlockirqrestore: %p %s:%d\n",\
+					sem, __FILE__, __LINE__));\
+        spin_unlock_irqrestore(sem, flags);\
         } while (0)
 
 
 #define rio_spin_lock(sem) do { \
+	rio_dprint(RIO_DEBUG_SPINLOCK, ("spinlock: %p %s:%d\n",\
+					sem, __FILE__, __LINE__));\
         spin_lock(sem);\
-	rio_dprintk (RIO_DEBUG_SPINLOCK, "spinlock: %p %s:%d\n",\
-					sem, __FILE__, __LINE__);\
         } while (0)
 
 #define rio_spin_unlock(sem) do { \
-	rio_dprintk (RIO_DEBUG_SPINLOCK, "spinunlock: %p %s:%d\n",\
-					sem, __FILE__, __LINE__);\
+	rio_dprint(RIO_DEBUG_SPINLOCK, ("spinunlock: %p %s:%d\n",\
+					sem, __FILE__, __LINE__));\
         spin_unlock(sem);\
         } while (0)
 #else
@@ -165,7 +160,7 @@ static inline void *rio_memcpy_fromio (void *dest, void *source, int n)
 #define rio_memcpy_fromio                      memcpy_fromio
 #endif
 
-#define DEBUG 1
+#define DEBUG
 
 
 /* 
@@ -178,7 +173,7 @@ static inline void *rio_memcpy_fromio (void *dest, void *source, int n)
 */
 
 #ifdef DEBUG
-#define rio_dprintk(f, str...) do { if (rio_debug & f) printk (str);} while (0)
+#define rio_dprintk(f, str...) if (rio_debug & f) printk (str)
 #define func_enter() rio_dprintk (RIO_DEBUG_FLOW, "rio: enter " __FUNCTION__ "\n")
 #define func_exit()  rio_dprintk (RIO_DEBUG_FLOW, "rio: exit  " __FUNCTION__ "\n")
 #define func_enter2() rio_dprintk (RIO_DEBUG_FLOW, "rio: enter " __FUNCTION__ \
@@ -189,21 +184,4 @@ static inline void *rio_memcpy_fromio (void *dest, void *source, int n)
 #define func_exit()
 #define func_enter2()
 #endif
-
-/* Documentation says to use these defines. Why aren't they in a
- * header then?  Hmm. They are in the header "riowinif.h", however
- * that file doesn't compile. I give up. Copied here. -- REW
- */
-
-#define MSET_RTS        0x01            /* RTS modem signal */
-#define MSET_DTR        0x02            /* DTR modem signal */
-
-#define MODEM_DSR               0x80    /* Data Set Ready modem state */
-#define MODEM_CTS               0x40    /* Clear To Send modem state */
-#define MODEM_RI                0x20    /* Ring Indicate modem state */
-#define MODEM_CD                0x10    /* Carrier Detect modem state */
-#define MODEM_TSTOP             0x08    /* Transmit Stopped state */
-#define MODEM_TEMPTY    0x04    /* Transmit Empty state */
-#define MODEM_DTR               0x02    /* DTR modem output state */
-#define MODEM_RTS               0x01    /* RTS modem output state */
 

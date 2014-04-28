@@ -24,10 +24,9 @@
 #include <linux/string.h>
 #include <linux/errno.h>
 #include <linux/videodev.h>
+#include <linux/init.h>
 
-#if LINUX_VERSION_CODE >= 0x020100
 #include <asm/uaccess.h>
-#endif
 #include <asm/system.h>
 
 #include <linux/kmod.h>
@@ -42,14 +41,7 @@
 static struct video_device *video_device[VIDEO_NUM_DEVICES];
 
 #ifdef CONFIG_VIDEO_BT848
-extern int init_bttv_cards(struct video_init *);
 extern int i2c_tuner_init(struct video_init *);
-#endif
-#ifdef CONFIG_VIDEO_SAA5249
-extern int init_saa_5249(struct video_init *);
-#endif	
-#ifdef CONFIG_VIDEO_CQCAM
-extern int init_colour_qcams(struct video_init *);
 #endif
 #ifdef CONFIG_VIDEO_BWQCAM
 extern int init_bw_qcams(struct video_init *);
@@ -60,97 +52,29 @@ extern int cpia_init(struct video_init *);
 #ifdef CONFIG_VIDEO_PLANB
 extern int init_planbs(struct video_init *);
 #endif
-#ifdef CONFIG_RADIO_AZTECH
-extern int aztech_init(struct video_init *);
-#endif
-#ifdef CONFIG_RADIO_RTRACK
-extern int rtrack_init(struct video_init *);
-#endif
-#ifdef CONFIG_RADIO_RTRACK2
-extern int rtrack2_init(struct video_init *);
-#endif
-#ifdef CONFIG_RADIO_SF16FMI
-extern int fmi_init(struct video_init *);
-#endif
-#ifdef CONFIG_RADIO_MIROPCM20
-extern int pcm20_init(struct video_init *);
-#endif
-#ifdef CONFIG_RADIO_GEMTEK
-extern int gemtek_init(struct video_init *);
-#endif
-#ifdef CONFIG_RADIO_TYPHOON
-extern int typhoon_init(struct video_init *);
-#endif
-#ifdef CONFIG_RADIO_CADET
-extern int cadet_init(struct video_init *);
-#endif
-#ifdef CONFIG_RADIO_TRUST
-extern int trust_init(struct video_init *);
-#endif
-#ifdef CONFIG_VIDEO_PMS
-extern int init_pms_cards(struct video_init *);
-#endif
 #ifdef CONFIG_VIDEO_ZORAN
 extern int init_zoran_cards(struct video_init *);
 #endif
 
 static struct video_init video_init_list[]={
 #ifdef CONFIG_VIDEO_BT848
-	{"i2c-tuner", i2c_tuner_init},
-	{"bttv", init_bttv_cards},
-#endif	
-#ifdef CONFIG_VIDEO_SAA5249
-	{"saa5249", init_saa_5249},
-#endif	
-#ifdef CONFIG_VIDEO_CQCAM
-	{"c-qcam", init_colour_qcams},
-#endif	
+        {"i2c-tuner", i2c_tuner_init},
+#endif 
 #ifdef CONFIG_VIDEO_BWQCAM
 	{"bw-qcam", init_bw_qcams},
-#endif        
-#ifdef CONFIG_VIDEO_CPIA
-        {"cpia", cpia_init},
 #endif	
-#ifdef CONFIG_VIDEO_PMS
-	{"PMS", init_pms_cards}, 
+#ifdef CONFIG_VIDEO_CPIA
+	{"cpia", cpia_init},
 #endif	
 #ifdef CONFIG_VIDEO_PLANB
 	{"planb", init_planbs},
 #endif
-#ifdef CONFIG_RADIO_AZTECH
-	{"Aztech", aztech_init}, 
-#endif	
-#ifdef CONFIG_RADIO_RTRACK
-	{"RTrack", rtrack_init}, 
-#endif 
-#ifdef CONFIG_RADIO_RTRACK2
-	{"RTrack2", rtrack2_init}, 
-#endif
-#ifdef CONFIG_RADIO_SF16FMI
-	{"SF16FMI", fmi_init}, 
-#endif	
-#ifdef CONFIG_RADIO_MIROPCM20
-	{"PCM20", pcm20_init}, 
-#endif
-#ifdef CONFIG_RADIO_CADET
-	{"Cadet", cadet_init},
-#endif
-#ifdef CONFIG_RADIO_GEMTEK
-	{"GemTek", gemtek_init},
-#endif
-#ifdef CONFIG_RADIO_TYPHOON
-	{"radio-typhoon", typhoon_init},
-#endif
 #ifdef CONFIG_VIDEO_ZORAN
 	{"zoran", init_zoran_cards},
-#endif	
-#ifdef CONFIG_RADIO_TRUST
-	{"Trust", trust_init}, 
 #endif	
 	{"end", NULL}
 };
 
-#if LINUX_VERSION_CODE >= 0x020100
 /*
  *	Read will do some smarts later on. Buffer pin etc.
  */
@@ -164,7 +88,6 @@ static ssize_t video_read(struct file *file,
 	else
 		return -EINVAL;
 }
-
 
 
 /*
@@ -197,31 +120,6 @@ static unsigned int video_poll(struct file *file, poll_table * wait)
 }
 
 
-#else
-static int video_read(struct inode *ino,struct file *file,
-			  char *buf, int count)
-{
-         int err;
-	 struct video_device *vfl=video_device[MINOR(ino->i_rdev)];
-	 if (vfl->read)
-	   return vfl->read(vfl, buf, count, file->f_flags&O_NONBLOCK);
-	 else
-	   return -EINVAL;
-}
-
-static int video_write(struct inode *ino,struct file *file, const char *buf, 
-			int count)
-{
-	int err;
-	struct video_device *vfl=video_device[MINOR(ino->i_rdev)];
-	if (vfl->write)
-	  return vfl->write(vfl, buf, count, file->f_flags&O_NONBLOCK);
-	else
-	  return 0;
-}
-
-#endif
-
 /*
  *	Open a video device.
  */
@@ -239,9 +137,11 @@ static int video_open(struct inode *inode, struct file *file)
 	if(vfl==NULL) {
 		char modname[20];
 
+		MOD_INC_USE_COUNT;
 		sprintf (modname, "char-major-%d-%d", VIDEO_MAJOR, minor);
 		request_module(modname);
 		vfl=video_device[minor];
+		MOD_DEC_USE_COUNT;
 		if (vfl==NULL)
 			return -ENODEV;
 	}
@@ -279,20 +179,11 @@ static int video_release(struct inode *inode, struct file *file)
  *	image ?
  */
  
-#if LINUX_VERSION_CODE >= 0x020100
 static long long video_lseek(struct file * file,
 			  long long offset, int origin)
 {
 	return -ESPIPE;
 }
-#else
-static long long video_lseek(struct inode *inode, struct file * file,
-			     long long offset, int origin)
-{
-	return -ESPIPE;
-}
-#endif
-
 
 static int video_ioctl(struct inode *inode, struct file *file,
 	unsigned int cmd, unsigned long arg)
@@ -315,24 +206,39 @@ static int video_ioctl(struct inode *inode, struct file *file,
  */
  
  
-#if LINUX_VERSION_CODE >= 0x020100
 int video_mmap(struct file *file, struct vm_area_struct *vma)
 {
 	struct video_device *vfl=video_device[MINOR(file->f_dentry->d_inode->i_rdev)];
-#else
-static int video_mmap(struct inode * ino, struct file * file,
-		      struct vm_area_struct * vma)
-{
-	struct video_device *vfl=video_device[MINOR(ino->i_rdev)];
-#endif
 	if(vfl->mmap)
 		return vfl->mmap(vfl, (char *)vma->vm_start, 
 				(unsigned long)(vma->vm_end-vma->vm_start));
 	return -EINVAL;
 }
 
-/*
- *	Video For Linux device drivers request registration here.
+extern struct file_operations video_fops;
+
+/**
+ *	video_register_device - register video4linux devices
+ *	@vfd: video device structure we want to register
+ *	@type: type of device to register
+ *	FIXME: needs a semaphore on 2.3.x
+ *	
+ *	The registration code assigns minor numbers based on the type
+ *	requested. -ENFILE is returned in all the device slots for this
+ *	category are full. If not then the minor field is set and the
+ *	driver initialize function is called (if non %NULL).
+ *
+ *	Zero is returned on success.
+ *
+ *	Valid types are
+ *
+ *	%VFL_TYPE_GRABBER - A frame grabber
+ *
+ *	%VFL_TYPE_VTX - A teletext device
+ *
+ *	%VFL_TYPE_VBI - Vertical blank data (undecoded)
+ *
+ *	%VFL_TYPE_RADIO - A radio card	
  */
  
 int video_register_device(struct video_device *vfd, int type)
@@ -341,24 +247,29 @@ int video_register_device(struct video_device *vfd, int type)
 	int base;
 	int err;
 	int end;
+	char *name_base;
 	
 	switch(type)
 	{
 		case VFL_TYPE_GRABBER:
 			base=0;
 			end=64;
+			name_base = "video";
 			break;
 		case VFL_TYPE_VTX:
 			base=192;
 			end=224;
+			name_base = "vtx";
 			break;
 		case VFL_TYPE_VBI:
 			base=224;
 			end=240;
+			name_base = "vbi";
 			break;
 		case VFL_TYPE_RADIO:
 			base=64;
 			end=128;
+			name_base = "radio";
 			break;
 		default:
 			return -1;
@@ -368,6 +279,8 @@ int video_register_device(struct video_device *vfd, int type)
 	{
 		if(video_device[i]==NULL)
 		{
+			char name[16];
+
 			video_device[i]=vfd;
 			vfd->minor=i;
 			/* The init call may sleep so we book the slot out
@@ -383,20 +296,35 @@ int video_register_device(struct video_device *vfd, int type)
 					return err;
 				}
 			}
+			sprintf (name, "v4l/%s%d", name_base, i - base);
+			/*
+			 *	Start the device root only. Anything else
+			 *	has serious privacy issues.
+			 */
+			vfd->devfs_handle =
+			    devfs_register (NULL, name, 0, DEVFS_FL_DEFAULT,
+					    VIDEO_MAJOR, vfd->minor,
+					    S_IFCHR | S_IRUSR | S_IWUSR, 0, 0,
+					    &video_fops, NULL);
 			return 0;
 		}
 	}
 	return -ENFILE;
 }
 
-/*
- *	Unregister an unused video for linux device
+/**
+ *	video_unregister_device - unregister a video4linux device
+ *	@vfd: the device to unregister
+ *
+ *	This unregisters the passed device and deassigns the minor
+ *	number. Future open calls will be met with errors.
  */
  
 void video_unregister_device(struct video_device *vfd)
 {
 	if(video_device[vfd->minor]!=vfd)
 		panic("vfd: bad unregister");
+	devfs_unregister (vfd->devfs_handle);
 	video_device[vfd->minor]=NULL;
 	MOD_DEC_USE_COUNT;
 }
@@ -404,34 +332,26 @@ void video_unregister_device(struct video_device *vfd)
 
 static struct file_operations video_fops=
 {
-	video_lseek,
-	video_read,
-	video_write,
-	NULL,	/* readdir */
-#if LINUX_VERSION_CODE >= 0x020100
-	video_poll,	/* poll */
-#else
-	NULL,
-#endif
-	video_ioctl,
-	video_mmap,
-	video_open,
-#if LINUX_VERSION_CODE >= 0x020100
-	NULL,		/* flush */
-#endif
-	video_release
+	llseek:		video_lseek,
+	read:		video_read,
+	write:		video_write,
+	ioctl:		video_ioctl,
+	mmap:		video_mmap,
+	open:		video_open,
+	release:	video_release,
+	poll:		video_poll,
 };
 
 /*
  *	Initialise video for linux
  */
  
-int videodev_init(void)
+int __init videodev_init(void)
 {
 	struct video_init *vfli = video_init_list;
 	
 	printk(KERN_INFO "Linux video capture interface: v1.00\n");
-	if(register_chrdev(VIDEO_MAJOR,"video_capture", &video_fops))
+	if(devfs_register_chrdev(VIDEO_MAJOR,"video_capture", &video_fops))
 	{
 		printk("video_dev: unable to get major %d\n", VIDEO_MAJOR);
 		return -EIO;
@@ -457,18 +377,13 @@ int init_module(void)
 
 void cleanup_module(void)
 {
-	unregister_chrdev(VIDEO_MAJOR, "video_capture");
+	devfs_unregister_chrdev(VIDEO_MAJOR, "video_capture");
 }
 
-
-
-
-
-
-
 #endif
 
-#if LINUX_VERSION_CODE >= 0x020100
 EXPORT_SYMBOL(video_register_device);
 EXPORT_SYMBOL(video_unregister_device);
-#endif
+
+MODULE_AUTHOR("Alan Cox");
+MODULE_DESCRIPTION("Device registrar for Video4Linux drivers");

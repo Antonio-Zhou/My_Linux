@@ -1,8 +1,7 @@
 /* fops.c -- File operations for DRM -*- linux-c -*-
  * Created: Mon Jan  4 08:58:31 1999 by faith@precisioninsight.com
  *
- * Copyright 1999 Precision Insight, Inc., Cedar Park, Texas.
- * Copyright 2000 VA Linux Systems, Inc., Sunnyvale, California.
+ * Copyright 1999, 2000 Precision Insight, Inc., Cedar Park, Texas.
  * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -25,14 +24,13 @@
  * DEALINGS IN THE SOFTWARE.
  * 
  * Authors:
- *    Rickard E. (Rik) Faith <faith@valinux.com>
- *    Daryll Strauss <daryll@valinux.com>
+ *    Rickard E. (Rik) Faith <faith@precisioninsight.com>
+ *    Daryll Strauss <daryll@precisioninsight.com>
  *
  */
 
 #define __NO_VERSION__
 #include "drmP.h"
-#include <linux/poll.h>
 
 /* drm_open is called whenever a process opens /dev/drm. */
 
@@ -47,10 +45,7 @@ int drm_open_helper(struct inode *inode, struct file *filp, drm_device_t *dev)
 	DRM_DEBUG("pid = %d, minor = %d\n", current->pid, minor);
 
 	priv		    = drm_alloc(sizeof(*priv), DRM_MEM_FILES);
-	if(priv == NULL)
-		return -ENOMEM;
 	memset(priv, 0, sizeof(*priv));
-
 	filp->private_data  = priv;
 	priv->uid	    = current->euid;
 	priv->pid	    = current->pid;
@@ -97,8 +92,7 @@ int drm_release(struct inode *inode, struct file *filp)
 	DRM_DEBUG("pid = %d, device = 0x%x, open_count = %d\n",
 		  current->pid, dev->device, dev->open_count);
 
-	if (dev->lock.hw_lock
-	    && _DRM_LOCK_IS_HELD(dev->lock.hw_lock->lock)
+	if (_DRM_LOCK_IS_HELD(dev->lock.hw_lock->lock)
 	    && dev->lock.pid == current->pid) {
 		DRM_ERROR("Process %d dead, freeing lock for context %d\n",
 			  current->pid,
@@ -218,12 +212,11 @@ int drm_write_string(drm_device_t *dev, const char *s)
 		send -= count;
 	}
 
-#if LINUX_VERSION_CODE < 0x020400
+#if LINUX_VERSION_CODE < 0x020315
 	if (dev->buf_async) kill_fasync(dev->buf_async, SIGIO);
 #else
-				/* Type of first parameter changed in
-                                   Linux 2.4.0-test2... */
-	if (dev->buf_async) kill_fasync(&dev->buf_async, SIGIO, POLL_IN);
+				/* Parameter added in 2.3.21 */
+	if (dev->buf_async) kill_fasync(dev->buf_async, SIGIO, POLL_IN);
 #endif
 	DRM_DEBUG("waking\n");
 	wake_up_interruptible(&dev->buf_readers);

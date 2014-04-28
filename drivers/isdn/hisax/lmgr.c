@@ -1,12 +1,30 @@
-/* $Id: lmgr.c,v 1.1.2.1 2001/12/31 13:26:45 kai Exp $
+/* $Id: lmgr.c,v 1.6 1999/07/01 08:12:04 keil Exp $
+
+ * Author       Karsten Keil (keil@isdn4linux.de)
  *
- * Layermanagement module
  *
- * Author       Karsten Keil
- * Copyright    by Karsten Keil      <keil@isdn4linux.de>
- * 
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
+ *  Layermanagement module
+ *
+ * $Log: lmgr.c,v $
+ * Revision 1.6  1999/07/01 08:12:04  keil
+ * Common HiSax version for 2.0, 2.1, 2.2 and 2.3 kernel
+ *
+ * Revision 1.5  1998/11/15 23:55:12  keil
+ * changes from 2.0
+ *
+ * Revision 1.4  1998/05/25 12:58:19  keil
+ * HiSax golden code from certification, Don't use !!!
+ * No leased lines, no X75, but many changes.
+ *
+ * Revision 1.3  1998/03/07 22:57:06  tsbogend
+ * made HiSax working on Linux/Alpha
+ *
+ * Revision 1.2  1997/10/29 19:09:34  keil
+ * new L1
+ *
+ * Revision 1.1  1997/06/26 11:17:25  keil
+ * first version
+ *
  *
  */
 

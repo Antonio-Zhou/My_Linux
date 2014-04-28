@@ -4,7 +4,7 @@
  *
  *  S390 version
  *    Copyright (C) 1999 IBM Deutschland Entwicklung GmbH, IBM Corporation
- *    Author(s): Martin Peschke <mpeschke@de.ibm.com>
+ *    Author(s): Martin Peschke <peschke@fh-brandenburg.de>
  */
 
 #ifndef __HWC_RW_H__
@@ -12,12 +12,31 @@
 
 #include <linux/ioctl.h>
 
-typedef struct {
+#ifndef __HWC_RW_C__
 
-	void (*move_input) (unsigned char *, unsigned int);
+extern int hwc_init (void);
 
-	void (*wake_up) (void);
-} hwc_high_level_calls_t;
+extern int hwc_write (int from_user, const unsigned char *, unsigned int);
+
+extern unsigned int hwc_chars_in_buffer (unsigned char);
+
+extern unsigned int hwc_write_room (unsigned char);
+
+extern void hwc_flush_buffer (unsigned char);
+
+extern signed int hwc_ioctl (unsigned int, unsigned long);
+
+extern void do_hwc_interrupt (void);
+
+extern int hwc_printk (const char *,...);
+
+#else
+
+extern void store_hwc_input (unsigned char *, unsigned int);
+
+extern void wake_up_hwc_tty (void);
+
+#endif
 
 #define IN_HWCB      1
 #define IN_WRITE_BUF 2
@@ -26,24 +45,22 @@ typedef struct {
 typedef unsigned short int ioctl_htab_t;
 typedef unsigned char ioctl_echo_t;
 typedef unsigned short int ioctl_cols_t;
+typedef unsigned char ioctl_code_t;
 typedef signed char ioctl_nl_t;
 typedef unsigned short int ioctl_obuf_t;
 typedef unsigned char ioctl_case_t;
 typedef unsigned char ioctl_delim_t;
-typedef unsigned long ioctl_meas_t;
 
 typedef struct {
 	ioctl_htab_t width_htab;
 	ioctl_echo_t echo;
 	ioctl_cols_t columns;
+	ioctl_code_t code;
 	ioctl_nl_t final_nl;
 	ioctl_obuf_t max_hwcb;
 	ioctl_obuf_t kmem_hwcb;
 	ioctl_case_t tolower;
 	ioctl_delim_t delim;
-	ioctl_meas_t measured_lines;
-	ioctl_meas_t measured_chars;
-	ioctl_meas_t measured_wcalls;
 } hwc_ioctls_t;
 
 static hwc_ioctls_t _hwc_ioctls;
@@ -56,6 +73,8 @@ static hwc_ioctls_t _hwc_ioctls;
 
 #define TIOCHWCSCOLS	_IOW(HWC_IOCTL_LETTER, 2, _hwc_ioctls.columns)
 
+#define TIOCHWCSCODE	_IOW(HWC_IOCTL_LETTER, 3, _hwc_ioctls.code)
+
 #define TIOCHWCSNL	_IOW(HWC_IOCTL_LETTER, 4, _hwc_ioctls.final_nl)
 
 #define TIOCHWCSOBUF	_IOW(HWC_IOCTL_LETTER, 5, _hwc_ioctls.max_hwcb)
@@ -63,8 +82,6 @@ static hwc_ioctls_t _hwc_ioctls;
 #define TIOCHWCSINIT	_IO(HWC_IOCTL_LETTER, 6)
 
 #define TIOCHWCSCASE	_IOW(HWC_IOCTL_LETTER, 7, _hwc_ioctls.tolower)
-
-#define TIOCHWCSMEAS	_IO(HWC_IOCTL_LETTER, 8)
 
 #define TIOCHWCSDELIM	_IOW(HWC_IOCTL_LETTER, 9, _hwc_ioctls.delim)
 
@@ -74,6 +91,8 @@ static hwc_ioctls_t _hwc_ioctls;
 
 #define TIOCHWCGCOLS	_IOR(HWC_IOCTL_LETTER, 12, _hwc_ioctls.columns)
 
+#define TIOCHWCGCODE	_IOR(HWC_IOCTL_LETTER, 13, _hwc_ioctls.code)
+
 #define TIOCHWCGNL	_IOR(HWC_IOCTL_LETTER, 14, _hwc_ioctls.final_nl)
 
 #define TIOCHWCGOBUF	_IOR(HWC_IOCTL_LETTER, 15, _hwc_ioctls.max_hwcb)
@@ -82,42 +101,13 @@ static hwc_ioctls_t _hwc_ioctls;
 
 #define TIOCHWCGCASE	_IOR(HWC_IOCTL_LETTER, 17, _hwc_ioctls.tolower)
 
-#define TIOCHWCGDELIM	_IOR(HWC_IOCTL_LETTER, 18, _hwc_ioctls.delim)
+#define TIOCHWCGDELIM	_IOR(HWC_IOCTL_LETTER, 19, _hwc_ioctls.delim)
 
-#define TIOCHWCGKBUF	_IOR(HWC_IOCTL_LETTER, 19, _hwc_ioctls.max_hwcb)
+#define TIOCHWCGKBUF	_IOR(HWC_IOCTL_LETTER, 20, _hwc_ioctls.max_hwcb)
 
-#define TIOCHWCGCURR	_IOR(HWC_IOCTL_LETTER, 20, _hwc_ioctls)
+#define TIOCHWCGCURR	_IOR(HWC_IOCTL_LETTER, 21, _hwc_ioctls)
 
-#define TIOCHWCGMEASL	_IOR(HWC_IOCTL_LETTER, 21, _hwc_ioctls.measured_lines)
-
-#define TIOCHWCGMEASC  _IOR(HWC_IOCTL_LETTER, 22, _hwc_ioctls.measured_chars)
-
-#define TIOCHWCGMEASS	_IOR(HWC_IOCTL_LETTER, 23, _hwc_ioctls.measured_wcalls)
-
-#ifndef __HWC_RW_C__
-
-extern int hwc_init (unsigned long *);
-
-extern int hwc_write (int from_user, const unsigned char *, unsigned int);
-
-extern unsigned int hwc_chars_in_buffer (unsigned char);
-
-extern unsigned int hwc_write_room (unsigned char);
-
-extern void hwc_flush_buffer (unsigned char);
-
-extern void hwc_unblank (void);
-
-extern signed int hwc_ioctl (unsigned int, unsigned long);
-
-extern void do_hwc_interrupt (void);
-
-extern int hwc_printk (const char *,...);
-
-extern signed int hwc_register_calls (hwc_high_level_calls_t *);
-
-extern signed int hwc_unregister_calls (hwc_high_level_calls_t *);
-
-#endif
+#define CODE_ASCII              0x0
+#define CODE_EBCDIC             0x1
 
 #endif

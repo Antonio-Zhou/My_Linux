@@ -32,9 +32,9 @@
 #define __LC_SUBCHANNEL_NR              0x0BA
 #define __LC_IO_INT_PARM                0x0BC
 #define __LC_MCCK_CODE                  0x0E8
-#define __LC_AREGS_SAVE_AREA            0x120
-#define __LC_CREGS_SAVE_AREA            0x1c0
-#define __LC_RETURN_PSW                 0x200
+#define __LC_AREGS_SAVE_AREA            0x200
+#define __LC_CREGS_SAVE_AREA            0x240
+#define __LC_RETURN_PSW                 0x280
 
 #define __LC_SYNC_IO_WORD               0x400
 
@@ -44,7 +44,6 @@
 #define __LC_CPUID                      0xC50
 #define __LC_CPUADDR                    0xC58
 #define __LC_IPLDEV                     0xC6C
-#define __LC_PANIC_MAGIC                0xE00
 
 
 /* interrupt handler start with all io, external and mcck interrupt disabled */
@@ -53,9 +52,9 @@
 #define _EXT_PSW_MASK        0x04080000
 #define _PGM_PSW_MASK        0x04080000
 #define _SVC_PSW_MASK        0x04080000
-#define _MCCK_PSW_MASK       0x04080000
+#define _MCCK_PSW_MASK       0x040A0000
 #define _IO_PSW_MASK         0x04080000
-#define _USER_PSW_MASK       0x0709C000/* DAT, IO, EXT, Home-space         */
+#define _USER_PSW_MASK       0x070DC000/* DAT, IO, EXT, Home-space         */
 #define _WAIT_PSW_MASK       0x070E0000/* DAT, IO, EXT, Wait, Home-space   */
 #define _DW_PSW_MASK         0x000A0000/* disabled wait PSW mask           */
 
@@ -78,6 +77,7 @@
 
 #ifndef __ASSEMBLY__
 
+#include <linux/config.h>
 #include <asm/processor.h>
 #include <linux/types.h>
 #include <asm/atomic.h>
@@ -127,14 +127,15 @@ struct _lowcore
 	__u32        failing_storage_address;  /* 0x0f8 */
 	__u8         pad5[0x100-0xfc];         /* 0x0fc */
 	__u32        st_status_fixed_logout[4];/* 0x100 */
-	__u8         pad6[0x120-0x110];        /* 0x110 */
-	__u32        access_regs_save_area[16];/* 0x120 */
+	__u8         pad6[0x160-0x110];        /* 0x110 */
 	__u32        floating_pt_save_area[8]; /* 0x160 */
 	__u32        gpregs_save_area[16];     /* 0x180 */
-	__u32        cregs_save_area[16];      /* 0x1c0 */
+	__u8         pad7[0x200-0x1c0];        /* 0x1c0 */
 
-        psw_t        return_psw;               /* 0x200 */
-	__u8         pad8[0x400-0x208];        /* 0x208 */
+	__u32        access_regs_save_area[16];/* 0x200 */
+	__u32        cregs_save_area[16];      /* 0x240 */	
+        psw_t        return_psw;               /* 0x280 */
+	__u8         pad8[0x400-0x288];        /* 0x288 */
 
 	__u32        sync_io_word;	       /* 0x400 */
 
@@ -154,14 +155,9 @@ struct _lowcore
 	atomic_t     ext_call_fast;            /* 0xc78 */
 	atomic_t     ext_call_queue;           /* 0xc7c */
         atomic_t     ext_call_count;           /* 0xc80 */
-	__u8         pad10[0xe00-0xc84];       /* 0xc84 */
 
-        /* 0xe00 is used as indicator for dump tools */
-        /* whether the kernel died with panic() or not */
-	__u32        panic_magic;              /* 0xe00 */
-
-        /* Align to the top 1k of prefix area */
-	__u8         pad11[0x1000-0xe04];      /* 0xe04 */
+        /* Align SMP info to the top 1k of prefix area */
+	__u8         pad10[0x1000-0xc84];      /* 0xc84 */
 } __attribute__((packed)); /* End structure*/
 
 extern __inline__ void set_prefix(__u32 address)
@@ -172,7 +168,7 @@ extern __inline__ void set_prefix(__u32 address)
 #define S390_lowcore (*((struct _lowcore *) 0))
 extern struct _lowcore *lowcore_ptr[];
 
-#ifndef __SMP__
+#ifndef CONFIG_SMP
 #define get_cpu_lowcore(cpu)    S390_lowcore
 #define safe_get_cpu_lowcore(cpu) S390_lowcore
 #else
@@ -181,8 +177,6 @@ extern struct _lowcore *lowcore_ptr[];
         ((cpu)==smp_processor_id() ? S390_lowcore:(*lowcore_ptr[(cpu)]))
 #endif
 #endif /* __ASSEMBLY__ */
-
-#define __PANIC_MAGIC           0xDEADC0DE
 
 #endif
 

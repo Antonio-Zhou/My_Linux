@@ -36,7 +36,6 @@
  *	AX.25 036	Jonathan(G4KLX)	Move DAMA code into own file.
  *			Joerg(DL1BKE)	Fixed DAMA Slave.
  *	AX.25 037	Jonathan(G4KLX)	New timer architecture.
- *			Thomas(DL9SAU)  Fixed missing initialization of skb->protocol.
  */
 
 #include <linux/config.h>
@@ -55,7 +54,7 @@
 #include <linux/inet.h>
 #include <linux/netdevice.h>
 #include <linux/skbuff.h>
-#include <linux/firewall.h>
+#include <linux/netfilter.h>
 #include <net/sock.h>
 #include <net/ip.h>			/* For ip_rcv */
 #include <net/arp.h>			/* For arp_rcv */
@@ -160,7 +159,6 @@ int ax25_rx_iframe(ax25_cb *ax25, struct sk_buff *skb)
 		skb->nh.raw   = skb->data;
 		skb->dev      = ax25->ax25_dev->dev;
 		skb->pkt_type = PACKET_HOST;
-		skb->protocol = htons(ETH_P_IP);
 		ip_rcv(skb, skb->dev, NULL);	/* Wrong ptype */
 		return 1;
 	}
@@ -216,7 +214,7 @@ static int ax25_process_rx_frame(ax25_cb *ax25, struct sk_buff *skb, int type, i
 	return queued;
 }
 
-static int ax25_rcv(struct sk_buff *skb, struct device *dev, ax25_address *dev_addr, struct packet_type *ptype)
+static int ax25_rcv(struct sk_buff *skb, struct net_device *dev, ax25_address *dev_addr, struct packet_type *ptype)
 {
 	struct sock *make;
 	struct sock *sk;
@@ -237,11 +235,6 @@ static int ax25_rcv(struct sk_buff *skb, struct device *dev, ax25_address *dev_a
 	skb->h.raw = skb->data;
 
 	if ((ax25_dev = ax25_dev_ax25dev(dev)) == NULL) {
-		kfree_skb(skb);
-		return 0;
-	}
-
-	if (call_in_firewall(PF_AX25, skb->dev, skb->h.raw, NULL, &skb) != FW_ACCEPT) {
 		kfree_skb(skb);
 		return 0;
 	}
@@ -295,7 +288,6 @@ static int ax25_rcv(struct sk_buff *skb, struct device *dev, ax25_address *dev_a
 				skb->nh.raw   = skb->data;
 				skb->dev      = dev;
 				skb->pkt_type = PACKET_HOST;
-				skb->protocol = htons(ETH_P_IP);
 				ip_rcv(skb, dev, ptype);	/* Note ptype here is the wrong one, fix me later */
 				break;
 
@@ -305,7 +297,6 @@ static int ax25_rcv(struct sk_buff *skb, struct device *dev, ax25_address *dev_a
 				skb->nh.raw   = skb->data;
 				skb->dev      = dev;
 				skb->pkt_type = PACKET_HOST;
-				skb->protocol = htons(ETH_P_ARP);
 				arp_rcv(skb, dev, ptype);	/* Note ptype here is wrong... */
 				break;
 #endif
@@ -474,7 +465,7 @@ static int ax25_rcv(struct sk_buff *skb, struct device *dev, ax25_address *dev_a
 /*
  *	Receive an AX.25 frame via a SLIP interface.
  */
-int ax25_kiss_rcv(struct sk_buff *skb, struct device *dev, struct packet_type *ptype)
+int ax25_kiss_rcv(struct sk_buff *skb, struct net_device *dev, struct packet_type *ptype)
 {
 	skb->sk = NULL;		/* Initially we don't know who it's for */
 	skb->destructor = NULL;	/* Who initializes this, dammit?! */

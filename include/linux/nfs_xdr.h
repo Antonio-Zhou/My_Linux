@@ -1,11 +1,6 @@
 #ifndef _LINUX_NFS_XDR_H
 #define _LINUX_NFS_XDR_H
 
-#include <linux/nfs.h>
-#include <linux/nfs2.h>
-#include <linux/nfs3.h>
-#include <linux/dcache.h>
-
 extern struct rpc_program	nfs_program;
 extern struct rpc_stat		nfs_rpcstat;
 
@@ -89,7 +84,7 @@ struct nfs_readres {
 #define NFS_WRITE_MAXIOV        8
 struct nfs_writeargs {
 	struct nfs_fh *		fh;
-	__u64			offset;
+	__u32			offset;
 	__u32			count;
 	enum nfs3_stable_how	stable;
 	unsigned int		nriov;
@@ -319,48 +314,42 @@ struct nfs3_readdirres {
 struct nfs_rpc_ops {
 	int	version;		/* Protocol version */
 
-	int	(*getroot)(struct nfs_server *,
-			struct nfs_fh *, struct nfs_fattr *);
-	int	(*getattr)(struct inode *, struct nfs_fattr *);
-	int	(*setattr)(struct inode *, struct nfs_fattr *, struct iattr *);
-	int	(*lookup)(struct inode *, struct qstr *,
-			struct nfs_fh *, struct nfs_fattr *);
-	int	(*access)(struct inode *, int, int);
-	int	(*readlink)(struct inode *, void *buffer, unsigned int buflen);
-	int	(*read)(struct inode *, struct rpc_cred *,
-			struct nfs_fattr *,
-			int flags, unsigned long offset,
-			unsigned int count, void *buffer, int *eofp);
-	int	(*write)(struct inode *, struct rpc_cred *,
-			struct nfs_fattr *,
-			int flags, unsigned long offset,
-			unsigned int count, void *buffer,
-			struct nfs_writeverf *verfp);
-	int	(*commit)(struct inode *, struct nfs_fattr *,
-			struct rpc_cred *,
-			unsigned long, unsigned int);
-	int	(*create)(struct inode *, struct qstr *, struct iattr *,
-			  int, struct nfs_fh *, struct nfs_fattr *);
-	int	(*remove)(struct inode *, struct qstr *);
-	int	(*unlink_setup)	(struct rpc_message *,
-			struct dentry *, struct qstr *);
-	void	(*unlink_done)	(struct dentry *, struct rpc_message *);
-	int	(*rename)(struct inode *, struct qstr *,
-			struct inode *, struct qstr *);
-	int	(*link)(struct inode *, struct inode *, struct qstr *);
-	int	(*symlink)(struct inode *, struct qstr *, struct qstr *,
-			   struct iattr *, struct nfs_fh *,
-			   struct nfs_fattr *);
-	int	(*mkdir)(struct inode *, struct qstr *,	struct iattr *,
-			 struct nfs_fh *, struct nfs_fattr *);
-	int	(*rmdir)(struct inode *, struct qstr *);
-	int	(*readdir)(struct inode *, struct rpc_cred *,
-			__u64, void *, unsigned int, int);
-	int	(*mknod)(struct inode *, struct qstr *,	struct iattr *,
-			 dev_t,	struct nfs_fh *, struct nfs_fattr *);
-	int	(*statfs)(struct nfs_server *, struct nfs_fh *,
-			struct nfs_fsinfo *);
-	__u32 *	(*decode_dirent)(__u32 *, struct nfs_entry *, int plus);
+	int	(*getroot) (struct nfs_server *, struct nfs_fh *,
+			    struct nfs_fattr *);
+	int	(*getattr) (struct dentry *, struct nfs_fattr *);
+	int	(*setattr) (struct dentry *, struct nfs_fattr *,
+			    struct iattr *);
+	int	(*lookup)  (struct dentry *, struct qstr *,
+			    struct nfs_fh *, struct nfs_fattr *);
+	int	(*access)  (struct dentry *, int , int);
+	int	(*readlink)(struct dentry *, void *, unsigned int);
+	int	(*read)    (struct file *, struct nfs_fattr *,
+			    int, loff_t, unsigned int,
+			    void *buffer, int *eofp);
+	int	(*write)   (struct file *, struct nfs_fattr *,
+			    int, loff_t, unsigned int,
+			    void *buffer, struct nfs_writeverf *verfp);
+	int	(*commit)  (struct dentry *, struct nfs_fattr *,
+			    unsigned long, unsigned int);
+	int	(*create)  (struct dentry *, struct qstr *, struct iattr *,
+			    int, struct nfs_fh *, struct nfs_fattr *);
+	int	(*remove)  (struct dentry *, struct qstr *);
+	int	(*rename)  (struct dentry *, struct qstr *,
+			    struct dentry *, struct qstr *);
+	int	(*link)    (struct dentry *, struct dentry *, struct qstr *);
+	int	(*symlink) (struct dentry *, struct qstr *, struct qstr *,
+			    struct iattr *, struct nfs_fh *,
+			    struct nfs_fattr *);
+	int	(*mkdir)   (struct dentry *, struct qstr *, struct iattr *,
+			    struct nfs_fh *, struct nfs_fattr *);
+	int	(*rmdir)   (struct dentry *, struct qstr *);
+	int	(*readdir) (struct file *, u64 cookie, void *, unsigned int,
+			    int);
+	int	(*mknod)   (struct dentry *, struct qstr *, struct iattr *,
+			    dev_t, struct nfs_fh *, struct nfs_fattr *);
+	int	(*statfs)  (struct nfs_server *, struct nfs_fh *,
+			    struct nfs_fsinfo *);
+	u32 *	(*decode_dirent)(u32 *, struct nfs_entry *, int plus);
 };
 
 /*

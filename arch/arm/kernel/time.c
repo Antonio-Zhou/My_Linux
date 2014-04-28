@@ -12,15 +12,12 @@
  * 1998-12-20  Updated NTP code according to technical memorandum Jan '96
  *             "A Kernel Model for Precision Timekeeping" by Dave Mills
  */
+#include <linux/config.h>
 #include <linux/errno.h>
 #include <linux/sched.h>
 #include <linux/kernel.h>
-#include <linux/param.h>
-#include <linux/string.h>
-#include <linux/mm.h>
 #include <linux/interrupt.h>
 #include <linux/time.h>
-#include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/smp.h>
 
@@ -32,6 +29,8 @@
 #include <asm/hardware.h>
 
 extern int setup_arm_irq(int, struct irqaction *);
+extern void setup_timer(void);
+extern rwlock_t xtime_lock;
 extern volatile unsigned long lost_ticks;
 
 /* change this if you have some constant time drift */
@@ -44,6 +43,27 @@ extern volatile unsigned long lost_ticks;
 #ifndef BIN_TO_BCD
 #define BIN_TO_BCD(val) ((val)=(((val)/10)<<4) + (val)%10)
 #endif
+
+static int dummy_set_rtc(void)
+{
+	return 0;
+}
+
+/*
+ * hook for setting the RTC's idea of the current time.
+ */
+int (*set_rtc)(void) = dummy_set_rtc;
+
+static unsigned long dummy_gettimeoffset(void)
+{
+	return 0;
+}
+
+/*
+ * hook for getting the time offset.  Note that it is
+ * always called with interrupts disabled.
+ */
+unsigned long (*gettimeoffset)(void) = dummy_gettimeoffset;
 
 /* Converts Gregorian date to seconds since 1970-01-01 00:00:00.
  * Assumes input in normal date format, i.e. 1980-12-31 23:59:59
@@ -60,9 +80,9 @@ extern volatile unsigned long lost_ticks;
  * machines were long is 32-bit! (However, as time_t is signed, we
  * will already get problems at other places on 2038-01-19 03:14:08)
  */
-unsigned long mktime(unsigned int year, unsigned int mon,
-	unsigned int day, unsigned int hour,
-	unsigned int min, unsigned int sec)
+unsigned long
+mktime(unsigned int year, unsigned int mon, unsigned int day,
+       unsigned int hour, unsigned int min, unsigned int sec)
 {
 	if (0 >= (int) (mon -= 2)) {	/* 1..12 -> 11,12,1..10 */
 		mon += 12;	/* Puts Feb last since it has leap day */
@@ -77,11 +97,14 @@ unsigned long mktime(unsigned int year, unsigned int mon,
 }
 
 /*
- * Handle profile stuff...
+ * Handle kernel profile stuff...
  */
-static void do_profile(unsigned long pc)
+static inline void do_profile(struct pt_regs *regs)
 {
-	if (prof_buffer && current->pid) {
+	if (!user_mode(regs) &&
+	    prof_buffer &&
+	    current->pid) {
+		unsigned long pc = instruction_pointer(regs);
 		extern int _stext;
 
 		pc -= (unsigned long)&_stext;
@@ -95,48 +118,102 @@ static void do_profile(unsigned long pc)
 	}
 }
 
-#include <asm/arch/time.h>
+static long next_rtc_update;
 
-static unsigned long do_gettimeoffset(void)
+/*
+ * If we have an externally synchronized linux clock, then update
+ * CMOS clock accordingly every ~11 minutes.  set_rtc() has to be
+ * called as close as possible to 500 ms before the new second
+ * starts.
+ */
+static inline void do_set_rtc(void)
 {
-	return gettimeoffset ();
+	if (time_status & STA_UNSYNC || set_rtc == NULL)
+		return;
+
+	if (next_rtc_update &&
+	    time_before(xtime.tv_sec, next_rtc_update))
+		return;
+
+	if (xtime.tv_usec < 50000 - (tick >> 1) &&
+	    xtime.tv_usec >= 50000 + (tick >> 1))
+		return;
+
+	if (set_rtc())
+		/*
+		 * rtc update failed.  Try again in 60s
+		 */
+		next_rtc_update = xtime.tv_sec + 60;
+	else
+		next_rtc_update = xtime.tv_sec + 660;
 }
+
+#ifdef CONFIG_LEDS
+
+#include <asm/leds.h>
+
+static void do_leds(void)
+{
+	static unsigned int count = 50;
+	static int last_pid;
+
+	if (current->pid != last_pid) {
+		last_pid = current->pid;
+		if (last_pid)
+			leds_event(led_idle_end);
+		else
+			leds_event(led_idle_start);
+	}
+		
+	if (--count == 0) {
+		count = 50;
+		leds_event(led_timer);
+	}
+}
+#else
+#define do_leds()
+#endif
 
 void do_gettimeofday(struct timeval *tv)
 {
 	unsigned long flags;
+	unsigned long usec, sec;
 
-	save_flags_cli (flags);
-	*tv = xtime;
-	tv->tv_usec += do_gettimeoffset();
+	read_lock_irqsave(&xtime_lock, flags);
+	usec = gettimeoffset();
+	{
+		unsigned long lost = lost_ticks;
 
-	/*
-	 * xtime is atomically updated in timer_bh. lost_ticks is
-	 * nonzero if the timer bottom half hasnt executed yet.
-	 */
-	if (lost_ticks)
-		tv->tv_usec += USECS_PER_JIFFY;
-
-	restore_flags(flags);
-
-	if (tv->tv_usec >= 1000000) {
-		tv->tv_usec -= 1000000;
-		tv->tv_sec++;
+		if (lost)
+			usec += lost * USECS_PER_JIFFY;
 	}
+	sec = xtime.tv_sec;
+	usec += xtime.tv_usec;
+	read_unlock_irqrestore(&xtime_lock, flags);
+
+	/* usec may have gone up a lot: be safe */
+	while (usec >= 1000000) {
+		usec -= 1000000;
+		sec++;
+	}
+
+	tv->tv_sec = sec;
+	tv->tv_usec = usec;
 }
 
 void do_settimeofday(struct timeval *tv)
 {
-	cli ();
+	write_lock_irq(&xtime_lock);
 	/* This is revolting. We need to set the xtime.tv_usec
 	 * correctly. However, the value in this location is
 	 * is value at the last tick.
 	 * Discover what correction gettimeofday
 	 * would have done, and then undo it!
 	 */
-	tv->tv_usec -= do_gettimeoffset();
+	tv->tv_usec -= gettimeoffset();
+	tv->tv_usec -= lost_ticks * USECS_PER_JIFFY;
 
-	if (tv->tv_usec < 0) {
+	while (tv->tv_usec < 0) {
 		tv->tv_usec += 1000000;
 		tv->tv_sec--;
 	}
@@ -146,12 +223,28 @@ void do_settimeofday(struct timeval *tv)
 	time_status |= STA_UNSYNC;
 	time_maxerror = NTP_PHASE_LIMIT;
 	time_esterror = NTP_PHASE_LIMIT;
-	sti();
+	write_unlock_irq(&xtime_lock);
 }
 
+static struct irqaction timer_irq = {
+	NULL, 0, 0, "timer", NULL, NULL
+};
+
+/*
+ * Include architecture specific code
+ */
+#include <asm/arch/time.h>
+
+/*
+ * This must cause the timer to start ticking.
+ * It doesn't have to set the current time though
+ * from an RTC - it can be done later once we have
+ * some buses initialised.
+ */
 void __init time_init(void)
 {
 	xtime.tv_usec = 0;
+	xtime.tv_sec  = 0;
 
 	setup_timer();
 }

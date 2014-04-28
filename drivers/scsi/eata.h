@@ -16,7 +16,9 @@ int eata2x_reset(Scsi_Cmnd *);
 int eata2x_old_reset(Scsi_Cmnd *, unsigned int);
 int eata2x_biosparam(Disk *, kdev_t, int *);
 
-#define EATA_VERSION "5.11.01"
+#define EATA_VERSION "5.11.00"
+
+#define LinuxVersionCode(v, p, s) (((v)<<16)+((p)<<8)+(s))
 
 #define EATA {                                                               \
                 name:              "EATA/DMA 2.0x rev. " EATA_VERSION " ",   \

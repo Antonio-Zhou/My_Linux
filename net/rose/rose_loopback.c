@@ -37,7 +37,7 @@ void rose_loopback_init(void)
 
 static int rose_loopback_running(void)
 {
-	return (loopback_timer.prev != NULL || loopback_timer.next != NULL);
+	return timer_pending(&loopback_timer);
 }
 
 int rose_loopback_queue(struct sk_buff *skb, struct rose_neigh *neigh)
@@ -74,7 +74,7 @@ static void rose_set_loopback_timer(void)
 static void rose_loopback_timer(unsigned long param)
 {
 	struct sk_buff *skb;
-	struct device *dev;
+	struct net_device *dev;
 	rose_address *dest;
 	struct sock *sk;
 	unsigned short frametype;

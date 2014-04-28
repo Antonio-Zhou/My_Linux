@@ -424,11 +424,6 @@ MODULE_AUTHOR("Dario Ballabio");
 #define SPIN_UNLOCK_RESTORE \
                   spin_unlock_irqrestore(&io_request_lock, spin_flags);
 
-struct proc_dir_entry proc_scsi_eata2x = {
-    PROC_SCSI_EATA2X, 6, "eata2x",
-    S_IFDIR | S_IRUGO | S_IXUGO, 2
-};
-
 /* Subversion values */
 #define ISA  0
 #define ESA 1
@@ -1054,7 +1049,7 @@ static inline int port_detect \
       sh[j]->unchecked_isa_dma = FALSE;
    else {
       unsigned long flags;
-      sh[j]->wish_block = TRUE;
+      scsi_register_blocked_host(sh[j]);
       sh[j]->unchecked_isa_dma = TRUE;
       
       flags=claim_dma_lock();
@@ -1217,7 +1212,7 @@ static int option_setup(char *str) {
 
    ints[0] = i - 1;
    internal_setup(cur, ints);
-   return 0;
+   return 1;
 }
 
 static void add_pci_ports(void) {
@@ -1257,7 +1252,7 @@ static void add_pci_ports(void) {
 int eata2x_detect(Scsi_Host_Template *tpnt) {
    unsigned int j = 0, k;
 
-   tpnt->proc_dir = &proc_scsi_eata2x;
+   tpnt->proc_name = "eata2x";
 
    if(boot_options) option_setup(boot_options);
 
@@ -2278,6 +2273,10 @@ int eata2x_release(struct Scsi_Host *shpnt) {
 
    if (sh[j] == NULL) panic("%s: release, invalid Scsi_Host pointer.\n",
                             driver_name);
+
+   if( sh[j]->unchecked_isa_dma ) {
+	   scsi_deregister_blocked_host(sh[j]);
+   }
 
    for (i = 0; i < sh[j]->can_queue; i++)
       if ((&HD(j)->cp[i])->sglist) kfree((&HD(j)->cp[i])->sglist);

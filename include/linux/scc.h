@@ -221,7 +221,7 @@ struct scc_channel {
 	
 	int init;			/* channel exists? */
 
-	struct device *dev;		/* link to device control structure */
+	struct net_device *dev;		/* link to device control structure */
 	struct net_device_stats dev_stat;/* device statistics */
 
 	char brand;			/* manufacturer of the board */
@@ -251,7 +251,6 @@ struct scc_channel {
 
 	struct timer_list tx_t;		/* tx timer for this channel */
 	struct timer_list tx_wdog;	/* tx watchdogs */
-	struct timer_list fs_wdog;	/* failsafe watchdogs */
 };
 
 int scc_init(void);

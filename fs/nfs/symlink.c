@@ -14,95 +14,96 @@
 #include <linux/sched.h>
 #include <linux/errno.h>
 #include <linux/sunrpc/clnt.h>
-#include <linux/nfs_fs.h>
 #include <linux/nfs.h>
+#include <linux/nfs2.h>
+#include <linux/nfs_fs.h>
 #include <linux/pagemap.h>
 #include <linux/stat.h>
-#include <asm/pgtable.h>
 #include <linux/mm.h>
 #include <linux/malloc.h>
 #include <linux/string.h>
 
-#include <asm/uaccess.h>
-
-static int nfs_readlink(struct dentry *, char *, int);
-static struct dentry *nfs_follow_link(struct dentry *, struct dentry *, unsigned int);
-
-/*
- * symlinks can't do much...
- */
-struct inode_operations nfs_symlink_inode_operations = {
-	readlink:		nfs_readlink,
-	follow_link:		nfs_follow_link,
-	revalidate:		nfs_revalidate,
-};
-
 /* Symlink caching in the page cache is even more simplistic
  * and straight-forward than readdir caching.
  */
-static int nfs_symlink_filler(struct inode *inode, struct page *page)
+static int nfs_symlink_filler(struct dentry *dentry, struct page *page)
 {
-	void * buffer = (void *)page_address(page);
-	unsigned int error;
+	struct inode *inode = dentry->d_inode;
+	void *buffer = (void *)kmap(page);
+	int error;
 
 	/* We place the length at the beginning of the page,
-	 * in client byte order, followed by the string.
+	 * in host byte order, followed by the string.  The
+	 * XDR response verification will NULL terminate it.
 	 */
-	error = NFS_PROTO(inode)->readlink(inode, buffer,
-					   PAGE_CACHE_SIZE-sizeof(u32)-4);
+	error = NFS_PROTO(inode)->readlink(dentry, buffer,
+					   PAGE_CACHE_SIZE - sizeof(u32)-4);
 	if (error < 0)
 		goto error;
-	flush_dcache_page(page_address(page)); /* Is this correct? */
-	set_bit(PG_uptodate, &page->flags);
-	nfs_unlock_page(page);
+	SetPageUptodate(page);
+	kunmap(page);
+	UnlockPage(page);
 	return 0;
+
 error:
-	set_bit(PG_error, &page->flags);
-	nfs_unlock_page(page);
+	SetPageError(page);
+	kunmap(page);
+	UnlockPage(page);
 	return -EIO;
 }
 
-static int nfs_readlink(struct dentry *dentry, char *buffer, int buflen)
+static char *nfs_getlink(struct dentry *dentry, struct page **ppage)
 {
-	struct inode *inode = dentry->d_inode;
-	struct page *page;
-	u32 *p, len;
-
-	/* Caller revalidated the directory inode already. */
-	page = read_cache_page(inode, 0,
-				(filler_t *)nfs_symlink_filler, inode);
-	if (IS_ERR(page))
-		goto read_failed;
-
-	p = (u32 *) page_address(page);
-	len = *p++;
-	if (len > buflen)
-		len = buflen;
-	copy_to_user(buffer, p, len);
-	page_cache_release(page);
-	return len;
-read_failed:
-	return PTR_ERR(page);
-}
-
-static struct dentry *
-nfs_follow_link(struct dentry *dentry, struct dentry *base, unsigned int follow)
-{
-	struct dentry *result;
 	struct inode *inode = dentry->d_inode;
 	struct page *page;
 	u32 *p;
 
 	/* Caller revalidated the directory inode already. */
-	page = read_cache_page(inode, 0,
-				(filler_t *)nfs_symlink_filler, inode);
+	page = read_cache_page(&inode->i_data, 0,
+				(filler_t *)nfs_symlink_filler, dentry);
 	if (IS_ERR(page))
 		goto read_failed;
-
-	p = (u32 *) page_address(page);
-	result = lookup_dentry((char *) (p + 1), base, follow);
+	if (!Page_Uptodate(page))
+		goto getlink_read_error;
+	*ppage = page;
+	p = (u32 *) kmap(page);
+	return (char*)(p+1);
+		
+getlink_read_error:
 	page_cache_release(page);
-	return result;
+	return ERR_PTR(-EIO);
 read_failed:
-	return (struct dentry *)page;
+	return (char*)page;
 }
+
+static int nfs_readlink(struct dentry *dentry, char *buffer, int buflen)
+{
+	struct page *page = NULL;
+	int res = vfs_readlink(dentry,buffer,buflen,nfs_getlink(dentry,&page));
+	if (page) {
+		kunmap(page);
+		page_cache_release(page);
+	}
+	return res;
+}
+
+static int nfs_follow_link(struct dentry *dentry, struct nameidata *nd)
+{
+	struct page *page = NULL;
+	int res = vfs_follow_link(nd, nfs_getlink(dentry,&page));
+	if (page) {
+		kunmap(page);
+		page_cache_release(page);
+	}
+	return res;
+}
+
+/*
+ * symlinks can't do much...
+ */
+struct inode_operations nfs_symlink_inode_operations = {
+	readlink:	nfs_readlink,
+	follow_link:	nfs_follow_link,
+	revalidate:	nfs_revalidate,
+	setattr:	nfs_notify_change,
+};

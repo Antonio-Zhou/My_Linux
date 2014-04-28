@@ -75,6 +75,8 @@
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 #endif
 
+#define RS_EVENT_WRITE_WAKEUP	0
+
 DECLARE_TASK_QUEUE(tq_riscom);
 
 #define RISCOM_TYPE_NORMAL	1
@@ -87,7 +89,7 @@ static struct tty_struct * riscom_table[RC_NBOARD * RC_NPORT] = { NULL, };
 static struct termios * riscom_termios[RC_NBOARD * RC_NPORT] = { NULL, };
 static struct termios * riscom_termios_locked[RC_NBOARD * RC_NPORT] = { NULL, };
 static unsigned char * tmp_buf = NULL;
-static struct semaphore tmp_buf_sem = MUTEX;
+static DECLARE_MUTEX(tmp_buf_sem);
 
 static unsigned long baud_table[] =  {
 	0, 50, 75, 110, 134, 150, 200, 300, 600, 1200, 1800, 2400, 4800,
@@ -232,7 +234,7 @@ extern inline void rc_long_delay(unsigned long delay)
 }
 
 /* Reset and setup CD180 chip */
-__initfunc(static void rc_init_CD180(struct riscom_board const * bp))
+static void __init rc_init_CD180(struct riscom_board const * bp)
 {
 	unsigned long flags;
 	
@@ -257,7 +259,7 @@ __initfunc(static void rc_init_CD180(struct riscom_board const * bp))
 }
 
 /* Main probing routine, also sets irq. */
-__initfunc(static int rc_probe(struct riscom_board *bp))
+static int __init rc_probe(struct riscom_board *bp)
 {
 	unsigned char val1, val2;
 	int irqs = 0;
@@ -946,7 +948,7 @@ static void rc_shutdown_port(struct riscom_board *bp, struct riscom_port *port)
 static int block_til_ready(struct tty_struct *tty, struct file * filp,
 			   struct riscom_port *port)
 {
-	struct wait_queue wait = { current, NULL };
+	DECLARE_WAITQUEUE(wait, current);
 	struct riscom_board *bp = port_Board(port);
 	int    retval;
 	int    do_clocal = 0;
@@ -1027,7 +1029,7 @@ static int block_til_ready(struct tty_struct *tty, struct file * filp,
 			rc_out(bp, RC_DTR, bp->DTR);
 		}
 		sti();
-		current->state = TASK_INTERRUPTIBLE;
+		set_current_state(TASK_INTERRUPTIBLE);
 		if (tty_hung_up_p(filp) ||
 		    !(port->flags & ASYNC_INITIALIZED)) {
 			if (port->flags & ASYNC_HUP_NOTIFY)
@@ -1214,58 +1216,33 @@ static int rc_write(struct tty_struct * tty, int from_user,
 	if (!tty || !port->xmit_buf || !tmp_buf)
 		return 0;
 
-	save_flags(flags);
-	if (from_user) {
+	if (from_user)
 		down(&tmp_buf_sem);
-		while (1) {
-			cli();		
-			c = MIN(count, MIN(SERIAL_XMIT_SIZE - port->xmit_cnt - 1,
-					   SERIAL_XMIT_SIZE - port->xmit_head));
-			if (c <= 0)
-				break;
 
-			c -= copy_from_user(tmp_buf, buf, c);
-			if (!c) {
-				if (!total)
-					total = -EFAULT;
-				break;
-			}
+	save_flags(flags);
+	while (1) {
+		cli();		
+		c = MIN(count, MIN(SERIAL_XMIT_SIZE - port->xmit_cnt - 1,
+				   SERIAL_XMIT_SIZE - port->xmit_head));
+		if (c <= 0)
+			break;
 
-			cli();
+		if (from_user) {
+			copy_from_user(tmp_buf, buf, c);
 			c = MIN(c, MIN(SERIAL_XMIT_SIZE - port->xmit_cnt - 1,
 				       SERIAL_XMIT_SIZE - port->xmit_head));
 			memcpy(port->xmit_buf + port->xmit_head, tmp_buf, c);
-			port->xmit_head = (port->xmit_head + c) & (SERIAL_XMIT_SIZE-1);
-			port->xmit_cnt += c;
-			restore_flags(flags);
-
-			buf += c;
-			count -= c;
-			total += c;
-		}
-		up(&tmp_buf_sem);
-	} else {
-		while (1) {
-			cli();		
-			c = MIN(count, MIN(SERIAL_XMIT_SIZE - port->xmit_cnt - 1,
-					   SERIAL_XMIT_SIZE - port->xmit_head));
-			if (c <= 0) {
-				restore_flags(flags);
-				break;
-			}
-
+		} else
 			memcpy(port->xmit_buf + port->xmit_head, buf, c);
-			port->xmit_head = (port->xmit_head + c) & (SERIAL_XMIT_SIZE-1);
-			port->xmit_cnt += c;
-			restore_flags(flags);
-
-			buf += c;
-			count -= c;
-			total += c;
-		}
+		port->xmit_head = (port->xmit_head + c) & (SERIAL_XMIT_SIZE-1);
+		port->xmit_cnt += c;
+		restore_flags(flags);
+		buf += c;
+		count -= c;
+		total += c;
 	}
-
-	cli();
+	if (from_user)
+		up(&tmp_buf_sem);
 	if (port->xmit_cnt && !tty->stopped && !tty->hw_stopped &&
 	    !(port->IER & IER_TXRDY)) {
 		port->IER |= IER_TXRDY;
@@ -1273,7 +1250,6 @@ static int rc_write(struct tty_struct * tty, int from_user,
 		rc_out(bp, CD180_IER, port->IER);
 	}
 	restore_flags(flags);
-
 	return total;
 }
 
@@ -1357,7 +1333,6 @@ static void rc_flush_buffer(struct tty_struct *tty)
 	restore_flags(flags);
 	
 	wake_up_interruptible(&tty->write_wait);
-	wake_up_interruptible(&tty->poll_wait);
 	if ((tty->flags & (1 << TTY_DO_WRITE_WAKEUP)) &&
 	    tty->ldisc.write_wakeup)
 		(tty->ldisc.write_wakeup)(tty);
@@ -1740,7 +1715,6 @@ static void do_softint(void *private_)
 		    tty->ldisc.write_wakeup)
 			(tty->ldisc.write_wakeup)(tty);
 		wake_up_interruptible(&tty->write_wait);
-		wake_up_interruptible(&tty->poll_wait);
 	}
 }
 
@@ -1818,6 +1792,8 @@ static inline int rc_init_drivers(void)
 		rc_port[i].tqueue_hangup.data = &rc_port[i];
 		rc_port[i].close_delay = 50 * HZ/100;
 		rc_port[i].closing_wait = 3000 * HZ/100;
+		init_waitqueue_head(&rc_port[i].open_wait);
+		init_waitqueue_head(&rc_port[i].close_wait);
 	}
 	
 	return 0;
@@ -1846,7 +1822,7 @@ static void rc_release_drivers(void)
  * addresses in this case.
  *
  */ 
-__initfunc(void riscom8_setup(char *str, int * ints))
+void __init riscom8_setup(char *str, int * ints)
 {
 	int i;
 
@@ -1862,7 +1838,7 @@ __initfunc(void riscom8_setup(char *str, int * ints))
 /* 
  * This routine must be called by kernel at boot time 
  */
-__initfunc(int riscom8_init(void))
+int __init  riscom8_init(void)
 {
 	int i;
 	int found = 0;

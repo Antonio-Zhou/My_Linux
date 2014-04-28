@@ -7,26 +7,36 @@
 #
 # Note 2! The CFLAGS definitions are now in the main makefile...
 
-ifdef CONFIG_SMP
 .S.o:
-	$(CC) -D__ASSEMBLY__ $(AFLAGS) -traditional -c $< -o $*.o
-else
-.S.o:
-	$(CC) -D__ASSEMBLY__ -traditional -c $< -o $*.o
-endif
+	$(CC) $(AFLAGS) -traditional -c $< -o $*.o
 
 all: kernel.o head.o init_task.o
 
 O_TARGET := kernel.o
-O_OBJS   := lowcore.o entry.o bitmap.o traps.o time.o \
-            setup.o sys_s390.o ptrace.o signal.o cpcmd.o \
-            s390fpu.o reipl.o s390mach.o 
-
-OX_OBJS  := debug.o ebcdic.o irq.o process.o s390_ext.o s390_ksyms.o s390dyn.o s390io.o
+O_OBJS   := lowcore.o entry.o bitmap.o traps.o time.o process.o irq.o \
+            setup.o sys_s390.o ptrace.o signal.o cpcmd.o ebcdic.o \
+            semaphore.o s390fpu.o s390io.o s390mach.o s390dyn.o reipl.o
+OX_OBJS := s390_ksyms.o
 MX_OBJS  :=
 
 ifdef CONFIG_SMP
-OX_OBJS += smp.o
+O_OBJS += smp.o
+endif
+
+ifdef CONFIG_PCI
+O_OBJS += bios32.o
+endif
+
+ifdef CONFIG_MCA
+O_OBJS += mca.o
+endif
+
+ifeq ($(CONFIG_MTRR),y)
+OX_OBJS += mtrr.o
+else
+  ifeq ($(CONFIG_MTRR),m)
+  MX_OBJS += mtrr.o
+  endif
 endif
 
 ifeq ($(CONFIG_IEEEFPU_EMULATION),y)
@@ -40,12 +50,5 @@ ifdef CONFIG_REMOTE_DEBUG
 O_OBJS += gdb-stub.o #gdb-low.o 
 endif
 
-
-
 include $(TOPDIR)/Rules.make
-
-
-
-
-
 

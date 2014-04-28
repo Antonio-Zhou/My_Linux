@@ -7,13 +7,14 @@
 #include <linux/sched.h>
 #include <linux/mm.h>
 #include <linux/pagemap.h>
-#include <linux/tasks.h>
+#include <linux/threads.h>
 #include <linux/smp.h>
 #include <linux/smp_lock.h>
 #include <linux/interrupt.h>
 #include <linux/kernel_stat.h>
 #include <linux/delay.h>
 #include <linux/init.h>
+#include <linux/spinlock.h>
 
 #include <asm/head.h>
 #include <asm/ptrace.h>
@@ -23,7 +24,6 @@
 #include <asm/page.h>
 #include <asm/pgtable.h>
 #include <asm/oplib.h>
-#include <asm/spinlock.h>
 #include <asm/hardirq.h>
 #include <asm/softirq.h>
 #include <asm/uaccess.h>
@@ -38,7 +38,7 @@ extern unsigned prom_cpu_nodes[];
 
 struct cpuinfo_sparc cpu_data[NR_CPUS]  __attribute__ ((aligned (64)));
 
-volatile int cpu_number_map[NR_CPUS]    __attribute__ ((aligned (64)));
+volatile int __cpu_number_map[NR_CPUS]  __attribute__ ((aligned (64)));
 volatile int __cpu_logical_map[NR_CPUS] __attribute__ ((aligned (64)));
 
 /* Please don't make this stuff initdata!!!  --DaveM */
@@ -53,7 +53,7 @@ unsigned long cpu_present_map = 0;
 int smp_num_cpus = 1;
 int smp_threads_ready = 0;
 
-__initfunc(void smp_setup(char *str, int *ints))
+void __init smp_setup(char *str, int *ints)
 {
 	/* XXX implement me XXX */
 }
@@ -77,31 +77,21 @@ int smp_bogo(char *buf)
 	for (i = 0; i < NR_CPUS; i++)
 		if(cpu_present_map & (1UL << i))
 			len += sprintf(buf + len,
-				       "Cpu%dBogo\t: %lu.%02lu\n"
-				       "Cpu%dClkTck\t: %016lx\n",
-				       i, cpu_data[i].udelay_val / (500000/HZ),
-				       (cpu_data[i].udelay_val / (5000/HZ)) % 100,
-				       i, (unsigned long) cpu_data[i].clock_tick);
+				       "Cpu%dBogo\t: %lu.%02lu\n",
+				       i, cpu_data[i].udelay_val / 500000,
+				       (cpu_data[i].udelay_val / 5000) % 100);
 	return len;
 }
 
-__initfunc(void smp_store_cpu_info(int id))
+void __init smp_store_cpu_info(int id)
 {
-	int i, no;
+	int i;
 
-	cpu_data[id].irq_count			= 0;
 	cpu_data[id].bh_count			= 0;
 	/* multiplier and counter set by
 	   smp_setup_percpu_timer()  */
-	cpu_data[id].udelay_val			= loops_per_jiffy;
+	cpu_data[id].udelay_val			= loops_per_sec;
 
-
-	for (no = 0; no < linux_num_cpus; no++)
-		if (linux_cpus[no].mid == id)
-			break;
-
-	cpu_data[id].clock_tick = prom_getintdefault(linux_cpus[no].prom_node,
-						     "clock-frequency", 0);
 	cpu_data[id].pgcache_size		= 0;
 	cpu_data[id].pte_cache[0]		= NULL;
 	cpu_data[id].pte_cache[1]		= NULL;
@@ -113,7 +103,7 @@ __initfunc(void smp_store_cpu_info(int id))
 		cpu_data[id].irq_worklists[i] = 0;
 }
 
-__initfunc(void smp_commence(void))
+void __init smp_commence(void)
 {
 }
 
@@ -125,7 +115,7 @@ static volatile unsigned long callin_flag = 0;
 extern void inherit_locked_prom_mappings(int save_p);
 extern void cpu_probe(void);
 
-__initfunc(void smp_callin(void))
+void __init smp_callin(void)
 {
 	int cpuid = hard_smp_processor_id();
 	unsigned long pstate;
@@ -181,14 +171,18 @@ __initfunc(void smp_callin(void))
 	/* Clear this or we will die instantly when we
 	 * schedule back to this idler...
 	 */
-	current->tss.flags &= ~(SPARC_FLAG_NEWCHILD);
+	current->thread.flags &= ~(SPARC_FLAG_NEWCHILD);
+
+	/* Attach to the address space of init_task. */
+	atomic_inc(&init_mm.mm_count);
+	current->active_mm = &init_mm;
 
 	while(!smp_processors_ready)
 		membar("#LoadLoad");
 }
 
-extern int cpu_idle(void *unused);
-extern unsigned long init_IRQ(unsigned long);
+extern int cpu_idle(void);
+extern void init_IRQ(void);
 
 void initialize_secondary(void)
 {
@@ -197,10 +191,9 @@ void initialize_secondary(void)
 int start_secondary(void *unused)
 {
 	trap_init();
-	/* No memory allocation allowed on slave IRQ init */
-	init_IRQ(0UL);
+	init_IRQ();
 	smp_callin();
-	return cpu_idle(NULL);
+	return cpu_idle();
 }
 
 void cpu_panic(void)
@@ -219,7 +212,7 @@ extern unsigned long sparc64_cpu_startup;
  */
 static struct task_struct *cpu_new_task = NULL;
 
-__initfunc(void smp_boot_cpus(void))
+void __init smp_boot_cpus(void)
 {
 	int cpucount = 0, i;
 
@@ -245,9 +238,17 @@ __initfunc(void smp_boot_cpus(void))
 
 			prom_printf("Starting CPU %d... ", i);
 			kernel_thread(start_secondary, NULL, CLONE_PID);
-			p = task[++cpucount];
+			cpucount++;
+
+			p = init_task.prev_task;
+			init_tasks[cpucount] = p;
+
 			p->processor = i;
 			p->has_cpu = 1; /* we schedule the first task manually */
+
+			del_from_runqueue(p);
+			unhash_process(p);
+
 			callin_flag = 0;
 			for (no = 0; no < linux_num_cpus; no++)
 				if (linux_cpus[no].mid == i)
@@ -261,7 +262,7 @@ __initfunc(void smp_boot_cpus(void))
 				udelay(100);
 			}
 			if(callin_flag) {
-				cpu_number_map[i] = cpucount;
+				__cpu_number_map[i] = cpucount;
 				__cpu_logical_map[cpucount] = i;
 				prom_cpu_nodes[i] = linux_cpus[no].prom_node;
 				prom_printf("OK\n");
@@ -273,7 +274,7 @@ __initfunc(void smp_boot_cpus(void))
 		}
 		if(!callin_flag) {
 			cpu_present_map &= ~(1UL << i);
-			cpu_number_map[i] = -1;
+			__cpu_number_map[i] = -1;
 		}
 	}
 	cpu_new_task = NULL;
@@ -289,8 +290,8 @@ __initfunc(void smp_boot_cpus(void))
 		}
 		printk("Total of %d processors activated (%lu.%02lu BogoMIPS).\n",
 		       cpucount + 1,
-		       (bogosum + 2500)/(500000/HZ),
-		       ((bogosum + 2500)/(5000/HZ))%100);
+		       (bogosum + 2500)/500000,
+		       ((bogosum + 2500)/5000)%100);
 		smp_activated = 1;
 		smp_num_cpus = cpucount + 1;
 	}
@@ -303,7 +304,7 @@ __initfunc(void smp_boot_cpus(void))
 static inline void xcall_deliver(u64 data0, u64 data1, u64 data2, u64 pstate, unsigned long cpu)
 {
 	u64 result, target = (cpu << 14) | 0x70;
-	int stuck;
+	int stuck, tmp;
 
 #ifdef XCALL_DEBUG
 	printk("CPU[%d]: xcall(data[%016lx:%016lx:%016lx],tgt[%016lx])\n",
@@ -317,22 +318,23 @@ again:
 	 * So we use the high UDB control register (ASI 0x7f,
 	 * ADDR 0x20) for the dummy read. -DaveM
 	 */
+	tmp = 0x40;
 	__asm__ __volatile__("
-	wrpr	%0, %1, %%pstate
-	wr	%%g0, %2, %%asi
-	stxa	%3, [0x40] %%asi
-	stxa	%4, [0x50] %%asi
-	stxa	%5, [0x60] %%asi
+	wrpr	%1, %2, %%pstate
+	stxa	%4, [%0] %3
+	stxa	%5, [%0+%8] %3
+	add	%0, %8, %0
+	stxa	%6, [%0+%8] %3
 	membar	#Sync
-	stxa	%%g0, [%6] %%asi
+	stxa	%%g0, [%7] %3
 	membar	#Sync
 	mov	0x20, %%g1
 	ldxa	[%%g1] 0x7f, %%g0
 	membar	#Sync"
-	: /* No outputs */
+	: "=r" (tmp)
 	: "r" (pstate), "i" (PSTATE_IE), "i" (ASI_UDB_INTR_W),
-	  "r" (data0), "r" (data1), "r" (data2), "r" (target)
-	: "g1");
+	  "r" (data0), "r" (data1), "r" (data2), "r" (target), "r" (0x10), "0" (tmp)
+       : "g1");
 
 	/* NOTE: PSTATE_IE is still clear. */
 	stuck = 100000;
@@ -425,6 +427,9 @@ void smp_flush_tlb_all(void)
  * are flush_tlb_*() routines, and these run after flush_cache_*()
  * which performs the flushw.
  *
+ * XXX I diked out the fancy flush avoidance code for the
+ * XXX swapping cases for now until the new MM code stabilizes. -DaveM
+ *
  * The SMP TLB coherency scheme we use works as follows:
  *
  * 1) mm->cpu_vm_mask is a bit mask of which cpus an address
@@ -436,16 +441,16 @@ void smp_flush_tlb_all(void)
  *    cross calls.
  *
  *    One invariant is that when a cpu switches to a process, and
- *    that processes tsk->mm->cpu_vm_mask does not have the current
- *    cpu's bit set, that tlb context is flushed locally.
+ *    that processes tsk->active_mm->cpu_vm_mask does not have the
+ *    current cpu's bit set, that tlb context is flushed locally.
  *
  *    If the address space is non-shared (ie. mm->count == 1) we avoid
  *    cross calls when we want to flush the currently running process's
  *    tlb state.  This is done by clearing all cpu bits except the current
- *    processor's in current->mm->cpu_vm_mask and performing the flush
- *    locally only.  This will force any subsequent cpus which run this
- *    task to flush the context from the local tlb if the process migrates
- *    to another cpu (again).
+ *    processor's in current->active_mm->cpu_vm_mask and performing the
+ *    flush locally only.  This will force any subsequent cpus which run
+ *    this task to flush the context from the local tlb if the process
+ *    migrates to another cpu (again).
  *
  * 3) For shared address spaces (threads) and swapping we bite the
  *    bullet for most cases and perform the cross call.
@@ -463,67 +468,83 @@ void smp_flush_tlb_all(void)
  */
 void smp_flush_tlb_mm(struct mm_struct *mm)
 {
-	u32 ctx = mm->context & 0x3ff;
+	if (CTX_VALID(mm->context)) {
+		u32 ctx = CTX_HWBITS(mm->context);
+		int cpu = smp_processor_id();
 
-	if(mm == current->mm && atomic_read(&mm->count) == 1) {
-		if(mm->cpu_vm_mask != (1UL << smp_processor_id()))
-			mm->cpu_vm_mask = (1UL << smp_processor_id());
-		goto local_flush_and_out;
+		if (mm == current->active_mm && atomic_read(&mm->mm_users) == 1) {
+			/* See smp_flush_tlb_page for info about this. */
+			mm->cpu_vm_mask = (1UL << cpu);
+			goto local_flush_and_out;
+		}
+
+		smp_cross_call(&xcall_flush_tlb_mm, ctx, 0, 0);
+
+	local_flush_and_out:
+		__flush_tlb_mm(ctx, SECONDARY_CONTEXT);
 	}
-	smp_cross_call(&xcall_flush_tlb_mm, ctx, 0, 0);
-
-local_flush_and_out:
-	__flush_tlb_mm(ctx, SECONDARY_CONTEXT);
 }
 
 void smp_flush_tlb_range(struct mm_struct *mm, unsigned long start,
 			 unsigned long end)
 {
-	u32 ctx = mm->context & 0x3ff;
+	if (CTX_VALID(mm->context)) {
+		u32 ctx = CTX_HWBITS(mm->context);
+		int cpu = smp_processor_id();
 
-	start &= PAGE_MASK;
-	end   &= PAGE_MASK;
-	if(mm == current->mm && atomic_read(&mm->count) == 1) {
-		if(mm->cpu_vm_mask != (1UL << smp_processor_id()))
-			mm->cpu_vm_mask = (1UL << smp_processor_id());
-		goto local_flush_and_out;
+		start &= PAGE_MASK;
+		end   &= PAGE_MASK;
+
+		if (mm == current->active_mm && atomic_read(&mm->mm_users) == 1) {
+			mm->cpu_vm_mask = (1UL << cpu);
+			goto local_flush_and_out;
+		}
+
+		smp_cross_call(&xcall_flush_tlb_range, ctx, start, end);
+
+	local_flush_and_out:
+		__flush_tlb_range(ctx, start, SECONDARY_CONTEXT, end, PAGE_SIZE, (end-start));
 	}
-	smp_cross_call(&xcall_flush_tlb_range, ctx, start, end);
-
-local_flush_and_out:
-	__flush_tlb_range(ctx, start, SECONDARY_CONTEXT, end, PAGE_SIZE, (end-start));
 }
 
 void smp_flush_tlb_page(struct mm_struct *mm, unsigned long page)
 {
-	u32 ctx = mm->context & 0x3ff;
+	if (CTX_VALID(mm->context)) {
+		u32 ctx = CTX_HWBITS(mm->context);
+		int cpu = smp_processor_id();
 
-	page &= PAGE_MASK;
-	if(mm == current->mm && atomic_read(&mm->count) == 1) {
-		if(mm->cpu_vm_mask != (1UL << smp_processor_id()))
-			mm->cpu_vm_mask = (1UL << smp_processor_id());
-		goto local_flush_and_out;
-	} else {
-		/* Try to handle two special cases to avoid cross calls
-		 * in common scenerios where we are swapping process
-		 * pages out.
-		 */
-		if(((mm->context ^ tlb_context_cache) & CTX_VERSION_MASK) ||
-		   (mm->cpu_vm_mask == 0)) {
-			/* A dead context cannot ever become "alive" until
-			 * a task switch is done to it.
+		page &= PAGE_MASK;
+		if (mm == current->active_mm && atomic_read(&mm->mm_users) == 1) {
+			/* By virtue of being the current address space, and
+			 * having the only reference to it, the following operation
+			 * is safe.
+			 *
+			 * It would not be a win to perform the xcall tlb flush in
+			 * this case, because even if we switch back to one of the
+			 * other processors in cpu_vm_mask it is almost certain that
+			 * all TLB entries for this context will be replaced by the
+			 * time that happens.
 			 */
-			return; /* It's dead, nothing to do. */
+			mm->cpu_vm_mask = (1UL << cpu);
+			goto local_flush_and_out;
+		} else {
+			/* By virtue of running under the mm->page_table_lock,
+			 * and mmu_context.h:switch_mm doing the same, the following
+			 * operation is safe.
+			 */
+			if (mm->cpu_vm_mask == (1UL << cpu))
+				goto local_flush_and_out;
 		}
-		if(mm->cpu_vm_mask == (1UL << smp_processor_id())) {
-			__flush_tlb_page(ctx, page, SECONDARY_CONTEXT);
-			return; /* Only local flush is necessary. */
-		}
-	}
-	smp_cross_call(&xcall_flush_tlb_page, ctx, page, 0);
 
-local_flush_and_out:
-	__flush_tlb_page(ctx, page, SECONDARY_CONTEXT);
+		/* OK, we have to actually perform the cross call.  Most likely
+		 * this is a cloned mm or kswapd is kicking out pages for a task
+		 * which has run recently on another cpu.
+		 */
+		smp_cross_call(&xcall_flush_tlb_page, ctx, page, 0);
+
+	local_flush_and_out:
+		__flush_tlb_page(ctx, page, SECONDARY_CONTEXT);
+	}
 }
 
 /* CPU capture. */
@@ -537,7 +558,7 @@ static unsigned long penguins_are_doing_time = 0;
 void smp_capture(void)
 {
 	if (smp_processors_ready) {
-		int result = atomic_add_return(1, &smp_capture_depth);
+		int result = __atomic_add(1, &smp_capture_depth);
 
 		membar("#StoreStore | #LoadStore");
 		if(result == 1) {
@@ -605,19 +626,7 @@ void smp_promstop_others(void)
 		smp_cross_call(&xcall_promstop, 0, 0, 0);
 }
 
-static inline void sparc64_do_profile(unsigned long pc)
-{
-	if (prof_buffer && current->pid) {
-		extern int _stext;
-
-		pc -= (unsigned long) &_stext;
-		pc >>= prof_shift;
-
-		if(pc >= prof_len)
-			pc = prof_len - 1;
-		atomic_inc((atomic_t *)&prof_buffer[pc]);
-	}
-}
+extern void sparc64_do_profile(unsigned long pc, unsigned long o7);
 
 static unsigned long current_tick_offset;
 
@@ -646,40 +655,29 @@ void smp_percpu_timer_interrupt(struct pt_regs *regs)
 
 	clear_softint((1UL << 0));
 	do {
-		if(!user)
-			sparc64_do_profile(regs->tpc);
-		if(!--prof_counter(cpu))
-		{
+		if (!user)
+			sparc64_do_profile(regs->tpc, regs->u_regs[UREG_RETPC]);
+		if (!--prof_counter(cpu)) {
 			if (cpu == boot_cpu_id) {
-/* XXX Keep this in sync with irq.c --DaveM */
-#define irq_enter(cpu, irq)			\
-do {	hardirq_enter(cpu);			\
-	spin_unlock_wait(&global_irq_lock);	\
-} while(0)
-#define irq_exit(cpu, irq)	hardirq_exit(cpu)
-
 				irq_enter(cpu, 0);
-				kstat.irqs[cpu][0]++;
 
+				kstat.irqs[cpu][0]++;
 				timer_tick_interrupt(regs);
 
 				irq_exit(cpu, 0);
-
-#undef irq_enter
-#undef irq_exit
 			}
 
-			if(current->pid) {
+			if (current->pid) {
 				unsigned int *inc, *inc2;
 
 				update_one_process(current, 1, user, !user, cpu);
-				if(--current->counter < 0) {
+				if (--current->counter <= 0) {
 					current->counter = 0;
 					current->need_resched = 1;
 				}
 
-				if(user) {
-					if(current->priority < DEF_PRIORITY) {
+				if (user) {
+					if (current->priority < DEF_PRIORITY) {
 						inc = &kstat.cpu_nice;
 						inc2 = &kstat.per_cpu_nice[cpu];
 					} else {
@@ -738,7 +736,7 @@ do {	hardirq_enter(cpu);			\
 	} while (tick >= compare);
 }
 
-__initfunc(static void smp_setup_percpu_timer(void))
+static void __init smp_setup_percpu_timer(void)
 {
 	int cpu = smp_processor_id();
 	unsigned long pstate;
@@ -779,7 +777,7 @@ __initfunc(static void smp_setup_percpu_timer(void))
 			     : "r" (pstate));
 }
 
-__initfunc(void smp_tick_init(void))
+void __init smp_tick_init(void)
 {
 	int i;
 	
@@ -789,10 +787,10 @@ __initfunc(void smp_tick_init(void))
 	for(i = 0; i < linux_num_cpus; i++)
 		cpu_present_map |= (1UL << linux_cpus[i].mid);
 	for(i = 0; i < NR_CPUS; i++) {
-		cpu_number_map[i] = -1;
+		__cpu_number_map[i] = -1;
 		__cpu_logical_map[i] = -1;
 	}
-	cpu_number_map[boot_cpu_id] = 0;
+	__cpu_number_map[boot_cpu_id] = 0;
 	prom_cpu_nodes[boot_cpu_id] = linux_cpus[0].prom_node;
 	__cpu_logical_map[0] = boot_cpu_id;
 	current->processor = boot_cpu_id;
@@ -811,24 +809,23 @@ static inline unsigned long find_flush_base(unsigned long size)
 		/* Failure. */
 		if(p >= (mem_map + max_mapnr))
 			return 0UL;
-		if(PageSkip(p)) {
-			p = p->next_hash;
-			base = page_address(p);
+		if(PageReserved(p)) {
 			found = size;
+			base = page_address(p);
 		} else {
 			found -= PAGE_SIZE;
-			p++;
 		}
+		p++;
 	}
 	return base;
 }
 
 cycles_t cacheflush_time;
 
-__initfunc(static void smp_tune_scheduling (void))
+static void __init smp_tune_scheduling (void)
 {
-	unsigned long flush_base, flags, *p;
-	unsigned int ecache_size;
+	unsigned long orig_flush_base, flush_base, flags, *p;
+	unsigned int ecache_size, order;
 	cycles_t tick1, tick2, raw;
 
 	/* Approximate heuristic for SMP scheduling.  It is an
@@ -843,18 +840,21 @@ __initfunc(static void smp_tune_scheduling (void))
 	 */
 	printk("SMP: Calibrating ecache flush... ");
 	ecache_size = prom_getintdefault(linux_cpus[0].prom_node,
-					 "ecache-size", (512 *1024));
-	flush_base = find_flush_base(ecache_size << 1);
+					 "ecache-size", (512 * 1024));
+	if (ecache_size > (4 * 1024 * 1024))
+		ecache_size = (4 * 1024 * 1024);
+	orig_flush_base = flush_base =
+		__get_free_pages(GFP_KERNEL, order = get_order(ecache_size));
 
-	if(flush_base != 0UL) {
+	if (flush_base != 0UL) {
 		__save_and_cli(flags);
 
 		/* Scan twice the size once just to get the TLB entries
 		 * loaded and make sure the second scan measures pure misses.
 		 */
-		for(p = (unsigned long *)flush_base;
-		    ((unsigned long)p) < (flush_base + (ecache_size<<1));
-		    p += (64 / sizeof(unsigned long)))
+		for (p = (unsigned long *)flush_base;
+		     ((unsigned long)p) < (flush_base + (ecache_size<<1));
+		     p += (64 / sizeof(unsigned long)))
 			*((volatile unsigned long *)p);
 
 		/* Now the real measurement. */
@@ -885,9 +885,12 @@ __initfunc(static void smp_tune_scheduling (void))
 		 * sharing the cache and fitting.
 		 */
 		cacheflush_time = (raw - (raw >> 2));
-	} else
+
+		free_pages(orig_flush_base, order);
+	} else {
 		cacheflush_time = ((ecache_size << 2) +
 				   (ecache_size << 1));
+	}
 
 	printk("Using heuristic of %d cycles.\n",
 	       (int) cacheflush_time);

@@ -14,7 +14,6 @@
 #include <linux/sunrpc/svc.h>
 #include <linux/sunrpc/clnt.h>
 #include <linux/nfsd/nfsd.h>
-#include <linux/lockd/xdr4.h>
 #include <linux/lockd/lockd.h>
 #include <linux/lockd/share.h>
 #include <linux/lockd/sm_inter.h>
@@ -39,7 +38,7 @@ nlm4svc_retrieve_args(struct svc_rqst *rqstp, struct nlm_args *argp,
 
 	/* nfsd callbacks must have been installed for this procedure */
 	if (!nlmsvc_ops)
-		return nlm4_lck_denied_nolocks;
+		return nlm_lck_denied_nolocks;
 
 	/* Obtain handle for client host */
 	if (rqstp->rq_client == NULL) {
@@ -47,7 +46,7 @@ nlm4svc_retrieve_args(struct svc_rqst *rqstp, struct nlm_args *argp,
 			"lockd: unauthenticated request from (%08x:%d)\n",
 			ntohl(rqstp->rq_addr.sin_addr.s_addr),
 			ntohs(rqstp->rq_addr.sin_port));
-		return nlm4_lck_denied_nolocks;
+		return nlm_lck_denied_nolocks;
 	}
 
 	/* Obtain host handle */
@@ -72,10 +71,9 @@ nlm4svc_retrieve_args(struct svc_rqst *rqstp, struct nlm_args *argp,
 no_locks:
 	if (host)
 		nlm_release_host(host);
-	/* check the error to see if its a stale fh error */
  	if (error)
 		return error;	
-	return nlm4_lck_denied_nolocks;
+	return nlm_lck_denied_nolocks;
 }
 
 /*
@@ -103,7 +101,7 @@ nlm4svc_proc_test(struct svc_rqst *rqstp, struct nlm_args *argp,
 
 	/* Don't accept test requests during grace period */
 	if (nlmsvc_grace_period) {
-		resp->status = nlm4_lck_denied_grace_period;
+		resp->status = nlm_lck_denied_grace_period;
 		return rpc_success;
 	}
 
@@ -133,7 +131,7 @@ nlm4svc_proc_lock(struct svc_rqst *rqstp, struct nlm_args *argp,
 
 	/* Don't accept new lock requests during grace period */
 	if (nlmsvc_grace_period && !argp->reclaim) {
-		resp->status = nlm4_lck_denied_grace_period;
+		resp->status = nlm_lck_denied_grace_period;
 		return rpc_success;
 	}
 
@@ -149,7 +147,7 @@ nlm4svc_proc_lock(struct svc_rqst *rqstp, struct nlm_args *argp,
 	 * NB: We don't retrieve the remote host's state yet.
 	 */
 	if (host->h_nsmstate && host->h_nsmstate != argp->state) {
-		resp->status = nlm4_lck_denied_nolocks;
+		resp->status = nlm_lck_denied_nolocks;
 	} else
 #endif
 
@@ -176,7 +174,7 @@ nlm4svc_proc_cancel(struct svc_rqst *rqstp, struct nlm_args *argp,
 
 	/* Don't accept requests during grace period */
 	if (nlmsvc_grace_period) {
-		resp->status = nlm4_lck_denied_grace_period;
+		resp->status = nlm_lck_denied_grace_period;
 		return rpc_success;
 	}
 
@@ -209,7 +207,7 @@ nlm4svc_proc_unlock(struct svc_rqst *rqstp, struct nlm_args *argp,
 
 	/* Don't accept new lock requests during grace period */
 	if (nlmsvc_grace_period) {
-		resp->status = nlm4_lck_denied_grace_period;
+		resp->status = nlm_lck_denied_grace_period;
 		return rpc_success;
 	}
 
@@ -256,7 +254,6 @@ nlm4svc_proc_test_msg(struct svc_rqst *rqstp, struct nlm_args *argp,
 
 	dprintk("lockd: TEST_MSG      called\n");
 
-	memset(&res, 0, sizeof(res));
 	if ((stat = nlm4svc_proc_test(rqstp, argp, &res)) == 0)
 		stat = nlm4svc_callback(rqstp, NLMPROC_TEST_RES, &res);
 	return stat;
@@ -334,7 +331,7 @@ nlm4svc_proc_share(struct svc_rqst *rqstp, struct nlm_args *argp,
 
 	/* Don't accept new lock requests during grace period */
 	if (nlmsvc_grace_period && !argp->reclaim) {
-		resp->status = nlm4_lck_denied_grace_period;
+		resp->status = nlm_lck_denied_grace_period;
 		return rpc_success;
 	}
 
@@ -367,7 +364,7 @@ nlm4svc_proc_unshare(struct svc_rqst *rqstp, struct nlm_args *argp,
 
 	/* Don't accept requests during grace period */
 	if (nlmsvc_grace_period) {
-		resp->status = nlm4_lck_denied_grace_period;
+		resp->status = nlm_lck_denied_grace_period;
 		return rpc_success;
 	}
 
@@ -423,8 +420,6 @@ nlm4svc_proc_sm_notify(struct svc_rqst *rqstp, struct nlm_reboot *argp,
 					      void	        *resp)
 {
 	struct sockaddr_in	saddr = rqstp->rq_addr;
-	int			vers = rqstp->rq_vers;
-	int			prot = rqstp->rq_prot;
 	struct nlm_host		*host;
 
 	dprintk("lockd: SM_NOTIFY     called\n");
@@ -440,8 +435,8 @@ nlm4svc_proc_sm_notify(struct svc_rqst *rqstp, struct nlm_reboot *argp,
 	/* Obtain the host pointer for this NFS server and try to
 	 * reclaim all locks we hold on this server.
 	 */
-	saddr.sin_addr.s_addr = htonl(argp->addr);
-	if ((host = nlmclnt_lookup_host(&saddr, prot, vers)) != NULL) {
+	saddr.sin_addr.s_addr = argp->addr;	
+	if ((host = nlm_lookup_host(NULL, &saddr, IPPROTO_UDP, 1)) != NULL) {
 		nlmclnt_recovery(host, argp->state);
 		nlm_release_host(host);
 	}
@@ -451,10 +446,10 @@ nlm4svc_proc_sm_notify(struct svc_rqst *rqstp, struct nlm_reboot *argp,
 		struct svc_client	*clnt;
 		saddr.sin_addr.s_addr = argp->addr;	
 		if ((clnt = nlmsvc_ops->exp_getclient(&saddr)) != NULL 
-		 && (host = nlm_lookup_host(clnt, NULL, 0, 0)) != NULL) {
+		 && (host = nlm_lookup_host(clnt, &saddr, 0, 0)) != NULL) {
 			nlmsvc_free_host_resources(host);
-			nlm_release_host(host);
 		}
+		nlm_release_host(host);
 	}
 
 	return rpc_success;
@@ -554,8 +549,7 @@ struct svc_procedure		nlmsvc_procedures4[] = {
   PROC(cancel_res,	cancelres,	norep,		res,	void),
   PROC(unlock_res,	unlockres,	norep,		res,	void),
   PROC(granted_res,	grantedres,	norep,		res,	void),
-  /* statd callback */
-  PROC(sm_notify,	reboot,		void,		reboot,	void),
+  PROC(none,		void,		void,		void,	void),
   PROC(none,		void,		void,		void,	void),
   PROC(none,		void,		void,		void,	void),
   PROC(none,		void,		void,		void,	void),
@@ -564,4 +558,6 @@ struct svc_procedure		nlmsvc_procedures4[] = {
   PROC(nm_lock,		lockargs,	res,		args,	res),
   PROC(free_all,	notify,		void,		args,	void),
 
+  /* statd callback */
+  PROC(sm_notify,	reboot,		void,		reboot,	void),
 };

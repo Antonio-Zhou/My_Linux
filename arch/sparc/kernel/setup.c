@@ -1,4 +1,4 @@
-/*  $Id: setup.c,v 1.105.2.2 2000/10/05 04:17:17 anton Exp $
+/*  $Id: setup.c,v 1.118 2000/05/09 17:40:13 davem Exp $
  *  linux/arch/sparc/kernel/setup.c
  *
  *  Copyright (C) 1995  David S. Miller (davem@caip.rutgers.edu)
@@ -26,6 +26,7 @@
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/console.h>
+#include <linux/spinlock.h>
 
 #include <asm/segment.h>
 #include <asm/system.h>
@@ -40,10 +41,11 @@
 #include <asm/kdebug.h>
 #include <asm/mbus.h>
 #include <asm/idprom.h>
-#include <asm/spinlock.h>
 #include <asm/softirq.h>
 #include <asm/hardirq.h>
 #include <asm/machines.h>
+
+#undef PROM_DEBUG_CONSOLE
 
 struct screen_info screen_info = {
 	0, 0,			/* orig-x, orig-y */
@@ -78,7 +80,7 @@ void prom_sync_me(void)
 {
 	unsigned long prom_tbr, flags;
 
-#ifdef __SMP__
+#ifdef CONFIG_SMP
 	global_irq_holder = NO_PROC_ID;
 	*((unsigned char *)&global_irq_lock) = 0;
 	*((unsigned char *)&global_bh_lock) = 0;
@@ -124,7 +126,9 @@ unsigned int boot_flags;
 #ifdef CONFIG_SUN_CONSOLE
 static int console_fb = 0;
 #endif
-static unsigned long memory_size __initdata = 0;
+
+/* Exported for mm/init.c:paging_init. */
+unsigned long cmdline_memory_size __initdata = 0;
 
 void kernel_enter_debugger(void)
 {
@@ -153,7 +157,7 @@ int obp_system_intr(void)
  * Process kernel command line switches that are specific to the
  * SPARC or that require special low-level processing.
  */
-__initfunc(static void process_switch(char c))
+static void __init process_switch(char c)
 {
 	switch (c) {
 	case 'd':
@@ -172,7 +176,7 @@ __initfunc(static void process_switch(char c))
 	}
 }
 
-__initfunc(static void boot_flags_init(char *commands))
+static void __init boot_flags_init(char *commands)
 {
 	while (*commands) {
 		/* Move to the start of the next "argument". */
@@ -197,11 +201,6 @@ __initfunc(static void boot_flags_init(char *commands))
 			case 'b':
 				boot_flags |= BOOTME_KGDBB;
 				prom_printf("KGDB: Using serial line /dev/ttyb.\n");
-				break;
-#endif
-#ifdef CONFIG_AP1000
-			case 'c':
-				printk("KGDB: AP1000+ debugging\n");
 				break;
 #endif
 			default:
@@ -238,13 +237,13 @@ __initfunc(static void boot_flags_init(char *commands))
 				 * "mem=XXX[kKmM] overrides the PROM-reported
 				 * memory size.
 				 */
-				memory_size = simple_strtoul(commands + 4,
+				cmdline_memory_size = simple_strtoul(commands + 4,
 							     &commands, 0);
 				if (*commands == 'K' || *commands == 'k') {
-					memory_size <<= 10;
+					cmdline_memory_size <<= 10;
 					commands++;
 				} else if (*commands=='M' || *commands=='m') {
-					memory_size <<= 20;
+					cmdline_memory_size <<= 20;
 					commands++;
 				}
 			}
@@ -266,13 +265,11 @@ extern char cputypval;
 extern unsigned long start, end;
 extern void panic_setup(char *, int *);
 extern void srmmu_end_memory(unsigned long, unsigned long *);
-extern unsigned long sun_serial_setup(unsigned long);
+extern void sun_serial_setup(void);
 
 extern unsigned short root_flags;
 extern unsigned short root_dev;
 extern unsigned short ram_flags;
-extern unsigned sparc_ramdisk_image;
-extern unsigned sparc_ramdisk_size;
 #define RAMDISK_IMAGE_START_MASK	0x07FF
 #define RAMDISK_PROMPT_FLAG		0x8000
 #define RAMDISK_LOAD_FLAG		0x4000
@@ -287,6 +284,7 @@ struct tt_entry *sparc_ttable;
 
 struct pt_regs fake_swapper_regs = { 0, 0, 0, 0, { 0, } };
 
+#ifdef PROM_DEBUG_CONSOLE
 static void prom_cons_write(struct console *con, const char *str, unsigned count)
 {
 	while (count--)
@@ -296,11 +294,14 @@ static void prom_cons_write(struct console *con, const char *str, unsigned count
 static struct console prom_console = {
 	"PROM", prom_cons_write, 0, 0, 0, 0, 0, CON_PRINTBUFFER, 0, 0, 0
 };
+#endif
 
-__initfunc(void setup_arch(char **cmdline_p,
-	unsigned long * memory_start_p, unsigned long * memory_end_p))
+extern void paging_init(void);
+
+void __init setup_arch(char **cmdline_p)
 {
-	int total, i, packed;
+	int i;
+	unsigned long highest_paddr;
 
 	sparc_ttable = (struct tt_entry *) &start;
 
@@ -313,6 +314,7 @@ __initfunc(void setup_arch(char **cmdline_p,
 	if(!strcmp(&cputypval,"sun4 ")) { sparc_cpu_model=sun4; }
 	if(!strcmp(&cputypval,"sun4c")) { sparc_cpu_model=sun4c; }
 	if(!strcmp(&cputypval,"sun4m")) { sparc_cpu_model=sun4m; }
+	if(!strcmp(&cputypval,"sun4s")) { sparc_cpu_model=sun4m; }  /* CP-1200 with PROM 2.30 -E */
 	if(!strcmp(&cputypval,"sun4d")) { sparc_cpu_model=sun4d; }
 	if(!strcmp(&cputypval,"sun4e")) { sparc_cpu_model=sun4e; }
 	if(!strcmp(&cputypval,"sun4u")) { sparc_cpu_model=sun4u; }
@@ -323,45 +325,33 @@ __initfunc(void setup_arch(char **cmdline_p,
 		prom_halt();
 	}
 #endif
-#if CONFIG_AP1000
-	sparc_cpu_model=ap1000;
-	strcpy(&cputypval, "ap+");
-#endif
 	printk("ARCH: ");
-	packed = 0;
 	switch(sparc_cpu_model) {
 	case sun4:
 		printk("SUN4\n");
-		packed = 0;
 		break;
 	case sun4c:
 		printk("SUN4C\n");
-		packed = 0;
 		break;
 	case sun4m:
 		printk("SUN4M\n");
-		packed = 1;
 		break;
 	case sun4d:
 		printk("SUN4D\n");
-		packed = 1;
 		break;
 	case sun4e:
 		printk("SUN4E\n");
-		packed = 0;
 		break;
 	case sun4u:
 		printk("SUN4U\n");
-		break;
-	case ap1000:
-		register_console(&prom_console);
-		printk("AP1000\n");
-		packed = 1;
 		break;
 	default:
 		printk("UNKNOWN!\n");
 		break;
 	};
+#ifdef PROM_DEBUG_CONSOLE
+	register_console(&prom_console);
+#endif
 
 #ifdef CONFIG_DUMMY_CONSOLE
 	conswitchp = &dummy_con;
@@ -374,26 +364,20 @@ __initfunc(void setup_arch(char **cmdline_p,
 	if (ARCH_SUN4C_SUN4)
 		sun4c_probe_vac();
 	load_mmu();
-	total = prom_probe_memory();
-	*memory_start_p = PAGE_ALIGN(((unsigned long) &end));
+	(void) prom_probe_memory();
 
-	if(!packed) {
-		for(i=0; sp_banks[i].num_bytes != 0; i++) {
-			end_of_phys_memory = sp_banks[i].base_addr +
-					     sp_banks[i].num_bytes;
-			if (memory_size) {
-				if (end_of_phys_memory > memory_size) {
-					sp_banks[i].num_bytes -=
-					    (end_of_phys_memory - memory_size);
-					end_of_phys_memory = memory_size;
-					sp_banks[++i].base_addr = 0xdeadbeef;
-					sp_banks[i].num_bytes = 0;
-				}
-			}
-		}
-		*memory_end_p = (end_of_phys_memory + KERNBASE);
-	} else
-		srmmu_end_memory(memory_size, memory_end_p);
+	phys_base = 0xffffffffUL;
+	highest_paddr = 0UL;
+	for (i = 0; sp_banks[i].num_bytes != 0; i++) {
+		unsigned long top;
+
+		if (sp_banks[i].base_addr < phys_base)
+			phys_base = sp_banks[i].base_addr;
+		top = sp_banks[i].base_addr +
+			sp_banks[i].num_bytes;
+		if (highest_paddr < top)
+			highest_paddr = top;
+	}
 
 	if (!root_flags)
 		root_mountflags &= ~MS_RDONLY;
@@ -403,38 +387,9 @@ __initfunc(void setup_arch(char **cmdline_p,
 	rd_prompt = ((ram_flags & RAMDISK_PROMPT_FLAG) != 0);
 	rd_doload = ((ram_flags & RAMDISK_LOAD_FLAG) != 0);	
 #endif
-#ifdef CONFIG_BLK_DEV_INITRD
-	if (sparc_ramdisk_image) {
-		initrd_start = sparc_ramdisk_image;
-		if (initrd_start < KERNBASE) initrd_start += KERNBASE;
-		initrd_end = initrd_start + sparc_ramdisk_size;
-		if (initrd_end > *memory_end_p) {
-			printk(KERN_CRIT "initrd extends beyond end of memory "
-		                 	 "(0x%08lx > 0x%08lx)\ndisabling initrd\n",
-		       			 initrd_end,*memory_end_p);
-			initrd_start = 0;
-		}
-		if (initrd_start >= *memory_start_p && initrd_start < *memory_start_p + 2 * PAGE_SIZE) {
-			initrd_below_start_ok = 1;
-			*memory_start_p = PAGE_ALIGN (initrd_end);
-		} else if (initrd_start && sparc_ramdisk_image < KERNBASE) {
-			switch (sparc_cpu_model) {
-			case sun4m:
-			case sun4d:
-				initrd_start -= KERNBASE;
-				initrd_end -= KERNBASE;
-				break;
-			default:
-				break;
-			};
-		}
-	}
-#endif	
+
 	prom_setsync(prom_sync_me);
 
-#ifdef CONFIG_SUN_SERIAL
-	*memory_start_p = sun_serial_setup(*memory_start_p); /* set this up ASAP */
-#endif
 	{
 #if !CONFIG_SUN_SERIAL
 		serial_console = 0;
@@ -458,6 +413,7 @@ __initfunc(void setup_arch(char **cmdline_p,
 					prom_printf("MrCoffee keyboard\n");
 				} else {
 					prom_printf("Inconsistent or unknown console\n");
+					prom_printf("You cannot mix serial and non serial input/output devices\n");
 					prom_halt();
 				}
 			}
@@ -487,16 +443,17 @@ __initfunc(void setup_arch(char **cmdline_p,
 		breakpoint();
 	}
 
-
 	/* Due to stack alignment restrictions and assumptions... */
-	init_task.mm->mmap->vm_page_prot = PAGE_SHARED;
-	init_task.mm->mmap->vm_start = KERNBASE;
-	init_task.mm->mmap->vm_end = *memory_end_p;
-	init_task.mm->context = (unsigned long) NO_CONTEXT;
-	init_task.tss.kregs = &fake_swapper_regs;
+	init_mm.mmap->vm_page_prot = PAGE_SHARED;
+	init_mm.mmap->vm_start = PAGE_OFFSET;
+	init_mm.mmap->vm_end = PAGE_OFFSET + highest_paddr;
+	init_mm.context = (unsigned long) NO_CONTEXT;
+	init_task.thread.kregs = &fake_swapper_regs;
 
 	if (serial_console)
 		conswitchp = NULL;
+
+	paging_init();
 }
 
 asmlinkage int sys_ioperm(unsigned long from, unsigned long num, int on)
@@ -521,7 +478,7 @@ int get_cpuinfo(char *buffer)
             "type\t\t: %s\n"
 	    "ncpus probed\t: %d\n"
 	    "ncpus active\t: %d\n"
-#ifndef __SMP__
+#ifndef CONFIG_SMP
             "BogoMips\t: %lu.%02lu\n"
 #endif
 	    ,
@@ -530,15 +487,15 @@ int get_cpuinfo(char *buffer)
             romvec->pv_romvers, prom_rev, romvec->pv_printrev >> 16, (short)romvec->pv_printrev,
             &cputypval,
 	    linux_num_cpus, smp_num_cpus
-#ifndef __SMP__
-	    , loops_per_jiffy/(500000/HZ), (loops_per_jiffy/(5000/HZ)) % 100
+#ifndef CONFIG_SMP
+	    , loops_per_sec/500000, (loops_per_sec/5000) % 100
 #endif
 	    );
-#ifdef __SMP__
+#ifdef CONFIG_SMP
 	len += smp_bogo_info(buffer + len);
 #endif
 	len += mmu_info(buffer + len);
-#ifdef __SMP__
+#ifdef CONFIG_SMP
 	len += smp_info(buffer + len);
 #endif
 	return len;

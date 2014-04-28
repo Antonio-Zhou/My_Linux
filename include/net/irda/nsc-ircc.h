@@ -30,7 +30,8 @@
 
 #include <linux/time.h>
 
-#include <asm/spinlock.h>
+#include <linux/spinlock.h>
+#include <linux/pm.h>
 #include <asm/io.h>
 
 /* DMA modes needed */
@@ -233,7 +234,7 @@ struct nsc_ircc_cb {
 	struct st_fifo st_fifo;    /* Info about received frames */
 	struct tx_fifo tx_fifo;    /* Info about frames to be transmitted */
 
-	struct device *netdev;     /* Yes! we are some kind of netdevice */
+	struct net_device *netdev;     /* Yes! we are some kind of netdevice */
 	struct net_device_stats stats;
 	
 	struct irlap_cb *irlap;    /* The link layer we are binded to */
@@ -253,6 +254,8 @@ struct nsc_ircc_cb {
 	__u32 flags;               /* Interface flags */
 	__u32 new_speed;
 	int index;                 /* Instance index */
+
+        struct pm_dev *dev;
 };
 
 static inline void switch_bank(int iobase, int bank)

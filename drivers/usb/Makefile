@@ -23,7 +23,7 @@ export-objs		:= usb.o input.o
 # Multipart objects.
 
 list-multi		:= usbcore.o
-usbcore-objs		:= usb.o usb-debug.o hub.o
+usbcore-objs		:= usb.o usb-debug.o usb-core.o hub.o
 
 # Optional parts of multipart objects.
 
@@ -73,7 +73,7 @@ obj-$(CONFIG_USB_PRINTER)	+= printer.o
 obj-$(CONFIG_USB_AUDIO)		+= audio.o
 obj-$(CONFIG_USB_IBMCAM)	+= ibmcam.o
 obj-$(CONFIG_USB_DC2XX)		+= dc2xx.o
-obj-$(CONFIG_USB_MDC800)	+= mdc800.o
+obj-$(CONFIG_USB_MDC800)   += mdc800.o
 obj-$(CONFIG_USB_STORAGE)	+= usb-storage.o
 obj-$(CONFIG_USB_USS720)	+= uss720.o
 obj-$(CONFIG_USB_DABUSB)	+= dabusb.o
@@ -82,9 +82,6 @@ obj-$(CONFIG_USB_OV511)		+= ov511.o
 obj-$(CONFIG_USB_PEGASUS)	+= pegasus.o
 obj-$(CONFIG_USB_RIO500)	+= rio500.o
 obj-$(CONFIG_USB_DSBR)		+= dsbr100.o
-obj-$(CONFIG_USB_MICROTEK)	+= microtek.o
-obj-$(CONFIG_USB_KAWETH)	+= kaweth.o
-obj-$(CONFIG_USB_BLUETOOTH)	+= bluetooth.o
 
 # Extract lists of the multi-part drivers.
 # The 'int-*' lists are the intermediate files used to build the multi's.

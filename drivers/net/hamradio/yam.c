@@ -70,14 +70,13 @@
 #include <linux/kernel.h>
 #include <linux/proc_fs.h>
 
+#include <linux/version.h>
+#include <asm/uaccess.h>
+#include <linux/init.h>
+
 #include <linux/yam.h>
 #include "yam9600.h"
 #include "yam1200.h"
-
-/* --------------------------------------------------------------------- */
-
-#include <asm/uaccess.h>
-#include <linux/init.h>
 
 /* --------------------------------------------------------------------- */
 
@@ -117,13 +116,13 @@ struct yam_port {
 	int iobase;
 	int irq;
 	int dupmode;
-	char name[16];
 
-	struct device dev;
+	struct net_device dev;
 
 	/* Stats section */
 
 	struct net_device_stats stats;
+
 	int nb_rxint;
 	int nb_mdint;
 
@@ -456,7 +455,7 @@ static int fpga_download(int iobase, int bitrate)
 * Serial port init 
 ************************************************************************/
 
-static void yam_set_uart(struct device *dev)
+static void yam_set_uart(struct net_device *dev)
 {
 	struct yam_port *yp = (struct yam_port *) dev->priv;
 	int divisor = 115200 / yp->baudrate;
@@ -525,7 +524,7 @@ static enum uart yam_check_uart(unsigned int iobase)
 * Rx Section
 ******************************************************************************/
 static void inline
- yam_rx_flag(struct device *dev, struct yam_port *yp)
+ yam_rx_flag(struct net_device *dev, struct yam_port *yp)
 {
 	if (yp->dcd && yp->rx_len >= 3 && yp->rx_len < YAM_MAX_FRAME) {
 		int pkt_len = yp->rx_len - 2 + 1;	/* -CRC + kiss */
@@ -556,7 +555,7 @@ static void inline
 }
 
 static void inline
- yam_rx_byte(struct device *dev, struct yam_port *yp, unsigned char rxb)
+ yam_rx_byte(struct net_device *dev, struct yam_port *yp, unsigned char rxb)
 {
 	if (yp->rx_len < YAM_MAX_FRAME) {
 		unsigned char c = yp->rx_crcl;
@@ -570,17 +569,17 @@ static void inline
 * TX Section
 ********************************************************************************/
 
-static void ptt_on(struct device *dev)
+static void ptt_on(struct net_device *dev)
 {
 	outb(PTT_ON, MCR(dev->base_addr));
 }
 
-static void ptt_off(struct device *dev)
+static void ptt_off(struct net_device *dev)
 {
 	outb(PTT_OFF, MCR(dev->base_addr));
 }
 
-static int yam_send_packet(struct sk_buff *skb, struct device *dev)
+static int yam_send_packet(struct sk_buff *skb, struct net_device *dev)
 {
 	struct yam_port *yp = dev->priv;
 
@@ -592,7 +591,7 @@ static int yam_send_packet(struct sk_buff *skb, struct device *dev)
 	return 0;
 }
 
-static void yam_start_tx(struct device *dev, struct yam_port *yp)
+static void yam_start_tx(struct net_device *dev, struct yam_port *yp)
 {
 	if ((yp->tx_state == TX_TAIL) || (yp->txd == 0))
 		yp->tx_count = 1;
@@ -610,7 +609,7 @@ static inline unsigned short random_num(void)
 	return random_seed;
 }
 
-static void yam_arbitrate(struct device *dev)
+static void yam_arbitrate(struct net_device *dev)
 {
 	struct yam_port *yp = dev->priv;
 
@@ -648,15 +647,15 @@ static void yam_dotimer(unsigned long dummy)
 	int i;
 
 	for (i = 0; i < NR_PORTS; i++) {
-		struct device *dev = &yam_ports[i].dev;
-		if (dev->start)
+		struct net_device *dev = &yam_ports[i].dev;
+		if (netif_running(dev))
 			yam_arbitrate(dev);
 	}
 	yam_timer.expires = jiffies + HZ / 100;
 	add_timer(&yam_timer);
 }
 
-static void yam_tx_byte(struct device *dev, struct yam_port *yp)
+static void yam_tx_byte(struct net_device *dev, struct yam_port *yp)
 {
 	struct sk_buff *skb;
 	unsigned char b, temp;
@@ -736,7 +735,7 @@ static void yam_tx_byte(struct device *dev, struct yam_port *yp)
 
 static void yam_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 {
-	struct device *dev;
+	struct net_device *dev;
 	struct yam_port *yp;
 	unsigned char iir;
 	int counter = 100;
@@ -748,7 +747,7 @@ static void yam_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 		yp = &yam_ports[i];
 		dev = &yp->dev;
 
-		if (!dev->start)
+		if (!netif_running(dev))
 			continue;
 
 		while ((iir = IIR_MASK & inb(IIR(dev->base_addr))) != IIR_NOPEND) {
@@ -781,7 +780,7 @@ static void yam_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 	}
 }
 
-static int yam_net_get_info(char *buffer, char **start, off_t offset, int length, int dummy)
+static int yam_net_get_info(char *buffer, char **start, off_t offset, int length)
 {
 	int len = 0;
 	int i;
@@ -793,8 +792,8 @@ static int yam_net_get_info(char *buffer, char **start, off_t offset, int length
 	for (i = 0; i < NR_PORTS; i++) {
 		if (yam_ports[i].iobase == 0 || yam_ports[i].irq == 0)
 			continue;
-		len += sprintf(buffer + len, "Device %s\n", yam_ports[i].name);
-		len += sprintf(buffer + len, "  Up       %d\n", yam_ports[i].dev.start);
+		len += sprintf(buffer + len, "Device yam%d\n", i);
+		len += sprintf(buffer + len, "  Up       %d\n", netif_running(&yam_ports[i].dev));
 		len += sprintf(buffer + len, "  Speed    %u\n", yam_ports[i].bitrate);
 		len += sprintf(buffer + len, "  IoBase   0x%x\n", yam_ports[i].iobase);
 		len += sprintf(buffer + len, "  BaudRate %u\n", yam_ports[i].baudrate);
@@ -835,33 +834,21 @@ static int yam_net_get_info(char *buffer, char **start, off_t offset, int length
 }
 
 #ifdef CONFIG_INET
-
-#ifndef PROC_NET_YAM
-#define PROC_NET_YAM (PROC_NET_LAST+10)		/* Sorry again... */
-#endif
-
 #ifdef CONFIG_PROC_FS
-struct proc_dir_entry yam_proc_dir_entry =
-{
-	PROC_NET_YAM, 3, "yam", S_IFREG | S_IRUGO, 1, 0, 0, 0,
-	&proc_net_inode_operations, yam_net_get_info
-};
-
-#define yam_net_procfs_init()   proc_net_register(&yam_proc_dir_entry);
-#define yam_net_procfs_remove() proc_net_unregister(PROC_NET_YAM);
+#define yam_net_procfs_init() proc_net_create("yam",0,yam_net_get_info)
+#define yam_net_procfs_remove() proc_net_remove("yam")
 #else
 #define yam_net_procfs_init()
 #define yam_net_procfs_remove()
-#endif
+#endif /* CONFIG_PROC_FS */
 #else
 #define yam_net_procfs_init()
 #define yam_net_procfs_remove()
-#endif
+#endif /* CONFIG_INET */
 
 /* --------------------------------------------------------------------- */
 
-static struct net_device_stats *
- yam_get_stats(struct device *dev)
+static struct net_device_stats *yam_get_stats(struct net_device *dev)
 {
 	struct yam_port *yp;
 
@@ -881,7 +868,7 @@ static struct net_device_stats *
 
 /* --------------------------------------------------------------------- */
 
-static int yam_open(struct device *dev)
+static int yam_open(struct net_device *dev)
 {
 	struct yam_port *yp = (struct yam_port *) dev->priv;
 	enum uart u;
@@ -915,7 +902,9 @@ static int yam_open(struct device *dev)
 	request_region(dev->base_addr, YAM_EXTENT, dev->name);
 
 	yam_set_uart(dev);
-	dev->start = 1;
+
+	netif_start_queue(dev);
+	
 	yp->slotcnt = yp->slot / 10;
 
 	/* Reset overruns for all ports - FPGA programming makes overruns */
@@ -932,7 +921,7 @@ static int yam_open(struct device *dev)
 
 /* --------------------------------------------------------------------- */
 
-static int yam_close(struct device *dev)
+static int yam_close(struct net_device *dev)
 {
 	struct sk_buff *skb;
 	struct yam_port *yp = (struct yam_port *) dev->priv;
@@ -947,8 +936,7 @@ static int yam_close(struct device *dev)
 	/* Remove IRQ handler if last */
 	free_irq(dev->irq, NULL);
 	release_region(dev->base_addr, YAM_EXTENT);
-	dev->start = 0;
-	dev->tbusy = 1;
+	netif_stop_queue(dev);
 	while ((skb = skb_dequeue(&yp->send_queue)))
 		dev_kfree_skb(skb);
 
@@ -960,7 +948,7 @@ static int yam_close(struct device *dev)
 
 /* --------------------------------------------------------------------- */
 
-static int yam_ioctl(struct device *dev, struct ifreq *ifr, int cmd)
+static int yam_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 {
 	struct yam_port *yp = (struct yam_port *) dev->priv;
 	struct yamdrv_ioctl_cfg yi;
@@ -973,7 +961,7 @@ static int yam_ioctl(struct device *dev, struct ifreq *ifr, int cmd)
 	if (yp == NULL || yp->magic != YAM_MAGIC)
 		return -EINVAL;
 
-	if (!suser())
+	if (!capable(CAP_NET_ADMIN))
 		return -EPERM;
 
 	if (cmd != SIOCDEVPRIVATE)
@@ -985,9 +973,11 @@ static int yam_ioctl(struct device *dev, struct ifreq *ifr, int cmd)
 		return -EINVAL;			/* unused */
 
 	case SIOCYAMSMCS:
-		if (dev->start)
+		if (netif_running(dev))
 			return -EINVAL;		/* Cannot change this parameter when up */
 		ym = kmalloc(sizeof(struct yamdrv_ioctl_mcs), GFP_ATOMIC);
+		if(ym==NULL)
+			return -ENOBUFS;
 		ym->bitrate = 9600;
 		if (copy_from_user(ym, ifr->ifr_data, sizeof(struct yamdrv_ioctl_mcs)))
 			 return -EFAULT;
@@ -998,16 +988,18 @@ static int yam_ioctl(struct device *dev, struct ifreq *ifr, int cmd)
 		break;
 
 	case SIOCYAMSCFG:
+		if (!capable(CAP_SYS_RAWIO))
+			return -EPERM;
 		if (copy_from_user(&yi, ifr->ifr_data, sizeof(struct yamdrv_ioctl_cfg)))
 			 return -EFAULT;
 
-		if ((yi.cfg.mask & YAM_IOBASE) && dev->start)
+		if ((yi.cfg.mask & YAM_IOBASE) && netif_running(dev))
 			return -EINVAL;		/* Cannot change this parameter when up */
-		if ((yi.cfg.mask & YAM_IRQ) && dev->start)
+		if ((yi.cfg.mask & YAM_IRQ) && netif_running(dev))
 			return -EINVAL;		/* Cannot change this parameter when up */
-		if ((yi.cfg.mask & YAM_BITRATE) && dev->start)
+		if ((yi.cfg.mask & YAM_BITRATE) && netif_running(dev))
 			return -EINVAL;		/* Cannot change this parameter when up */
-		if ((yi.cfg.mask & YAM_BAUDRATE) && dev->start)
+		if ((yi.cfg.mask & YAM_BAUDRATE) && netif_running(dev))
 			return -EINVAL;		/* Cannot change this parameter when up */
 
 		if (yi.cfg.mask & YAM_IOBASE) {
@@ -1089,7 +1081,7 @@ static int yam_ioctl(struct device *dev, struct ifreq *ifr, int cmd)
 
 /* --------------------------------------------------------------------- */
 
-static int yam_set_mac_address(struct device *dev, void *addr)
+static int yam_set_mac_address(struct net_device *dev, void *addr)
 {
 	struct sockaddr *sa = (struct sockaddr *) addr;
 
@@ -1100,7 +1092,7 @@ static int yam_set_mac_address(struct device *dev, void *addr)
 
 /* --------------------------------------------------------------------- */
 
-static int yam_probe(struct device *dev)
+static int yam_probe(struct net_device *dev)
 {
 	struct yam_port *yp;
 
@@ -1143,8 +1135,9 @@ static int yam_probe(struct device *dev)
 
 /* --------------------------------------------------------------------- */
 
-__initfunc(int yam_init(struct device *dev))
+int __init yam_init(void)
 {
+	struct net_device *dev;
 	int i;
 
 	printk(yam_drvinfo);
@@ -1154,7 +1147,7 @@ __initfunc(int yam_init(struct device *dev))
 	memset(yam_ports, 0, sizeof(yam_ports));
 
 	for (i = 0; i < NR_PORTS; i++) {
-		sprintf(yam_ports[i].name, "yam%d", i);
+		sprintf(yam_ports[i].dev.name, "yam%d", i);
 		yam_ports[i].magic = YAM_MAGIC;
 		yam_ports[i].bitrate = DEFAULT_BITRATE;
 		yam_ports[i].baudrate = DEFAULT_BITRATE * 2;
@@ -1170,13 +1163,10 @@ __initfunc(int yam_init(struct device *dev))
 		dev = &yam_ports[i].dev;
 
 		dev->priv = &yam_ports[i];
-		dev->name = yam_ports[i].name;
 		dev->base_addr = yam_ports[i].iobase;
 		dev->irq = yam_ports[i].irq;
 		dev->init = yam_probe;
 		dev->if_port = 0;
-		dev->start = 0;
-		dev->tbusy = 1;
 
 		if (register_netdev(dev)) {
 			printk(KERN_WARNING "yam: cannot register net  device %s\n", dev->name);
@@ -1189,8 +1179,6 @@ __initfunc(int yam_init(struct device *dev))
 	add_timer(&yam_timer);
 
 	yam_net_procfs_init();
-
-	/* do not keep this device */
 	return 1;
 }
 
@@ -1202,12 +1190,13 @@ __initfunc(int yam_init(struct device *dev))
  * command line settable parameters
  */
 
+
 MODULE_AUTHOR("Frederic Rible F1OAT frible@teaser.fr");
 MODULE_DESCRIPTION("Yam amateur radio modem driver");
 
-__initfunc(int init_module(void))
+int init_module(void)
 {
-	int ret = yam_init(NULL);
+	int ret = yam_init();
 
 	return (ret == 1) ? 0 : ret;
 }
@@ -1220,10 +1209,10 @@ void cleanup_module(void)
 
 	del_timer(&yam_timer);
 	for (i = 0; i < NR_PORTS; i++) {
-		struct device *dev = &yam_ports[i].dev;
+		struct net_device *dev = &yam_ports[i].dev;
 		if (!dev->priv)
 			continue;
-		if (dev->start)
+		if (netif_running(dev))
 			yam_close(dev);
 		unregister_netdev(dev);
 	}

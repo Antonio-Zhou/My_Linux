@@ -70,9 +70,15 @@ typedef struct {
 	long			pgrp;
 	unsigned int		rxmarkmsk;
 	struct tty_struct	*tty;
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,3,0))
 	struct wait_queue	*open_wait;
 	struct wait_queue	*close_wait;
 	struct wait_queue	*raw_wait;
+#else
+	wait_queue_head_t	open_wait;
+	wait_queue_head_t	close_wait;
+	wait_queue_head_t	raw_wait;
+#endif
 	struct tq_struct	tqhangup;
 	struct termios		normaltermios;
 	struct termios		callouttermios;

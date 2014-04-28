@@ -6,7 +6,7 @@
  * Status:        Experimental.
  * Author:        Dag Brattli <dagb@cs.uit.no>
  * Created at:    Tue Apr 14 12:41:42 1998
- * Modified at:   Fri Jan 14 10:46:56 2000
+ * Modified at:   Mon Mar 20 09:08:57 2000
  * Modified by:   Dag Brattli <dagb@cs.uit.no>
  * 
  *     Copyright (c) 1999-2000 Dag Brattli, All Rights Reserved.
@@ -34,7 +34,7 @@
 
 #include <linux/tty.h>
 #include <linux/netdevice.h>
-#include <asm/spinlock.h>
+#include <linux/spinlock.h>
 #include <linux/irda.h>
 
 #include <net/irda/irda.h>
@@ -73,18 +73,18 @@ typedef enum {
 	IRDA_TASK_CHILD_INIT,  /* Initializing child task */
 	IRDA_TASK_CHILD_WAIT,  /* Waiting for child task to finish */
 	IRDA_TASK_CHILD_DONE   /* Child task is finished */
-} TASK_STATE;
+} IRDA_TASK_STATE;
 
 struct irda_task;
-typedef int (*TASK_CALLBACK) (struct irda_task *task);
+typedef int (*IRDA_TASK_CALLBACK) (struct irda_task *task);
 
 struct irda_task {
 	queue_t q;
 	magic_t magic;
 
-	TASK_STATE state;
-	TASK_CALLBACK function;
-	TASK_CALLBACK finished;
+	IRDA_TASK_STATE state;
+	IRDA_TASK_CALLBACK function;
+	IRDA_TASK_CALLBACK finished;
 
 	struct irda_task *parent;
 	struct timer_list timer;
@@ -97,16 +97,16 @@ struct irda_task {
 struct dongle_reg;
 typedef struct {
 	struct dongle_reg *issue;     /* Registration info */
-	struct device *dev;           /* Device we are attached to */
+	struct net_device *dev;           /* Device we are attached to */
 	struct irda_task *speed_task; /* Task handling speed change */
 	struct irda_task *reset_task; /* Task handling reset */
 	__u32 speed;                  /* Current speed */
 
 	/* Callbacks to the IrDA device driver */
-	int (*set_mode)(struct device *, int mode);
-	int (*read)(struct device *dev, __u8 *buf, int len);
-	int (*write)(struct device *dev, __u8 *buf, int len);
-	int (*set_dtr_rts)(struct device *dev, int dtr, int rts);
+	int (*set_mode)(struct net_device *, int mode);
+	int (*read)(struct net_device *dev, __u8 *buf, int len);
+	int (*write)(struct net_device *dev, __u8 *buf, int len);
+	int (*set_dtr_rts)(struct net_device *dev, int dtr, int rts);
 } dongle_t;
 
 /* Dongle registration info */
@@ -159,31 +159,32 @@ int  irda_device_init(void);
 void irda_device_cleanup(void);
 
 /* Interface to be uses by IrLAP */
-void irda_device_set_media_busy(struct device *dev, int status);
-int  irda_device_is_media_busy(struct device *dev);
-int  irda_device_is_receiving(struct device *dev);
+void irda_device_set_media_busy(struct net_device *dev, int status);
+int  irda_device_is_media_busy(struct net_device *dev);
+int  irda_device_is_receiving(struct net_device *dev);
 
 /* Interface for internal use */
-int  irda_device_txqueue_empty(struct device *dev);
-int  irda_device_set_raw_mode(struct device* self, int status);
-int  irda_device_set_dtr_rts(struct device *dev, int dtr, int rts);
-int  irda_device_change_speed(struct device *dev, __u32 speed);
-int  irda_device_setup(struct device *dev);
+int  irda_device_txqueue_empty(struct net_device *dev);
+int  irda_device_set_raw_mode(struct net_device* self, int status);
+int  irda_device_set_dtr_rts(struct net_device *dev, int dtr, int rts);
+int  irda_device_change_speed(struct net_device *dev, __u32 speed);
+int  irda_device_setup(struct net_device *dev);
 
 /* Dongle interface */
 void irda_device_unregister_dongle(struct dongle_reg *dongle);
 int  irda_device_register_dongle(struct dongle_reg *dongle);
-dongle_t *irda_device_dongle_init(struct device *dev, int type);
+dongle_t *irda_device_dongle_init(struct net_device *dev, int type);
 int irda_device_dongle_cleanup(dongle_t *dongle);
 
 void setup_dma(int channel, char *buffer, int count, int mode);
 
 void irda_task_delete(struct irda_task *task);
 int  irda_task_kick(struct irda_task *task);
-struct irda_task *irda_task_execute(void *instance, TASK_CALLBACK function, 
-				    TASK_CALLBACK finished, 
+struct irda_task *irda_task_execute(void *instance, 
+				    IRDA_TASK_CALLBACK function, 
+				    IRDA_TASK_CALLBACK finished, 
 				    struct irda_task *parent, void *param);
-void irda_task_next_state(struct irda_task *task, TASK_STATE state);
+void irda_task_next_state(struct irda_task *task, IRDA_TASK_STATE state);
 
 extern const char *infrared_mode[];
 

@@ -6,7 +6,7 @@
 HEAD		 = head.o
 OBJS		 = misc.o
 SYSTEM		 = $(TOPDIR)/vmlinux
-CFLAGS		 = -O2 -DSTDC_HEADERS $(CFLAGS_PROC)
+CFLAGS		 = $(CPPFLAGS) -O2 -DSTDC_HEADERS $(CFLAGS_PROC)
 FONTC		 = $(TOPDIR)/drivers/video/font_acorn_8x8.c
 ZLDFLAGS	 = -p -X -T vmlinux.lds
 
@@ -25,6 +25,10 @@ ifeq ($(CONFIG_ARCH_RPC),y)
 ZTEXTADDR	 = 0x10008000
 endif
 
+ifeq ($(CONFIG_ARCH_CLPS7500),y)
+ZTEXTADDR	 = 0x10008000
+endif
+
 ifeq ($(CONFIG_ARCH_EBSA110),y)
 ZTEXTADDR	 = 0x00008000
 endif
@@ -39,20 +43,24 @@ endif
 
 ifeq ($(CONFIG_ARCH_NEXUSPCI),y)
 HEAD		 = head-nexuspci.o
-OBJS		+= $(TOPDIR)/arch/arm/lib/ll_char_wr_scc.o
 ZTEXTADDR	 = 0x40200000
 ZRELADDR	 = 0x40008000
 endif
 
 ifeq ($(CONFIG_ARCH_SA1100),y)
 OBJS		+= head-sa1100.o
-ifeq ($(CONFIG_SA1100_VICTOR),y)
-ZTEXTADDR	 = 0x00002000
-ZBSSADDR	 = 0xc0100000
-else
 ZTEXTADDR	 = 0xc0008000
-endif
 ZRELADDR	 = 0xc0008000
+ifeq ($(CONFIG_SA1100_VICTOR),y)
+  ZTEXTADDR	 = 0x00002000
+  ZBSSADDR	 = 0xc0100000
+endif
+ifeq ($(CONFIG_SA1100_THINCLIENT),y)
+  ZTEXTADDR	 = 0xC0200000
+endif
+ifeq ($(CONFIG_SA1100_GRAPHICSCLIENT),y)
+  ZTEXTADDR	 = 0xC0200000
+endif
 endif
 
 #
@@ -74,7 +82,7 @@ endif
 all:		vmlinux
 
 vmlinux:	$(HEAD) $(OBJS) piggy.o vmlinux.lds
-		$(LD) $(ZLDFLAGS) $(HEAD) $(OBJS) piggy.o $(GCCLIB) -o vmlinux
+		$(LD) $(ZLDFLAGS) $(HEAD) $(OBJS) piggy.o $(LIBGCC) -o vmlinux
 
 $(HEAD): 	$(HEAD:.o=.S)
 		$(CC) $(AFLAGS) -traditional -c $(HEAD:.o=.S)

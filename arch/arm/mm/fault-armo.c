@@ -29,54 +29,6 @@
 
 #include "fault-common.c"
 
-static void *alloc_table(int size, int prio)
-{
-	if (size != 128)
-		printk("invalid table size\n");
-	return (void *)get_page_8k(prio);
-}
-
-void free_table(void *table)
-{
-	free_page_8k((unsigned long)table);
-}
-
-pgd_t *get_pgd_slow(void)
-{
-	pgd_t *pgd = (pgd_t *)alloc_table(PTRS_PER_PGD * BYTES_PER_PTR, GFP_KERNEL);
-	pgd_t *init;
-
-	if (pgd) {
-		init = pgd_offset(&init_mm, 0);
-		memzero(pgd, USER_PTRS_PER_PGD * BYTES_PER_PTR);
-		memcpy(pgd + USER_PTRS_PER_PGD, init + USER_PTRS_PER_PGD,
-			(PTRS_PER_PGD - USER_PTRS_PER_PGD) * BYTES_PER_PTR);
-	}
-	return pgd;
-}
-
-pte_t *get_pte_slow(pmd_t *pmd, unsigned long offset)
-{
-	pte_t *pte;
-
-	pte = (pte_t *)alloc_table(PTRS_PER_PTE * BYTES_PER_PTR, GFP_KERNEL);
-	if (pmd_none(*pmd)) {
-		if (pte) {
-			memzero(pte, PTRS_PER_PTE * BYTES_PER_PTR);
-			set_pmd(pmd, mk_pmd(pte));
-			return pte + offset;
-		}
-		set_pmd(pmd, mk_pmd(BAD_PAGETABLE));
-		return NULL;
-	}
-	free_table((void *)pte);
-	if (pmd_bad(*pmd)) {
-		__bad_pmd(pmd);
-		return NULL;
-	}
-	return (pte_t *) pmd_page(*pmd) + offset;
-}
-
 /*
  * Handle a data abort.  Note that we have to handle a range of addresses
  * on ARM2/3 for ldm.  If both pages are zero-mapped, then we have to force

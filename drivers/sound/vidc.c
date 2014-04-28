@@ -13,6 +13,8 @@
  * We currently support a mixer device, but it is currently non-functional.
  */
 
+#include <linux/config.h>
+#include <linux/init.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 
@@ -77,11 +79,12 @@ static unsigned int	vidc_audio_volume_r;	/* right PCM vol, 0 - 65536 */
 static void	(*old_mksound)(unsigned int hz, unsigned int ticks);
 extern void	(*kd_mksound)(unsigned int hz, unsigned int ticks);
 extern void	vidc_update_filler(int bits, int channels);
+extern int	softoss_dev;
 
 static void
 vidc_mksound(unsigned int hz, unsigned int ticks)
 {
-
+//	printk("BEEP - %d %d!\n", hz, ticks);
 }
 
 static void
@@ -109,7 +112,7 @@ vidc_mixer_set(int mdev, unsigned int level)
 
 		vidc_audio_volume_l = SCALE(lev_l, mlev_l);
 		vidc_audio_volume_r = SCALE(lev_r, mlev_r);
-
+/*printk("VIDC: PCM vol %05X %05X\n", vidc_audio_volume_l, vidc_audio_volume_r);*/
 		break;
 	}
 #undef SCALE
@@ -169,12 +172,6 @@ static int vidc_mixer_ioctl(int dev, unsigned int cmd, caddr_t arg)
 	return put_user(val, (unsigned int *)arg) ? -EFAULT : 0;
 }
 
-static struct mixer_operations vidc_mixer_operations = {
-	"VIDC",
-	"VIDCsound",
-	vidc_mixer_ioctl	/* ioctl                */
-};
-
 static unsigned int vidc_audio_set_format(int dev, unsigned int fmt)
 {
 	switch (fmt) {
@@ -224,8 +221,8 @@ static int vidc_audio_set_speed(int dev, int rate)
 		if (newsize > 4096)
 			newsize = 4096;
 		for (new2size = 128; new2size < newsize; new2size <<= 1);
-		if (new2size - newsize > newsize - (new2size >> 1))
-			new2size >>= 1;
+			if (new2size - newsize > newsize - (new2size >> 1))
+				new2size >>= 1;
 		if (new2size > 4096) {
 			printk(KERN_ERR "VIDC: error: dma buffer (%d) %d > 4K\n",
 				newsize, new2size);
@@ -364,25 +361,24 @@ static void vidc_audio_trigger(int dev, int enable_bits)
 
 static struct audio_driver vidc_audio_driver =
 {
-	vidc_audio_open,		/* open 		*/
-	vidc_audio_close,		/* close		*/
-	vidc_audio_output_block,	/* output_block 	*/
-	vidc_audio_start_input, 	/* start_input		*/
-	NULL,				/* ioctl		*/
-	vidc_audio_prepare_for_input,	/* prepare_for_input	*/
-	vidc_audio_prepare_for_output,	/* prepare_for_output	*/
-	vidc_audio_reset,		/* halt_io		*/
-	vidc_audio_local_qlen,		/* local_qlen		*/
-	NULL,				/* copy_user		*/
-	NULL,				/* halt_input		*/
-	NULL,				/* halt_output		*/
-	vidc_audio_trigger,		/* trigger		*/
-	vidc_audio_set_speed,		/* set_speed		*/
-	vidc_audio_set_format,		/* set_bits		*/
-	vidc_audio_set_channels,	/* set_channels 	*/
-	NULL,				/* postprocess_write	*/
-	NULL,				/* postprocess_read	*/
-	NULL				/* mmap			*/
+	open:			vidc_audio_open,
+	close:			vidc_audio_close,
+	output_block:		vidc_audio_output_block,
+	start_input:		vidc_audio_start_input,
+	prepare_for_input:	vidc_audio_prepare_for_input,
+	prepare_for_output:	vidc_audio_prepare_for_output,
+	halt_io:		vidc_audio_reset,
+	local_qlen:		vidc_audio_local_qlen,
+	trigger:		vidc_audio_trigger,
+	set_speed:		vidc_audio_set_speed,
+	set_bits:		vidc_audio_set_format,
+	set_channels:		vidc_audio_set_channels
+};
+
+static struct mixer_operations vidc_mixer_operations = {
+	id:		"VIDC",
+	name:		"VIDCsound",
+	ioctl:		vidc_mixer_ioctl
 };
 
 void vidc_update_filler(int format, int channels)
@@ -417,7 +413,7 @@ void vidc_update_filler(int format, int channels)
 	}
 }
 
-void attach_vidc(struct address_info *hw_config)
+static void __init attach_vidc(struct address_info *hw_config)
 {
 	char name[32];
 	int i, adev;
@@ -455,7 +451,7 @@ void attach_vidc(struct address_info *hw_config)
 				name);
 			goto mem_failed;
 		}
-		dma_pbuf[i] = virt_to_phys(dma_buf[i]);
+		dma_pbuf[i] = virt_to_phys((void *)dma_buf[i]);
 	}
 
 	if (sound_alloc_dma(hw_config->dma, hw_config->name)) {
@@ -472,6 +468,10 @@ void attach_vidc(struct address_info *hw_config)
 	kd_mksound = vidc_mksound;
 	vidc_adev = adev;
 	vidc_mixer_set(SOUND_MIXER_VOLUME, (85 | 85 << 8));
+
+#if defined(CONFIG_SOUND_SOFTOSS) || defined(CONFIG_SOUND_SOFTOSS_MODULE)
+	softoss_dev = adev;
+#endif
 	return;
 
 irq_failed:
@@ -487,7 +487,7 @@ audio_failed:
 	return;
 }
 
-int probe_vidc(struct address_info *hw_config)
+static int __init probe_vidc(struct address_info *hw_config)
 {
 	hw_config->irq		= IRQ_DMAS0;
 	hw_config->dma		= DMA_VIRTUAL_SOUND;
@@ -497,7 +497,7 @@ int probe_vidc(struct address_info *hw_config)
 	return 1;
 }
 
-void unload_vidc(struct address_info *hw_config)
+static void __exit unload_vidc(struct address_info *hw_config)
 {
 	int i, adev = vidc_adev;
 
@@ -517,27 +517,27 @@ void unload_vidc(struct address_info *hw_config)
 	}
 }
 
-#ifdef MODULE
-static struct address_info config;
+static struct address_info cfg;
 /*
  * Note! Module use count is handled by SOUNDLOCK/SOUND_LOCK_END
  */
 
-int init_module(void)
+static int __init init_vidc(void)
 {
-	if (probe_vidc(&config) == 0)
+	if (probe_vidc(&cfg) == 0)
 		return -ENODEV;
 
 	SOUND_LOCK;
-	attach_vidc(&config);
+	attach_vidc(&cfg);
 
 	return 0;
 }
 
-void cleanup_module(void)
+static void __exit cleanup_vidc(void)
 {
-	unload_vidc(&config);
+	unload_vidc(&cfg);
 	SOUND_LOCK_END;
 }
 
-#endif
+module_init(init_vidc);
+module_exit(cleanup_vidc);

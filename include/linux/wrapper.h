@@ -5,7 +5,6 @@
 #define inode_handle struct inode
 #define select_table_handle select_table
 #define vm_area_handle struct vm_area_struct
-#define file_operation_handle file_operations
 
 #define connect_wrapper(x) 0
 #define current_got_fatal_signal() (signal_pending(current))
@@ -28,7 +27,7 @@
 
 #define vma_set_inode(v,i) v->vm_inode = i
 #define vma_get_flags(v) v->vm_flags
-#define vma_get_offset(v) v->vm_offset
+#define vma_get_pgoff(v) v->vm_pgoff
 #define vma_get_start(v) v->vm_start
 #define vma_get_end(v) v->vm_end
 #define vma_get_page_prot(v) v->vm_page_prot

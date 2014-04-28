@@ -32,13 +32,12 @@
 #ifdef CONFIG_BLK_DEV_RAM
 #include <linux/blk.h>
 #endif
+#include <linux/bootmem.h>
 #include <linux/console.h>
 #include <asm/uaccess.h>
 #include <asm/system.h>
 #include <asm/smp.h>
-#include "cpcmd.h"
-
-extern void reipl(int ipl_device);
+#include <asm/mmu_context.h>
 
 /*
  * Machine setup..
@@ -46,7 +45,6 @@ extern void reipl(int ipl_device);
 __u16 boot_cpu_addr;
 int cpus_initialized = 0;
 unsigned long cpu_initialized = 0;
-volatile int __cpu_logical_map[NR_CPUS]; /* logical cpu to cpu address */
 
 /*
  * Setup options
@@ -59,7 +57,7 @@ extern int rd_image_start;             /* starting block # of image        */
 #endif
 
 extern int root_mountflags;
-extern int _etext, _edata, _end;
+extern int _text,_etext, _edata, _end;
 
 
 /*
@@ -73,13 +71,15 @@ extern int _etext, _edata, _end;
 static char command_line[COMMAND_LINE_SIZE] = { 0, };
        char saved_command_line[COMMAND_LINE_SIZE];
 
+static struct resource code_resource = { "Kernel code", 0x100000, 0 };
+static struct resource data_resource = { "Kernel data", 0, 0 };
+
 /*
  * cpu_init() initializes state that is per-CPU.
  */
-void cpu_init (void)
+void __init cpu_init (void)
 {
         int nr = smp_processor_id();
-        int addr = hard_smp_processor_id();
 
         if (test_and_set_bit(nr,&cpu_initialized)) {
                 printk("CPU#%d ALREADY INITIALIZED!!!!!!!!!\n", nr);
@@ -91,7 +91,7 @@ void cpu_init (void)
          * Store processor id in lowcore (used e.g. in timer_interrupt)
          */
         asm volatile ("stidp %0": "=m" (S390_lowcore.cpu_data.cpu_id));
-        S390_lowcore.cpu_data.cpu_addr = addr;
+        S390_lowcore.cpu_data.cpu_addr = hard_smp_processor_id();
         S390_lowcore.cpu_data.cpu_nr = nr;
 
         /*
@@ -99,6 +99,13 @@ void cpu_init (void)
          */
         current->flags &= ~PF_USEDFPU;
         current->used_math = 0;
+
+        /* Setup active_mm for idle_task  */
+        atomic_inc(&init_mm.mm_count);
+        current->active_mm = &init_mm;
+        if (current->mm)
+                BUG();
+        enter_lazy_tlb(&init_mm, current, nr);
 }
 
 /*
@@ -119,19 +126,23 @@ static inline void strncpy_skip_quote(char *dst, char *src, int n)
         }
 }
 
-__initfunc(void vmhalt_setup(char *str, char *ints))
+static int __init vmhalt_setup(char *str)
 {
         strncpy_skip_quote(vmhalt_cmd, str, 127);
         vmhalt_cmd[127] = 0;
-        return;
+        return 1;
 }
 
-__initfunc(void vmpoff_setup(char *str, char *ints))
+__setup("vmhalt=", vmhalt_setup);
+
+static int __init vmpoff_setup(char *str)
 {
         strncpy_skip_quote(vmpoff_cmd, str, 127);
         vmpoff_cmd[127] = 0;
-        return;
+        return 1;
 }
+
+__setup("vmpoff=", vmpoff_setup);
 
 /*
  * Reboot, halt and power_off routines for non SMP.
@@ -140,21 +151,21 @@ __initfunc(void vmpoff_setup(char *str, char *ints))
 #ifndef CONFIG_SMP
 void machine_restart(char * __unused)
 {
-        reipl(S390_lowcore.ipl_device); 
+	reipl(S390_lowcore.ipl_device);
 }
 
 void machine_halt(void)
 {
-        if (MACHINE_IS_VM && strlen(vmhalt_cmd) > 0) 
+        if (MACHINE_IS_VM && strlen(vmhalt_cmd) > 0)
                 cpcmd(vmhalt_cmd, NULL, 0);
-        signal_processor(smp_processor_id(), sigp_stop_and_store_status);
+        disabled_wait(0);
 }
 
 void machine_power_off(void)
 {
         if (MACHINE_IS_VM && strlen(vmpoff_cmd) > 0)
                 cpcmd(vmpoff_cmd, NULL, 0);
-        signal_processor(smp_processor_id(), sigp_stop_and_store_status);
+        disabled_wait(0);
 }
 #endif
 
@@ -177,12 +188,16 @@ void tod_wait(unsigned long delay)
  * Setup function called from init/main.c just after the banner
  * was printed.
  */
-__initfunc(void setup_arch(char **cmdline_p,
-        unsigned long * memory_start_p, unsigned long * memory_end_p))
+void __init setup_arch(char **cmdline_p)
 {
-        static unsigned int smptrap = 0;
+        unsigned long bootmap_size;
         unsigned long memory_start, memory_end;
-        char c, cn, *to, *from;
+        char c = ' ', *to = command_line, *from = COMMAND_LINE;
+	struct resource *res;
+	unsigned long start_pfn, end_pfn;
+        static unsigned int smptrap=0;
+        unsigned long delay = 0;
+        int len = 0;
 
         if (smptrap)
                 return;
@@ -195,19 +210,16 @@ __initfunc(void setup_arch(char **cmdline_p,
          */
         cpu_init();
         boot_cpu_addr = S390_lowcore.cpu_data.cpu_addr;
-        __cpu_logical_map[0] = boot_cpu_addr;
 
         /*
          * print what head.S has found out about the machine 
          */
-        if (MACHINE_IS_VM)
-                printk("We are running under VM\n");
-        else
-                printk("We are running native\n");
-        if (MACHINE_HAS_IEEE)
-                printk("This machine has an IEEE fpu\n");
-        else
-                printk("This machine has no IEEE fpu\n");
+	printk((MACHINE_IS_VM) ?
+	       "We are running under VM\n" :
+	       "We are running native\n");
+	printk((MACHINE_HAS_IEEE) ?
+	       "This machine has an IEEE fpu\n" :
+	       "This machine has no IEEE fpu\n");
 
         ROOT_DEV = to_kdev_t(ORIG_ROOT_DEV);
 #ifdef CONFIG_BLK_DEV_RAM
@@ -215,33 +227,32 @@ __initfunc(void setup_arch(char **cmdline_p,
         rd_prompt = ((RAMDISK_FLAGS & RAMDISK_PROMPT_FLAG) != 0);
         rd_doload = ((RAMDISK_FLAGS & RAMDISK_LOAD_FLAG) != 0);
 #endif
+	/* nasty stuff with PARMAREAs. we use head.S or parameterline
+	  if (!MOUNT_ROOT_RDONLY)
+	  root_mountflags &= ~MS_RDONLY;
+	*/
         memory_start = (unsigned long) &_end;    /* fixit if use $CODELO etc*/
-	memory_end = MEMORY_SIZE;
-        /*
-         * We need some free virtual space to be able to do vmalloc.
-         * On a machine with 2GB memory we make sure that we have at
-         * least 128 MB free space for vmalloc.
-         */
-        if (memory_end > 1920*1024*1024)
-                memory_end = 1920*1024*1024;
-        init_task.mm->start_code = PAGE_OFFSET;
-        init_task.mm->end_code = (unsigned long) &_etext;
-        init_task.mm->end_data = (unsigned long) &_edata;
-        init_task.mm->brk = (unsigned long) &_end;
+	memory_end = MEMORY_SIZE;                /* detected in head.s */
+        init_mm.start_code = PAGE_OFFSET;
+        init_mm.end_code = (unsigned long) &_etext;
+        init_mm.end_data = (unsigned long) &_edata;
+        init_mm.brk = (unsigned long) &_end;
+
+	code_resource.start = (unsigned long) &_text;
+	code_resource.end = (unsigned long) &_etext - 1;
+	data_resource.start = (unsigned long) &_etext;
+	data_resource.end = (unsigned long) &_edata - 1;
 
         /* Save unparsed command line copy for /proc/cmdline */
         memcpy(saved_command_line, COMMAND_LINE, COMMAND_LINE_SIZE);
         saved_command_line[COMMAND_LINE_SIZE-1] = '\0';
 
-        c = ' ';
-        from = COMMAND_LINE;
-        to = command_line;
         for (;;) {
                 /*
-                 * "mem=XXX[kKmM]" sets memsize != 32M
-                 * memory size
+                 * "mem=XXX[kKmM]" sets memsize 
                  */
                 if (c == ' ' && strncmp(from, "mem=", 4) == 0) {
+                        if (to != command_line) to--;
                         memory_end = simple_strtoul(from+4, &from, 0);
                         if ( *from == 'K' || *from == 'k' ) {
                                 memory_end = memory_end << 10;
@@ -252,11 +263,10 @@ __initfunc(void setup_arch(char **cmdline_p,
                         }
                 }
                 /*
-                 * "ipldelay=XXX[sSmM]" waits for the specified time
+                 * "ipldelay=XXX[sm]" sets ipl delay in seconds or minutes
                  */
                 if (c == ' ' && strncmp(from, "ipldelay=", 9) == 0) {
-                        unsigned long delay;
-
+			if (to != command_line) to--;
                         delay = simple_strtoul(from+9, &from, 0);
 			if (*from == 's' || *from == 'S') {
 				delay = delay*1000000;
@@ -265,46 +275,67 @@ __initfunc(void setup_arch(char **cmdline_p,
 				delay = delay*60*1000000;
 				from++;
 			}
-			/* now wait for the requested amount of time */
-			udelay(delay);
+			/* now wait for the requestion amount of time */
+			tod_wait(delay);
                 }
-                cn = *(from++);
-                if (!cn)
+                c = *(from++);
+                if (!c)
                         break;
-                if (cn == '\n')
-                        cn = ' ';  /* replace newlines with space */
-		if (cn == 0x0d)
-			cn = ' ';  /* replace 0x0d with space */
-                if (cn == ' ' && c == ' ')
-                        continue;  /* remove additional spaces */
-                c = cn;
-                if (to - command_line >= COMMAND_LINE_SIZE)
+                if (COMMAND_LINE_SIZE <= ++len)
                         break;
                 *(to++) = c;
         }
-        if (c == ' ' && to > command_line) to--;
         *to = '\0';
         *cmdline_p = command_line;
-        memory_end += PAGE_OFFSET;
-        *memory_start_p = memory_start;
-        *memory_end_p = memory_end;
 
+	/*
+	 * partially used pages are not usable - thus
+	 * we are rounding upwards:
+	 */
+	start_pfn = (__pa(&_end) + PAGE_SIZE - 1) >> PAGE_SHIFT;
+	end_pfn = memory_end >> PAGE_SHIFT;
+
+	/*
+	 * Initialize the boot-time allocator (with low memory only):
+	 */
+	bootmap_size = init_bootmem(start_pfn, end_pfn);
+
+	/*
+	 * Register RAM pages with the bootmem allocator.
+	 */
+	free_bootmem(start_pfn << PAGE_SHIFT, 
+		     (end_pfn - start_pfn) << PAGE_SHIFT);
+
+        /*
+         * Reserve the bootmem bitmap itself as well. We do this in two
+         * steps (first step was init_bootmem()) because this catches
+         * the (very unlikely) case of us accidentally initializing the
+         * bootmem allocator with an invalid RAM area.
+         */
+        reserve_bootmem(start_pfn << PAGE_SHIFT, bootmap_size);
+
+        paging_init();
 #ifdef CONFIG_BLK_DEV_INITRD
-        initrd_start = INITRD_START;
-        if (initrd_start) {
-                initrd_end = initrd_start+INITRD_SIZE;
-                printk("Initial ramdisk at: 0x%p (%lu bytes)\n",
-                       (void *) initrd_start, INITRD_SIZE);
-                initrd_below_start_ok = 1;
-                if (initrd_end > *memory_end_p) {
+        if (INITRD_START) {
+		if (INITRD_START + INITRD_SIZE < memory_end) {
+			reserve_bootmem(INITRD_START, INITRD_SIZE);
+			initrd_start = INITRD_START;
+			initrd_end = initrd_start + INITRD_SIZE;
+		} else {
                         printk("initrd extends beyond end of memory "
                                "(0x%08lx > 0x%08lx)\ndisabling initrd\n",
-                               initrd_end, (unsigned long) memory_end_p);
+                               initrd_start + INITRD_SIZE, memory_end);
                         initrd_start = initrd_end = 0;
-                }
+		}
         }
 #endif
-
+	res = alloc_bootmem_low(sizeof(struct resource));
+	res->start = 0;
+	res->end = memory_end;
+	res->flags = IORESOURCE_MEM | IORESOURCE_BUSY;
+	request_resource(&iomem_resource, res);
+	request_resource(res, &code_resource);
+	request_resource(res, &data_resource);
 }
 
 void print_cpu_info(struct cpuinfo_S390 *cpuinfo)
@@ -337,8 +368,8 @@ int get_cpuinfo(char * buffer)
         p += sprintf(p,"vendor_id       : IBM/S390\n"
                        "# processors    : %i\n"
                        "bogomips per cpu: %lu.%02lu\n",
-                       smp_num_cpus, loops_per_jiffy/(500000/HZ),
-                       (loops_per_jiffy/(5000/HZ)) % 100);
+                       smp_num_cpus, loops_per_sec/500000,
+                       (loops_per_sec/5000)%100);
         for (i = 0; i < smp_num_cpus; i++) {
                 cpuinfo = &safe_get_cpu_lowcore(i).cpu_data;
                 p += sprintf(p,"processor %i: "

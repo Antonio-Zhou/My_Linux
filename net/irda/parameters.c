@@ -6,7 +6,7 @@
  * Status:        Experimental.
  * Author:        Dag Brattli <dagb@cs.uit.no>
  * Created at:    Mon Jun  7 10:25:11 1999
- * Modified at:   Wed Mar  1 10:58:05 2000
+ * Modified at:   Sun Jan 30 14:08:39 2000
  * Modified by:   Dag Brattli <dagb@cs.uit.no>
  * 
  *     Copyright (c) 1999-2000 Dag Brattli, All Rights Reserved.
@@ -513,7 +513,10 @@ int irda_param_extract(void *self, __u8 *buf, int len, pi_param_info_t *info)
 		      buf[0]);
 		
 		/* Skip this parameter */
-		return 2 + buf[n + 1];  /* Continue */
+		n += (2 + buf[n+1]);
+		len -= (2 + buf[n+1]);
+
+		return 0;  /* Continue */
 	}
 
 	/* Lookup the info on how to parse this parameter */
@@ -529,7 +532,10 @@ int irda_param_extract(void *self, __u8 *buf, int len, pi_param_info_t *info)
 	if (!pi_minor_info->func) {
 		MESSAGE(__FUNCTION__"(), no handler for pi=%#x\n", buf[n]);
 		/* Skip this parameter */
-		return 2 + buf[n + 1]; /* Continue */
+		n += (2 + buf[n+1]);
+		len -= (2 + buf[n+1]);
+
+		return 0; /* Continue */
 	}
 
 	/* Parse parameter value */

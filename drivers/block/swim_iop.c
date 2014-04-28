@@ -45,9 +45,6 @@
 
 #define MAX_FLOPPIES	4
 
-#define IOCTL_MODE_BIT	8
-#define OPEN_WRITE_BIT	16
-
 enum swim_state {
 	idle,
 	available,
@@ -105,10 +102,6 @@ static void swimiop_receive(struct iop_msg *, struct pt_regs *);
 static void swimiop_status_update(int, struct swim_drvstatus *);
 static int swimiop_eject(struct floppy_state *fs);
 
-static ssize_t floppy_read(struct file *filp, char *buf,
-			   size_t count, loff_t *ppos);
-static ssize_t floppy_write(struct file *filp, const char *buf,
-			    size_t count, loff_t *ppos);
 static int floppy_ioctl(struct inode *inode, struct file *filp,
 			unsigned int cmd, unsigned long param);
 static int floppy_open(struct inode *inode, struct file *filp);
@@ -121,24 +114,15 @@ static void release_drive(struct floppy_state *fs);
 static void set_timeout(struct floppy_state *fs, int nticks,
 			void (*proc)(unsigned long));
 static void fd_request_timeout(unsigned long);
-static void do_fd_request(void);
+static void do_fd_request(request_queue_t * q);
 static void start_request(struct floppy_state *fs);
 
-static struct file_operations floppy_fops = {
-	NULL,			/* lseek */
-	floppy_read,		/* read */
-	floppy_write,		/* write */
-	NULL,			/* readdir */
-	NULL,			/* poll */
-	floppy_ioctl,		/* ioctl */
-	NULL,			/* mmap */
-	floppy_open,		/* open */
-	NULL,			/* flush */
-	floppy_release,		/* release */
-	block_fsync,		/* fsync */
-	NULL,			/* fasync */
-	floppy_check_change,	/* check_media_change */
-	floppy_revalidate,	/* revalidate */
+static struct block_device_operations floppy_fops = {
+	open:			floppy_open,
+	release:		floppy_release,
+	ioctl:			floppy_ioctl,
+	check_media_change:	floppy_check_change,
+	revalidate:		floppy_revalidate,
 };
 
 /*
@@ -163,7 +147,7 @@ int swimiop_init(void)
 		       MAJOR_NR);
 		return -EBUSY;
 	}
-	blk_dev[MAJOR_NR].request_fn = DEVICE_REQUEST;
+	blk_init_queue(BLK_DEFAULT_QUEUE(MAJOR_NR), DEVICE_REQUEST);
 	blksize_size[MAJOR_NR] = floppy_blocksizes;
 	blk_size[MAJOR_NR] = floppy_sizes;
 
@@ -350,40 +334,6 @@ static int swimiop_eject(struct floppy_state *fs)
 	return cmd->error;
 }
 
-static ssize_t floppy_read(struct file *filp, char *buf,
-			   size_t count, loff_t *ppos)
-{
-	struct inode *inode = filp->f_dentry->d_inode;
-	struct floppy_state *fs;
-	int devnum = MINOR(inode->i_rdev);
-
-	if (devnum >= floppy_count)
-		return -ENODEV;
-		
-	fs = &floppy_states[devnum];
-	if (fs->ejected)
-		return -ENXIO;
-	return block_read(filp, buf, count, ppos);
-}
-
-static ssize_t floppy_write(struct file * filp, const char * buf,
-			    size_t count, loff_t *ppos)
-{
-	struct inode * inode = filp->f_dentry->d_inode;
-	struct floppy_state *fs;
-	int devnum = MINOR(inode->i_rdev);
-
-	if (devnum >= floppy_count)
-		return -ENODEV;
-	check_disk_change(inode->i_rdev);
-	fs = &floppy_states[devnum];
-	if (fs->ejected)
-		return -ENXIO;
-	if (fs->write_prot)
-		return -EROFS;
-	return block_write(filp, buf, count, ppos);
-}
-
 static struct floppy_struct floppy_type =
 	{ 2880,18,2,80,0,0x1B,0x00,0xCF,0x6C,NULL };	/*  7 1.44MB 3.5"   */
 
@@ -397,8 +347,7 @@ static int floppy_ioctl(struct inode *inode, struct file *filp,
 	if (devnum >= floppy_count)
 		return -ENODEV;
 		
-	if (((cmd & 0x40) && !(filp && (filp->f_mode & IOCTL_MODE_BIT))) ||
-	    ((cmd & 0x80) && !suser()))
+	if ((cmd & 0x80) && !suser())
 		return -EPERM;
 
 	fs = &floppy_states[devnum];
@@ -451,12 +400,6 @@ static int floppy_open(struct inode *inode, struct file *filp)
 	else
 		++fs->ref_count;
 
-	/* Allow ioctls if we have write-permissions even if read-only open */
-	if ((filp->f_mode & 2) || (permission(inode, 2) == 0))
-		filp->f_mode |= IOCTL_MODE_BIT;
-	if (filp->f_mode & 2)
-		filp->f_mode |= OPEN_WRITE_BIT;
-
 	return 0;
 }
 
@@ -467,15 +410,6 @@ static int floppy_release(struct inode *inode, struct file *filp)
 
 	if (devnum >= floppy_count)
 		return -ENODEV;
-
-	/*
-	 * If filp is NULL, we're being called from blkdev_release
-	 * or after a failed mount attempt.  In the former case the
-	 * device has already been sync'ed, and in the latter no
-	 * sync is required.  Otherwise, sync if filp is writable.
-	 */
-	if (filp && (filp->f_mode & (2 | OPEN_WRITE_BIT)))
-		block_fsync (filp, filp->f_dentry);
 
 	fs = &floppy_states[devnum];
 	if (fs->ref_count > 0) fs->ref_count--;
@@ -566,7 +500,7 @@ static void set_timeout(struct floppy_state *fs, int nticks,
 	restore_flags(flags);
 }
 
-static void do_fd_request(void)
+static void do_fd_request(request_queue_t * q)
 {
 	int i;
 
@@ -616,7 +550,7 @@ static void start_request(struct floppy_state *fs)
 		wake_up(&fs->wait);
 		return;
 	}
-	while (CURRENT && fs->state == idle) {
+	while (!QUEUE_EMPTY && fs->state == idle) {
 		if (MAJOR(CURRENT->rq_dev) != MAJOR_NR)
 			panic(DEVICE_NAME ": request list destroyed");
 		if (CURRENT->bh && !buffer_locked(CURRENT->bh))

@@ -14,7 +14,7 @@
 #include <linux/smp_lock.h>
 
 #include <asm/uaccess.h>
-#include <asm/pgtable.h>
+#include <asm/pgalloc.h>
 #include <asm/io.h>
 
 /*
@@ -48,8 +48,8 @@
 /*
  * virtual flags (16 and 32-bit versions)
  */
-#define VFLAGS	(*(unsigned short *)&(current->tss.v86flags))
-#define VEFLAGS	(current->tss.v86flags)
+#define VFLAGS	(*(unsigned short *)&(current->thread.v86flags))
+#define VEFLAGS	(current->thread.v86flags)
 
 #define set_flags(X,new,mask) \
 ((X) = ((X) & ~(mask)) | ((new) & (mask)))
@@ -65,25 +65,27 @@
 asmlinkage struct pt_regs * FASTCALL(save_v86_state(struct kernel_vm86_regs * regs));
 struct pt_regs * save_v86_state(struct kernel_vm86_regs * regs)
 {
+	struct tss_struct *tss;
 	struct pt_regs *ret;
 	unsigned long tmp;
 
 	lock_kernel();
-	if (!current->tss.vm86_info) {
+	if (!current->thread.vm86_info) {
 		printk("no vm86_info: BAD\n");
 		do_exit(SIGSEGV);
 	}
-	set_flags(regs->eflags, VEFLAGS, VIF_MASK | current->tss.v86mask);
-	tmp = copy_to_user(&current->tss.vm86_info->regs,regs, VM86_REGS_SIZE1);
-	tmp += copy_to_user(&current->tss.vm86_info->regs.VM86_REGS_PART2,
+	set_flags(regs->eflags, VEFLAGS, VIF_MASK | current->thread.v86mask);
+	tmp = copy_to_user(&current->thread.vm86_info->regs,regs, VM86_REGS_SIZE1);
+	tmp += copy_to_user(&current->thread.vm86_info->regs.VM86_REGS_PART2,
 		&regs->VM86_REGS_PART2, VM86_REGS_SIZE2);
-	tmp += put_user(current->tss.screen_bitmap,&current->tss.vm86_info->screen_bitmap);
+	tmp += put_user(current->thread.screen_bitmap,&current->thread.vm86_info->screen_bitmap);
 	if (tmp) {
 		printk("vm86: could not access userspace vm86_info\n");
 		do_exit(SIGSEGV);
 	}
-	current->tss.esp0 = current->tss.saved_esp0;
-	current->tss.saved_esp0 = 0;
+	tss = init_tss + smp_processor_id();
+	tss->esp0 = current->thread.esp0 = current->thread.saved_esp0;
+	current->thread.saved_esp0 = 0;
 	ret = KVM86->regs32;
 	unlock_kernel();
 	return ret;
@@ -100,7 +102,7 @@ static void mark_screen_rdonly(struct task_struct * tsk)
 	if (pgd_none(*pgd))
 		return;
 	if (pgd_bad(*pgd)) {
-		printk("vm86: bad pgd entry [%p]:%08lx\n", pgd, pgd_val(*pgd));
+		pgd_ERROR(*pgd);
 		pgd_clear(pgd);
 		return;
 	}
@@ -108,7 +110,7 @@ static void mark_screen_rdonly(struct task_struct * tsk)
 	if (pmd_none(*pmd))
 		return;
 	if (pmd_bad(*pmd)) {
-		printk("vm86: bad pmd entry [%p]:%08lx\n", pmd, pmd_val(*pmd));
+		pmd_ERROR(*pmd);
 		pmd_clear(pmd);
 		return;
 	}
@@ -138,7 +140,7 @@ asmlinkage int sys_vm86old(struct vm86_struct * v86)
 
 	lock_kernel();
 	tsk = current;
-	if (tsk->tss.saved_esp0)
+	if (tsk->thread.saved_esp0)
 		goto out;
 	tmp  = copy_from_user(&info, v86, VM86_REGS_SIZE1);
 	tmp += copy_from_user(&info.regs.VM86_REGS_PART2, &v86->regs.VM86_REGS_PART2,
@@ -148,7 +150,7 @@ asmlinkage int sys_vm86old(struct vm86_struct * v86)
 		goto out;
 	memset(&info.vm86plus, 0, (int)&info.regs32 - (int)&info.vm86plus);
 	info.regs32 = (struct pt_regs *) &v86;
-	tsk->tss.vm86_info = v86;
+	tsk->thread.vm86_info = v86;
 	do_sys_vm86(&info, tsk);
 	ret = 0;	/* we never return here */
 out:
@@ -188,7 +190,7 @@ asmlinkage int sys_vm86(unsigned long subfunction, struct vm86plus_struct * v86)
 
 	/* we come here only for functions VM86_ENTER, VM86_ENTER_NO_BYPASS */
 	ret = -EPERM;
-	if (tsk->tss.saved_esp0)
+	if (tsk->thread.saved_esp0)
 		goto out;
 	tmp  = copy_from_user(&info, v86, VM86_REGS_SIZE1);
 	tmp += copy_from_user(&info.regs.VM86_REGS_PART2, &v86->regs.VM86_REGS_PART2,
@@ -198,7 +200,7 @@ asmlinkage int sys_vm86(unsigned long subfunction, struct vm86plus_struct * v86)
 		goto out;
 	info.regs32 = (struct pt_regs *) &subfunction;
 	info.vm86plus.is_vm86pus = 1;
-	tsk->tss.vm86_info = (struct vm86_struct *)v86;
+	tsk->thread.vm86_info = (struct vm86_struct *)v86;
 	do_sys_vm86(&info, tsk);
 	ret = 0;	/* we never return here */
 out:
@@ -209,6 +211,7 @@ out:
 
 static void do_sys_vm86(struct kernel_vm86_struct *info, struct task_struct *tsk)
 {
+	struct tss_struct *tss;
 /*
  * make sure the vm86() system call doesn't try to do anything silly
  */
@@ -231,16 +234,16 @@ static void do_sys_vm86(struct kernel_vm86_struct *info, struct task_struct *tsk
 
 	switch (info->cpu_type) {
 		case CPU_286:
-			tsk->tss.v86mask = 0;
+			tsk->thread.v86mask = 0;
 			break;
 		case CPU_386:
-			tsk->tss.v86mask = NT_MASK | IOPL_MASK;
+			tsk->thread.v86mask = NT_MASK | IOPL_MASK;
 			break;
 		case CPU_486:
-			tsk->tss.v86mask = AC_MASK | NT_MASK | IOPL_MASK;
+			tsk->thread.v86mask = AC_MASK | NT_MASK | IOPL_MASK;
 			break;
 		default:
-			tsk->tss.v86mask = ID_MASK | AC_MASK | NT_MASK | IOPL_MASK;
+			tsk->thread.v86mask = ID_MASK | AC_MASK | NT_MASK | IOPL_MASK;
 			break;
 	}
 
@@ -248,15 +251,16 @@ static void do_sys_vm86(struct kernel_vm86_struct *info, struct task_struct *tsk
  * Save old state, set default return value (%eax) to 0
  */
 	info->regs32->eax = 0;
-	tsk->tss.saved_esp0 = tsk->tss.esp0;
-	tsk->tss.esp0 = (unsigned long) &info->VM86_TSS_ESP0;
+	tsk->thread.saved_esp0 = tsk->thread.esp0;
+	tss = init_tss + smp_processor_id();
+	tss->esp0 = tsk->thread.esp0 = (unsigned long) &info->VM86_TSS_ESP0;
 
-	tsk->tss.screen_bitmap = info->screen_bitmap;
+	tsk->thread.screen_bitmap = info->screen_bitmap;
 	if (info->flags & VM86_SCREEN_BITMAP)
 		mark_screen_rdonly(tsk);
 	unlock_kernel();
 	__asm__ __volatile__(
-		"xorl %%eax,%%eax; movl %%ax,%%fs; movl %%ax,%%gs\n\t"
+		"xorl %%eax,%%eax; movl %%eax,%%fs; movl %%eax,%%gs\n\t"
 		"movl %0,%%esp\n\t"
 		"jmp ret_from_sys_call"
 		: /* no outputs */
@@ -295,7 +299,7 @@ static inline void clear_TF(struct kernel_vm86_regs * regs)
 
 static inline void set_vflags_long(unsigned long eflags, struct kernel_vm86_regs * regs)
 {
-	set_flags(VEFLAGS, eflags, current->tss.v86mask);
+	set_flags(VEFLAGS, eflags, current->thread.v86mask);
 	set_flags(regs->eflags, eflags, SAFE_MASK);
 	if (eflags & IF_MASK)
 		set_IF(regs);
@@ -303,7 +307,7 @@ static inline void set_vflags_long(unsigned long eflags, struct kernel_vm86_regs
 
 static inline void set_vflags_short(unsigned short flags, struct kernel_vm86_regs * regs)
 {
-	set_flags(VFLAGS, flags, current->tss.v86mask);
+	set_flags(VFLAGS, flags, current->thread.v86mask);
 	set_flags(regs->eflags, flags, SAFE_MASK);
 	if (flags & IF_MASK)
 		set_IF(regs);
@@ -315,7 +319,7 @@ static inline unsigned long get_vflags(struct kernel_vm86_regs * regs)
 
 	if (VEFLAGS & VIF_MASK)
 		flags |= IF_MASK;
-	return flags | (VEFLAGS & current->tss.v86mask);
+	return flags | (VEFLAGS & current->thread.v86mask);
 }
 
 static inline int is_revectored(int nr, struct revectored_struct * bitmap)
@@ -330,176 +334,74 @@ static inline int is_revectored(int nr, struct revectored_struct * bitmap)
  * Boy are these ugly, but we need to do the correct 16-bit arithmetic.
  * Gcc makes a mess of it, so we do it inline and use non-obvious calling
  * conventions..
- * FIXME: is VM86_UNKNOWN really the correct return code?
  */
-#define pushb(base, ptr, val, regs) \
-	do { \
-		int err; \
-		__asm__ __volatile__(				\
-			"decw %w0\n\t"				\
-			"1: movb %3,0(%2,%0)\n\t"		\
-			"xor %1,%1\n\t"				\
-			"2:\n"					\
-			".section .fixup,\"ax\"\n\t"		\
-			"3:	movl $1,%1\n\t"			\
-			"	jmp 2b\n\t"			\
-			".previous\n"				\
-			".section __ex_table,\"a\"\n"		\
-			"	.align 4\n"			\
-			"	.long 1b,3b\n"			\
-			".previous"				\
-			: "=r" (ptr), "=r" (err)		\
-			: "r" (base), "q" (val), "0" (ptr));	\
-		if (err) \
-			return_to_32bit(regs, VM86_UNKNOWN); \
-	} while(0)
+#define pushb(base, ptr, val) \
+__asm__ __volatile__( \
+	"decw %w0\n\t" \
+	"movb %2,0(%1,%0)" \
+	: "=r" (ptr) \
+	: "r" (base), "q" (val), "0" (ptr))
 
-#define pushw(base, ptr, val, regs) \
-	do { \
-		int err; \
-		__asm__ __volatile__(				\
-			"decw %w0\n\t"				\
-			"1: movb %h3,0(%2,%0)\n\t"		\
-			"decw %w0\n\t"				\
-			"2: movb %b3,0(%2,%0)\n\t"		\
-			"xor %1,%1\n\t"				\
-			"3:\n"					\
-			".section .fixup,\"ax\"\n\t"		\
-			"4:	movl $1,%1\n\t"			\
-			"	jmp 3b\n\t"			\
-			".previous\n"				\
-			".section __ex_table,\"a\"\n"		\
-			"	.align 4\n"			\
-			"	.long 1b,4b\n"			\
-			"	.long 2b,4b\n"			\
-			".previous"				\
-			: "=r" (ptr), "=r" (err)		\
-			: "r" (base), "q" (val), "0" (ptr));	\
-		if (err) \
-			return_to_32bit(regs, VM86_UNKNOWN); \
-	} while(0)
+#define pushw(base, ptr, val) \
+__asm__ __volatile__( \
+	"decw %w0\n\t" \
+	"movb %h2,0(%1,%0)\n\t" \
+	"decw %w0\n\t" \
+	"movb %b2,0(%1,%0)" \
+	: "=r" (ptr) \
+	: "r" (base), "q" (val), "0" (ptr))
 
-#define pushl(base, ptr, val, regs) \
-	do { \
-		int err; \
-		__asm__ __volatile__(				\
-			"decw %w0\n\t"				\
-			"rorl $16,%3\n\t"			\
-			"1: movb %h3,0(%2,%0)\n\t"		\
-			"decw %w0\n\t"				\
-			"2: movb %b3,0(%2,%0)\n\t"		\
-			"decw %w0\n\t"				\
-			"rorl $16,%3\n\t"			\
-			"3: movb %h3,0(%2,%0)\n\t"		\
-			"decw %w0\n\t"				\
-			"4: movb %b3,0(%2,%0)\n\t"		\
-			"xor %1,%1\n\t"				\
-			"5:\n"					\
-			".section .fixup,\"ax\"\n\t"		\
-			"6:	movl $1,%1\n\t"			\
-			"	jmp 5b\n\t"			\
-			".previous\n"				\
-			".section __ex_table,\"a\"\n"		\
-			"	.align 4\n"			\
-			"	.long 1b,6b\n"			\
-			"	.long 2b,6b\n"			\
-			"	.long 3b,6b\n"			\
-			"	.long 4b,6b\n"			\
-			".previous"				\
-			: "=r" (ptr), "=r" (err)		\
-			: "r" (base), "q" (val), "0" (ptr));	\
-		if (err) \
-			return_to_32bit(regs, VM86_UNKNOWN); \
-	} while(0)
+#define pushl(base, ptr, val) \
+__asm__ __volatile__( \
+	"decw %w0\n\t" \
+	"rorl $16,%2\n\t" \
+	"movb %h2,0(%1,%0)\n\t" \
+	"decw %w0\n\t" \
+	"movb %b2,0(%1,%0)\n\t" \
+	"decw %w0\n\t" \
+	"rorl $16,%2\n\t" \
+	"movb %h2,0(%1,%0)\n\t" \
+	"decw %w0\n\t" \
+	"movb %b2,0(%1,%0)" \
+	: "=r" (ptr) \
+	: "r" (base), "q" (val), "0" (ptr))
 
-#define popb(base, ptr, regs) \
-	({ \
-	 	unsigned long __res; \
-	 	unsigned int err; \
-		__asm__ __volatile__( \
-			"1:movb 0(%1,%0),%b2\n\t"		\
-			"incw %w0\n\t"				\
-			"xor %3,%3\n\t"				\
-			"2:\n"					\
-			".section .fixup,\"ax\"\n\t"		\
-			"3:	movl $1,%1\n\t"			\
-			"	jmp 2b\n\t"			\
-			".previous\n"				\
-			".section __ex_table,\"a\"\n"		\
-			"	.align 4\n"			\
-			"	.long 1b,3b\n"			\
-			".previous"				\
-			: "=r" (ptr), "=r" (base), "=q" (__res), \
-				"=r" (err) \
-			: "0" (ptr), "1" (base), "2" (0)); \
-		if (err) \
-			return_to_32bit(regs, VM86_UNKNOWN); \
-		__res; \
-	})
+#define popb(base, ptr) \
+({ unsigned long __res; \
+__asm__ __volatile__( \
+	"movb 0(%1,%0),%b2\n\t" \
+	"incw %w0" \
+	: "=r" (ptr), "=r" (base), "=q" (__res) \
+	: "0" (ptr), "1" (base), "2" (0)); \
+__res; })
 
-#define popw(base, ptr, regs) \
-	({ \
-	 	unsigned long __res; \
-	 	unsigned int err; \
-		__asm__ __volatile__( \
-			"1:movb 0(%1,%0),%b2\n\t"		\
-			"incw %w0\n\t"				\
-			"2:movb 0(%1,%0),%h2\n\t"		\
-			"incw %w0\n\t"				\
-			"xor %3,%3\n\t"				\
-			"3:\n"					\
-			".section .fixup,\"ax\"\n\t"		\
-			"4:	movl $1,%1\n\t"			\
-			"	jmp 3b\n\t"			\
-			".previous\n"				\
-			".section __ex_table,\"a\"\n"		\
-			"	.align 4\n"			\
-			"	.long 1b,4b\n"			\
-			"	.long 2b,4b\n"			\
-			".previous"				\
-			: "=r" (ptr), "=r" (base), "=q" (__res), \
-				"=r" (err) \
-			: "0" (ptr), "1" (base), "2" (0)); \
-		if (err) \
-			return_to_32bit(regs, VM86_UNKNOWN); \
-		__res; \
-	})
+#define popw(base, ptr) \
+({ unsigned long __res; \
+__asm__ __volatile__( \
+	"movb 0(%1,%0),%b2\n\t" \
+	"incw %w0\n\t" \
+	"movb 0(%1,%0),%h2\n\t" \
+	"incw %w0" \
+	: "=r" (ptr), "=r" (base), "=q" (__res) \
+	: "0" (ptr), "1" (base), "2" (0)); \
+__res; })
 
-#define popl(base, ptr, regs) \
-	({ \
-	 	unsigned long __res; \
-	 	unsigned int err; \
-		__asm__ __volatile__( \
-			"1:movb 0(%1,%0),%b2\n\t"		\
-			"incw %w0\n\t"				\
-			"2:movb 0(%1,%0),%h2\n\t"		\
-			"incw %w0\n\t"				\
-			"rorl $16,%2\n\t"			\
-			"3:movb 0(%1,%0),%b2\n\t"		\
-			"incw %w0\n\t"				\
-			"4:movb 0(%1,%0),%h2\n\t"		\
-			"incw %w0\n\t"				\
-			"rorl $16,%2\n\t"			\
-			"xor %3,%3\n\t"				\
-			"5:\n"					\
-			".section .fixup,\"ax\"\n\t"		\
-			"6:	movl $1,%1\n\t"			\
-			"	jmp 5b\n\t"			\
-			".previous\n"				\
-			".section __ex_table,\"a\"\n"		\
-			"	.align 4\n"			\
-			"	.long 1b,6b\n"			\
-			"	.long 2b,6b\n"			\
-			"	.long 3b,6b\n"			\
-			"	.long 4b,6b\n"			\
-			".previous"				\
-			: "=r" (ptr), "=r" (base), "=q" (__res), \
-				"=r" (err) \
-			: "0" (ptr), "1" (base), "2" (0)); \
-		if (err) \
-			return_to_32bit(regs, VM86_UNKNOWN); \
-		__res; \
-	})
+#define popl(base, ptr) \
+({ unsigned long __res; \
+__asm__ __volatile__( \
+	"movb 0(%1,%0),%b2\n\t" \
+	"incw %w0\n\t" \
+	"movb 0(%1,%0),%h2\n\t" \
+	"incw %w0\n\t" \
+	"rorl $16,%2\n\t" \
+	"movb 0(%1,%0),%b2\n\t" \
+	"incw %w0\n\t" \
+	"movb 0(%1,%0),%h2\n\t" \
+	"incw %w0\n\t" \
+	"rorl $16,%2" \
+	: "=r" (ptr), "=r" (base), "=q" (__res) \
+	: "0" (ptr), "1" (base)); \
+__res; })
 
 static void do_int(struct kernel_vm86_regs *regs, int i, unsigned char * ssp, unsigned long sp)
 {
@@ -516,9 +418,9 @@ static void do_int(struct kernel_vm86_regs *regs, int i, unsigned char * ssp, un
 		goto cannot_handle;
 	if ((segoffs >> 16) == BIOSSEG)
 		goto cannot_handle;
-	pushw(ssp, sp, get_vflags(regs), regs);
-	pushw(ssp, sp, regs->cs, regs);
-	pushw(ssp, sp, IP(regs), regs);
+	pushw(ssp, sp, get_vflags(regs));
+	pushw(ssp, sp, regs->cs);
+	pushw(ssp, sp, IP(regs));
 	regs->cs = segoffs >> 16;
 	SP(regs) -= 6;
 	IP(regs) = segoffs & 0xffff;
@@ -541,7 +443,7 @@ int handle_vm86_trap(struct kernel_vm86_regs * regs, long error_code, int trapno
 	}
 	if (trapno !=1)
 		return 1; /* we let this handle by the calling routine */
-	if (current->ptrace & PT_PTRACED) {
+	if (current->flags & PF_PTRACED) {
 		unsigned long flags;
 		spin_lock_irqsave(&current->sigmask_lock, flags);
 		sigdelset(&current->blocked, SIGTRAP);
@@ -549,8 +451,8 @@ int handle_vm86_trap(struct kernel_vm86_regs * regs, long error_code, int trapno
 		spin_unlock_irqrestore(&current->sigmask_lock, flags);
 	}
 	send_sig(SIGTRAP, current, 1);
-	current->tss.trap_no = trapno;
-	current->tss.error_code = error_code;
+	current->thread.trap_no = trapno;
+	current->thread.error_code = error_code;
 	return 0;
 }
 
@@ -562,7 +464,7 @@ void handle_vm86_fault(struct kernel_vm86_regs * regs, long error_code)
 
 #define CHECK_IF_IN_TRAP \
 	if (VMPI.vm86dbg_active && VMPI.vm86dbg_TFpendig) \
-		pushw(ssp,sp,popw(ssp,sp, regs) | TF_MASK, regs);
+		pushw(ssp,sp,popw(ssp,sp) | TF_MASK);
 #define VM86_FAULT_RETURN \
 	if (VMPI.force_return_for_pic  && (VEFLAGS & IF_MASK)) \
 		return_to_32bit(regs, VM86_PICRETURN); \
@@ -573,17 +475,17 @@ void handle_vm86_fault(struct kernel_vm86_regs * regs, long error_code)
 	sp = SP(regs);
 	ip = IP(regs);
 
-	switch (popb(csp, ip, regs)) {
+	switch (popb(csp, ip)) {
 
 	/* operand size override */
 	case 0x66:
-		switch (popb(csp, ip, regs)) {
+		switch (popb(csp, ip)) {
 
 		/* pushfd */
 		case 0x9c:
 			SP(regs) -= 4;
 			IP(regs) += 2;
-			pushl(ssp, sp, get_vflags(regs), regs);
+			pushl(ssp, sp, get_vflags(regs));
 			VM86_FAULT_RETURN;
 
 		/* popfd */
@@ -591,16 +493,16 @@ void handle_vm86_fault(struct kernel_vm86_regs * regs, long error_code)
 			SP(regs) += 4;
 			IP(regs) += 2;
 			CHECK_IF_IN_TRAP
-			set_vflags_long(popl(ssp, sp, regs), regs);
+			set_vflags_long(popl(ssp, sp), regs);
 			VM86_FAULT_RETURN;
 
 		/* iretd */
 		case 0xcf:
 			SP(regs) += 12;
-			IP(regs) = (unsigned short)popl(ssp, sp, regs);
-			regs->cs = (unsigned short)popl(ssp, sp, regs);
+			IP(regs) = (unsigned short)popl(ssp, sp);
+			regs->cs = (unsigned short)popl(ssp, sp);
 			CHECK_IF_IN_TRAP
-			set_vflags_long(popl(ssp, sp, regs), regs);
+			set_vflags_long(popl(ssp, sp), regs);
 			VM86_FAULT_RETURN;
 		/* need this to avoid a fallthrough */
 		default:
@@ -611,7 +513,7 @@ void handle_vm86_fault(struct kernel_vm86_regs * regs, long error_code)
 	case 0x9c:
 		SP(regs) -= 2;
 		IP(regs)++;
-		pushw(ssp, sp, get_vflags(regs), regs);
+		pushw(ssp, sp, get_vflags(regs));
 		VM86_FAULT_RETURN;
 
 	/* popf */
@@ -619,12 +521,12 @@ void handle_vm86_fault(struct kernel_vm86_regs * regs, long error_code)
 		SP(regs) += 2;
 		IP(regs)++;
 		CHECK_IF_IN_TRAP
-		set_vflags_short(popw(ssp, sp, regs), regs);
+		set_vflags_short(popw(ssp, sp), regs);
 		VM86_FAULT_RETURN;
 
 	/* int xx */
 	case 0xcd: {
-	        int intno=popb(csp, ip, regs);
+	        int intno=popb(csp, ip);
 		IP(regs) += 2;
 		if (VMPI.vm86dbg_active) {
 			if ( (1 << (intno &7)) & VMPI.vm86dbg_intxxtab[intno >> 3] )
@@ -637,10 +539,10 @@ void handle_vm86_fault(struct kernel_vm86_regs * regs, long error_code)
 	/* iret */
 	case 0xcf:
 		SP(regs) += 6;
-		IP(regs) = popw(ssp, sp, regs);
-		regs->cs = popw(ssp, sp, regs);
+		IP(regs) = popw(ssp, sp);
+		regs->cs = popw(ssp, sp);
 		CHECK_IF_IN_TRAP
-		set_vflags_short(popw(ssp, sp, regs), regs);
+		set_vflags_short(popw(ssp, sp), regs);
 		VM86_FAULT_RETURN;
 
 	/* cli */
@@ -720,14 +622,6 @@ static inline int task_valid(struct task_struct *tsk)
 	}
 	read_unlock(&tasklist_lock);
 	return ret;
-}
-
-void release_x86_irqs(struct task_struct *task)
-{
-	int i;
-	for (i=3; i<16; i++)
-	    if (vm86_irqs[i].tsk == task)
-		free_vm86_irq(i);
 }
 
 static inline void handle_irq_zombies(void)

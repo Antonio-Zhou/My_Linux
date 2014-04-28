@@ -70,16 +70,18 @@ struct mace_frame
 
 #define PRIV_BYTES	sizeof(struct mace68k_data)
 
-static int mace68k_open(struct device *dev);
-static int mace68k_close(struct device *dev);
-static int mace68k_xmit_start(struct sk_buff *skb, struct device *dev);
-static struct net_device_stats *mace68k_stats(struct device *dev);
-static void mace68k_set_multicast(struct device *dev);
-static void mace68k_reset(struct device *dev);
-static int mace68k_set_address(struct device *dev, void *addr);
+extern void psc_debug_dump(void);
+
+static int mace68k_open(struct net_device *dev);
+static int mace68k_close(struct net_device *dev);
+static int mace68k_xmit_start(struct sk_buff *skb, struct net_device *dev);
+static struct net_device_stats *mace68k_stats(struct net_device *dev);
+static void mace68k_set_multicast(struct net_device *dev);
+static void mace68k_reset(struct net_device *dev);
+static int mace68k_set_address(struct net_device *dev, void *addr);
 static void mace68k_interrupt(int irq, void *dev_id, struct pt_regs *regs);
 static void mace68k_dma_intr(int irq, void *dev_id, struct pt_regs *regs);
-static void mace68k_set_timeout(struct device *dev);
+static void mace68k_set_timeout(struct net_device *dev);
 static void mace68k_tx_timeout(unsigned long data);
 
 /*
@@ -112,7 +114,7 @@ static void psc_load_rxdma_base(int set, void *base)
  *	Reset the receive DMA subsystem
  */
   
-static void mace68k_rxdma_reset(struct device *dev)
+static void mace68k_rxdma_reset(struct net_device *dev)
 {
 	struct mace68k_data *mp = (struct mace68k_data *) dev->priv;
 	volatile struct mace *mace = mp->mace;
@@ -139,15 +141,17 @@ static void mace68k_rxdma_reset(struct device *dev)
 	
 	mace->maccc=mcc|ENRCV;
 	
+#if 0
 	psc_write_word(PSC_ENETRD_CTL, 0x9800);
 	psc_write_word(PSC_ENETRD_CTL+0x10, 0x9800);
+#endif
 }
 
 /*
  *	Reset the transmit DMA subsystem
  */
  
-static void mace68k_txdma_reset(struct device *dev)
+static void mace68k_txdma_reset(struct net_device *dev)
 {
 	struct mace68k_data *mp = (struct mace68k_data *) dev->priv;
 	volatile struct mace *mace = mp->mace;
@@ -156,7 +160,7 @@ static void mace68k_txdma_reset(struct device *dev)
 	psc_write_word(PSC_ENETWR_CTL,0x8800);
 	
 	mace->maccc = mcc&~ENXMT;
-	psc_write_word(PSC_ENETWR_CTL,0x400);
+	psc_write_word(PSC_ENETWR_CTL,0x0400);
 	mace->maccc = mcc;
 }
 
@@ -164,7 +168,7 @@ static void mace68k_txdma_reset(struct device *dev)
  *	Disable DMA
  */
  
-static void mace68k_dma_off(struct device *dev)
+static void mace68k_dma_off(struct net_device *dev)
 {
 	psc_write_word(PSC_ENETRD_CTL, 0x8800);
 	psc_write_word(PSC_ENETRD_CTL, 0x1000);
@@ -179,8 +183,7 @@ static void mace68k_dma_off(struct device *dev)
 
 /* Bit-reverse one byte of an ethernet hardware address. */
 
-static int
-bitrev(int b)
+static int bitrev(int b)
 {
     int d = 0, i;
 
@@ -194,13 +197,13 @@ bitrev(int b)
  *	model of Macintrash has a MACE (AV macintoshes)
  */
  
-int mace68k_probe(struct device *unused)
+int mace68k_probe(struct net_device *unused)
 {
 	int j;
 	static int once=0;
 	struct mace68k_data *mp;
 	unsigned char *addr;
-	struct device *dev;
+	struct net_device *dev;
 	unsigned char checksum = 0;
 	
 	/*
@@ -310,7 +313,11 @@ int mace68k_probe(struct device *unused)
 	psc_write_word(PSC_ENETWR_CTL, 0x0400);
 	psc_write_word(PSC_ENETRD_CTL, 0x0400);
                                         	
+	/* apple's driver doesn't seem to do this */
+	/* except at driver shutdown time...      */
+#if 0
 	mace68k_dma_off(dev);
+#endif
 
 	return 0;
 }
@@ -319,15 +326,26 @@ int mace68k_probe(struct device *unused)
  *	Reset a MACE controller
  */
  
-static void mace68k_reset(struct device *dev)
+static void mace68k_reset(struct net_device *dev)
 {
 	struct mace68k_data *mp = (struct mace68k_data *) dev->priv;
 	volatile struct mace *mb = mp->mace;
 	int i;
 
 	/* soft-reset the chip */
-	mb->biucc = SWRST;
-	udelay(100);
+	i = 200;
+	while (--i) {
+		mb->biucc = SWRST;
+		if (mb->biucc & SWRST) {
+			udelay(10);
+			continue;
+		}
+		break;
+	}
+	if (!i) {
+		printk(KERN_ERR "mace: cannot reset chip!\n");
+		return;
+	}
 
 	mb->biucc = XMTSP_64;
 	mb->imr = 0xff;		/* disable all intrs for now */
@@ -361,7 +379,7 @@ static void mace68k_reset(struct device *dev)
  *	Load the address on a mace controller.
  */
  
-static int mace68k_set_address(struct device *dev, void *addr)
+static int mace68k_set_address(struct net_device *dev, void *addr)
 {
 	unsigned char *p = addr;
 	struct mace68k_data *mp = (struct mace68k_data *) dev->priv;
@@ -389,7 +407,7 @@ static int mace68k_set_address(struct device *dev, void *addr)
  *	engine. The ethernet chip is quite friendly.
  */
  
-static int mace68k_open(struct device *dev)
+static int mace68k_open(struct net_device *dev)
 {
 	struct mace68k_data *mp = (struct mace68k_data *) dev->priv;
 	volatile struct mace *mb = mp->mace;
@@ -438,7 +456,7 @@ static int mace68k_open(struct device *dev)
  *	Shut down the mace and its interrupt channel
  */
  
-static int mace68k_close(struct device *dev)
+static int mace68k_close(struct net_device *dev)
 {
 	struct mace68k_data *mp = (struct mace68k_data *) dev->priv;
 	volatile struct mace *mb = mp->mace;
@@ -456,7 +474,7 @@ static int mace68k_close(struct device *dev)
 	return 0;
 }
 
-static inline void mace68k_set_timeout(struct device *dev)
+static inline void mace68k_set_timeout(struct net_device *dev)
 {
 	struct mace68k_data *mp = (struct mace68k_data *) dev->priv;
 	unsigned long flags;
@@ -477,15 +495,22 @@ static inline void mace68k_set_timeout(struct device *dev)
  *	Transmit a frame
  */
  
-static int mace68k_xmit_start(struct sk_buff *skb, struct device *dev)
+static int mace68k_xmit_start(struct sk_buff *skb, struct net_device *dev)
 {
 	struct mace68k_data *mp = (struct mace68k_data *) dev->priv;
 	/*
 	 *	This may need atomic types ???
 	 */
+
+	printk("mace68k_xmit_start: mp->tx_count = %d, dev->tbusy = %d, mp->tx_ring = %p (%p)\n",
+		mp->tx_count, dev->tbusy,
+		mp->tx_ring, virt_to_bus(mp->tx_ring));
+	psc_debug_dump();
+
 	if(mp->tx_count == 0)
 	{
 		dev->tbusy=1;
+		mace68k_dma_intr(IRQ_MAC_MACE_DMA, dev, NULL);
 		return 1;
 	}
 	mp->tx_count--;
@@ -508,7 +533,7 @@ static int mace68k_xmit_start(struct sk_buff *skb, struct device *dev)
 	return 0;
 }
 
-static struct net_device_stats *mace68k_stats(struct device *dev)
+static struct net_device_stats *mace68k_stats(struct net_device *dev)
 {
 	struct mace68k_data *p = (struct mace68k_data *) dev->priv;
 	return &p->stats;
@@ -519,7 +544,7 @@ static struct net_device_stats *mace68k_stats(struct device *dev)
  */
 #define CRC_POLY	0xedb88320
 
-static void mace68k_set_multicast(struct device *dev)
+static void mace68k_set_multicast(struct net_device *dev)
 {
 	struct mace68k_data *mp = (struct mace68k_data *) dev->priv;
 	volatile struct mace *mb = mp->mace;
@@ -607,11 +632,11 @@ static void mace68k_handle_misc_intrs(struct mace68k_data *mp, int intr)
 }
 
 /*
- *	A transmit error has occurred. (We kick the transmit side from
+ *	A transmit error has occured. (We kick the transmit side from
  *	the DMA completion)
  */
  
-static void mace68k_xmit_error(struct device *dev)
+static void mace68k_xmit_error(struct net_device *dev)
 {
 	struct mace68k_data *mp = (struct mace68k_data *) dev->priv;
 	volatile struct mace *mb = mp->mace;
@@ -636,10 +661,10 @@ static void mace68k_xmit_error(struct device *dev)
 }
 
 /*
- *	A receive interrupt occurred.
+ *	A receive interrupt occured.
  */
  
-static void mace68k_recv_interrupt(struct device *dev)
+static void mace68k_recv_interrupt(struct net_device *dev)
 {
 //	struct mace68k_data *mp = (struct mace68k_data *) dev->priv;
 //	volatile struct mace *mb = mp->mace;
@@ -651,7 +676,7 @@ static void mace68k_recv_interrupt(struct device *dev)
  
 static void mace68k_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 {
-	struct device *dev = (struct device *) dev_id;
+	struct net_device *dev = (struct net_device *) dev_id;
 	struct mace68k_data *mp = (struct mace68k_data *) dev->priv;
 	volatile struct mace *mb = mp->mace;
 	u8 ir;
@@ -667,7 +692,7 @@ static void mace68k_interrupt(int irq, void *dev_id, struct pt_regs *regs)
 
 static void mace68k_tx_timeout(unsigned long data)
 {
-//	struct device *dev = (struct device *) data;
+//	struct net_device *dev = (struct net_device *) data;
 //	struct mace68k_data *mp = (struct mace68k_data *) dev->priv;
 //	volatile struct mace *mb = mp->mace;
 }
@@ -676,7 +701,7 @@ static void mace68k_tx_timeout(unsigned long data)
  *	Handle a newly arrived frame
  */
  
-static void mace_dma_rx_frame(struct device *dev, struct mace_frame *mf)
+static void mace_dma_rx_frame(struct net_device *dev, struct mace_frame *mf)
 {
 	struct mace68k_data *mp = (struct mace68k_data *) dev->priv;
 	struct sk_buff *skb;
@@ -718,9 +743,10 @@ static void mace_dma_rx_frame(struct device *dev, struct mace_frame *mf)
  
 static void mace68k_dma_intr(int irq, void *dev_id, struct pt_regs *regs)
 {
-	struct device *dev = (struct device *) dev_id;
+	struct net_device *dev = (struct net_device *) dev_id;
 	struct mace68k_data *mp = (struct mace68k_data *) dev->priv;
 
+#if 0
 	u32 psc_status;
 	
 	/* It seems this must be allowed to stabilise ?? */
@@ -733,24 +759,23 @@ static void mace68k_dma_intr(int irq, void *dev_id, struct pt_regs *regs)
 	 	
 	if(psc_status&0x60000000)
 	{
+#endif
 		/*
 		 *	Process the read queue
 		 */
 		 
 		u16 psc_status = psc_read_word(PSC_ENETRD_CTL);
 		
-		if(psc_status&0x2000)
-		{
+		printk("mace68k_dma_intr: PSC_ENETRD_CTL = %04X\n", (uint) psc_status);
+
+		if (psc_status & 0x2000) {
 			mace68k_rxdma_reset(dev);
 			mp->rx_done = 0;
-		}
-		
-		else if(psc_status&0x100)
-		{
+		} else if (psc_status & 0x100) {
 			int left;
 			
-			psc_write_word(PSC_ENETRD_CMD+mp->rx_slot, 0x1100);
-			left=psc_read_long(PSC_ENETRD_LEN+mp->rx_slot);
+			psc_write_word(PSC_ENETRD_CMD + mp->rx_slot, 0x1100);
+			left=psc_read_long(PSC_ENETRD_LEN + mp->rx_slot);
 			/* read packets */	
 			
 			while(mp->rx_done < left)
@@ -780,14 +805,21 @@ static void mace68k_dma_intr(int irq, void *dev_id, struct pt_regs *regs)
 		 */
 		 
 		psc_status = psc_read_word(PSC_ENETWR_CTL);
-		if(psc_status&0x2000) {
+		printk("mace68k_dma_intr: PSC_ENETWR_CTL = %04X\n", (uint) psc_status);
+
+		/* apple's driver seems to loop over this until neither */
+		/* condition is true.    - jmt                          */
+
+		if (psc_status & 0x2000) {
 			mace68k_txdma_reset(dev);
-		} else if(psc_status&0x0100) {
-			psc_write_word(PSC_ENETWR_CMD+mp->tx_slot, 0x100);
-			mp->tx_slot^=16;
+		} else if (psc_status & 0x0100) {
+			psc_write_word(PSC_ENETWR_CMD + mp->tx_slot, 0x0100);
+			mp->tx_slot ^=16;
 			mp->tx_count++;
 			dev->tbusy = 0;
 			mark_bh(NET_BH);
 		}
+#if 0
 	}
+#endif
 }

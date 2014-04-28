@@ -6,10 +6,10 @@
  * Status:        Experimental.
  * Author:        Dag Brattli <dagb@cs.uit.no>
  * Created at:    Mon Aug  4 20:40:53 1997
- * Modified at:   Sun Jan  9 07:45:06 2000
+ * Modified at:   Tue Dec 14 23:04:16 1999
  * Modified by:   Dag Brattli <dagb@cs.uit.no>
  * 
- *     Copyright (c) 1998-2000 Dag Brattli <dagb@cs.uit.no>, 
+ *     Copyright (c) 1998-1999 Dag Brattli <dagb@cs.uit.no>, 
  *     All Rights Reserved.
  *     
  *     This program is free software; you can redistribute it and/or 
@@ -23,6 +23,7 @@
  *
  ********************************************************************/
 
+#include <linux/config.h>
 #include <linux/kernel.h>
 
 #include <net/irda/irda.h>
@@ -502,8 +503,6 @@ static int irlmp_state_connect(struct lsap_cb *self, IRLMP_EVENT event,
 
 	switch (event) {
 	case LM_CONNECT_RESPONSE:
-		del_timer(&self->watchdog_timer);
-
 		/* 
 		 *  Bind this LSAP to the IrLAP link where the connect was
 		 *  received 
@@ -518,11 +517,12 @@ static int irlmp_state_connect(struct lsap_cb *self, IRLMP_EVENT event,
 		hashbin_insert(self->lap->lsaps, (queue_t *) self, (int) self, 
 			       NULL);
 
-		self->connected = TRUE;	
-		irlmp_next_lsap_state(self, LSAP_DATA_TRANSFER_READY);
-
 		irlmp_send_lcf_pdu(self->lap, self->dlsap_sel, 
 				   self->slsap_sel, CONNECT_CNF, skb);
+
+		del_timer(&self->watchdog_timer);
+
+		irlmp_next_lsap_state(self, LSAP_DATA_TRANSFER_READY);
 		break;
 	default:
 		IRDA_DEBUG(0, __FUNCTION__ "(), Unknown event %s\n",

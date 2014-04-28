@@ -1,19 +1,17 @@
-/*
- * Linux driver for HYSDN cards
- * common definitions for both sides of the bus:
- * - conventions both spoolers must know
- * - channel numbers agreed upon
- *
- * Author    M. Steinkopf
- * Copyright 1999 by M. Steinkopf
- *
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
- *
- */
-
 #ifndef __INCE1PC_H__
 #define __INCE1PC_H__
+
+/****************************************************************************
+
+    FILE:       ince1pc.h
+
+    AUTHOR:     M.Steinkopf
+
+    PURPOSE:    common definitions for both sides of the bus:
+		- conventions both spoolers must know
+		- channel numbers agreed upon
+
+*****************************************************************************/ 
 
 /*  basic scalar definitions have same meanning,
  *  but their declaration location depends on environment
@@ -101,8 +99,8 @@ typedef struct ErrLogEntry_tag {
 #if defined(__TURBOC__)
 #if sizeof(tErrLogEntry) != ERRLOG_ENTRY_SIZE
 #error size of tErrLogEntry != ERRLOG_ENTRY_SIZE
-#endif				/*  */
-#endif				/*  */
+#endif				/*  */
+#endif				/*  */
 
 /*--------------------------------------DPRAM boot spooler------------------*/ 
 				/*  this is the struture used between pc and

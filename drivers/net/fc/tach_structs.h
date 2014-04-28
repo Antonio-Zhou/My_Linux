@@ -393,7 +393,7 @@ struct fc_info {
 	struct timer_list lport_timer;
 	struct timer_list explore_timer;
 	struct timer_list display_cache_timer;
-	struct device *dev;
+	struct net_device *dev;
 	struct Scsi_Host *host;
 	spinlock_t fc_lock;
 };

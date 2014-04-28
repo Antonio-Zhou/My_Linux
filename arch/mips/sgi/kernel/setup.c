@@ -1,4 +1,4 @@
-/* $Id: setup.c,v 1.24 1999/06/12 17:26:15 ulfc Exp $
+/* $Id: setup.c,v 1.29 2000/01/27 01:05:23 ralf Exp $
  *
  * setup.c: SGI specific setup, including init of the feature struct.
  *
@@ -22,26 +22,24 @@
 #include <asm/irq.h>
 #include <asm/reboot.h>
 #include <asm/sgialib.h>
-#include <asm/sgi.h>
-#include <asm/sgimc.h>
-#include <asm/sgihpc.h>
-#include <asm/sgint23.h>
+#include <asm/sgi/sgimc.h>
+#include <asm/sgi/sgihpc.h>
+#include <asm/sgi/sgint23.h>
 #include <asm/gdb-stub.h>
 
 #ifdef CONFIG_REMOTE_DEBUG
 extern void rs_kgdb_hook(int);
 extern void breakpoint(void);
+static int remote_debug = 0;
 #endif
 
-#if defined(CONFIG_SERIAL_CONSOLE) || defined(CONFIG_PROM_CONSOLE)
-extern void console_setup(char *, int *);
+#if defined(CONFIG_SERIAL_CONSOLE) || defined(CONFIG_SGI_PROM_CONSOLE)
+extern void console_setup(char *);
 #endif
 
 extern struct rtc_ops indy_rtc_ops;
 void indy_reboot_setup(void);
 void sgi_volume_set(unsigned char);
-
-static int remote_debug = 0;
 
 #define sgi_kh ((struct hpc_keyb *) (KSEG1 + 0x1fbd9800 + 64))
 
@@ -118,7 +116,7 @@ struct kbd_ops sgi_kbd_ops = {
 	sgi_read_status
 };
 
-__initfunc(static void sgi_irq_setup(void))
+static void __init sgi_irq_setup(void)
 {
 	sgint_init();
 
@@ -129,7 +127,16 @@ __initfunc(static void sgi_irq_setup(void))
 #endif
 }
 
-__initfunc(void sgi_setup(void))
+int __init page_is_ram(unsigned long pagenr)
+{
+	if (pagenr < MAP_NR(PAGE_OFFSET + 0x2000UL))
+		return 1;
+	if (pagenr > MAP_NR(PAGE_OFFSET + 0x08002000))
+		return 1;
+	return 0;
+}
+
+void __init sgi_setup(void)
 {
 #ifdef CONFIG_SERIAL_CONSOLE
 	char *ctype;
@@ -158,12 +165,12 @@ __initfunc(void sgi_setup(void))
 	 * graphics console, it is set to "d" for the first serial
 	 * line and "d2" for the second serial line.
 	 */
-	ctype = prom_getenv("console");
+	ctype = ArcGetEnvironmentVariable("console");
 	if(*ctype == 'd') {
 		if(*(ctype+1)=='2')
-			console_setup ("ttyS1", NULL);
+			console_setup ("ttyS1");
 		else
-			console_setup ("ttyS0", NULL);
+			console_setup ("ttyS0");
 	}
 #endif
 
@@ -189,14 +196,26 @@ __initfunc(void sgi_setup(void))
 #endif
 
 #ifdef CONFIG_SGI_PROM_CONSOLE
-	console_setup("ttyS0", NULL);
+	console_setup("ttyS0");
 #endif
-	  
-	sgi_volume_set(simple_strtoul(prom_getenv("volume"), NULL, 10));
+ 
+	sgi_volume_set(simple_strtoul(ArcGetEnvironmentVariable("volume"), NULL, 10));
 
 #ifdef CONFIG_VT
 #ifdef CONFIG_SGI_NEWPORT_CONSOLE
 	conswitchp = &newport_con;
+
+	screen_info = (struct screen_info) {
+		0, 0,		/* orig-x, orig-y */
+		0,		/* unused */
+		0,		/* orig_video_page */
+		0,		/* orig_video_mode */
+		160,		/* orig_video_cols */
+		0, 0, 0,	/* unused, ega_bx, unused */
+		64,		/* orig_video_lines */
+		0,		/* orig_video_isVGA */
+		16		/* orig_video_points */
+	};
 #else
 	conswitchp = &dummy_con;
 #endif
@@ -211,3 +230,4 @@ __initfunc(void sgi_setup(void))
 	init_vino();
 #endif
 }
+__initcall(rs_init);

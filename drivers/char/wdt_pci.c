@@ -28,7 +28,6 @@
  *					Parameterized timeout
  *		JP Nollmann	:	Added support for PCI wdt501p
  *		Alan Cox	:	Split ISA and PCI cards into two drivers
- *		Jeff Garzik	:	PCI cleanups
  */
 
 #include <linux/config.h>
@@ -51,11 +50,8 @@
 #include <linux/notifier.h>
 #include <linux/reboot.h>
 #include <linux/init.h>
-#include <linux/smp_lock.h>
-#include <linux/kcomp.h>
-#include <linux/pci.h>
 
-#define PFX "wdt_pci: "
+#include <linux/pci.h>
 
 /*
  * Until Access I/O gets their application for a PCI vendor ID approved,
@@ -82,6 +78,37 @@ static int irq=11;
 
 #define WD_TIMO (100*60)		/* 1 minute */
 
+#ifndef MODULE
+
+/**
+ *	wdtpci_setup:
+ *	@str: command line string
+ *
+ *	Setup options. The board isn't really probe-able so we have to
+ *	get the user to tell us the configuration. Sane people build it 
+ *	modular but the others come here.
+ */
+ 
+static int __init wdtpci_setup(char *str)
+{
+	int ints[4];
+
+	str = get_options (str, ARRAY_SIZE(ints), ints);
+
+	if (ints[0] > 0)
+	{
+		io = ints[1];
+		if(ints[0] > 1)
+			irq = ints[2];
+	}
+
+	return 1;
+}
+
+__setup("wdt=", wdtpci_setup);
+
+#endif /* !MODULE */
+ 
 /*
  *	Programming support
  */
@@ -149,7 +176,7 @@ static int wdtpci_status(void)
  *
  *	Handle an interrupt from the board. These are raised when the status
  *	map changes in what the board considers an interesting way. That means
- *	a failure condition occurring.
+ *	a failure condition occuring.
  */
  
 static void wdtpci_interrupt(int irq, void *dev_id, struct pt_regs *regs)
@@ -295,7 +322,7 @@ static int wdtpci_ioctl(struct inode *inode, struct file *file, unsigned int cmd
 	switch(cmd)
 	{
 		default:
-			return -ENOTTY;
+			return -ENOIOCTLCMD;
 		case WDIOC_GETSUPPORT:
 			return copy_to_user((struct watchdog_info *)arg, &ident, sizeof(ident))?-EFAULT:0;
 
@@ -328,9 +355,7 @@ static int wdtpci_open(struct inode *inode, struct file *file)
 		case WATCHDOG_MINOR:
 			if(wdt_is_open)
 				return -EBUSY;
-#ifdef CONFIG_WATCHDOG_NOWAYOUT	
 			MOD_INC_USE_COUNT;
-#endif
 			/*
 			 *	Activate 
 			 */
@@ -363,6 +388,7 @@ static int wdtpci_open(struct inode *inode, struct file *file)
 			outb_p(0, WDT_DC);	/* Enable */
 			return 0;
 		case TEMP_MINOR:
+			MOD_INC_USE_COUNT;
 			return 0;
 		default:
 			return -ENODEV;
@@ -385,14 +411,13 @@ static int wdtpci_release(struct inode *inode, struct file *file)
 {
 	if(MINOR(inode->i_rdev)==WATCHDOG_MINOR)
 	{
-		lock_kernel();
 #ifndef CONFIG_WATCHDOG_NOWAYOUT	
 		inb_p(WDT_DC);		/* Disable counters */
 		wdtpci_ctr_load(2,0);	/* 0 length reset pulses now */
 #endif		
 		wdt_is_open=0;
-		unlock_kernel();
 	}
+	MOD_DEC_USE_COUNT;
 	return 0;
 }
 
@@ -462,62 +487,12 @@ static struct notifier_block wdtpci_notifier=
 	0
 };
 
+#ifdef MODULE
 
-static int __init wdtpci_init_one (struct pci_dev *dev)
-{
-	static int dev_count = 0;
-
-	dev_count++;
-	if (dev_count > 1) {
-		printk (KERN_ERR PFX
-			"this driver only supports 1 device\n");
-		return -ENODEV;
-	}
-
-	irq = dev->irq;
-	io = dev->base_address[2]&PCI_BASE_ADDRESS_IO_MASK;
-	
-	printk ("WDT501-P(PCI-WDG-CSM) driver 0.07 at %X "
-		"(Interrupt %d)\n", io, irq);
-
-	request_region (io, 16, "wdt-pci");
-	if (request_irq (irq, wdtpci_interrupt, SA_INTERRUPT | SA_SHIRQ,
-			 "wdt-pci", &wdtpci_miscdev)) {
-		printk (KERN_ERR PFX "IRQ %d is not free.\n", irq);
-		goto err_out_free_res;
-	}
-
-	misc_register (&wdtpci_miscdev);
-
-#ifdef CONFIG_WDT_501
-	misc_register (&temp_miscdev);
-#endif
-
-	register_reboot_notifier (&wdtpci_notifier);
-
-	return 0;
-
-err_out_free_res:
-	release_region (io, 16);
-	return -EIO;
-}
-
-
-static void __exit wdtpci_remove_one (struct pci_dev *pdev)
-{
-	/* here we assume only one device will ever have
-	 * been picked up and registered by probe function */
-	unregister_reboot_notifier(&wdtpci_notifier);
-#ifdef CONFIG_WDT_501_PCI
-	misc_deregister(&temp_miscdev);
-#endif	
-	misc_deregister(&wdtpci_miscdev);
-	free_irq(irq, &wdtpci_miscdev);
-	release_region(io, 16);
-}
+#define wdtpci_init init_module
 
 /**
- *	wdtpci_cleanup:
+ *	cleanup_module:
  *
  *	Unload the watchdog. You cannot do this with any file handles open.
  *	If your watchdog is set to continue ticking on close and you unload
@@ -525,16 +500,19 @@ static void __exit wdtpci_remove_one (struct pci_dev *pdev)
  *	will not touch PC memory so all is fine. You just have to load a new
  *	module in 60 seconds or reboot.
  */
-
-static struct pci_dev *wdt_dev;
  
-static void __exit wdtpci_cleanup(void)
+void cleanup_module(void)
 {
-	if(wdt_dev)
-		wdtpci_remove_one(wdt_dev);
-	wdt_dev = NULL;
+	misc_deregister(&wdtpci_miscdev);
+#ifdef CONFIG_WDT_501_PCI
+	misc_deregister(&temp_miscdev);
+#endif	
+	unregister_reboot_notifier(&wdtpci_notifier);
+	release_region(io,16);
+	free_irq(irq, &wdtpci_miscdev);
 }
 
+#endif
 
 /**
  * 	wdtpci_init:
@@ -544,19 +522,37 @@ static void __exit wdtpci_cleanup(void)
  *	The open() function will actually kick the board off.
  */
  
-static int __init wdtpci_init(void)
+int __init wdtpci_init(void)
 {
-	wdt_dev=pci_find_device(PCI_VENDOR_ID_ACCESSIO, PCI_DEVICE_ID_WDG_CSM, NULL);
-	if (wdt_dev ==NULL)
-		return -ENODEV;
-	if(wdtpci_init_one(wdt_dev)<0)
+ 	struct pci_dev *dev = NULL;
+ 
+ 	if (pci_present()) 
+ 	{
+ 		while ((dev = pci_find_device(PCI_VENDOR_ID_ACCESSIO,
+ 					     PCI_DEVICE_ID_WDG_CSM, dev))) {
+ 			/* See if we can do this device */
+ 			irq = dev->irq;
+			io = dev->resource[2].start;
+ 			printk("WDT501-P(PCI-WDG-CSM) driver 0.07 at %X "
+			       "(Interrupt %d)\n", io, irq);
+ 		}
+ 	}
+	if(request_region(io, 16, "wdt-pci")==NULL)
 	{
-		wdt_dev=NULL;
-		return -ENODEV;
+		printk(KERN_ERR "I/O %d is not free.\n", io);
+		return -EIO;
 	}
+	if(request_irq(irq, wdtpci_interrupt, SA_INTERRUPT|SA_SHIRQ, "wdt-pci", &wdtpci_miscdev))
+	{
+		printk(KERN_ERR "IRQ %d is not free.\n", irq);
+		release_region(io, 16);
+		return -EIO;
+	}
+	misc_register(&wdtpci_miscdev);
+#ifdef CONFIG_WDT_501	
+	misc_register(&temp_miscdev);
+#endif	
+	register_reboot_notifier(&wdtpci_notifier);
 	return 0;
 }
 
-
-module_init(wdtpci_init);
-module_exit(wdtpci_cleanup);

@@ -1,19 +1,18 @@
 /*
  * linux/include/asm-arm/arch-nexuspci/system.h
  *
- * Copyright (c) 1996,1997,1998 Russell King.
+ * Copyright (c) 1996, 97, 98, 99, 2000 FutureTV Labs Ltd.
  */
 #ifndef __ASM_ARCH_SYSTEM_H
 #define __ASM_ARCH_SYSTEM_H
 
-#define arch_do_idle()		processor.u.armv3v4._do_idle()
-
-extern __inline__ void arch_reset(char mode)
+extern __inline__ void arch_idle(void)
 {
-	/*
-	 * loop endlessly - the watchdog will reset us if it's enabled.
-	 */
-	cli();
+	while (!current->need_resched && !hlt_counter)
+		cpu_do_idle(IDLE_WAIT_SLOW);
 }
+
+#define arch_reset(mode)	do { } while (0)
+#define arch_power_off()	do { } while (0)
 
 #endif

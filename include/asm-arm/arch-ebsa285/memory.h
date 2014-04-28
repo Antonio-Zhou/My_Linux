@@ -15,17 +15,21 @@
 #ifndef __ASM_ARCH_MMU_H
 #define __ASM_ARCH_MMU_H
 
+#include <linux/config.h>
+
 #if defined(CONFIG_HOST_FOOTBRIDGE)
 
 /*
  * Task size: 3GB
  */
 #define TASK_SIZE		(0xc0000000UL)
+#define TASK_SIZE_26		(0x04000000UL)
 
 /*
  * Page offset: 3GB
  */
 #define PAGE_OFFSET		(0xc0000000UL)
+#define PHYS_OFFSET		(0x00000000UL)
 
 #define __virt_to_bus__is_a_macro
 #define __virt_to_bus(x)	((x) - 0xe0000000)
@@ -40,11 +44,13 @@
  * Task size: 1.5GB
  */
 #define TASK_SIZE		(0x60000000UL)
+#define TASK_SIZE_26		(0x04000000UL)
 
 /*
  * Page offset: 1.5GB
  */
 #define PAGE_OFFSET		(0x60000000UL)
+#define PHYS_OFFSET		(0x00000000UL)
 
 #else
 

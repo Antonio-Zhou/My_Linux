@@ -33,4 +33,3 @@ void fixccws(ccw1_bits_t *ccwptr)
 			break;
 	}
 }
-

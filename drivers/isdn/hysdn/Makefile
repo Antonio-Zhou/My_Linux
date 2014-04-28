@@ -1,29 +1,24 @@
-# Makefile for the hysdn ISDN device driver
+SUB_DIRS     :=
+MOD_SUB_DIRS :=
+ALL_SUB_DIRS :=
 
-# The target object and module list name.
+L_OBJS :=
+LX_OBJS :=
+M_OBJS :=
+MX_OBJS :=
+O_OBJS :=
+OX_OBJS :=
+L_TARGET :=
+O_TARGET :=
 
-O_TARGET	:= vmlinux-obj.o
+ifeq ($(CONFIG_PROC_FS),y)
+  ifeq ($(CONFIG_HYSDN),y)
+    M_OBJS += hysdn.o
+    O_TARGET += hysdn.o
+    O_OBJS += hysdn_procconf.o hysdn_proclog.o boardergo.o hysdn_boot.o hysdn_sched.o hysdn_net.o
+    OX_OBJS += hysdn_init.o 
+  endif
+endif
 
-# Multipart objects.
-
-list-multi	:= hysdn.o
-hysdn-objs	:= hysdn_procconf.o hysdn_proclog.o boardergo.o hysdn_boot.o \
-		   hysdn_sched.o hysdn_net.o hysdn_init.o
-
-# Optional parts of multipart objects.
-
-hysdn-objs-$(CONFIG_HYSDN_CAPI) += hycapi.o
-
-hysdn-objs 	+= $(hysdn-objs-y)
-
-# Each configuration option enables a list of files.
-
-obj-$(CONFIG_HYSDN)	+= hysdn.o
-
-include $(TOPDIR)/drivers/isdn/Rules.make
-
-# Link rules for multi-part drivers.
-
-hysdn.o: $(hysdn-objs)
-	$(LD) -r -o $@ $(hysdn-objs)
+include $(TOPDIR)/Rules.make
 

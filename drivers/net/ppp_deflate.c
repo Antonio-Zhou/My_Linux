@@ -32,27 +32,9 @@
  */
 
 #include <linux/module.h>
-#include <linux/kernel.h>
-#include <linux/init.h>
-#include <linux/sched.h>
-#include <linux/types.h>
-#include <linux/fcntl.h>
-#include <linux/interrupt.h>
-#include <linux/ptrace.h>
-#include <linux/ioport.h>
-#include <linux/in.h>
 #include <linux/malloc.h>
 #include <linux/vmalloc.h>
-#include <linux/errno.h>
-#include <linux/string.h>	/* used in new tty drivers */
-#include <linux/signal.h>	/* used in new tty drivers */
-
-#include <asm/system.h>
-
-#include <linux/netdevice.h>
-#include <linux/skbuff.h>
-#include <linux/inet.h>
-#include <linux/ioctl.h>
+#include <linux/init.h>
 
 #include <linux/ppp_defs.h>
 #include <linux/ppp-comp.h>
@@ -657,33 +639,21 @@ struct compressor ppp_deflate_draft = {
 	z_comp_stats,		/* decomp_stat */
 };
 
-__initfunc(int ppp_deflate_install(void))
+int deflate_init(void)
 {  
-        int answer = ppp_register_compressor (&ppp_deflate);
+        int answer = ppp_register_compressor(&ppp_deflate);
         if (answer == 0)
-                printk (KERN_INFO
-			"PPP Deflate Compression module registered\n");
+                printk(KERN_INFO
+		       "PPP Deflate Compression module registered\n");
 	ppp_register_compressor(&ppp_deflate_draft);
         return answer;
 }
-
-#ifdef MODULE
-
-int
-init_module(void)
-{
-	return ppp_deflate_install();
-}
      
-void
-cleanup_module(void)
+void deflate_cleanup(void)
 {
-	if (MOD_IN_USE)
-		printk (KERN_INFO
-			"Deflate Compression module busy, remove delayed\n");
-	else {
-	        ppp_unregister_compressor (&ppp_deflate);
-	        ppp_unregister_compressor (&ppp_deflate_draft);
-	}
+	ppp_unregister_compressor(&ppp_deflate);
+	ppp_unregister_compressor(&ppp_deflate_draft);
 }
-#endif
+
+module_init(deflate_init);
+module_exit(deflate_cleanup);

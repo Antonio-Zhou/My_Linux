@@ -5,7 +5,6 @@
  * ELF register definitions..
  */
 #include <asm/ptrace.h>
-#include <asm/types.h>
 
 #define ELF_NGREG	48	/* includes nip, msr, lr, etc. */
 #define ELF_NFPREG	33	/* includes fpscr */
@@ -39,9 +38,11 @@ typedef elf_greg_t elf_gregset_t[ELF_NGREG];
 typedef double elf_fpreg_t;
 typedef elf_fpreg_t elf_fpregset_t[ELF_NFPREG];
 
+#ifdef __KERNEL__
 /* Altivec registers */
 typedef vector128 elf_vrreg_t;
 typedef elf_vrreg_t elf_vrregset_t[ELF_NVRREG];
+#endif /* __KERNEL__ */
 
 #define ELF_CORE_COPY_REGS(gregs, regs) \
 	memcpy(gregs, regs, \
@@ -65,8 +66,7 @@ typedef elf_vrreg_t elf_vrregset_t[ELF_NVRREG];
 #define ELF_PLATFORM	(NULL)
 
 #ifdef __KERNEL__
-#define SET_PERSONALITY(ex, ibcs2) \
-	current->personality = (ibcs2 ? PER_SVR4 : PER_LINUX)
+#define SET_PERSONALITY(ex, ibcs2) set_personality((ibcs2)?PER_SVR4:PER_LINUX)
 #endif
 
 #endif

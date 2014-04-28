@@ -95,8 +95,13 @@ typedef struct stlport {
 	unsigned long		hwid;
 	void			*uartp;
 	struct tty_struct	*tty;
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,3,0))
 	struct wait_queue	*open_wait;
 	struct wait_queue	*close_wait;
+#else
+	wait_queue_head_t	open_wait;
+	wait_queue_head_t	close_wait;
+#endif
 	struct termios		normaltermios;
 	struct termios		callouttermios;
 	struct tq_struct	tqueue;

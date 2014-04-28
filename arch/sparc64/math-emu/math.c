@@ -1,4 +1,4 @@
-/* $Id: math.c,v 1.7.2.2 1999/11/19 08:24:37 jj Exp $
+/* $Id: math.c,v 1.11 1999/12/20 05:02:25 davem Exp $
  * arch/sparc64/math-emu/math.c
  *
  * Copyright (C) 1997,1999 Jakub Jelinek (jj@ultra.linux.cz)
@@ -16,10 +16,10 @@
 #include <asm/uaccess.h>
 
 #include "sfp-util.h"
-#include "soft-fp.h"
-#include "single.h"
-#include "double.h"
-#include "quad.h"
+#include <math-emu/soft-fp.h>
+#include <math-emu/single.h>
+#include <math-emu/double.h>
+#include <math-emu/quad.h>
 
 /* QUAD - ftt == 3 */
 #define FMOVQ	0x003
@@ -90,7 +90,7 @@
  */
 static inline int record_exception(struct pt_regs *regs, int eflag)
 {
-	u64 fsr = current->tss.xfsr[0];
+	u64 fsr = current->thread.xfsr[0];
 	int would_trap;
 
 	/* Determine if this exception would have generated a trap. */
@@ -135,7 +135,7 @@ static inline int record_exception(struct pt_regs *regs, int eflag)
 	if(would_trap != 0)
 		fsr |= (1UL << 14);
 
-	current->tss.xfsr[0] = fsr;
+	current->thread.xfsr[0] = fsr;
 
 	/* If we will not trap, advance the program counter over
 	 * the instruction being handled.
@@ -176,7 +176,7 @@ int do_mathemu(struct pt_regs *regs, struct fpustate *f)
 
 	if(tstate & TSTATE_PRIV)
 		die_if_kernel("FPQuad from kernel", regs);
-	if(current->tss.flags & SPARC_FLAG_32BIT)
+	if(current->thread.flags & SPARC_FLAG_32BIT)
 		pc = (u32)pc;
 	if (get_user(insn, (u32 *)pc) != -EFAULT) {
 		if ((insn & 0xc1f80000) == 0x81a00000) /* FPOP1 */ {
@@ -222,8 +222,8 @@ int do_mathemu(struct pt_regs *regs, struct fpustate *f)
 		else if ((insn & 0xc1f80000) == 0x81a80000) /* FPOP2 */ {
 			IR = 2;
 			switch ((insn >> 5) & 0x1ff) {
-			case FCMPQ: TYPE(3,0,0,3,0,3,0); break;
-			case FCMPEQ: TYPE(3,0,0,3,0,3,0); break;
+			case FCMPQ: TYPE(3,0,0,3,1,3,1); break;
+			case FCMPEQ: TYPE(3,0,0,3,1,3,1); break;
 			/* Now the conditional fmovq support */
 			case FMOVQ0:
 			case FMOVQ1:
@@ -231,9 +231,9 @@ int do_mathemu(struct pt_regs *regs, struct fpustate *f)
 			case FMOVQ3:
 				/* fmovq %fccX, %fY, %fZ */
 				if (!((insn >> 11) & 3))
-					XR = current->tss.xfsr[0] >> 10;
+					XR = current->thread.xfsr[0] >> 10;
 				else
-					XR = current->tss.xfsr[0] >> (30 + ((insn >> 10) & 0x6));
+					XR = current->thread.xfsr[0] >> (30 + ((insn >> 10) & 0x6));
 				XR &= 3;
 				IR = 0;
 				switch ((insn >> 14) & 0x7) {
@@ -282,7 +282,7 @@ int do_mathemu(struct pt_regs *regs, struct fpustate *f)
 					XR = 0;
 				else if (freg < 16)
 					XR = regs->u_regs[freg];
-				else if (current->tss.flags & SPARC_FLAG_32BIT) {
+				else if (current->thread.flags & SPARC_FLAG_32BIT) {
 					struct reg_window32 *win32;
 					flushw_user ();
 					win32 = (struct reg_window32 *)((unsigned long)((u32)regs->u_regs[UREG_FP]));
@@ -305,7 +305,7 @@ int do_mathemu(struct pt_regs *regs, struct fpustate *f)
 			}
 			if (IR == 0) {
 				/* The fmov test was false. Do a nop instead */
-				current->tss.xfsr[0] &= ~(FSR_CEXC_MASK);
+				current->thread.xfsr[0] &= ~(FSR_CEXC_MASK);
 				regs->tpc = regs->tnpc;
 				regs->tnpc += 4;
 				return 1;
@@ -319,20 +319,20 @@ int do_mathemu(struct pt_regs *regs, struct fpustate *f)
 	if (type) {
 		argp rs1 = NULL, rs2 = NULL, rd = NULL;
 		
-		freg = (current->tss.xfsr[0] >> 14) & 0xf;
+		freg = (current->thread.xfsr[0] >> 14) & 0xf;
 		if (freg != (type >> 9))
 			goto err;
-		current->tss.xfsr[0] &= ~0x1c000;
+		current->thread.xfsr[0] &= ~0x1c000;
 		freg = ((insn >> 14) & 0x1f);
 		switch (type & 0x3) {
 		case 3: if (freg & 2) {
-				current->tss.xfsr[0] |= (6 << 14) /* invalid_fp_register */;
+				current->thread.xfsr[0] |= (6 << 14) /* invalid_fp_register */;
 				goto err;
 			}
 		case 2: freg = ((freg & 1) << 5) | (freg & 0x1e);
 		case 1: rs1 = (argp)&f->regs[freg];
 			flags = (freg < 32) ? FPRS_DL : FPRS_DU; 
-			if (!(current->tss.fpsaved[0] & flags))
+			if (!(current->thread.fpsaved[0] & flags))
 				rs1 = (argp)&zero;
 			break;
 		}
@@ -344,13 +344,13 @@ int do_mathemu(struct pt_regs *regs, struct fpustate *f)
 		freg = (insn & 0x1f);
 		switch ((type >> 3) & 0x3) {
 		case 3: if (freg & 2) {
-				current->tss.xfsr[0] |= (6 << 14) /* invalid_fp_register */;
+				current->thread.xfsr[0] |= (6 << 14) /* invalid_fp_register */;
 				goto err;
 			}
 		case 2: freg = ((freg & 1) << 5) | (freg & 0x1e);
 		case 1: rs2 = (argp)&f->regs[freg];
 			flags = (freg < 32) ? FPRS_DL : FPRS_DU; 
-			if (!(current->tss.fpsaved[0] & flags))
+			if (!(current->thread.fpsaved[0] & flags))
 				rs2 = (argp)&zero;
 			break;
 		}
@@ -362,23 +362,23 @@ int do_mathemu(struct pt_regs *regs, struct fpustate *f)
 		freg = ((insn >> 25) & 0x1f);
 		switch ((type >> 6) & 0x3) {
 		case 3: if (freg & 2) {
-				current->tss.xfsr[0] |= (6 << 14) /* invalid_fp_register */;
+				current->thread.xfsr[0] |= (6 << 14) /* invalid_fp_register */;
 				goto err;
 			}
 		case 2: freg = ((freg & 1) << 5) | (freg & 0x1e);
 		case 1: rd = (argp)&f->regs[freg];
 			flags = (freg < 32) ? FPRS_DL : FPRS_DU; 
-			if (!(current->tss.fpsaved[0] & FPRS_FEF)) {
-				current->tss.fpsaved[0] = FPRS_FEF;
-				current->tss.gsr[0] = 0;
+			if (!(current->thread.fpsaved[0] & FPRS_FEF)) {
+				current->thread.fpsaved[0] = FPRS_FEF;
+				current->thread.gsr[0] = 0;
 			}
-			if (!(current->tss.fpsaved[0] & flags)) {
+			if (!(current->thread.fpsaved[0] & flags)) {
 				if (freg < 32)
 					memset(f->regs, 0, 32*sizeof(u32));
 				else
 					memset(f->regs+32, 0, 32*sizeof(u32));
 			}
-			current->tss.fpsaved[0] |= flags;
+			current->thread.fpsaved[0] |= flags;
 			break;
 		}
 		switch ((insn >> 5) & 0x1ff) {
@@ -430,8 +430,6 @@ int do_mathemu(struct pt_regs *regs, struct fpustate *f)
 		/* comparison */
 		case FCMPQ:
 		case FCMPEQ:
-			FP_UNPACK_RAW_QP (QA, rs1);
-			FP_UNPACK_RAW_QP (QB, rs2);
 			FP_CMP_Q(XR, QB, QA, 3);
 			if (XR == 3 &&
 			    (((insn >> 5) & 0x1ff) == FCMPEQ ||
@@ -441,7 +439,7 @@ int do_mathemu(struct pt_regs *regs, struct fpustate *f)
 		}
 		if (!FP_INHIBIT_RESULTS) {
 			switch ((type >> 6) & 0x7) {
-			case 0: xfsr = current->tss.xfsr[0];
+			case 0: xfsr = current->thread.xfsr[0];
 				if (XR == -1) XR = 2;
 				switch (freg & 3) {
 				/* fcc0, 1, 2, 3 */
@@ -450,7 +448,7 @@ int do_mathemu(struct pt_regs *regs, struct fpustate *f)
 				case 2: xfsr &= ~0xc00000000UL; xfsr |= (XR << 34); break;
 				case 3: xfsr &= ~0x3000000000UL; xfsr |= (XR << 36); break;
 				}
-				current->tss.xfsr[0] = xfsr;
+				current->thread.xfsr[0] = xfsr;
 				break;
 			case 1: rd->s = IR; break;
 			case 2: rd->d = XR; break;
@@ -464,7 +462,7 @@ int do_mathemu(struct pt_regs *regs, struct fpustate *f)
 			return record_exception(regs, _fex);
 
 		/* Success and no exceptions detected. */
-		current->tss.xfsr[0] &= ~(FSR_CEXC_MASK);
+		current->thread.xfsr[0] &= ~(FSR_CEXC_MASK);
 		regs->tpc = regs->tnpc;
 		regs->tnpc += 4;
 		return 1;

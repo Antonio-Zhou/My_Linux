@@ -11,6 +11,7 @@
  *  Copyright (C) 1998 Phil Blundell
  */
 #include <linux/sched.h>
+#include <linux/ioport.h>
 #include <linux/init.h>
 
 #include <asm/dma.h>
@@ -125,7 +126,14 @@ void isa_disable_dma(int channel, dma_t *dma)
 	outb(channel | 4, isa_dma_port[channel][ISA_DMA_MASK]);
 }
 
-__initfunc(int isa_init_dma(void))
+static struct resource dma_resources[] = {
+	{ "dma1",		0x0000, 0x000f },
+	{ "dma low page", 	0x0080, 0x008f },
+	{ "dma2",		0x00c0, 0x00df },
+	{ "dma high page",	0x0480, 0x048f }
+};
+
+int __init isa_init_dma(void)
 {
 	int dmac_found;
 
@@ -138,7 +146,7 @@ __initfunc(int isa_init_dma(void))
 	dmac_found = inb(0x00) == 0x55 && inb(0x00) == 0xaa;
 
 	if (dmac_found) {
-		int channel;
+		int channel, i;
 
 		for (channel = 0; channel < 8; channel++)
 			isa_disable_dma(channel, NULL);
@@ -173,6 +181,9 @@ __initfunc(int isa_init_dma(void))
 		outb(0x33, 0x4d6);
 
 		request_dma(DMA_ISA_CASCADE, "cascade");
+
+		for (i = 0; i < sizeof(dma_resources) / sizeof(dma_resources[0]); i++)
+			request_resource(&ioport_resource, dma_resources + i);
 	}
 
 	return dmac_found;

@@ -65,7 +65,7 @@ static char *lap_reasons[] = {
 };
 
 #ifdef CONFIG_PROC_FS
-int irlap_proc_read(char *, char **, off_t, int, int);
+int irlap_proc_read(char *, char **, off_t, int);
 
 #endif /* CONFIG_PROC_FS */
 
@@ -107,7 +107,7 @@ void irlap_cleanup(void)
  *    Initialize IrLAP layer
  *
  */
-struct irlap_cb *irlap_open(struct device *dev, struct qos_info *qos)
+struct irlap_cb *irlap_open(struct net_device *dev, struct qos_info *qos)
 {
 	struct irlap_cb *self;
 
@@ -1130,8 +1130,7 @@ void irlap_set_local_busy(struct irlap_cb *self, int status)
  *    Give some info to the /proc file system
  *
  */
-int irlap_proc_read(char *buf, char **start, off_t offset, int len, 
-		    int unused)
+int irlap_proc_read(char *buf, char **start, off_t offset, int len)
 {
 	struct irlap_cb *self;
 	unsigned long flags;

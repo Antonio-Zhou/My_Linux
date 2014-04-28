@@ -22,25 +22,57 @@
 #include <linux/malloc.h>
 #include <linux/module.h>
 #include <linux/fs.h>
+#include <linux/devfs_fs_kernel.h>
 #include <linux/mm.h>
 #include <linux/sched.h>
+#include <linux/adb.h>
+#include <linux/cuda.h>
+#include <linux/pmu.h>
 #include <linux/notifier.h>
+#include <linux/wait.h>
 #include <linux/init.h>
-#include <asm/prom.h>
-#include <asm/adb.h>
-#include <asm/cuda.h>
-#include <asm/pmu.h>
 #include <asm/uaccess.h>
+#ifdef CONFIG_PPC
+#include <asm/prom.h>
 #include <asm/hydra.h>
+#endif
 
 EXPORT_SYMBOL(adb_controller);
 EXPORT_SYMBOL(adb_client_list);
-EXPORT_SYMBOL(adb_hardware);
 
-struct adb_controller *adb_controller = NULL;
+extern struct adb_driver via_macii_driver;
+extern struct adb_driver via_maciisi_driver;
+extern struct adb_driver via_cuda_driver;
+extern struct adb_driver adb_iop_driver;
+extern struct adb_driver via_pmu_driver;
+extern struct adb_driver macio_adb_driver;
+
+static struct adb_driver *adb_driver_list[] = {
+#ifdef CONFIG_ADB_MACII
+	&via_macii_driver,
+#endif
+#ifdef CONFIG_ADB_MACIISI
+	&via_maciisi_driver,
+#endif
+#ifdef CONFIG_ADB_CUDA
+	&via_cuda_driver,
+#endif
+#ifdef CONFIG_ADB_IOP
+	&adb_iop_driver,
+#endif
+#ifdef CONFIG_ADB_PMU
+	&via_pmu_driver,
+#endif
+#ifdef CONFIG_ADB_MACIO
+	&macio_adb_driver,
+#endif
+	NULL
+};
+
+struct adb_driver *adb_controller;
 struct notifier_block *adb_client_list = NULL;
-enum adb_hw adb_hardware = ADB_NONE;
 static int adb_got_sleep = 0;
+static int adb_inited = 0;
 
 #ifdef CONFIG_PMAC_PBOOK
 static int adb_notify_sleep(struct pmu_sleep_notifier *self, int when);
@@ -109,6 +141,15 @@ static int adb_scan_bus(void)
 			adb_request(&req, NULL, ADBREQ_SYNC, 3,
 				    (i<< 4) | 0xb, (highFree | 0x60), 0xfe);
 			/*
+			 * See if anybody actually moved. This is suggested
+			 * by HW TechNote 01:
+			 *
+			 * http://developer.apple.com/technotes/hw/hw_01.html
+			 */
+			adb_request(&req, NULL, ADBREQ_SYNC | ADBREQ_REPLY, 1,
+				    (highFree << 4) | 0xf);
+			if (req.reply_len <= 1) continue;
+			/*
 			 * Test whether there are any device(s) left
 			 * at address i.
 			 */
@@ -159,28 +200,47 @@ static int adb_scan_bus(void)
 	return devmask;
 }
 
-void adb_init(void)
+int __init adb_init(void)
 {
-	if ( (_machine != _MACH_chrp) && (_machine != _MACH_Pmac) )
-		return;
+	struct adb_driver *driver;
+	int i;
 
-	via_cuda_init();
-	via_pmu_init();
-	macio_adb_init();
-	
-	if (adb_controller == NULL)
-		printk(KERN_WARNING "Warning: no ADB interface detected\n");
-	else {
-		adb_hardware = adb_controller->kind;
+#ifdef CONFIG_PPC
+	if ( (_machine != _MACH_chrp) && (_machine != _MACH_Pmac) )
+		return 0;
+#endif
+#ifdef CONFIG_MAC
+	if (!MACH_IS_MAC)
+		return 0;
+#endif
+
+	/* xmon may do early-init */
+	if (adb_inited)
+		return 0;
+	adb_inited = 1;
 		
+	adb_controller = NULL;
+
+	i = 0;
+	while ((driver = adb_driver_list[i++]) != NULL) {
+		if (!driver->probe()) {
+			adb_controller = driver;
+			break;
+		}
+	}
+	if ((adb_controller == NULL) || adb_controller->init()) {
+		printk(KERN_WARNING "Warning: no ADB interface detected\n");
+	} else {
 #ifdef CONFIG_PMAC_PBOOK
 		pmu_register_sleep_notifier(&adb_sleep_notifier);
 #endif /* CONFIG_PMAC_PBOOK */
 
 		adb_reset_bus();
 	}
+	return 0;
 }
 
+__initcall(adb_init);
 
 #ifdef CONFIG_PMAC_PBOOK
 /*
@@ -295,6 +355,9 @@ adb_request(struct adb_request *req, void (*done)(struct adb_request *),
 		req->data[i+1] = va_arg(list, int);
 	va_end(list);
 
+	if (flags & ADBREQ_NOSEND)
+		return 0;
+
 	return adb_controller->send_request(req, flags & ADBREQ_SYNC);
 }
 
@@ -390,13 +453,13 @@ adb_get_infos(int address, int *original_address, int *handler_id)
 
 #define ADB_MAJOR	56	/* major number for /dev/adb */
 
-extern int adbdev_init(void);
+extern void adbdev_init(void);
 
 struct adbdev_state {
 	spinlock_t	lock;
 	atomic_t	n_pending;
 	struct adb_request *completed;
-	struct wait_queue *wait_queue;
+  	wait_queue_head_t wait_queue;
 	int		inuse;
 };
 
@@ -433,7 +496,7 @@ static int adb_open(struct inode *inode, struct file *file)
 {
 	struct adbdev_state *state;
 
-	if (MINOR(inode->i_rdev) > 0 || (adb_controller == NULL))
+	if (MINOR(inode->i_rdev) > 0 || adb_controller == NULL)
 		return -ENXIO;
 	state = kmalloc(sizeof(struct adbdev_state), GFP_KERNEL);
 	if (state == 0)
@@ -442,7 +505,7 @@ static int adb_open(struct inode *inode, struct file *file)
 	spin_lock_init(&state->lock);
 	atomic_set(&state->n_pending, 0);
 	state->completed = NULL;
-	state->wait_queue = NULL;
+	init_waitqueue_head(&state->wait_queue);
 	state->inuse = 1;
 
 	return 0;
@@ -479,7 +542,7 @@ static ssize_t adb_read(struct file *file, char *buf,
 	int ret;
 	struct adbdev_state *state = file->private_data;
 	struct adb_request *req;
-	struct wait_queue wait = { current, NULL };
+	wait_queue_t wait = __WAITQUEUE_INITIALIZER(wait,current);
 	unsigned long flags;
 
 	if (count < 2)
@@ -560,6 +623,7 @@ static ssize_t adb_write(struct file *file, const char *buf,
 		goto out;
 
 	atomic_inc(&state->n_pending);
+	if (adb_controller == NULL) return -ENXIO;
 
 	/* Special case for ADB_BUSRESET request, all others are sent to
 	   the controller */
@@ -589,31 +653,29 @@ out:
 }
 
 static struct file_operations adb_fops = {
-	adb_lseek,
-	adb_read,
-	adb_write,
-	NULL,		/* no readdir */
-	NULL,		/* no poll yet */
-	NULL,		/* no ioctl yet */
-	NULL,		/* no mmap */
-	adb_open,
-	NULL,		/* flush */
-	adb_release
+	llseek:		adb_lseek,
+	read:		adb_read,
+	write:		adb_write,
+	open:		adb_open,
+	release:	adb_release,
 };
 
-static int __init adbdev_init(void)
+void adbdev_init()
 {
-	if (adb_controller == NULL)
-		return 0;
-	if (register_chrdev(ADB_MAJOR, "adb", &adb_fops))
+#ifdef CONFIG_PPC
+	if ( (_machine != _MACH_chrp) && (_machine != _MACH_Pmac) )
+		return;
+#endif
+#ifdef CONFIG_MAC
+	if (!MACH_IS_MAC)
+		return;
+#endif
+
+	if (devfs_register_chrdev(ADB_MAJOR, "adb", &adb_fops))
 		printk(KERN_ERR "adb: unable to get major %d\n", ADB_MAJOR);
-	return 0;
+	else
+		devfs_register (NULL, "adb", 0, DEVFS_FL_NONE,
+				ADB_MAJOR, 0,
+				S_IFCHR | S_IRUSR | S_IWUSR, 0, 0,
+				&adb_fops, NULL);
 }
-
-static void adbdev_cleanup(void)
-{
-	unregister_chrdev(ADB_MAJOR, "adb");
-}
-
-module_init(adbdev_init);
-module_exit(adbdev_cleanup);

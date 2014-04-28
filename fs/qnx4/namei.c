@@ -76,7 +76,7 @@ static struct buffer_head *qnx4_find_entry(int len, struct inode *dir,
 		return NULL;
 	}
 	bh = NULL;
-	block = blkofs = offset = 0;
+	block = offset = blkofs = 0;
 	while (blkofs * QNX4_BLOCK_SIZE + offset < dir->i_size) {
 		if (!bh) {
 			bh = qnx4_bread(dir, blkofs, 0);
@@ -121,7 +121,7 @@ struct dentry * qnx4_lookup(struct inode *dir, struct dentry *dentry)
 	if ((de->di_status & QNX4_FILE_LINK) == QNX4_FILE_LINK) {
 		lnk = (struct qnx4_link_info *) de;
 		ino = (le32_to_cpu(lnk->dl_inode_blk) - 1) *
-		    QNX4_INODES_PER_BLOCK +
+                    QNX4_INODES_PER_BLOCK +
 		    lnk->dl_inode_ndx;
 	}
 	brelse(bh);
@@ -171,10 +171,6 @@ int qnx4_rmdir(struct inode *dir, struct dentry *dentry)
 		goto end_rmdir;
 	}
 #endif
-	if (!list_empty(&dentry->d_hash)) {
-		retval = -EBUSY;
-		goto end_rmdir;
-	}
 	if (inode->i_nlink != 2) {
 		QNX4DEBUG(("empty directory has nlink!=2 (%d)\n", inode->i_nlink));
 	}
@@ -188,7 +184,6 @@ int qnx4_rmdir(struct inode *dir, struct dentry *dentry)
 	inode->i_ctime = dir->i_ctime = dir->i_mtime = CURRENT_TIME;
 	dir->i_nlink--;
 	mark_inode_dirty(dir);
-	d_delete(dentry);
 	retval = 0;
 
       end_rmdir:
@@ -232,7 +227,6 @@ int qnx4_unlink(struct inode *dir, struct dentry *dentry)
 	inode->i_nlink--;
 	inode->i_ctime = dir->i_ctime;
 	mark_inode_dirty(inode);
-	d_delete(dentry);
 	retval = 0;
 
       end_unlink:

@@ -9,14 +9,17 @@
 
 extern const char xchg_str[];
 
+#include <linux/config.h>
 #include <asm/proc-fns.h>
 
 extern __inline__ unsigned long __xchg(unsigned long x, volatile void *ptr, int size)
 {
+	extern void arm_invalidptr(const char *, int);
+
 	switch (size) {
-		case 1:	return processor.u.armv2._xchg_1(x, ptr);
-		case 2:	return processor.u.armv2._xchg_2(x, ptr);
-		case 4:	return processor.u.armv2._xchg_4(x, ptr);
+		case 1:	return cpu_xchg_1(x, ptr);
+		case 2:	return cpu_xchg_2(x, ptr);
+		case 4:	return cpu_xchg_4(x, ptr);
 		default: arm_invalidptr(xchg_str, size);
 	}
 	return 0;
@@ -26,12 +29,7 @@ extern __inline__ unsigned long __xchg(unsigned long x, volatile void *ptr, int 
  * We need to turn the caches off before calling the reset vector - RiscOS
  * messes up if we don't
  */
-#define proc_hard_reset()	processor._proc_fin()
-
-/*
- * This processor does not idle
- */
-#define proc_idle()
+#define proc_hard_reset()	cpu_proc_fin()
 
 /*
  * A couple of speedups for the ARM
@@ -110,7 +108,13 @@ extern __inline__ unsigned long __xchg(unsigned long x, volatile void *ptr, int 
 	  : "memory");					\
 	} while (0)
 
-#ifdef __SMP__
+/* For spinlocks etc */
+#define local_irq_save(x)	__save_flags_cli(x)
+#define local_irq_restore(x)	__restore_flags(x)
+#define local_irq_disable()	__cli()
+#define local_irq_enable()	__sti()
+
+#ifdef CONFIG_SMP
 #error SMP not supported
 #else
 

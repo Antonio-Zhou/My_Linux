@@ -1,3 +1,4 @@
+
 /*
  **********************************************************************
  *     recmgr.c -- Recording manager for emu10k1 driver
@@ -29,110 +30,110 @@
  **********************************************************************
  */
 
-#include "8010.h"
+#include "hwaccess.h"
 #include "recmgr.h"
 
-void emu10k1_start_record(struct emu10k1_card *card, struct wavein_buffer *buffer)
+void emu10k1_start_record(struct record *rec_ptr)
 {
+	struct emu10k1_card *hw_ptr = rec_ptr->card;
+
 	DPF(2, "emu10k1_start_record()\n");
+	DPD(2, "bus addx: %lx\n", rec_ptr->busaddx);
 
-	sblive_writeptr(card, buffer->sizereg, 0, buffer->sizeregval);
+	sblive_writeptr(hw_ptr, rec_ptr->bufaddrreg, 0, rec_ptr->busaddx);
+	sblive_writeptr(hw_ptr, rec_ptr->bufsizereg, 0, rec_ptr->bufsize);
 
-	if (buffer->adcctl)
-		sblive_writeptr(card, ADCCR, 0, buffer->adcctl);
+	if (rec_ptr->adcctl)
+		sblive_writeptr(hw_ptr, ADCCR, 0, rec_ptr->adcctl);
 
 	return;
 }
 
-void emu10k1_stop_record(struct emu10k1_card *card, struct wavein_buffer *buffer)
+void emu10k1_stop_record(struct record *rec_ptr)
 {
+	struct emu10k1_card *hw_ptr = rec_ptr->card;
+
 	DPF(2, "emu10k1_stop_record()\n");
 
 	/* Disable record transfer */
-	if (buffer->adcctl)
-		sblive_writeptr(card, ADCCR, 0, 0);
+	if (rec_ptr->adcctl)
+		sblive_writeptr(hw_ptr, ADCCR, 0, 0);
 
-	sblive_writeptr(card, buffer->sizereg, 0, ADCBS_BUFSIZE_NONE);
+	sblive_writeptr(hw_ptr, rec_ptr->bufsizereg, 0, ADCBS_BUFSIZE_NONE);
 
 	return;
 }
 
-void emu10k1_set_record_src(struct emu10k1_card *card, struct wiinst *wiinst)
+void emu10k1_set_record_src(struct record *rec_ptr, u8 recsrc)
 {
-	struct wavein_buffer *buffer = &wiinst->buffer;
-
 	DPF(2, "emu10k1_set_record_src()\n");
 
-	switch (wiinst->recsrc) {
+	switch (recsrc) {
 
 	case WAVERECORD_AC97:
 		DPF(2, "recording source: AC97\n");
-		buffer->sizereg = ADCBS;
-		buffer->addrreg = ADCBA;
-		buffer->idxreg = ADCIDX_IDX;
+		rec_ptr->bufsizereg = ADCBS;
+		rec_ptr->bufaddrreg = ADCBA;
+		rec_ptr->bufidxreg = ADCIDX_IDX;
 
-		switch (wiinst->format.samplingrate) {
+		switch (rec_ptr->samplingrate) {
 		case 0xBB80:
-			buffer->adcctl = ADCCR_SAMPLERATE_48;
+			rec_ptr->adcctl = ADCCR_SAMPLERATE_48;
 			break;
 		case 0xAC44:
-			buffer->adcctl = ADCCR_SAMPLERATE_44;
+			rec_ptr->adcctl = ADCCR_SAMPLERATE_44;
 			break;
 		case 0x7D00:
-			buffer->adcctl = ADCCR_SAMPLERATE_32;
+			rec_ptr->adcctl = ADCCR_SAMPLERATE_32;
 			break;
 		case 0x5DC0:
-			buffer->adcctl = ADCCR_SAMPLERATE_24;
+			rec_ptr->adcctl = ADCCR_SAMPLERATE_24;
 			break;
 		case 0x5622:
-			buffer->adcctl = ADCCR_SAMPLERATE_22;
+			rec_ptr->adcctl = ADCCR_SAMPLERATE_22;
 			break;
 		case 0x3E80:
-			buffer->adcctl = ADCCR_SAMPLERATE_16;
+			rec_ptr->adcctl = ADCCR_SAMPLERATE_16;
 			break;
 		case 0x2B11:
-			buffer->adcctl = ADCCR_SAMPLERATE_11;
+			rec_ptr->adcctl = ADCCR_SAMPLERATE_11;
 			break;
 		case 0x1F40:
-			buffer->adcctl = ADCCR_SAMPLERATE_8;
+			rec_ptr->adcctl = ADCCR_SAMPLERATE_8;
 			break;
 		default:
-			BUG();
 			break;
 		}
 
-		buffer->adcctl |= ADCCR_LCHANENABLE;
+		rec_ptr->adcctl |= ADCCR_LCHANENABLE;
 
-		if (wiinst->format.channels == 2)
-			buffer->adcctl |= ADCCR_RCHANENABLE;
+		if (rec_ptr->is_stereo)
+			rec_ptr->adcctl |= ADCCR_RCHANENABLE;
+
+		//      rec_ptr->fxwc = 0;
 
 		break;
 
 	case WAVERECORD_MIC:
 		DPF(2, "recording source: MIC\n");
-		buffer->sizereg = MICBS;
-		buffer->addrreg = MICBA;
-		buffer->idxreg = MICIDX_IDX;
-		buffer->adcctl = 0;
+		rec_ptr->bufsizereg = MICBS;
+		rec_ptr->bufaddrreg = MICBA;
+		rec_ptr->bufidxreg = MICIDX_IDX;
+		rec_ptr->adcctl = 0;
+		//      rec_ptr->fxwc = 0;
 		break;
 
 	case WAVERECORD_FX:
 		DPF(2, "recording source: FX\n");
-		buffer->sizereg = FXBS;
-		buffer->addrreg = FXBA;
-		buffer->idxreg = FXIDX_IDX;
-		buffer->adcctl = 0;
-
-		sblive_writeptr(card, FXWC, 0, wiinst->fxwc);
+		rec_ptr->bufsizereg = FXBS;
+		rec_ptr->bufaddrreg = FXBA;
+		rec_ptr->bufidxreg = FXIDX_IDX;
+		rec_ptr->adcctl = 0;
+		//      rec_ptr->fxwc = 0x000ffff;
 		break;
 	default:
-		BUG();
 		break;
 	}
-
-	DPD(2, "bus addx: %x\n", buffer->dma_handle);
-
-	sblive_writeptr(card, buffer->addrreg, 0, buffer->dma_handle);
 
 	return;
 }

@@ -83,13 +83,13 @@
 
 #include <asm/io.h>
 #include <asm/system.h>
-#include <asm/spinlock.h>
+#include <linux/spinlock.h>
 #include <linux/signal.h>
 #include <linux/sched.h>
 #include <linux/string.h>
 #include <linux/proc_fs.h>
 #include <linux/init.h>
-
+#include <linux/delay.h>
 #include <linux/blk.h>
 #include "scsi.h"
 #include "hosts.h"
@@ -99,7 +99,6 @@
 #include <asm/uaccess.h>
 #include "sd.h"
 #include <scsi/scsi_ioctl.h>
-#include <asm/delay.h>
 
 #ifdef DEBUG
 #define DPRINTK( when, msg... ) do { if ( (DEBUG & (when)) == (when) ) printk( msg ); } while (0)
@@ -107,12 +106,6 @@
 #define DPRINTK( when, msg... ) do { } while (0)
 #endif
 #define DANY( msg... ) DPRINTK( 0xffff, msg );
-
-static struct proc_dir_entry proc_scsi_seagate =
-{
-  PROC_SCSI_SEAGATE, 7, "seagate",
-  S_IFDIR | S_IRUGO | S_IXUGO, 2
-};
 
 #ifndef IRQ
 #define IRQ 5
@@ -255,10 +248,10 @@ MODULE_PARM(controller_type, "b");
 MODULE_PARM(irq, "i");
 
 #define retcode(result) (((result) << 16) | (message << 8) | status)
-#define STATUS ((u8) readb(st0x_cr_sr))
-#define DATA ((u8) readb(st0x_dr))
-#define WRITE_CONTROL(d) { writeb((d), st0x_cr_sr); }
-#define WRITE_DATA(d) { writeb((d), st0x_dr); }
+#define STATUS ((u8) isa_readb(st0x_cr_sr))
+#define DATA ((u8) isa_readb(st0x_dr))
+#define WRITE_CONTROL(d) { isa_writeb((d), st0x_cr_sr); }
+#define WRITE_DATA(d) { isa_writeb((d), st0x_dr); }
 
 void st0x_setup (char *str, int *ints)
 {
@@ -318,8 +311,6 @@ static const Signature __initdata signatures[] =
   {"FUTURE DOMAIN CORP. (C) 1992 V8.00.004/02/92", 5, 44, FD},
   {"IBM F1 BIOS V1.1004/30/92", 5, 25, FD},
   {"FUTURE DOMAIN TMC-950", 5, 21, FD},
-  /* Added for 2.2.16 by Matthias_Heidbrink@b.maus.de */
-  {"IBM F1 V1.2009/22/93", 5, 25, FD},
 };
 
 #define NUM_SIGNATURES (sizeof(signatures) / sizeof(Signature))
@@ -424,7 +415,7 @@ int __init seagate_st0x_detect (Scsi_Host_Template * tpnt)
   struct Scsi_Host *instance;
   int i, j;
 
-  tpnt->proc_dir = &proc_scsi_seagate;
+  tpnt->proc_name = "seagate";
 /*
  *    First, we try for the manual override.  */
   DANY ("Autodetecting ST0x / TMC-8xx\n");
@@ -459,7 +450,7 @@ int __init seagate_st0x_detect (Scsi_Host_Template * tpnt)
     for (i = 0; i < (sizeof (seagate_bases) / sizeof (unsigned int)); ++i)
 
       for (j = 0; !base_address && j < NUM_SIGNATURES; ++j)
-        if (check_signature (seagate_bases[i] + signatures[j].offset,
+        if (isa_check_signature (seagate_bases[i] + signatures[j].offset,
                              signatures[j].signature, signatures[j].length))
         {
           base_address = seagate_bases[i];
@@ -1708,16 +1699,124 @@ int seagate_st0x_reset (Scsi_Cmnd * SCpnt, unsigned int reset_flags)
   return SCSI_RESET_WAKEUP;
 }
 
+
+int seagate_st0x_biosparam (Disk * disk, kdev_t dev, int *ip)
+{
+  unsigned char buf[256 + sizeof (Scsi_Ioctl_Command)], 
+                cmd[6], *data, *page;
+  Scsi_Ioctl_Command *sic = (Scsi_Ioctl_Command *) buf;
+  int result, formatted_sectors, total_sectors;
+  int cylinders, heads, sectors;
+  int capacity;
+
 /*
- * There used to be some biosparam() code here, but the
- * author misunderstood the purpose of this routine and
- * tried to determine physical reality by reading mode
- * sense pages and the like. But that yields values like
- * 424 sectors/track, completely unusable for partition tables.
- * (And after the translation part we may have heads > 255,
- * equally unusable.)
- * So, we delete all of this stuff and rely on the defaults.
+ * Only SCSI-I CCS drives and later implement the necessary mode sense
+ * pages.
  */
+
+  if (disk->device->scsi_level < 2)
+    return -1;
+
+  data = sic->data;
+
+  cmd[0] = MODE_SENSE;
+  cmd[1] = (disk->device->lun << 5) & 0xe5;
+  cmd[2] = 0x04;                        /* Read page 4, rigid disk geometry
+                                           page current values */
+  cmd[3] = 0;
+  cmd[4] = 255;
+  cmd[5] = 0;
+
+/*
+ * We are transferring 0 bytes in the out direction, and expect to get back
+ * 24 bytes for each mode page.
+ */
+  sic->inlen = 0;
+  sic->outlen = 256;
+
+  memcpy (data, cmd, 6);
+
+  if (!(result = kernel_scsi_ioctl (disk->device, SCSI_IOCTL_SEND_COMMAND,
+                                    sic)))
+  {
+/*
+ * The mode page lies beyond the MODE SENSE header, with length 4, and
+ * the BLOCK DESCRIPTOR, with length header[3].
+ */
+    page = data + 4 + data[3];
+    heads = (int) page[5];
+    cylinders = (page[2] << 16) | (page[3] << 8) | page[4];
+
+    cmd[2] = 0x03;                      /* Read page 3, format page current
+                                           values */
+    memcpy (data, cmd, 6);
+
+    if (!(result = kernel_scsi_ioctl (disk->device, SCSI_IOCTL_SEND_COMMAND,
+                                      sic)))
+    {
+      page = data + 4 + data[3];
+      sectors = (page[10] << 8) | page[11];
+/*
+ * Get the total number of formatted sectors from the block descriptor,
+ * so we can tell how many are being used for alternates.
+ */
+      formatted_sectors = (data[4 + 1] << 16) | (data[4 + 2] << 8) 
+                          | data[4 + 3];
+
+      total_sectors = (heads * cylinders * sectors);
+
+/*
+ * Adjust the real geometry by subtracting
+ * (spare sectors / (heads * tracks)) cylinders from the number of cylinders.
+ *
+ * It appears that the CE cylinder CAN be a partial cylinder.
+ */
+
+      printk ("scsi%d : heads = %d cylinders = %d sectors = %d total = %d formatted = %d\n",
+              hostno, heads, cylinders, sectors, total_sectors,
+              formatted_sectors);
+
+      if (!heads || !sectors || !cylinders)
+        result = -1;
+      else
+        cylinders -= ((total_sectors - formatted_sectors) / (heads * sectors));
+
+/*
+ * Now, we need to do a sanity check on the geometry to see if it is
+ * BIOS compatible.  The maximum BIOS geometry is 1024 cylinders *
+ * 256 heads * 64 sectors.
+ */
+
+      if ((cylinders > 1024) || (sectors > 64))
+      {
+        /* The Seagate's seem to have some mapping.  Multiply
+           heads*sectors*cyl to get capacity.  Then start rounding down.
+         */
+        capacity = heads * sectors * cylinders;         
+      
+        /* Old MFM Drives use this, so does the Seagate */
+        sectors = 17;
+        heads = 2;
+        capacity = capacity / sectors;
+        while (cylinders > 1024)
+        {
+          heads *= 2;                   /* For some reason, they go in
+                                           multiples */
+          cylinders = capacity / heads;
+        }
+      }
+      ip[0] = heads;
+      ip[1] = sectors;
+      ip[2] = cylinders;
+/*
+ * There should be an alternate mapping for things the seagate doesn't
+ * understand, but I couldn't say what it is with reasonable certainty.
+ */
+    }
+  }
+
+  return result;
+}
 
 #ifdef MODULE
 /* Eventually this will go into an include file, but this will be later */

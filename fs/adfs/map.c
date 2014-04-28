@@ -8,7 +8,11 @@
 #include <linux/fs.h>
 #include <linux/adfs_fs.h>
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,3,0)
+#include <linux/spinlock.h>
+#else
 #include <asm/spinlock.h>
+#endif
 
 #include "adfs.h"
 

@@ -154,7 +154,10 @@ static unsigned long CyberRegs_phys;
  *    Predefined Video Modes
  */
 
-static struct fb_videomode cyberfb_predefined[] __initdata = {
+static struct {
+    const char *name;
+    struct fb_var_screeninfo var;
+} cyberfb_predefined[] __initdata = {
 	{ "640x480-8", {		/* Default 8 BPP mode (cyber8) */
 		640, 480, 640, 480, 0, 0, 8, 0,
 		{0, 8, 0}, {0, 8, 0}, {0, 8, 0}, {0, 0, 0},
@@ -236,7 +239,7 @@ static int cyberfb_usermode __initdata = 0;
  *    Interface used by the world
  */
 
-void cyberfb_setup(char *options, int *ints);
+int cyberfb_setup(char *options);
 
 static int cyberfb_open(struct fb_info *info, int user);
 static int cyberfb_release(struct fb_info *info, int user);
@@ -259,7 +262,7 @@ static int cyberfb_ioctl(struct inode *inode, struct file *file, u_int cmd,
  *    Interface to the low level console driver
  */
 
-void cyberfb_init(void);
+int cyberfb_init(void);
 static int Cyberfb_switch(int con, struct fb_info *info);
 static int Cyberfb_updatevar(int con, struct fb_info *info);
 static void Cyberfb_blank(int blank, struct fb_info *info);
@@ -403,9 +406,9 @@ static int Cyber_encode_fix(struct fb_fix_screeninfo *fix,
 	DPRINTK("ENTER\n");
 	memset(fix, 0, sizeof(struct fb_fix_screeninfo));
 	strcpy(fix->id, cyberfb_name);
-	fix->smem_start = (char*) CyberMem_phys;
+	fix->smem_start = CyberMem_phys;
 	fix->smem_len = CyberSize;
-	fix->mmio_start = (char*) CyberRegs_phys;
+	fix->mmio_start = CyberRegs_phys;
 	fix->mmio_len = 0x10000;
 
 	fix->type = FB_TYPE_PACKED_PIXELS;
@@ -1059,7 +1062,7 @@ static struct fb_ops cyberfb_ops = {
 };
 
 
-__initfunc(void cyberfb_setup(char *options, int *ints))
+int __init cyberfb_setup(char *options)
 {
 	char *this_opt;
 	DPRINTK("ENTER\n");
@@ -1068,7 +1071,7 @@ __initfunc(void cyberfb_setup(char *options, int *ints))
 
 	if (!options || !*options) {
 		DPRINTK("EXIT - no options\n");
-		return;
+		return 0;
 	}
 
 	for (this_opt = strtok(options, ","); this_opt;
@@ -1092,83 +1095,84 @@ __initfunc(void cyberfb_setup(char *options, int *ints))
 		cyberfb_default.yres,
 		cyberfb_default.bits_per_pixel);
 	DPRINTK("EXIT\n");
+	return 0;
 }
 
 /*
  *    Initialization
  */
 
-__initfunc(void cyberfb_init(void))
+int __init cyberfb_init(void)
 {
+	unsigned long board_addr, board_size;
 	struct cyberfb_par par;
-	unsigned long board_addr;
-	unsigned long board_size;
-	const struct ConfigDev *cd;
-	unsigned int CyberKey = 0;
+	struct zorro_dev *z = NULL;
 	DPRINTK("ENTER\n");
 
-	if (!(CyberKey = zorro_find(ZORRO_PROD_PHASE5_CYBERVISION64, 0, 0))) {
-		DPRINTK("EXIT - zorro_find failed\n");
-		return;
-	}
+	while ((z = zorro_find_device(ZORRO_PROD_PHASE5_CYBERVISION64, z))) {
+	    board_addr = z->resource.start;
+	    board_size = z->resource.end-z->resource.start+1;
+	    CyberMem_phys = board_addr + 0x01400000;
+	    CyberRegs_phys = CyberMem_phys + 0x00c00000;
+	    if (!request_mem_region(CyberRegs_phys, 0x10000, "S3 Trio64"))
+		continue;
+	    if (!request_mem_region(CyberMem_phys, 0x4000000, "RAM")) {
+		release_mem_region(CyberRegs_phys, 0x10000);
+		continue;
+	    }
+	    strcpy(z->name, "CyberVision64 Graphics Board");
+	    DPRINTK("board_addr=%08lx\n", board_addr);
+	    DPRINTK("board_size=%08lx\n", board_size);
 
-	cd = zorro_get_board (CyberKey);
-	zorro_config_board (CyberKey, 0);
-	board_addr = (unsigned long)cd->cd_BoardAddr;
-	board_size = (unsigned long)cd->cd_BoardSize;
-	DPRINTK("board_addr=%08lx\n", board_addr);
-	DPRINTK("board_size=%08lx\n", board_size);
-
-	CyberBase = ioremap(board_addr, board_size);
-	CyberRegs = CyberBase + 0x02000000;
-	CyberMem = CyberBase + 0x01400000;
-	DPRINTK("CyberBase=%08lx CyberRegs=%08lx CyberMem=%08lx\n",
-		CyberBase, (long unsigned int)CyberRegs, CyberMem);
-
-	CyberMem_phys = board_addr + 0x01400000;
-	CyberRegs_phys = CyberMem_phys + 0x00c00000;
-	DPRINTK("CyberMem=%08lx CyberRegs=%08lx\n", CyberMem,
-		(long unsigned int)CyberRegs);
+	    CyberBase = ioremap(board_addr, board_size);
+	    CyberRegs = CyberBase + 0x02000000;
+	    CyberMem = CyberBase + 0x01400000;
+	    DPRINTK("CyberBase=%08lx CyberRegs=%08lx CyberMem=%08lx\n",
+		    CyberBase, (long unsigned int)CyberRegs, CyberMem);
 
 #ifdef CYBERFBDEBUG
-	DPRINTK("Register state just after mapping memory\n");
-	cv64_dump();
+	    DPRINTK("Register state just after mapping memory\n");
+	    cv64_dump();
 #endif
 
-	strcpy(fb_info.modename, cyberfb_name);
-	fb_info.changevar = NULL;
-	fb_info.node = -1;
-	fb_info.fbops = &cyberfb_ops;
-	fb_info.disp = &disp;
-	fb_info.switch_con = &Cyberfb_switch;
-	fb_info.updatevar = &Cyberfb_updatevar;
-	fb_info.blank = &Cyberfb_blank;
+	    strcpy(fb_info.modename, cyberfb_name);
+	    fb_info.changevar = NULL;
+	    fb_info.node = -1;
+	    fb_info.fbops = &cyberfb_ops;
+	    fb_info.disp = &disp;
+	    fb_info.switch_con = &Cyberfb_switch;
+	    fb_info.updatevar = &Cyberfb_updatevar;
+	    fb_info.blank = &Cyberfb_blank;
 
-	Cyber_init();
-	/* ++Andre: set cyberfb default mode */
-	if (!cyberfb_usermode) {
-		cyberfb_default = cyberfb_predefined[CYBER8_DEFMODE].var;
-		DPRINTK("Use default cyber8 mode\n");
+	    Cyber_init();
+	    /* ++Andre: set cyberfb default mode */
+	    if (!cyberfb_usermode) {
+		    cyberfb_default = cyberfb_predefined[CYBER8_DEFMODE].var;
+		    DPRINTK("Use default cyber8 mode\n");
+	    }
+	    Cyber_decode_var(&cyberfb_default, &par);
+	    Cyber_encode_var(&cyberfb_default, &par);
+
+	    do_fb_set_var(&cyberfb_default, 1);
+	    cyberfb_get_var(&fb_display[0].var, -1, &fb_info);
+	    cyberfb_set_disp(-1, &fb_info);
+	    do_install_cmap(0, &fb_info);
+
+	    if (register_framebuffer(&fb_info) < 0) {
+		    DPRINTK("EXIT - register_framebuffer failed\n");
+		    release_mem_region(board_addr, board_size);
+		    return -EINVAL;
+	    }
+
+	    printk("fb%d: %s frame buffer device, using %ldK of video memory\n",
+		   GET_FB_IDX(fb_info.node), fb_info.modename, CyberSize>>10);
+
+	    /* TODO: This driver cannot be unloaded yet */
+	    MOD_INC_USE_COUNT;
+	    DPRINTK("EXIT\n");
+	    return 0;
 	}
-	Cyber_decode_var(&cyberfb_default, &par);
-	Cyber_encode_var(&cyberfb_default, &par);
-
-	do_fb_set_var(&cyberfb_default, 1);
-	cyberfb_get_var(&fb_display[0].var, -1, &fb_info);
-	cyberfb_set_disp(-1, &fb_info);
-	do_install_cmap(0, &fb_info);
-
-	if (register_framebuffer(&fb_info) < 0) {
-		DPRINTK("EXIT - register_framebuffer failed\n");
-		return;
-	}
-
-	printk("fb%d: %s frame buffer device, using %ldK of video memory\n",
-	       GET_FB_IDX(fb_info.node), fb_info.modename, CyberSize>>10);
-
-	/* TODO: This driver cannot be unloaded yet */
-	MOD_INC_USE_COUNT;
-	DPRINTK("EXIT\n");
+	return -ENXIO;
 }
 
 
@@ -1208,7 +1212,7 @@ static int Cyberfb_updatevar(int con, struct fb_info *info)
  *    Get a Video Mode
  */
 
-__initfunc(static int get_video_mode(const char *name))
+static int __init get_video_mode(const char *name)
 {
 	int i;
 
@@ -1296,8 +1300,7 @@ static struct display_switch fbcon_cyber8 = {
 #ifdef MODULE
 int init_module(void)
 {
-	cyberfb_init();
-	return 0;
+	return cyberfb_init();
 }
 
 void cleanup_module(void)

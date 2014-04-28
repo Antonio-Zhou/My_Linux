@@ -22,7 +22,20 @@
 #include <linux/umsdos_fs.h>
 #include <linux/malloc.h>
 
-#if 1
+#define UMSDOS_DIR_LOCK
+
+#ifdef UMSDOS_DIR_LOCK
+
+static inline void u_sleep_on (struct inode *dir)
+{
+	sleep_on (&dir->u.umsdos_i.dir_info.p);
+}
+
+static inline void u_wake_up (struct inode *dir)
+{
+    	wake_up (&dir->u.umsdos_i.dir_info.p);
+}
+
 /*
  * Wait for creation exclusivity.
  * Return 0 if the dir was already available.
@@ -34,9 +47,10 @@ static int umsdos_waitcreate (struct inode *dir)
 {
 	int ret = 0;
 
-	if (dir->u.umsdos_i.u.dir_info.creating
-	    && dir->u.umsdos_i.u.dir_info.pid != current->pid) {
-		sleep_on (&dir->u.umsdos_i.u.dir_info.p);
+	if (dir->u.umsdos_i.dir_info.creating
+	    && dir->u.umsdos_i.dir_info.pid != current->pid) {
+	    	PRINTK (("creating && dir_info.pid=%lu, current->pid=%u\n", dir->u.umsdos_i.dir_info.pid, current->pid));
+	    	u_sleep_on (dir);
 		ret = 1;
 	}
 	return ret;
@@ -47,8 +61,8 @@ static int umsdos_waitcreate (struct inode *dir)
  */
 static void umsdos_waitlookup (struct inode *dir)
 {
-	while (dir->u.umsdos_i.u.dir_info.looking) {
-		sleep_on (&dir->u.umsdos_i.u.dir_info.p);
+	while (dir->u.umsdos_i.dir_info.looking) {
+	    	u_sleep_on (dir);
 	}
 }
 
@@ -90,8 +104,8 @@ void umsdos_lockcreate (struct inode *dir)
 	 * if we (the process) own the lock
 	 */
 	while (umsdos_waitcreate (dir) != 0);
-	dir->u.umsdos_i.u.dir_info.creating++;
-	dir->u.umsdos_i.u.dir_info.pid = current->pid;
+	dir->u.umsdos_i.dir_info.creating++;
+	dir->u.umsdos_i.dir_info.pid = current->pid;
 	umsdos_waitlookup (dir);
 }
 
@@ -110,10 +124,10 @@ static void umsdos_lockcreate2 (struct inode *dir1, struct inode *dir2)
 		if (umsdos_waitcreate (dir1) == 0
 		    && umsdos_waitcreate (dir2) == 0) {
 			/* We own both now */
-			dir1->u.umsdos_i.u.dir_info.creating++;
-			dir1->u.umsdos_i.u.dir_info.pid = current->pid;
-			dir2->u.umsdos_i.u.dir_info.creating++;
-			dir2->u.umsdos_i.u.dir_info.pid = current->pid;
+			dir1->u.umsdos_i.dir_info.creating++;
+			dir1->u.umsdos_i.dir_info.pid = current->pid;
+			dir2->u.umsdos_i.dir_info.creating++;
+			dir2->u.umsdos_i.dir_info.pid = current->pid;
 			break;
 		}
 	}
@@ -127,7 +141,7 @@ static void umsdos_lockcreate2 (struct inode *dir1, struct inode *dir2)
 void umsdos_startlookup (struct inode *dir)
 {
 	while (umsdos_waitcreate (dir) != 0);
-	dir->u.umsdos_i.u.dir_info.looking++;
+	dir->u.umsdos_i.dir_info.looking++;
 }
 
 /*
@@ -135,12 +149,12 @@ void umsdos_startlookup (struct inode *dir)
  */
 void umsdos_unlockcreate (struct inode *dir)
 {
-	dir->u.umsdos_i.u.dir_info.creating--;
-	if (dir->u.umsdos_i.u.dir_info.creating < 0) {
-		printk ("UMSDOS: dir->u.umsdos_i.u.dir_info.creating < 0: %d"
-			,dir->u.umsdos_i.u.dir_info.creating);
+	dir->u.umsdos_i.dir_info.creating--;
+	if (dir->u.umsdos_i.dir_info.creating < 0) {
+		printk ("UMSDOS: dir->u.umsdos_i.dir_info.creating < 0: %d"
+			,dir->u.umsdos_i.dir_info.creating);
 	}
-	wake_up (&dir->u.umsdos_i.u.dir_info.p);
+    	u_wake_up (dir);
 }
 
 /*
@@ -148,12 +162,12 @@ void umsdos_unlockcreate (struct inode *dir)
  */
 void umsdos_endlookup (struct inode *dir)
 {
-	dir->u.umsdos_i.u.dir_info.looking--;
-	if (dir->u.umsdos_i.u.dir_info.looking < 0) {
-		printk ("UMSDOS: dir->u.umsdos_i.u.dir_info.looking < 0: %d"
-			,dir->u.umsdos_i.u.dir_info.looking);
+	dir->u.umsdos_i.dir_info.looking--;
+	if (dir->u.umsdos_i.dir_info.looking < 0) {
+		printk ("UMSDOS: dir->u.umsdos_i.dir_info.looking < 0: %d"
+			,dir->u.umsdos_i.dir_info.looking);
 	}
-	wake_up (&dir->u.umsdos_i.u.dir_info.p);
+    	u_wake_up (dir);
 }
 
 #else
@@ -404,15 +418,8 @@ static int umsdos_rename_f (struct inode *old_dir, struct dentry *old_dentry,
 		goto out_unlock;
 	/* make sure it's the same inode! */
 	ret = -ENOENT;
-	/*
-	 * note: for hardlinks they will be different!
-	 *  old_inode will contain inode of .LINKxxx file containing data, and
-	 *  old->d_inode will contain inode of file containing path to .LINKxxx file
-	 */
-	if (!(old_info.entry.flags & UMSDOS_HLINK)) {
-		if (old->d_inode != old_inode)
-			goto out_dput;
-	}
+	if (old->d_inode != old_inode)
+		goto out_dput;
 
 	new = umsdos_covered(new_dentry->d_parent, new_info.fake.fname, 
 					new_info.fake.len);
@@ -482,8 +489,6 @@ out:
  * Let's go for simplicity...
  */
 
-extern struct inode_operations umsdos_symlink_inode_operations;
-
 /*
  * AV. Should be called with dir->i_sem down.
  */
@@ -519,6 +524,7 @@ out_error:
 out_unlink:
 	printk(KERN_WARNING "umsdos_symlink: write failed, unlinking\n");
 	UMSDOS_unlink (dir, dentry);
+	d_drop(dentry);
 	goto out;
 }
 
@@ -715,35 +721,19 @@ out_unlock:
 	if (ret == 0) {
 		struct iattr newattrs;
 
-		/* Do a real lookup to get the short name dentry */
-		temp = umsdos_covered(olddentry->d_parent,
-					old_info.fake.fname,
-					old_info.fake.len);
-		ret = PTR_ERR(temp);
-		if (IS_ERR(temp))
-			goto out_unlock2;
-
-		/* now resolve the link ... */
-		temp = umsdos_solve_hlink(temp);
-		ret = PTR_ERR(temp);
-		if (IS_ERR(temp))
-			goto out_unlock2;
-
 #ifdef UMSDOS_PARANOIA
 if (!oldinode->u.umsdos_i.i_is_hlink)
 printk("UMSDOS_link: %s/%s, ino=%ld, not marked as hlink!\n",
 olddentry->d_parent->d_name.name, olddentry->d_name.name, oldinode->i_ino);
 #endif
-		temp->d_inode->i_nlink++;
+		oldinode->i_nlink++;
 Printk(("UMSDOS_link: linked %s/%s, ino=%ld, nlink=%d\n",
 olddentry->d_parent->d_name.name, olddentry->d_name.name,
 oldinode->i_ino, oldinode->i_nlink));
 		newattrs.ia_valid = 0;
-		ret = umsdos_notify_change_locked(temp, &newattrs);
- 		if (ret == 0)
-			mark_inode_dirty(temp->d_inode);
-		dput(temp);
-out_unlock2:	
+		ret = umsdos_notify_change_locked(olddentry, &newattrs);
+		if (ret == 0)
+			mark_inode_dirty(olddentry->d_inode);
 	}
 	if (olddir != dir)
 		up(&olddir->i_sem);
@@ -887,7 +877,7 @@ int UMSDOS_rmdir (struct inode *dir, struct dentry *dentry)
 		goto out;
 
 	ret = -EBUSY;
-	if (!list_empty(&dentry->d_hash))
+	if (!d_unhashed(dentry))
 		goto out;
 
 	/* check whether the EMD is empty */
@@ -909,9 +899,11 @@ if (err)
 printk("umsdos_rmdir: EMD %s/%s unlink failed, err=%d\n",
 demd->d_parent->d_name.name, demd->d_name.name, err);
 #endif
-			dput(demd);
-			if (!err)
+			if (!err) {
+				d_delete(demd);
 				ret = 0;
+			}
+			dput(demd);
 		}
 	} else if (empty == 2)
 		ret = 0;
@@ -932,6 +924,7 @@ demd->d_parent->d_name.name, demd->d_name.name, err);
 	if (ret && ret != -ENOENT)
 		goto out_dput;
 
+	d_delete(temp);
 	/* OK so far ... remove the name from the EMD */
 	ret = umsdos_delentry (dentry->d_parent, &info, 1);
 #ifdef UMSDOS_PARANOIA
@@ -1020,6 +1013,8 @@ Printk (("UMSDOS_unlink %.*s ", info.fake.len, info.fake.fname));
 	}
 
 	ret = msdos_unlink(dir, temp);
+	if (!ret)
+		d_delete(temp);
 #ifdef UMSDOS_PARANOIA
 if (ret)
 printk("umsdos_unlink: %s/%s unlink failed, ret=%d\n",
@@ -1029,8 +1024,6 @@ temp->d_parent->d_name.name, temp->d_name.name, ret);
 	/* dput() temp if we didn't do it above */
 out_dput:
 	dput(temp);
-	if (!ret)
-		d_delete (dentry);
 
 out_unlock:
 	umsdos_unlockcreate (dir);
@@ -1076,12 +1069,15 @@ link->d_parent->d_name.name, link->d_name.name, ret));
 			printk(KERN_WARNING
 				"umsdos_unlink: link removal failed, ret=%d\n",
 				 ret);
-		}
+		} else
+			d_delete(link);
 	} else {
 		struct iattr newattrs;
 		inode->i_nlink--;
 		newattrs.ia_valid = 0;
 		ret = umsdos_notify_change_locked(link, &newattrs);
+		if (!ret)
+			mark_inode_dirty(link->d_inode);
 	}
 
 out_cleanup:
@@ -1109,11 +1105,13 @@ int UMSDOS_rename (struct inode *old_dir, struct dentry *old_dentry,
 		 * If the target already exists, delete it first.
 		 */
 	if (new_dentry->d_inode) {
-		new_dentry->d_count++;
+		dget(new_dentry);
 		if (S_ISDIR(old_dentry->d_inode->i_mode))
 			ret = UMSDOS_rmdir (new_dir, new_dentry);
 		else
 			ret = UMSDOS_unlink (new_dir, new_dentry);
+		if (!ret)
+			d_drop(new_dentry);
 		dput(new_dentry);
 		if (ret)
 			return ret;

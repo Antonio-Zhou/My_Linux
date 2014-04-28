@@ -10,12 +10,10 @@
 #define USB_CLASS_AUDIO			1
 #define USB_CLASS_COMM			2
 #define USB_CLASS_HID			3
-#define USB_CLASS_PHYSICAL		5
 #define USB_CLASS_PRINTER		7
 #define USB_CLASS_MASS_STORAGE		8
 #define USB_CLASS_HUB			9
 #define USB_CLASS_DATA			10
-#define USB_CLASS_APP_SPEC		0xfe
 #define USB_CLASS_VENDOR_SPEC		0xff
 
 /*
@@ -29,7 +27,6 @@
 /*
  * USB recipients
  */
-#define USB_RECIP_MASK			0x1f
 #define USB_RECIP_DEVICE		0x00
 #define USB_RECIP_INTERFACE		0x01
 #define USB_RECIP_ENDPOINT		0x02
@@ -127,7 +124,6 @@
 
 #ifdef __KERNEL__
 
-#include <linux/kcomp.h>
 #include <linux/types.h>
 #include <linux/ioctl.h>
 #include <linux/version.h>
@@ -236,36 +232,36 @@ struct usb_device_descriptor {
 
 /* Endpoint descriptor */
 struct usb_endpoint_descriptor {
-	__u8  bLength		__attribute__ ((packed));
-	__u8  bDescriptorType	__attribute__ ((packed));
-	__u8  bEndpointAddress	__attribute__ ((packed));
-	__u8  bmAttributes	__attribute__ ((packed));
-	__u16 wMaxPacketSize	__attribute__ ((packed));
-	__u8  bInterval		__attribute__ ((packed));
-	__u8  bRefresh		__attribute__ ((packed));
-	__u8  bSynchAddress	__attribute__ ((packed));
+	__u8  bLength;
+	__u8  bDescriptorType;
+	__u8  bEndpointAddress;
+	__u8  bmAttributes;
+	__u16 wMaxPacketSize;
+	__u8  bInterval;
+	__u8  bRefresh;
+	__u8  bSynchAddress;
 
    	unsigned char *extra;   /* Extra descriptors */
 	int extralen;
-};
+} __attribute__ ((packed));
 
 /* Interface descriptor */
 struct usb_interface_descriptor {
-	__u8  bLength		__attribute__ ((packed));
-	__u8  bDescriptorType	__attribute__ ((packed));
-	__u8  bInterfaceNumber	__attribute__ ((packed));
-	__u8  bAlternateSetting	__attribute__ ((packed));
-	__u8  bNumEndpoints	__attribute__ ((packed));
-	__u8  bInterfaceClass	__attribute__ ((packed));
-	__u8  bInterfaceSubClass __attribute__ ((packed));
-	__u8  bInterfaceProtocol __attribute__ ((packed));
-	__u8  iInterface	__attribute__ ((packed));
+	__u8  bLength;
+	__u8  bDescriptorType;
+	__u8  bInterfaceNumber;
+	__u8  bAlternateSetting;
+	__u8  bNumEndpoints;
+	__u8  bInterfaceClass;
+	__u8  bInterfaceSubClass;
+	__u8  bInterfaceProtocol;
+	__u8  iInterface;
 
   	struct usb_endpoint_descriptor *endpoint;
 
-   	unsigned char *extra;   /* Extra descriptors */
+	unsigned char *extra;
 	int extralen;
-};
+} __attribute__ ((packed));
 
 struct usb_interface {
 	struct usb_interface_descriptor *altsetting;
@@ -280,20 +276,17 @@ struct usb_interface {
 
 /* Configuration descriptor information.. */
 struct usb_config_descriptor {
-	__u8  bLength		__attribute__ ((packed));
-	__u8  bDescriptorType	__attribute__ ((packed));
-	__u16 wTotalLength	__attribute__ ((packed));
-	__u8  bNumInterfaces	__attribute__ ((packed));
-	__u8  bConfigurationValue __attribute__ ((packed));
-	__u8  iConfiguration	__attribute__ ((packed));
-	__u8  bmAttributes	__attribute__ ((packed));
-	__u8  MaxPower		__attribute__ ((packed));
+	__u8  bLength;
+	__u8  bDescriptorType;
+	__u16 wTotalLength;
+	__u8  bNumInterfaces;
+	__u8  bConfigurationValue;
+	__u8  iConfiguration;
+	__u8  bmAttributes;
+	__u8  MaxPower;
 
 	struct usb_interface *interface;
-
-   	unsigned char *extra;   /* Extra descriptors */
-	int extralen;
-};
+} __attribute__ ((packed));
 
 /* String descriptor */
 struct usb_string_descriptor {
@@ -314,11 +307,6 @@ struct usb_driver {
 
 	struct file_operations *fops;
 	int minor;
-
-	struct semaphore serialize;
-
-	/* ioctl -- userspace apps can talk to drivers through usbdevfs */
-	int (*ioctl)(struct usb_device *dev, unsigned int code, void *buf);
 };
 
 /*
@@ -343,16 +331,11 @@ typedef int (*usb_device_irq)(int, void *, int, void *);
  * New USB Structures                                                         *
  *----------------------------------------------------------------------------*/
 
-/*
- * urb->transfer_flags:
- */
 #define USB_DISABLE_SPD         0x0001
 #define USB_ISO_ASAP            0x0002
 #define USB_URB_EARLY_COMPLETE  0x0004
 #define USB_ASYNC_UNLINK        0x0008
 #define USB_QUEUE_BULK          0x0010
-#define USB_NO_FSBR		0x0020
-#define USB_ZERO_PACKET         0x0040  // Finish bulk OUTs always with zero length packet
 #define USB_TIMEOUT_KILLED	0x1000	// only set by HCD!
 
 typedef struct
@@ -375,15 +358,14 @@ typedef struct urb
 	struct usb_device *dev;		// pointer to associated USB device
 	unsigned int pipe;		// pipe information
 	int status;			// returned status
-	unsigned int transfer_flags;	// USB_DISABLE_SPD | USB_ISO_ASAP | etc.
+	unsigned int transfer_flags;	// USB_DISABLE_SPD | USB_ISO_ASAP | USB_URB_EARLY_COMPLETE
 	void *transfer_buffer;		// associated data buffer
 	int transfer_buffer_length;	// data buffer length
 	int actual_length;              // actual data buffer length	
-	int bandwidth;			// bandwidth for this transfer request (INT or ISO)
 	unsigned char *setup_packet;	// setup packet (control only)
 	//
 	int start_frame;		// start frame (iso/irq only)
-	int number_of_packets;		// number of packets in this request (iso)
+	int number_of_packets;		// number of packets in this request (iso/irq only)
 	int interval;                   // polling interval (irq only)
 	int error_count;		// number of errors in this transfer (iso only)
 	int timeout;			// timeout (in jiffies)
@@ -489,17 +471,11 @@ struct usb_operations {
 	int (*unlink_urb) (struct urb* purb);
 };
 
-#define DEVNUM_ROUND_ROBIN	/***** OPTION *****/
-
 /*
  * Allocated per bus we have
  */
 struct usb_bus {
 	int busnum;			/* Bus number (in order of reg) */
-
-#ifdef DEVNUM_ROUND_ROBIN
-	int devnum_next;                /* Next open device number in round-robin allocation */
-#endif /* DEVNUM_ROUND_ROBIN */
 
 	struct usb_devmap devmap;       /* Device map */
 	struct usb_operations *op;      /* Operations (specific to the HC) */
@@ -507,7 +483,7 @@ struct usb_bus {
 	struct list_head bus_list;
 	void *hcpriv;                   /* Host Controller private data */
 
-	int bandwidth_allocated;	/* on this Host Controller; */
+	unsigned int bandwidth_allocated; /* on this Host Controller; */
 					  /* applies to Int. and Isoc. pipes; */
 					  /* measured in microseconds/frame; */
 					  /* range is 0..900, where 900 = */
@@ -516,12 +492,10 @@ struct usb_bus {
 	int bandwidth_isoc_reqs;	/* number of Isoc. requesters */
 
 	/* usbdevfs inode list */
-	struct list_head inodes;
-
-	atomic_t refcnt;
+        struct list_head inodes;
 };
 
-#define USB_MAXCHILDREN		(16)	/* This is arbitrary */
+#define USB_MAXCHILDREN (8)	/* This is arbitrary */
 
 struct usb_device {
 	int devnum;			/* Device number on USB bus */
@@ -532,6 +506,7 @@ struct usb_device {
 	unsigned int toggle[2];		/* one bit for each endpoint ([0] = IN, [1] = OUT) */
 	unsigned int halted[2];		/* endpoint halts; one bit per endpoint # & direction; */
 					/* [0] = IN, [1] = OUT */
+	struct usb_config_descriptor *actconfig;/* the active configuration */
 	int epmaxpacketin[16];		/* INput endpoint specific maximums */
 	int epmaxpacketout[16];		/* OUTput endpoint specific maximums */
 
@@ -540,9 +515,6 @@ struct usb_device {
 
 	struct usb_device_descriptor descriptor;/* Descriptor */
 	struct usb_config_descriptor *config;	/* All of the configs */
-	struct usb_config_descriptor *actconfig;/* the active configuration */
-
-	char **rawdescriptors;		/* Raw descriptors for each config */
 
 	int have_langid;		/* whether string_langid is valid yet */
 	int string_langid;		/* language ID for strings */
@@ -550,8 +522,8 @@ struct usb_device {
 	void *hcpriv;			/* Host Controller private data */
 	
         /* usbdevfs inode list */
-	struct list_head inodes;
-	struct list_head filelist;
+        struct list_head inodes;
+        struct list_head filelist;
 
 	/*
 	 * Child devices - these can be either new devices
@@ -565,12 +537,8 @@ struct usb_device {
 	struct usb_device *children[USB_MAXCHILDREN];
 };
 
-extern struct usb_interface *usb_ifnum_to_if(struct usb_device *dev, unsigned ifnum);
-extern struct usb_endpoint_descriptor *usb_epnum_to_ep_desc(struct usb_device *dev, unsigned epnum);
-
 extern int usb_register(struct usb_driver *);
 extern void usb_deregister(struct usb_driver *);
-extern void usb_scan_devices(void);
 
 /* used these for multi-interface device registration */
 extern void usb_driver_claim_interface(struct usb_driver *driver, struct usb_interface *iface, void* priv);
@@ -586,10 +554,7 @@ extern struct usb_device *usb_alloc_dev(struct usb_device *parent, struct usb_bu
 extern void usb_free_dev(struct usb_device *);
 extern void usb_inc_dev_use(struct usb_device *);
 #define usb_dec_dev_use usb_free_dev
-
-extern int usb_check_bandwidth (struct usb_device *dev, struct urb *urb);
-extern void usb_claim_bandwidth (struct usb_device *dev, struct urb *urb, int bustime, int isoc);
-extern void usb_release_bandwidth(struct usb_device *dev, struct urb *urb, int isoc);
+extern void usb_release_bandwidth(struct usb_device *, int);
 
 extern int usb_control_msg(struct usb_device *dev, unsigned int pipe, __u8 request, __u8 requesttype, __u16 value, __u16 index, void *data, __u16 size, int timeout);
 
@@ -706,7 +671,6 @@ int usb_get_class_descriptor(struct usb_device *dev, int ifnum, unsigned char de
 int usb_get_device_descriptor(struct usb_device *dev);
 int __usb_get_extra_descriptor(char *buffer, unsigned size, unsigned char type, void **ptr);
 int usb_get_status(struct usb_device *dev, int type, int target, void *data);
-int usb_get_configuration(struct usb_device *dev);
 int usb_get_protocol(struct usb_device *dev, int ifnum);
 int usb_set_protocol(struct usb_device *dev, int ifnum, int protocol);
 int usb_set_interface(struct usb_device *dev, int ifnum, int alternate);
@@ -718,7 +682,6 @@ int usb_set_report(struct usb_device *dev, int ifnum, unsigned char type,
 	unsigned char id, void *buf, int size);
 int usb_string(struct usb_device *dev, int index, char *buf, size_t size);
 int usb_clear_halt(struct usb_device *dev, int pipe);
-void usb_set_maxpacket(struct usb_device *dev);
 
 #define usb_get_extra_descriptor(ifpoint,type,ptr)\
 	__usb_get_extra_descriptor((ifpoint)->extra,(ifpoint)->extralen,type,(void**)ptr)
@@ -790,13 +753,13 @@ extern void usbdevfs_cleanup(void);
 
 #else /* CONFIG_USB_DEVICEFS */
 
-static inline void usbdevfs_add_bus(struct usb_bus *bus) {}
-static inline void usbdevfs_remove_bus(struct usb_bus *bus) {}
-static inline void usbdevfs_add_device(struct usb_device *dev) {}
-static inline void usbdevfs_remove_device(struct usb_device *dev) {}
+extern inline void usbdevfs_add_bus(struct usb_bus *bus) {}
+extern inline void usbdevfs_remove_bus(struct usb_bus *bus) {}
+extern inline void usbdevfs_add_device(struct usb_device *dev) {}
+extern inline void usbdevfs_remove_device(struct usb_device *dev) {}
 
-static inline int usbdevfs_init(void) { return 0; }
-static inline void usbdevfs_cleanup(void) { }
+extern inline int usbdevfs_init(void) { return 0; }
+extern inline void usbdevfs_cleanup(void) { }
 
 #endif /* CONFIG_USB_DEVICEFS */
 

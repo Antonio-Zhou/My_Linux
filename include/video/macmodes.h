@@ -38,12 +38,11 @@
 #define VMODE_1152_870_75	18	/* 1152x870, 75Hz */
 #define VMODE_1280_960_75	19	/* 1280x960, 75Hz */
 #define VMODE_1280_1024_75	20	/* 1280x1024, 75Hz */
-#define VMODE_1152_768_60	21	/* 1152x768, 60Hz */
-#define VMODE_1600_1024_60	22	/* 1600x1024, 60Hz */
-#define VMODE_MAX		22
+#define VMODE_MAX		20
 #define VMODE_CHOOSE		99
 
 #define CMODE_NVRAM		-1
+#define CMODE_CHOOSE		-2
 #define CMODE_8			0	/* 8 bits/pixel */
 #define CMODE_16		1	/* 16 (actually 15) bits/pixel */
 #define CMODE_32		2	/* 32 (actually 24) bits/pixel */
@@ -54,6 +53,9 @@ extern int mac_vmode_to_var(int vmode, int cmode,
 extern int mac_var_to_vmode(const struct fb_var_screeninfo *var, int *vmode,
 			    int *cmode);
 extern int mac_map_monitor_sense(int sense);
+extern int __init mac_find_mode(struct fb_var_screeninfo *var,
+				struct fb_info *info, const char *mode_option,
+				unsigned int default_bpp);
 
 
     /*

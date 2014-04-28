@@ -25,28 +25,28 @@
 #include <asm/processor.h>
 #include <asm/nvram.h>
 #include <asm/prom.h>
-#include <asm/time.h>
+#include <asm/init.h>
+#include "time.h"
 
 static int nvram_as1 = NVRAM_AS1;
 static int nvram_as0 = NVRAM_AS0;
 static int nvram_data = NVRAM_DATA;
 
-__initfunc(long chrp_time_init(void))
+void __init chrp_time_init(void)
 {
 	struct device_node *rtcs;
 	int base;
 
 	rtcs = find_compatible_devices("rtc", "pnpPNP,b00");
 	if (rtcs == NULL || rtcs->addrs == NULL)
-		return 0;
+		return;
 	base = rtcs->addrs[0].address;
 	nvram_as1 = 0;
 	nvram_as0 = base;
 	nvram_data = base + 1;
-	return 0;
 }
 
-int chrp_cmos_clock_read(int addr)
+int __chrp chrp_cmos_clock_read(int addr)
 {
 	if (nvram_as1 != 0)
 		outb(addr>>8, nvram_as1);
@@ -54,7 +54,7 @@ int chrp_cmos_clock_read(int addr)
 	return (inb(nvram_data));
 }
 
-void chrp_cmos_clock_write(unsigned long val, int addr)
+void __chrp chrp_cmos_clock_write(unsigned long val, int addr)
 {
 	if (nvram_as1 != 0)
 		outb(addr>>8, nvram_as1);
@@ -66,7 +66,7 @@ void chrp_cmos_clock_write(unsigned long val, int addr)
 /*
  * Set the hardware clock. -- Cort
  */
-int chrp_set_rtc_time(unsigned long nowtime)
+int __chrp chrp_set_rtc_time(unsigned long nowtime)
 {
 	unsigned char save_control, save_freq_select;
 	struct rtc_time tm;
@@ -112,7 +112,7 @@ int chrp_set_rtc_time(unsigned long nowtime)
 	return 0;
 }
 
-unsigned long chrp_get_rtc_time(void)
+unsigned long __chrp chrp_get_rtc_time(void)
 {
 	unsigned int year, mon, day, hour, min, sec;
 	int i;
@@ -152,7 +152,7 @@ unsigned long chrp_get_rtc_time(void)
 }
 
 
-__initfunc(void chrp_calibrate_decr(void))
+void __init chrp_calibrate_decr(void)
 {
 	struct device_node *cpu;
 	int *fp, divisor;
@@ -172,9 +172,10 @@ __initfunc(void chrp_calibrate_decr(void))
 		if (fp != 0)
 			freq = *fp;
 	}
-	freq *= 60;	/* try to make freq/1e6 an integer */
-        divisor = 60;
-        printk("time_init: decrementer frequency = %lu/%d\n", freq, divisor);
+	freq *= 30;
+	divisor = 30; 
+        printk("time_init: decrementer frequency = %lu/%d (%ld MHz)\n", freq,
+	       divisor, (freq/divisor)>>20);
         decrementer_count = freq / HZ / divisor;
         count_period_num = divisor;
         count_period_den = freq / 1000000;

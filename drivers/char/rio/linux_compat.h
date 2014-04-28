@@ -16,13 +16,11 @@
  *      Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
-#include <asm/hardirq.h>
-
 
 #define disable(oldspl) save_flags (oldspl)
 #define restore(oldspl) restore_flags (oldspl)
 
-#define sysbrk(x) kmalloc ((x),in_interrupt()? GFP_ATOMIC : GFP_KERNEL)
+#define sysbrk(x) kmalloc ((x), GFP_KERNEL)
 #define sysfree(p,size) kfree ((p))
 
 #define WBYTE(p,v) writeb(v, &p)
@@ -74,6 +72,8 @@ struct ttystatics {
 
 extern int rio_debug;
 
+#define rio_dprint(f, p) do {if (rio_debug & f) printk p;} while (0)
+
 #define RIO_DEBUG_INIT         0x000001
 #define RIO_DEBUG_BOOT         0x000002
 #define RIO_DEBUG_CMD          0x000004
@@ -92,8 +92,7 @@ extern int rio_debug;
 #define RIO_DEBUG_REC          0x008000
 #define RIO_DEBUG_SPINLOCK     0x010000
 #define RIO_DEBUG_DELAY        0x020000
-#define RIO_DEBUG_MOD_COUNT    0x040000
-#define RIO_DEBUG_IOCTL        0x080000
+
 
 /* Copied over from riowinif.h . This is ugly. The winif file declares
 also much other stuff which is incompatible with the headers from

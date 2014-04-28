@@ -1,14 +1,11 @@
-/* $Id: capilli.h,v 1.1.2.1 2001/12/31 13:26:42 kai Exp $
+/*
+ * $Id: capilli.h,v 1.4 1999/07/23 08:51:05 calle Exp $
  * 
  * Kernel CAPI 2.0 Driver Interface for Linux
  * 
- * Copyright 1999 by Carsten Paeth <calle@calle.de>
+ * (c) Copyright 1999 by Carsten Paeth (calle@calle.in-berlin.de)
  * 
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
- *
  */
-
 #ifndef __CAPILLI_H__
 #define __CAPILLI_H__
 

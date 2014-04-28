@@ -31,6 +31,7 @@
 * Dec 22, 1998  Arnaldo Melo    vmalloc/vfree used in device_setup to allocate
 *                               kernel memory and copy configuration data to
 *                               kernel space (for big firmwares)
+* May 19, 1999  Arnaldo Melo    __init in wanrouter_init
 * Jun 02, 1999  Gideon Hack	Updates for Linux 2.0.X and 2.2.X kernels.	
 *****************************************************************************/
 
@@ -43,14 +44,13 @@
 #include <linux/malloc.h>	/* kmalloc(), kfree() */
 #include <linux/mm.h>		/* verify_area(), etc. */
 #include <linux/string.h>	/* inline mem*, str* functions */
-
 #include <linux/vmalloc.h>	/* vmalloc, vfree */
-#include <asm/uaccess.h>        /* copy_to/from_user */
-#include <linux/init.h>         /* __initfunc et al. */
-
 #include <asm/segment.h>	/* kernel <-> user copy */
 #include <asm/byteorder.h>	/* htons(), etc. */
+#include <asm/uaccess.h>	/* copy_to/from_user */
 #include <linux/wanrouter.h>	/* WAN router API definitions */
+#include <linux/init.h>		/* __init et al. */
+
 
 
 /*
@@ -113,29 +113,28 @@ static unsigned char oui_802_2[] = { 0x00, 0x80, 0xC2 };
 #endif
 
 #ifndef MODULE
-
-int wanrouter_init(void)
+int __init wanrouter_init(void)
 {
 	int err;
-	extern void wanpipe_init(void);
-	extern void wanpipe_init2(void);
+	extern int wanpipe_init(void),
+		   cyclomx_init(void);
 
 	printk(KERN_INFO "%s v%u.%u %s\n",
 		fullname, ROUTER_VERSION, ROUTER_RELEASE, copyright);
-
 	err = wanrouter_proc_init();
 	if (err)
-		printk(KERN_ERR "%s: can't create entry in proc filesystem!\n", modname);
+		printk(KERN_ERR "%s: can't create entry in proc filesystem!\n",	modname);
 
-        /*
-         *      Initialise compiled in boards
-         */
-
+	/*
+	 *	Initialise compiled in boards
+	 */		
+	 
 #ifdef CONFIG_VENDOR_SANGOMA
 	wanpipe_init();
-	wanpipe_init2();
 #endif	
- 
+#ifdef CONFIG_CYCLADES_SYNC
+	cyclomx_init();
+#endif
 	return err;
 }
 
@@ -208,7 +207,7 @@ int register_wan_device(wan_device_t *wandev)
 	if ((wandev == NULL) || (wandev->magic != ROUTER_MAGIC) ||
 	    (wandev->name == NULL))
 		return -EINVAL;
- 		
+
 	namelen = strlen(wandev->name);
 	if (!namelen || (namelen > WAN_DRVNAME_SZ))
 		return -EINVAL;
@@ -220,7 +219,6 @@ int register_wan_device(wan_device_t *wandev)
 	printk(KERN_INFO "%s: registering WAN device %s\n",
 		modname, wandev->name);
 #endif
-
 	/*
 	 *	Register /proc directory entry 
 	 */
@@ -304,11 +302,12 @@ int unregister_wan_device(char *name)
  */
 
 
-int wanrouter_encapsulate (struct sk_buff *skb, struct device *dev)
+int wanrouter_encapsulate (struct sk_buff* skb, struct net_device* dev)
 {
 	int hdr_len = 0;
 
-	switch (skb->protocol) {
+	switch (skb->protocol)
+	{
 	case ETH_P_IP:		/* IP datagram encapsulation */
 		hdr_len += 1;
 		skb_push(skb, 1);
@@ -345,19 +344,21 @@ int wanrouter_encapsulate (struct sk_buff *skb, struct device *dev)
  */
 
 
-unsigned short wanrouter_type_trans (struct sk_buff *skb, struct device *dev)
+unsigned short wanrouter_type_trans (struct sk_buff* skb, struct net_device* dev)
 {
 	int cnt = skb->data[0] ? 0 : 1;	/* there may be a pad present */
 	unsigned short ethertype;
 
-	switch (skb->data[cnt]) {
+	switch (skb->data[cnt])
+	{
 	case NLPID_IP:		/* IP datagramm */
 		ethertype = htons(ETH_P_IP);
 		cnt += 1;
 		break;
 
         case NLPID_SNAP:	/* SNAP encapsulation */
-		if (memcmp(&skb->data[cnt + 1], oui_ether, sizeof(oui_ether))){
+		if (memcmp(&skb->data[cnt + 1], oui_ether, sizeof(oui_ether)))
+		{
           		printk(KERN_INFO
 				"%s: unsupported SNAP OUI %02X-%02X-%02X "
 				"on interface %s!\n", modname,
@@ -515,16 +516,20 @@ static int device_setup (wan_device_t *wandev, wandev_conf_t *u_conf)
  *	o call driver's shutdown() entry point
  */
  
-static int device_shutdown (wan_device_t *wandev)
+static int device_shutdown (wan_device_t* wandev)
 {
-	struct device *dev;
+	struct net_device* dev;
 
 	if (wandev->state == WAN_UNCONFIGURED)
 		return 0;
 		
-	for (dev = wandev->dev; dev;) {
+	for (dev = wandev->dev; dev;)
+	{
 		if (delete_interface(wandev, dev->name, 0))
-			dev = dev->slave;
+		{
+			struct net_device **slave = dev->priv;
+			dev = *slave;
+		}
 	}
 	if (wandev->ndev)
 		return -EBUSY;	/* there are opened interfaces  */
@@ -568,26 +573,26 @@ static int device_stat (wan_device_t *wandev, wandev_stat_t *u_stat)
  *	o register network interface
  */
 
-static int device_new_if (wan_device_t *wandev, wanif_conf_t *u_conf)
+static int device_new_if (wan_device_t* wandev, wanif_conf_t* u_conf)
 {
 	wanif_conf_t conf;
-	struct device *dev;
+	struct net_device *dev;
 	int err;
 
 	if ((wandev->state == WAN_UNCONFIGURED) || (wandev->new_if == NULL))
 		return -ENODEV;
-	
+		
 	if(copy_from_user(&conf, u_conf, sizeof(wanif_conf_t)))
 		return -EFAULT;
 		
 	if (conf.magic != ROUTER_MAGIC)
 		return -EINVAL;
 		
-	dev = kmalloc(sizeof(struct device), GFP_KERNEL);
+	dev = kmalloc(sizeof(struct net_device), GFP_KERNEL);
 	if (dev == NULL)
 		return -ENOBUFS;
 		
-	memset(dev, 0, sizeof(struct device));
+	memset(dev, 0, sizeof(struct net_device));
 	err = wandev->new_if(wandev, dev, &conf);
 	if (!err) {
 		/* Register network interface. This will invoke init()
@@ -606,8 +611,10 @@ static int device_new_if (wan_device_t *wandev, wanif_conf_t *u_conf)
 #endif				
 			err = register_netdev(dev);
 			if (!err) {
+				struct net_device **slave = dev->priv;
+
 				cli();	/***** critical section start *****/
-				dev->slave = wandev->dev;
+				*slave = wandev->dev;
 				wandev->dev = dev;
 				++wandev->ndev;
 				sti();	/****** critical section end ******/
@@ -680,16 +687,21 @@ static wan_device_t *find_device(char *name)
 
 static int delete_interface (wan_device_t *wandev, char *name, int force)
 {
-	struct device *dev, *prev;
+	struct net_device *dev, *prev;
 
-	for (dev = wandev->dev, prev = NULL;
-		dev && strcmp(name, dev->name);
-		prev = dev, dev = dev->slave);
+	dev = wandev->dev;
+	prev = NULL;
+	while (dev && strcmp(name, dev->name)) {
+		struct net_device **slave = dev->priv;
+
+		prev = dev;
+		dev = *slave;
+	}
 
 	if (dev == NULL)
 		return -ENODEV;	/* interface not found */
 
-	if (dev->start) {
+	if (netif_running(dev)) {
 		if (force) {
 			printk(KERN_WARNING
 				"%s: deleting opened interface %s!\n",
@@ -703,10 +715,16 @@ static int delete_interface (wan_device_t *wandev, char *name, int force)
 		wandev->del_if(wandev, dev);
 
 	cli();			/***** critical section start *****/
-	if (prev)
-		prev->slave = dev->slave;
-	else
-		wandev->dev = dev->slave;
+	if (prev) {
+		struct net_device **prev_slave = prev->priv;
+		struct net_device **slave = dev->priv;
+
+		*prev_slave = *slave;
+	} else {
+		struct net_device **slave = dev->priv;
+
+		wandev->dev = *slave;
+	}
 	--wandev->ndev;
 	sti();			/****** critical section end ******/
 

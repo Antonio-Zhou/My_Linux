@@ -27,6 +27,8 @@
 extern void via_nubus_init(void);
 extern void oss_nubus_init(void);
 
+extern int console_loglevel;
+
 /* Constants */
 
 /* This is, of course, the size in bytelanes, rather than the size in
@@ -36,12 +38,18 @@ extern void oss_nubus_init(void);
 
 #define NUBUS_TEST_PATTERN 0x5A932BC7
 
+/* Define this if you like to live dangerously - it is known not to
+   work on pretty much every machine except the Quadra 630 and the LC
+   III. */
+#undef I_WANT_TO_PROBE_SLOT_ZERO
+
+/* This sometimes helps combat failure to boot */
+#undef TRY_TO_DODGE_WSOD
+
 /* Globals */
 
 struct nubus_dev*   nubus_devices;
 struct nubus_board* nubus_boards;
-
-extern int console_loglevel;
 
 /* Meaning of "bytelanes":
 
@@ -274,7 +282,6 @@ int nubus_readdir(struct nubus_dir *nd, struct nubus_dirent *ent)
 int nubus_rewinddir(struct nubus_dir* dir)
 {
 	dir->ptr = dir->base;
-	dir->done = 0;
 	return 0;
 }
 
@@ -443,9 +450,9 @@ static int __init nubus_show_private_resource(struct nubus_dev* dev,
 }
 
 static struct nubus_dev* __init
-nubus_get_functional_resource(struct nubus_board* board,
-			      int slot,
-			      const struct nubus_dirent* parent)
+	   nubus_get_functional_resource(struct nubus_board* board,
+					 int slot,
+					 const struct nubus_dirent* parent)
 {
 	struct nubus_dir    dir;
 	struct nubus_dirent ent;
@@ -454,8 +461,13 @@ nubus_get_functional_resource(struct nubus_board* board,
 	printk(KERN_INFO "  Function 0x%02x:\n", parent->type);
 	nubus_get_subdir(parent, &dir);
 
-	printk(KERN_DEBUG "nubus_get_functional_resource: parent is 0x%p, dir is 0x%p\n",
-	       parent->base, dir.base);
+	/* Apple seems to have botched the ROM on the IIx */
+	if (slot == 0 && (unsigned long)dir.base % 2)
+		dir.base += 1;
+	
+	if (console_loglevel >= 10)
+		printk(KERN_DEBUG "nubus_get_functional_resource: parent is 0x%p, dir is 0x%p\n",
+		       parent->base, dir.base);
 
 	/* Actually we should probably panic if this fails */
 	if ((dev = kmalloc(sizeof(*dev), GFP_ATOMIC)) == NULL)
@@ -477,7 +489,7 @@ nubus_get_functional_resource(struct nubus_board* board,
 			dev->type     = nbtdata[1];
 			dev->dr_sw    = nbtdata[2];
 			dev->dr_hw    = nbtdata[3];
-			printk(KERN_INFO "    type: [cat 0x%x type 0x%x sw 0x%x hw 0x%x]\n",
+			printk(KERN_INFO "    type: [cat 0x%x type 0x%x hw 0x%x sw 0x%x]\n",
 			       nbtdata[0], nbtdata[1], nbtdata[2], nbtdata[3]);
 			break;
 		}
@@ -549,8 +561,9 @@ static int __init nubus_get_vidnames(struct nubus_board* board,
 
 	printk(KERN_INFO "    video modes supported:\n");
 	nubus_get_subdir(parent, &dir);
-	printk(KERN_DEBUG "nubus_get_vidnames: parent is 0x%p, dir is 0x%p\n",
-	       parent->base, dir.base);
+	if (console_loglevel >= 10)
+		printk(KERN_DEBUG "nubus_get_vidnames: parent is 0x%p, dir is 0x%p\n",
+		       parent->base, dir.base);
 
 	while(nubus_readdir(&dir, &ent) != -1)
 	{
@@ -609,8 +622,9 @@ static int __init nubus_get_vendorinfo(struct nubus_board* board,
 
 	printk(KERN_INFO "    vendor info:\n");
 	nubus_get_subdir(parent, &dir);
-	printk(KERN_DEBUG "nubus_get_vendorinfo: parent is 0x%p, dir is 0x%p\n",
-	       parent->base, dir.base);
+	if (console_loglevel >= 10)
+		printk(KERN_DEBUG "nubus_get_vendorinfo: parent is 0x%p, dir is 0x%p\n",
+		       parent->base, dir.base);
 
 	while(nubus_readdir(&dir, &ent) != -1)
 	{
@@ -633,8 +647,9 @@ static int __init nubus_get_board_resource(struct nubus_board* board, int slot,
 	struct nubus_dirent ent;
 	
 	nubus_get_subdir(parent, &dir);
-	printk(KERN_DEBUG "nubus_get_board_resource: parent is 0x%p, dir is 0x%p\n",
-	       parent->base, dir.base);
+	if (console_loglevel >= 10)
+		printk(KERN_DEBUG "nubus_get_board_resource: parent is 0x%p, dir is 0x%p\n",
+		       parent->base, dir.base);
 
 	while(nubus_readdir(&dir, &ent) != -1)
 	{
@@ -694,6 +709,83 @@ static int __init nubus_get_board_resource(struct nubus_board* board, int slot,
 		}
 	}
 	return 0;
+}
+
+/* Attempt to bypass the somewhat non-obvious arrangement of
+   sResources in the motherboard ROM */
+static void __init nubus_find_rom_dir(struct nubus_board* board)
+{
+	unsigned char* rp;
+	unsigned char* romdir;
+	struct nubus_dir dir;
+	struct nubus_dirent ent;
+
+	/* Check for the extra directory just under the format block */
+	rp = board->fblock;
+	nubus_rewind(&rp, 4, board->lanes);
+	if (nubus_get_rom(&rp, 4, board->lanes) != NUBUS_TEST_PATTERN) {
+		/* OK, the ROM was telling the truth */
+		board->directory = board->fblock;
+		nubus_move(&board->directory,
+			   nubus_expand32(board->doffset),
+			   board->lanes);
+		return;
+	}
+
+	/* On "slot zero", you have to walk down a few more
+	   directories to get to the equivalent of a real card's root
+	   directory.  We don't know what they were smoking when they
+	   came up with this. */
+	romdir = nubus_rom_addr(board->slot);
+	nubus_rewind(&romdir, ROM_DIR_OFFSET, board->lanes);
+	dir.base = dir.ptr = romdir;
+	dir.done = 0;
+	dir.mask = board->lanes;
+
+	/* This one points to an "Unknown Macintosh" directory */
+	if (nubus_readdir(&dir, &ent) == -1)
+		goto badrom;
+
+	if (console_loglevel >= 10)
+		printk(KERN_INFO "nubus_get_rom_dir: entry %02x %06x\n", ent.type, ent.data);
+	/* This one takes us to where we want to go. */
+	if (nubus_readdir(&dir, &ent) == -1) 
+		goto badrom;
+	if (console_loglevel >= 10)
+		printk(KERN_DEBUG "nubus_get_rom_dir: entry %02x %06x\n", ent.type, ent.data);
+	nubus_get_subdir(&ent, &dir);
+
+	/* Resource ID 01, also an "Unknown Macintosh" */
+	if (nubus_readdir(&dir, &ent) == -1) 
+		goto badrom;
+	if (console_loglevel >= 10)
+		printk(KERN_DEBUG "nubus_get_rom_dir: entry %02x %06x\n", ent.type, ent.data);
+
+	/* FIXME: the first one is *not* always the right one.  We
+	   suspect this has something to do with the ROM revision.
+	   "The HORROR ROM" (LC-series) uses 0x7e, while "The HORROR
+	   Continues" (Q630) uses 0x7b.  The DAFB Macs evidently use
+	   something else.  Please run "Slots" on your Mac (see
+	   include/linux/nubus.h for where to get this program) and
+	   tell us where the 'SiDirPtr' for Slot 0 is.  If you feel
+	   brave, you should also use MacsBug to walk down the ROM
+	   directories like this function does and try to find the
+	   path to that address... */
+	if (nubus_readdir(&dir, &ent) == -1)
+		goto badrom;
+	if (console_loglevel >= 10)
+		printk(KERN_DEBUG "nubus_get_rom_dir: entry %02x %06x\n", ent.type, ent.data);
+	
+	/* Bwahahahaha... */
+	nubus_get_subdir(&ent, &dir);
+	board->directory = dir.base;
+	return;
+	
+	/* Even more evil laughter... */
+ badrom:
+	board->directory = board->fblock;
+	nubus_move(&board->directory, nubus_expand32(board->doffset), board->lanes);
+	printk(KERN_ERR "nubus_get_rom_dir: ROM weirdness!  Notify the developers...\n");
 }
 
 /* Add a board (might be many devices) to the list */
@@ -762,10 +854,8 @@ static struct nubus_board* __init nubus_add_board(int slot, int bytelanes)
 	 * since the initial Macintosh ROM releases skipped the check.
 	 */
 
-	/* Set up the directory pointer */
-	board->directory = board->fblock;
-	nubus_move(&board->directory, nubus_expand32(board->doffset), board->lanes);
-
+	/* Attempt to work around slot zero weirdness */
+	nubus_find_rom_dir(board);
 	nubus_get_root_dir(board, &dir);	
 
 	/* We're ready to rock */
@@ -784,6 +874,9 @@ static struct nubus_board* __init nubus_add_board(int slot, int bytelanes)
 		printk(KERN_INFO "  Board resource:\n");
 		nubus_get_board_resource(board, slot, &ent);
 	}
+
+	/* Aaaarrrrgghh!  The LC III motherboard has *two* board
+	   resources.  I have no idea WTF to do about this. */
 
 	while (nubus_readdir(&dir, &ent) != -1) {
 		struct nubus_dev*  dev;
@@ -833,6 +926,7 @@ void __init nubus_probe_slot(int slot)
 		if (!card_present)
 			continue;
 
+		printk(KERN_DEBUG "Now probing slot %X at %p\n", slot, rp);
 		dp = *rp;
 		if(dp == 0)
 			continue;
@@ -869,41 +963,47 @@ static int sprint_nubus_board(struct nubus_board* board, char* ptr, int len)
 	return strlen(ptr);
 }
 
-/* We're going to have to be a bit more sophisticated about this, I
-   think, because it doesn't really seem to work right when you do a
-   full listing of boards and devices */
-int get_nubus_list(char *buf)
+static int nubus_read_proc(char *buf, char **start, off_t off,
+				int count, int *eof, void *data)
 {
-	int nprinted, len, size;
-	struct nubus_board* board;
-#define MSG "\nwarning: page-size limit reached!\n"
+	int nprinted, len, begin = 0;
+	int slot;
 
-	/* reserve same for truncation warning message: */
-	size  = PAGE_SIZE - (strlen(MSG) + 1);
-	len   = sprintf(buf, "Nubus boards found:\n");
-
+	len   = sprintf(buf, "Nubus devices found:\n");
 	/* Walk the list of NuBus boards */
 	for (board = nubus_boards; board != NULL; board = board->next)
 	{
 		nprinted = sprint_nubus_board(board, buf + len, size - len);
-		if (nprinted < 0) {
-			return len + sprintf(buf + len, MSG);
-		}
+		if (nprinted < 0)
+			break;
 		len += nprinted;
+		if (len+begin < off) {
+			begin += len;
+			len = 0;
+		}
+		if (len+begin >= off+count)
+			break;
 	}
+	if (slot==16 || len+begin < off)
+		*eof = 1;
+	off -= begin;
+	*strat = buf + off;
+	len -= off;
+	if (len>count)
+		len = count;
+	if (len<0)
+		len = 0;
 	return len;
 }
-
-static struct proc_dir_entry proc_old_nubus = {
-	PROC_NUBUS, 5, "nubus",
-	S_IFREG | S_IRUGO, 1, 0, 0,
-	0, &proc_array_inode_operations
-};
-#endif /* CONFIG_PROC_FS */
+#endif
 
 void __init nubus_scan_bus(void)
 {
 	int slot;
+	/* This might not work on your machine */
+#ifdef I_WANT_TO_PROBE_SLOT_ZERO
+	nubus_probe_slot(0);
+#endif
 	for(slot = 9; slot < 15; slot++)
 	{
 		nubus_probe_slot(slot);
@@ -922,6 +1022,13 @@ void __init nubus_init(void)
 		via_nubus_init();
 	}
 
+#ifdef TRY_TO_DODGE_WSOD
+	/* Rogue Ethernet interrupts can kill the machine if we don't
+	   do this.  Obviously this is bogus.  Hopefully the local VIA
+	   gurus can fix the real cause of the problem. */
+	mdelay(1000);
+#endif
+	
 	/* And probe */
 	printk("NuBus: Scanning NuBus slots.\n");
 	nubus_devices = NULL;
@@ -929,7 +1036,7 @@ void __init nubus_init(void)
 	nubus_scan_bus();
 
 #ifdef CONFIG_PROC_FS
-	proc_register(&proc_root, &proc_old_nubus);
+	create_proc_read_entry("nubus", 0, NULL, nubus_read_proc, NULL);
 	nubus_proc_init();
 #endif
 }

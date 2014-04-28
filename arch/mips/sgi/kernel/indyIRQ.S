@@ -6,7 +6,6 @@
  */
 
 #include <asm/asm.h>
-#include <asm/mipsconfig.h>
 #include <asm/mipsregs.h>
 #include <asm/regdef.h>
 #include <asm/stackframe.h>

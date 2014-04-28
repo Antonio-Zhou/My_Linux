@@ -1,21 +1,41 @@
-/* $Id: hysdn_sched.c,v 1.1.2.1 2001/12/31 13:26:46 kai Exp $
+/* $Id: hysdn_sched.c,v 1.1 2000/02/10 19:45:18 werner Exp $
+
+ * Linux driver for HYSDN cards, scheduler routines for handling exchange card <-> pc.
  *
- * Linux driver for HYSDN cards
- * scheduler routines for handling exchange card <-> pc.
+ * written by Werner Cornelius (werner@titro.de) for Hypercope GmbH
  *
- * Author    Werner Cornelius (werner@titro.de) for Hypercope GmbH
- * Copyright 1999 by Werner Cornelius (werner@titro.de)
+ * Copyright 1999  by Werner Cornelius (werner@titro.de)
  *
- * This software may be used and distributed according to the terms
- * of the GNU General Public License, incorporated herein by reference.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2, or (at your option)
+ * any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ *
+ * $Log: hysdn_sched.c,v $
+ * Revision 1.1  2000/02/10 19:45:18  werner
+ *
+ * Initial release
+ *
  *
  */
 
-#include <linux/config.h>
+#define __NO_VERSION__
+#include <linux/module.h>
+#include <linux/version.h>
+#include <asm/io.h>
 #include <linux/signal.h>
 #include <linux/kernel.h>
 #include <linux/ioport.h>
-#include <asm/io.h>
+#include <linux/interrupt.h>
 
 #include "hysdn_defs.h"
 
@@ -32,10 +52,7 @@ hysdn_sched_rx(hysdn_card * card, uchar * buf, word len, word chan)
 
 	switch (chan) {
 		case CHAN_NDIS_DATA:
-			if (hynet_enable & (1 << card->myid)) {
-                          /* give packet to network handler */
-				hysdn_rx_netpkt(card, buf, len);
-			}
+			hysdn_rx_netpkt(card, buf, len);	/* give packet to network handler */
 			break;
 
 		case CHAN_ERRLOG:
@@ -43,14 +60,7 @@ hysdn_sched_rx(hysdn_card * card, uchar * buf, word len, word chan)
 			if (card->err_log_state == ERRLOG_STATE_ON)
 				card->err_log_state = ERRLOG_STATE_START;	/* start new fetch */
 			break;
-#ifdef CONFIG_HYSDN_CAPI
-         	case CHAN_CAPI:
-/* give packet to CAPI handler */
-			if (hycapi_enable & (1 << card->myid)) {
-				hycapi_rx_capipkt(card, buf, len);
-			}
-			break;
-#endif /* CONFIG_HYSDN_CAPI */
+
 		default:
 			printk(KERN_INFO "irq message channel %d len %d unhandled \n", chan, len);
 			break;
@@ -105,9 +115,7 @@ hysdn_sched_tx(hysdn_card * card, uchar * buf, word volatile *len, word volatile
 		return (1);	/* tell that data should be send */
 	}			/* error log start and able to send */
 	/* now handle network interface packets */
-	if ((hynet_enable & (1 << card->myid)) && 
-	    (skb = hysdn_tx_netget(card)) != NULL) 
-	{
+	if ((skb = hysdn_tx_netget(card)) != NULL) {
 		if (skb->len <= maxlen) {
 			memcpy(buf, skb->data, skb->len);	/* copy the packet to the buffer */
 			*len = skb->len;
@@ -117,25 +125,12 @@ hysdn_sched_tx(hysdn_card * card, uchar * buf, word volatile *len, word volatile
 		} else
 			hysdn_tx_netack(card);	/* aknowledge packet -> throw away */
 	}			/* send a network packet if available */
-#ifdef CONFIG_HYSDN_CAPI
-	if( ((hycapi_enable & (1 << card->myid))) && 
-	    ((skb = hycapi_tx_capiget(card)) != NULL) )
-	{
-		if (skb->len <= maxlen) {
-			memcpy(buf, skb->data, skb->len);
-			*len = skb->len;
-			*chan = CHAN_CAPI;
-			hycapi_tx_capiack(card);
-			return (1);	/* go and send the data */
-		}
-	}
-#endif /* CONFIG_HYSDN_CAPI */
 	return (0);		/* nothing to send */
 }				/* hysdn_sched_tx */
 
 
 /*****************************************************************************/
-/* send one config line to the card and return 0 if successful, otherwise a */
+/* send one config line to the card and return 0 if successfull, otherwise a */
 /* negative error code.                                                      */
 /* The function works with timeouts perhaps not giving the greatest speed    */
 /* sending the line, but this should be meaningless beacuse only some lines  */

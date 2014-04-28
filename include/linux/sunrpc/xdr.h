@@ -59,7 +59,8 @@ void		xdr_init(void);
 /*
  * Miscellaneous XDR helper functions
  */
-u32 *	xdr_encode_string(u32 *p, const char *s, int len);
+u32 *	xdr_encode_array(u32 *p, const char *s, unsigned int len);
+u32 *	xdr_encode_string(u32 *p, const char *s);
 u32 *	xdr_decode_string(u32 *p, char **sp, int *lenp, int maxlen);
 u32 *	xdr_encode_netobj(u32 *p, const struct xdr_netobj *);
 u32 *	xdr_decode_netobj(u32 *p, struct xdr_netobj *);

@@ -11,9 +11,27 @@
 #include <linux/notifier.h>
 #include <linux/reboot.h>
 #include <linux/prctl.h>
+#include <linux/init.h>
+#include <linux/highuid.h>
 
 #include <asm/uaccess.h>
 #include <asm/io.h>
+
+/*
+ * this is where the system-wide overflow UID and GID are defined, for
+ * architectures that now have 32-bit UID/GID but didn't in the past
+ */
+
+int overflowuid = DEFAULT_OVERFLOWUID;
+int overflowgid = DEFAULT_OVERFLOWGID;
+
+/*
+ * the same as above, but for filesystems which can only store a 16-bit
+ * UID and GID. as such, this is needed on all architectures
+ */
+
+int fs_overflowuid = DEFAULT_FS_OVERFLOWUID;
+int fs_overflowgid = DEFAULT_FS_OVERFLOWUID;
 
 /*
  * this indicates whether you can reboot with ctrl-alt-del: the default is yes
@@ -40,11 +58,7 @@ int unregister_reboot_notifier(struct notifier_block * nb)
 	return notifier_chain_unregister(&reboot_notifier_list, nb);
 }
 
-
-
-extern void adjust_clock(void);
-
-asmlinkage int sys_ni_syscall(void)
+asmlinkage long sys_ni_syscall(void)
 {
 	return -ENOSYS;
 }
@@ -71,7 +85,7 @@ static int proc_sel(struct task_struct *p, int which, int who)
 	return 0;
 }
 
-asmlinkage int sys_setpriority(int which, int who, int niceval)
+asmlinkage long sys_setpriority(int which, int who, int niceval)
 {
 	struct task_struct *p;
 	unsigned int priority;
@@ -121,7 +135,7 @@ asmlinkage int sys_setpriority(int which, int who, int niceval)
  * not return the normal nice-value, but a value that has been
  * offset by 20 (ie it returns 0..40 instead of -20..20)
  */
-asmlinkage int sys_getpriority(int which, int who)
+asmlinkage long sys_getpriority(int which, int who)
 {
 	struct task_struct *p;
 	long max_prio = -ESRCH;
@@ -153,7 +167,7 @@ asmlinkage int sys_getpriority(int which, int who)
  *
  * reboot doesn't sync: do that yourself before calling this.
  */
-asmlinkage int sys_reboot(int magic1, int magic2, int cmd, void * arg)
+asmlinkage long sys_reboot(int magic1, int magic2, int cmd, void * arg)
 {
 	char buffer[256];
 
@@ -212,8 +226,7 @@ asmlinkage int sys_reboot(int magic1, int magic2, int cmd, void * arg)
 	default:
 		unlock_kernel();
 		return -EINVAL;
-		break;
-	};
+	}
 	unlock_kernel();
 	return 0;
 }
@@ -251,7 +264,7 @@ void ctrl_alt_del(void)
  * SMP: There are not races, the GIDs are checked only by filesystem
  *      operations (as far as semantic preservation is concerned).
  */
-asmlinkage int sys_setregid(gid_t rgid, gid_t egid)
+asmlinkage long sys_setregid(gid_t rgid, gid_t egid)
 {
 	int old_rgid = current->gid;
 	int old_egid = current->egid;
@@ -289,7 +302,7 @@ asmlinkage int sys_setregid(gid_t rgid, gid_t egid)
  *
  * SMP: Same implicit races as above.
  */
-asmlinkage int sys_setgid(gid_t gid)
+asmlinkage long sys_setgid(gid_t gid)
 {
 	int old_egid = current->egid;
 
@@ -366,7 +379,7 @@ extern inline void cap_emulate_setxuid(int old_ruid, int old_euid,
  * 100% compatible with BSD.  A program which uses just setuid() will be
  * 100% compatible with POSIX with saved IDs. 
  */
-asmlinkage int sys_setreuid(uid_t ruid, uid_t euid)
+asmlinkage long sys_setreuid(uid_t ruid, uid_t euid)
 {
 	int old_ruid, old_euid, old_suid, new_ruid;
 
@@ -381,19 +394,14 @@ asmlinkage int sys_setreuid(uid_t ruid, uid_t euid)
 		else
 			return -EPERM;
 	}
-
-	lock_kernel();
-
 	if (euid != (uid_t) -1) {
 		if ((old_ruid == euid) ||
 		    (current->euid == euid) ||
 		    (current->suid == euid) ||
 		    capable(CAP_SETUID))
 			current->fsuid = current->euid = euid;
-		else {
-			unlock_kernel();
+		else
 			return -EPERM;
-		}
 	}
 	if (ruid != (uid_t) -1 ||
 	    (euid != (uid_t) -1 && euid != old_ruid))
@@ -412,8 +420,6 @@ asmlinkage int sys_setreuid(uid_t ruid, uid_t euid)
 		current->uid = new_ruid;
 		alloc_uid(current);
 	}
-
-	unlock_kernel();
 	
 	if (!issecure(SECURE_NO_SETUID_FIXUP)) {
 		cap_emulate_setxuid(old_ruid, old_euid, old_suid);
@@ -435,12 +441,10 @@ asmlinkage int sys_setreuid(uid_t ruid, uid_t euid)
  * will allow a root program to temporarily drop privileges and be able to
  * regain them by swapping the real and effective uid.  
  */
-asmlinkage int sys_setuid(uid_t uid)
+asmlinkage long sys_setuid(uid_t uid)
 {
 	int old_euid = current->euid;
 	int old_ruid, old_suid, new_ruid;
-
-	lock_kernel();
 
 	old_ruid = new_ruid = current->uid;
 	old_suid = current->suid;
@@ -448,10 +452,8 @@ asmlinkage int sys_setuid(uid_t uid)
 		new_ruid = current->euid = current->suid = current->fsuid = uid;
 	else if ((uid == current->uid) || (uid == current->suid))
 		current->fsuid = current->euid = uid;
-	else {
-		unlock_kernel();
+	else
 		return -EPERM;
-	}
 
 	if (current->euid != old_euid)
 		current->dumpable = 0;
@@ -462,8 +464,6 @@ asmlinkage int sys_setuid(uid_t uid)
 		current->uid = new_ruid;
 		alloc_uid(current);
 	}
-
-	unlock_kernel();
 
 	if (!issecure(SECURE_NO_SETUID_FIXUP)) {
 		cap_emulate_setxuid(old_ruid, old_euid, old_suid);
@@ -477,7 +477,7 @@ asmlinkage int sys_setuid(uid_t uid)
  * This function implements a generic ability to update ruid, euid,
  * and suid.  This allows you to implement the 4.4 compatible seteuid().
  */
-asmlinkage int sys_setresuid(uid_t ruid, uid_t euid, uid_t suid)
+asmlinkage long sys_setresuid(uid_t ruid, uid_t euid, uid_t suid)
 {
 	int old_ruid = current->uid;
 	int old_euid = current->euid;
@@ -494,9 +494,6 @@ asmlinkage int sys_setresuid(uid_t ruid, uid_t euid, uid_t suid)
 		    (suid != current->euid) && (suid != current->suid))
 			return -EPERM;
 	}
-
-	lock_kernel();
-
 	if (ruid != (uid_t) -1) {
 		/* See above commentary about NPROC rlimit issues here. */
 		free_uid(current);
@@ -507,12 +504,10 @@ asmlinkage int sys_setresuid(uid_t ruid, uid_t euid, uid_t suid)
 		if (euid != current->euid)
 			current->dumpable = 0;
 		current->euid = euid;
+		current->fsuid = euid;
 	}
-	current->fsuid = current->euid;
 	if (suid != (uid_t) -1)
 		current->suid = suid;
-
-	unlock_kernel();
 
 	if (!issecure(SECURE_NO_SETUID_FIXUP)) {
 		cap_emulate_setxuid(old_ruid, old_euid, old_suid);
@@ -521,7 +516,7 @@ asmlinkage int sys_setresuid(uid_t ruid, uid_t euid, uid_t suid)
 	return 0;
 }
 
-asmlinkage int sys_getresuid(uid_t *ruid, uid_t *euid, uid_t *suid)
+asmlinkage long sys_getresuid(uid_t *ruid, uid_t *euid, uid_t *suid)
 {
 	int retval;
 
@@ -535,7 +530,7 @@ asmlinkage int sys_getresuid(uid_t *ruid, uid_t *euid, uid_t *suid)
 /*
  * Same as above, but for rgid, egid, sgid.
  */
-asmlinkage int sys_setresgid(gid_t rgid, gid_t egid, gid_t sgid)
+asmlinkage long sys_setresgid(gid_t rgid, gid_t egid, gid_t sgid)
 {
        if (!capable(CAP_SETGID)) {
 		if ((rgid != (gid_t) -1) && (rgid != current->gid) &&
@@ -554,14 +549,14 @@ asmlinkage int sys_setresgid(gid_t rgid, gid_t egid, gid_t sgid)
 		if (egid != current->egid)
 			current->dumpable = 0;
 		current->egid = egid;
+		current->fsgid = egid;
 	}
-	current->fsgid = current->egid;
 	if (sgid != (gid_t) -1)
 		current->sgid = sgid;
 	return 0;
 }
 
-asmlinkage int sys_getresgid(gid_t *rgid, gid_t *egid, gid_t *sgid)
+asmlinkage long sys_getresgid(gid_t *rgid, gid_t *egid, gid_t *sgid)
 {
 	int retval;
 
@@ -579,11 +574,9 @@ asmlinkage int sys_getresgid(gid_t *rgid, gid_t *egid, gid_t *sgid)
  * whatever uid it wants to). It normally shadows "euid", except when
  * explicitly set by setfsuid() or for access..
  */
-asmlinkage int sys_setfsuid(uid_t uid)
+asmlinkage long sys_setfsuid(uid_t uid)
 {
 	int old_fsuid;
-
-	lock_kernel();
 
 	old_fsuid = current->fsuid;
 	if (uid == current->uid || uid == current->euid ||
@@ -592,8 +585,6 @@ asmlinkage int sys_setfsuid(uid_t uid)
 		current->fsuid = uid;
 	if (current->fsuid != old_fsuid)
 		current->dumpable = 0;
-
-	unlock_kernel();
 
 	/* We emulate fsuid by essentially doing a scaled-down version
 	 * of what we did in setresuid and friends. However, we only
@@ -620,7 +611,7 @@ asmlinkage int sys_setfsuid(uid_t uid)
 /*
  * Samma p svenska..
  */
-asmlinkage int sys_setfsgid(gid_t gid)
+asmlinkage long sys_setfsgid(gid_t gid)
 {
 	int old_fsgid;
 
@@ -662,7 +653,7 @@ asmlinkage long sys_times(struct tms * tbuf)
  * LBT 04.03.94
  */
 
-asmlinkage int sys_setpgid(pid_t pid, pid_t pgid)
+asmlinkage long sys_setpgid(pid_t pid, pid_t pgid)
 {
 	struct task_struct * p;
 	int err = -EINVAL;
@@ -715,7 +706,7 @@ out:
 	return err;
 }
 
-asmlinkage int sys_getpgid(pid_t pid)
+asmlinkage long sys_getpgid(pid_t pid)
 {
 	if (!pid) {
 		return current->pgrp;
@@ -734,13 +725,13 @@ asmlinkage int sys_getpgid(pid_t pid)
 	}
 }
 
-asmlinkage int sys_getpgrp(void)
+asmlinkage long sys_getpgrp(void)
 {
 	/* SMP - assuming writes are word atomic this is fine */
 	return current->pgrp;
 }
 
-asmlinkage int sys_getsid(pid_t pid)
+asmlinkage long sys_getsid(pid_t pid)
 {
 	if (!pid) {
 		return current->session;
@@ -759,7 +750,7 @@ asmlinkage int sys_getsid(pid_t pid)
 	}
 }
 
-asmlinkage int sys_setsid(void)
+asmlinkage long sys_setsid(void)
 {
 	struct task_struct * p;
 	int err = -EPERM;
@@ -783,7 +774,7 @@ out:
 /*
  * Supplementary group IDs
  */
-asmlinkage int sys_getgroups(int gidsetsize, gid_t *grouplist)
+asmlinkage long sys_getgroups(int gidsetsize, gid_t *grouplist)
 {
 	int i;
 	
@@ -809,7 +800,7 @@ asmlinkage int sys_getgroups(int gidsetsize, gid_t *grouplist)
  *	without another task interfering.
  */
  
-asmlinkage int sys_setgroups(int gidsetsize, gid_t *grouplist)
+asmlinkage long sys_setgroups(int gidsetsize, gid_t *grouplist)
 {
 	if (!capable(CAP_SETGID))
 		return -EPERM;
@@ -821,65 +812,55 @@ asmlinkage int sys_setgroups(int gidsetsize, gid_t *grouplist)
 	return 0;
 }
 
-int in_group_p(gid_t grp)
+static int supplemental_group_member(gid_t grp)
 {
-	if (grp != current->fsgid) {
-		int i = current->ngroups;
-		if (i) {
-			gid_t *groups = current->groups;
-			do {
-				if (*groups == grp)
-					goto out;
-				groups++;
-				i--;
-			} while (i);
-		}
-		return 0;
-	}
-out:
-	return 1;
-}
+	int i = current->ngroups;
 
-/* Like in_group_p, but testing against egid, not fsgid */
-
-int in_egroup_p(gid_t grp)
-{
-	if (grp != current->egid) {
-		int i = current->ngroups;
-		if (i) {
-			gid_t *groups = current->groups;
-			do {
-				if (*groups == grp)
-					goto out;
-				groups++;
-				i--;
-			} while (i);
-		}
-		return 0;
+	if (i) {
+		gid_t *groups = current->groups;
+		do {
+			if (*groups == grp)
+				return 1;
+			groups++;
+			i--;
+		} while (i);
 	}
-out:
-	return 1;
+	return 0;
 }
 
 /*
- * This should really be a blocking read-write lock
- * rather than a semaphore. Anybody want to implement
- * one?
+ * Check whether we're fsgid/egid or in the supplemental group..
  */
-struct semaphore uts_sem = MUTEX;
+int in_group_p(gid_t grp)
+{
+	int retval = 1;
+	if (grp != current->fsgid)
+		retval = supplemental_group_member(grp);
+	return retval;
+}
 
-asmlinkage int sys_newuname(struct new_utsname * name)
+int in_egroup_p(gid_t grp)
+{
+	int retval = 1;
+	if (grp != current->egid)
+		retval = supplemental_group_member(grp);
+	return retval;
+}
+
+DECLARE_RWSEM(uts_sem);
+
+asmlinkage long sys_newuname(struct new_utsname * name)
 {
 	int errno = 0;
 
-	down(&uts_sem);
+	down_read(&uts_sem);
 	if (copy_to_user(name,&system_utsname,sizeof *name))
 		errno = -EFAULT;
-	up(&uts_sem);
+	up_read(&uts_sem);
 	return errno;
 }
 
-asmlinkage int sys_sethostname(char *name, int len)
+asmlinkage long sys_sethostname(char *name, int len)
 {
 	int errno;
 
@@ -887,30 +868,30 @@ asmlinkage int sys_sethostname(char *name, int len)
 		return -EPERM;
 	if (len < 0 || len > __NEW_UTS_LEN)
 		return -EINVAL;
-	down(&uts_sem);
+	down_write(&uts_sem);
 	errno = -EFAULT;
 	if (!copy_from_user(system_utsname.nodename, name, len)) {
 		system_utsname.nodename[len] = 0;
 		errno = 0;
 	}
-	up(&uts_sem);
+	up_write(&uts_sem);
 	return errno;
 }
 
-asmlinkage int sys_gethostname(char *name, int len)
+asmlinkage long sys_gethostname(char *name, int len)
 {
 	int i, errno;
 
 	if (len < 0)
 		return -EINVAL;
-	down(&uts_sem);
+	down_read(&uts_sem);
 	i = 1 + strlen(system_utsname.nodename);
 	if (i > len)
 		i = len;
 	errno = 0;
 	if (copy_to_user(name, system_utsname.nodename, i))
 		errno = -EFAULT;
-	up(&uts_sem);
+	up_read(&uts_sem);
 	return errno;
 }
 
@@ -918,7 +899,7 @@ asmlinkage int sys_gethostname(char *name, int len)
  * Only setdomainname; getdomainname can be implemented by calling
  * uname()
  */
-asmlinkage int sys_setdomainname(char *name, int len)
+asmlinkage long sys_setdomainname(char *name, int len)
 {
 	int errno;
 
@@ -927,17 +908,17 @@ asmlinkage int sys_setdomainname(char *name, int len)
 	if (len < 0 || len > __NEW_UTS_LEN)
 		return -EINVAL;
 
-	down(&uts_sem);
+	down_write(&uts_sem);
 	errno = -EFAULT;
 	if (!copy_from_user(system_utsname.domainname, name, len)) {
 		errno = 0;
 		system_utsname.domainname[len] = 0;
 	}
-	up(&uts_sem);
+	up_write(&uts_sem);
 	return errno;
 }
 
-asmlinkage int sys_getrlimit(unsigned int resource, struct rlimit *rlim)
+asmlinkage long sys_getrlimit(unsigned int resource, struct rlimit *rlim)
 {
 	if (resource >= RLIM_NLIMITS)
 		return -EINVAL;
@@ -946,7 +927,29 @@ asmlinkage int sys_getrlimit(unsigned int resource, struct rlimit *rlim)
 			? -EFAULT : 0;
 }
 
-asmlinkage int sys_setrlimit(unsigned int resource, struct rlimit *rlim)
+#if !defined(__ia64__) && !defined(__s390__)
+
+/*
+ *	Back compatibility for getrlimit. Needed for some apps.
+ */
+ 
+asmlinkage long sys_old_getrlimit(unsigned int resource, struct rlimit *rlim)
+{
+	struct rlimit x;
+	if (resource >= RLIM_NLIMITS)
+		return -EINVAL;
+
+	memcpy(&x, current->rlim + resource, sizeof(*rlim));
+	if(x.rlim_cur > 0x7FFFFFFF)
+		x.rlim_cur = 0x7FFFFFFF;
+	if(x.rlim_max > 0x7FFFFFFF)
+		x.rlim_max = 0x7FFFFFFF;
+	return copy_to_user(rlim, &x, sizeof(x))?-EFAULT:0;
+}
+
+#endif
+
+asmlinkage long sys_setrlimit(unsigned int resource, struct rlimit *rlim)
 {
 	struct rlimit new_rlim, *old_rlim;
 
@@ -983,6 +986,8 @@ asmlinkage int sys_setrlimit(unsigned int resource, struct rlimit *rlim)
  * either stopped or zombied.  In the zombied case the task won't get
  * reaped till shortly after the call to getrusage(), in both cases the
  * task being examined is in a frozen state so the counters won't change.
+ *
+ * FIXME! Get the fault counts properly!
  */
 int getrusage(struct task_struct *p, int who, struct rusage *ru)
 {
@@ -1021,21 +1026,21 @@ int getrusage(struct task_struct *p, int who, struct rusage *ru)
 	return copy_to_user(ru, &r, sizeof(r)) ? -EFAULT : 0;
 }
 
-asmlinkage int sys_getrusage(int who, struct rusage *ru)
+asmlinkage long sys_getrusage(int who, struct rusage *ru)
 {
 	if (who != RUSAGE_SELF && who != RUSAGE_CHILDREN)
 		return -EINVAL;
 	return getrusage(current, who, ru);
 }
 
-asmlinkage int sys_umask(int mask)
+asmlinkage long sys_umask(int mask)
 {
 	mask = xchg(&current->fs->umask, mask & S_IRWXUGO);
 	return mask;
 }
     
-asmlinkage int sys_prctl(int option, unsigned long arg2, unsigned long arg3,
-			 unsigned long arg4, unsigned long arg5)
+asmlinkage long sys_prctl(int option, unsigned long arg2, unsigned long arg3,
+			  unsigned long arg4, unsigned long arg5)
 {
 	int error = 0;
 	int sig;
@@ -1048,6 +1053,35 @@ asmlinkage int sys_prctl(int option, unsigned long arg2, unsigned long arg3,
 				break;
 			}
 			current->pdeath_signal = sig;
+			break;
+		case PR_GET_PDEATHSIG:
+			error = put_user(current->pdeath_signal, (int *)arg2);
+			break;
+		case PR_GET_DUMPABLE:
+			if (current->dumpable)
+				error = 1;
+			break;
+		case PR_SET_DUMPABLE:
+			if (arg2 != 0 && arg2 != 1) {
+				error = -EINVAL;
+				break;
+			}
+			current->dumpable = arg2;
+			break;
+	        case PR_SET_UNALIGN:
+#ifdef SET_UNALIGN_CTL
+			error = SET_UNALIGN_CTL(current, arg2);
+#else
+			error = -EINVAL;
+#endif
+			break;
+
+	        case PR_GET_UNALIGN:
+#ifdef GET_UNALIGN_CTL
+			error = GET_UNALIGN_CTL(current, arg2);
+#else
+			error = -EINVAL;
+#endif
 			break;
 
 		case PR_GET_KEEPCAPS:

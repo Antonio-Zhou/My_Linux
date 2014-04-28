@@ -18,6 +18,10 @@
  *   the definition is inactivated, but I still used it.  It turns out this
  *   actually happens a few times in the kernel source.  The simple way to
  *   fix this problem is to remove this particular optimization.
+ *
+ * 2.3.99-pre1, Andrew Morton <andrewm@uow.edu.au>
+ * - Changed so that 'filename.o' depends upon 'filename.[cS]'.  This is so that
+ *   missing source files are noticed, rather than silently ignored.
  */
 
 #include <ctype.h>
@@ -47,6 +51,8 @@ struct path_struct {
 };
 
 
+/* Current input file */
+static const char *g_filename;
 
 /*
  * This records all the configuration options seen.
@@ -58,7 +64,16 @@ char * str_config  = NULL;
 int    size_config = 0;
 int    len_config  = 0;
 
-
+static void
+do_depname(void)
+{
+	if (!hasdep) {
+		hasdep = 1;
+		printf("%s:", depname);
+		if (g_filename)
+			printf(" %s", g_filename);
+	}
+}
 
 /*
  * Grow the configuration string to a desired length.
@@ -193,10 +208,7 @@ void handle_include(int type, const char * name, int len)
 	if (access(path->buffer, F_OK) != 0)
 		return;
 
-	if (!hasdep) {
-		hasdep = 1;
-		printf("%s:", depname);
-	}
+	do_depname();
 	printf(" \\\n   %s", path->buffer);
 }
 
@@ -227,10 +239,7 @@ void use_config(const char * name, int len)
 
 	define_config(pc, len);
 
-	if (!hasdep) {
-		hasdep = 1;
-		printf("%s: ", depname);
-	}
+	do_depname();
 	printf(" \\\n   $(wildcard %s.h)", path_array[0].buffer);
 }
 
@@ -285,14 +294,12 @@ void use_config(const char * name, int len)
  * The state machine looks for (approximately) these Perl regular expressions:
  *
  *    m|\/\*.*?\*\/|
- *    m|\/\/.*|
  *    m|'.*?'|
  *    m|".*?"|
  *    m|#\s*include\s*"(.*?)"|
  *    m|#\s*include\s*<(.*?>"|
  *    m|#\s*(?define|undef)\s*CONFIG_(\w*)|
  *    m|(?!\w)CONFIG_|
- *    m|__SMP__|
  *
  * About 98% of the CPU time is spent here, and most of that is in
  * the 'start' paragraph.  Because the current characters are
@@ -317,21 +324,11 @@ __start:
 	CASE('"',  dquote);
 	CASE('#',  pound);
 	CASE('C',  cee);
-	CASE('_',  underscore);
 	goto start;
-
-/* // */
-slash_slash:
-	GETNEXT
-	CASE('\n', start);
-	NOTCASE('\\', slash_slash);
-	GETNEXT
-	goto slash_slash;
 
 /* / */
 slash:
 	GETNEXT
-	CASE('/',  slash_slash);
 	NOTCASE('*', __start);
 slash_star_dot_star:
 	GETNEXT
@@ -465,18 +462,6 @@ cee_CONFIG_word:
 		goto cee_CONFIG_word;
 	use_config(map_dot, next - map_dot - 1);
 	goto __start;
-
-/* __SMP__ */
-underscore:
-	GETNEXT NOTCASE('_', __start);
-	GETNEXT NOTCASE('S', __start);
-	GETNEXT NOTCASE('M', __start);
-	GETNEXT NOTCASE('P', __start);
-	GETNEXT NOTCASE('_', __start);
-	GETNEXT NOTCASE('_', __start);
-	use_config("SMP", 3);
-	goto __start;
-
     }
 }
 
@@ -559,11 +544,13 @@ int main(int argc, char **argv)
 	while (--argc > 0) {
 		const char * filename = *++argv;
 		const char * command  = __depname;
+		g_filename = 0;
 		len = strlen(filename);
 		memcpy(depname, filename, len+1);
 		if (len > 2 && filename[len-2] == '.') {
 			if (filename[len-1] == 'c' || filename[len-1] == 'S') {
 			    depname[len-1] = 'o';
+			    g_filename = filename;
 			    command = "";
 			}
 		}

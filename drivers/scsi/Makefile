@@ -5,10 +5,6 @@
 # unless it's something special (ie not a .c file).
 #
 
-SUB_DIRS     := 
-MOD_SUB_DIRS := $(SUB_DIRS)
-ALL_SUB_DIRS := $(SUB_DIRS)
-
 L_TARGET := scsi.a
 L_OBJS   := 
 M_OBJS   := 
@@ -17,12 +13,22 @@ MIX_OBJS :=
 MOD_LIST_NAME := SCSI_MODULES
 SCSI_SRCS = $(wildcard $(L_OBJS:%.o=%.c))
 
-CFLAGS_aha152x.o =   -DDEBUG_AHA152X -DAUTOCONF
+ALL_SUB_DIRS := pcmcia
+ifeq ($(CONFIG_PCMCIA),y)
+  SUB_DIRS += pcmcia
+  MOD_IN_SUB_DIRS += pcmcia
+else
+  ifeq ($(CONFIG_PCMCIA),m)
+    MOD_IN_SUB_DIRS += pcmcia
+  endif
+endif
+
+CFLAGS_aha152x.o =   -DAHA152X_STAT -DAUTOCONF
 CFLAGS_gdth.o    = # -DDEBUG_GDTH=2 -D__SERIAL__ -D__COM2__ -DGDTH_STATISTICS
 CFLAGS_seagate.o =   -DARBITRATE -DPARITY -DSEAGATE_USE_ASM
 
 .SUFFIXES:
-.SUFFIXES: .c .o .h .a
+.SUFFIXES: .c .o .h .a .S
 
 ifeq (${CFLAGS},)
 CFLAGS = -D__KERNEL__=1 \
@@ -44,8 +50,8 @@ ifeq ($(CONFIG_SCSI),y)
     OX_OBJS  := scsi_syms.o
   endif
   L_OBJS += scsi_n_syms.o hosts.o scsi_ioctl.o constants.o scsicam.o
-  L_OBJS += scsi_error.o scsi_obsolete.o scsi_queue.o
-  L_OBJS += scsi_proc.o
+  L_OBJS += scsi_error.o scsi_obsolete.o scsi_queue.o scsi_lib.o 
+  L_OBJS += scsi_merge.o scsi_proc.o scsi_dma.o scsi_scan.o
 else
   ifeq ($(CONFIG_SCSI),m)
     MIX_OBJS += scsi_syms.o
@@ -61,16 +67,8 @@ else
   endif
 endif
 
-ifeq ($(CONFIG_CHR_DEV_OSST),y)
-L_OBJS += osst.o
-else
-  ifeq ($(CONFIG_CHR_DEV_OSST),m)
-  M_OBJS += osst.o
-  endif
-endif
-
 ifeq ($(CONFIG_BLK_DEV_SD),y)
-L_OBJS += sd.o sd_ioctl.o
+L_OBJS += sd.o
 else
   ifeq ($(CONFIG_BLK_DEV_SD),m)
   M_OBJS += sd_mod.o
@@ -261,12 +259,44 @@ else
   endif
 endif
 
+ifeq ($(CONFIG_OKTAGON_SCSI),y)
+L_OBJS += NCR53C9x.o oktagon_esp.o oktagon_io.o
+else
+  ifeq ($(CONFIG_OKTAGON_SCSI),m)
+  M_OBJS += NCR53C9x.o oktagon_esp.o oktagon_io.o
+  endif
+endif
+
 ifeq ($(CONFIG_ATARI_SCSI),y)
 L_OBJS += atari_scsi.o
 else
   ifeq ($(CONFIG_ATARI_SCSI),m)
   M_OBJS += atari_scsi.o
   endif
+endif
+
+ifeq ($(CONFIG_MAC_SCSI),y)
+L_OBJS += mac_scsi.o
+else
+  ifeq ($(CONFIG_MAC_SCSI),m)
+  M_OBJS += mac_scsi.o
+  endif
+endif
+
+ifeq ($(CONFIG_SUN3_SCSI),y)
+L_OBJS += sun3_scsi.o
+else
+  ifeq ($(CONFIG_SUN3_SCSI),m)
+  M_OBJS += sun3_scsi.o
+  endif
+endif
+
+ifeq ($(CONFIG_SCSI_MAC_ESP),y)
+L_OBJS += mac_esp.o NCR53C9x.o
+else
+	ifeq ($(CONFIG_SCSI_MAC_ESP),m)
+	M_OBJS += mac_esp.o NCR53C9x.o
+	endif
 endif
 
 ifeq ($(CONFIG_SCSI_PPA),y)
@@ -285,7 +315,6 @@ else
   endif
 endif
 
-
 ifeq ($(CONFIG_SCSI_QLOGIC_FAS),y)
 L_OBJS += qlogicfas.o
 else
@@ -300,6 +329,14 @@ L_OBJS += qlogicisp.o
 else
   ifeq ($(CONFIG_SCSI_QLOGIC_ISP),m)
   M_OBJS += qlogicisp.o 
+  endif
+endif
+
+ifeq ($(CONFIG_SCSI_QLOGIC_1280),y)
+L_OBJS += qla1280.o 
+else
+  ifeq ($(CONFIG_SCSI_QLOGIC_1280),m)
+  M_OBJS += qla1280.o 
   endif
 endif
 
@@ -332,14 +369,6 @@ L_OBJS += qlogicfc.o
 else
   ifeq ($(CONFIG_SCSI_QLOGIC_FC),m)   
   M_OBJS += qlogicfc.o 
-  endif
-endif
-
-ifeq ($(CONFIG_SCSI_CPQFCTS),y)
-L_OBJS += cpqfc.o 
-else
-  ifeq ($(CONFIG_SCSI_CPQFCTS),m)   
-  M_OBJS += cpqfc.o 
   endif
 endif
 
@@ -584,6 +613,14 @@ else
   endif
 endif
 
+ifeq ($(CONFIG_SCSI_DMX3191D),y)
+L_OBJS += dmx3191d.o
+else
+  ifeq ($(CONFIG_SCSI_DMX3191D),m)
+  M_OBJS += dmx3191d.o
+  endif
+endif
+
 ifeq ($(CONFIG_SCSI_DTC3280),y)
 L_OBJS += dtc.o
 else
@@ -660,6 +697,14 @@ ifeq ($(CONFIG_JAZZ_ESP),y)
 L_OBJS += NCR53C9x.o jazz_esp.o
 endif
 
+ifeq ($(CONFIG_SCSI_DECNCR),y)
+L_OBJS += NCR53C9x.o dec_esp.o
+endif
+
+ifeq ($(CONFIG_SUN3X_ESP),y)
+L_OBJS += NCR53C9x.o sun3x_esp.o
+endif
+
 ifeq ($(CONFIG_BLK_DEV_3W_XXXX_RAID),y)
 L_OBJS += 3w-xxxx.o
 else
@@ -672,7 +717,7 @@ include $(TOPDIR)/Rules.make
 
 53c8xx_d.h: 53c7,8xx.scr script_asm.pl
 	ln -sf 53c7,8xx.scr fake8.c
-	$(CPP) -traditional -DCHIP=810 fake8.c | grep -v '^#' | perl script_asm.pl 
+	$(CPP) $(CPPFLAGS) -traditional -DCHIP=810 fake8.c | grep -v '^#' | $(PERL) script_asm.pl 
 	mv script.h 53c8xx_d.h
 	mv scriptu.h 53c8xx_u.h
 	rm fake8.c
@@ -681,20 +726,18 @@ include $(TOPDIR)/Rules.make
 
 53c7xx_d.h: 53c7xx.scr script_asm.pl
 	ln -sf 53c7xx.scr fake7.c
-	$(CPP) -traditional -DCHIP=710 fake7.c | grep -v '^#' | perl -s script_asm.pl -ncr7x0_family
+	$(CPP) $(CPPFLAGS) -traditional -DCHIP=710 fake7.c | grep -v '^#' | $(PERL) -s script_asm.pl -ncr7x0_family
 	mv script.h 53c7xx_d.h
 	mv scriptu.h 53c7xx_u.h
 	rm fake7.c
 
 53c7xx_u.h: 53c7xx_d.h
 
-53c7xx.o : 53c7xx_d.h 53c7xx.c
-	$(CC) $(CFLAGS) -c 53c7xx.c
+53c7xx.o : 53c7xx_d.h
 
 sim710_d.h: sim710.scr script_asm.pl
 	ln -sf sim710.scr fake7.c
-#	$(CPP) -traditional -DCHIP=810 fake7.c | grep -v '^#' | perl -s script_asm.pl
-	$(CPP) -traditional -DCHIP=710 fake7.c | grep -v '^#' | perl -s script_asm.pl -ncr7x0_family
+	$(CPP) $(CPPFLAGS) -traditional -DCHIP=710 fake7.c | grep -v '^#' | $(PERL) -s script_asm.pl -ncr7x0_family
 	mv script.h sim710_d.h
 	mv scriptu.h sim710_u.h
 	rm fake7.c
@@ -702,50 +745,23 @@ sim710_d.h: sim710.scr script_asm.pl
 sim710_u.h: sim710_d.h
 
 sim710.o : sim710_d.h
-
-# if we have a triggerable HBA (extra circuit addition for
-# TTL level output on GPIO line), build in the trigger file
-
-#CPQTRIGGER_FILE = cpqfcTStrigger.c
-
-CPQTRIG = cpqfcTStrigger.o
-
-cpqfcTStrigger.o: cpqfcTStrigger.c
-
-cpqfcTSinit.o: cpqfcTSinit.c cpqfcTSstructs.h cpqfcTSchip.h cpqfcTSioctl.h
-
-cpqfcTScontrol.o: cpqfcTScontrol.c cpqfcTSstructs.h cpqfcTSchip.h 
-
-cpqfcTSi2c.o: cpqfcTSi2c.c cpqfcTSchip.h 
-
-cpqfcTSworker.o: cpqfcTSworker.c cpqfcTSchip.h cpqfcTSstructs.h cpqfcTSioctl.h
-
-cpqfc.o: cpqfcTSinit.o cpqfcTScontrol.o cpqfcTSi2c.o cpqfcTSworker.o $(CPQTRIG)
-	$(LD) -r -o cpqfc.o cpqfcTSinit.o cpqfcTScontrol.o \
-	cpqfcTSi2c.o cpqfcTSworker.o $(CPQTRIG)
-
-
-initio.o: ini9100u.c i91uscsi.c
-	$(CC) $(CFLAGS) -c ini9100u.c -o ini9100u.o
-	$(CC) $(CFLAGS) -c i91uscsi.c -o i91uscsi.o
+ 
+initio.o: ini9100u.o i91uscsi.o
 	$(LD) -r -o initio.o ini9100u.o i91uscsi.o
-	rm -f ini9100u.o i91uscsi.o
 
 a100u2w.o: inia100.o i60uscsi.o
 	$(LD) -r -o a100u2w.o inia100.o i60uscsi.o
 
-megaraid.o: megaraid.c
-	$(CC) $(CFLAGS) -c megaraid.c
-
 scsi_mod.o: $(MIX_OBJS) hosts.o scsi.o scsi_ioctl.o constants.o \
-		scsicam.o scsi_proc.o scsi_error.o scsi_obsolete.o scsi_queue.o
+		scsicam.o scsi_proc.o scsi_error.o scsi_obsolete.o \
+		scsi_queue.o scsi_lib.o scsi_merge.o scsi_dma.o scsi_scan.o
 	$(LD) $(LD_RFLAG) -r -o $@ $(MIX_OBJS) hosts.o scsi.o scsi_ioctl.o \
-		constants.o scsicam.o scsi_proc.o               \
-		scsi_error.o scsi_obsolete.o scsi_queue.o \
+		constants.o scsicam.o scsi_proc.o scsi_merge.o     \
+		scsi_error.o scsi_obsolete.o scsi_queue.o scsi_lib.o \
+		scsi_dma.o scsi_scan.o
 
 sr_mod.o: sr.o sr_ioctl.o sr_vendor.o
 	$(LD) $(LD_RFLAG) -r -o $@ sr.o sr_ioctl.o sr_vendor.o
 
-sd_mod.o: sd.o sd_ioctl.o
-	$(LD) $(LD_RFLAG) -r -o $@ sd.o sd_ioctl.o
-
+sd_mod.o: sd.o
+	$(LD) $(LD_RFLAG) -r -o $@ sd.o

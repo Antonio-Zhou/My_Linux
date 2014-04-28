@@ -1,5 +1,5 @@
 /*
- * $Id: hid-debug.h,v 1.2 2000/05/29 10:54:53 vojtech Exp $
+ *  driver/usb/hid-debug.h
  *
  *  (c) 1999 Andreas Gal	<gal@cs.uni-magdeburg.de>
  *  (c) 2000 Vojtech Pavlik	<vojtech@suse.cz>

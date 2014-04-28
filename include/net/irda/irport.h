@@ -29,7 +29,7 @@
 #include <linux/netdevice.h>
 #include <linux/skbuff.h>
 #include <linux/types.h>
-#include <asm/spinlock.h>
+#include <linux/spinlock.h>
 
 #include <net/irda/irda_device.h>
 
@@ -51,7 +51,7 @@
 #define FRAME_MAX_SIZE 2048
 
 struct irport_cb {
-	struct device *netdev; /* Yes! we are some kind of netdevice */
+	struct net_device *netdev; /* Yes! we are some kind of netdevice */
 	struct net_device_stats stats;
 
 	struct irlap_cb *irlap;    /* The link layer we are attached to */
@@ -82,8 +82,8 @@ void irport_start(struct irport_cb *self);
 void irport_stop(struct irport_cb *self);
 void irport_change_speed(void *priv, __u32 speed);
 void irport_interrupt(int irq, void *dev_id, struct pt_regs *regs);
-int  irport_hard_xmit(struct sk_buff *skb, struct device *dev);
-int  irport_net_open(struct device *dev);
-int  irport_net_close(struct device *dev);
+int  irport_hard_xmit(struct sk_buff *skb, struct net_device *dev);
+int  irport_net_open(struct net_device *dev);
+int  irport_net_close(struct net_device *dev);
 
 #endif /* IRPORT_H */

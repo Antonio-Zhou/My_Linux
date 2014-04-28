@@ -2,15 +2,16 @@
  *
  * Name:	skgesirq.h
  * Project:	GEnesis, PCI Gigabit Ethernet Adapter
- * Version:	$Revision: 1.22 $
- * Date:	$Date: 2000/11/09 11:30:10 $
+ * Version:	$Revision: 1.18 $
+ * Date:	$Date: 1999/05/19 07:32:59 $
  * Purpose:	SK specific Gigabit Ethernet special IRQ functions
  *
  ******************************************************************************/
 
 /******************************************************************************
  *
- *	(C)Copyright 1998-2000 SysKonnect GmbH.
+ *	(C)Copyright 1998,1999 SysKonnect,
+ *	a business unit of Schneider & Koch & Co. Datensysteme GmbH.
  *
  *	This program is free software; you can redistribute it and/or modify
  *	it under the terms of the GNU General Public License as published by
@@ -25,18 +26,6 @@
  *
  * History:
  *	$Log: skgesirq.h,v $
- *	Revision 1.22  2000/11/09 11:30:10  rassmann
- *	WA: Waiting after releasing reset until BCom chip is accessible.
- *	
- *	Revision 1.21  2000/10/18 12:22:40  cgoos
- *	Added workaround for half duplex hangup.
- *	
- *	Revision 1.20  1999/12/06 10:00:44  cgoos
- *	Added SET event for role.
- *	
- *	Revision 1.19  1999/11/22 13:58:26  cgoos
- *	Changed license header to GPL.
- *	
  *	Revision 1.18  1999/05/19 07:32:59  cgoos
  *	Changes for 1000Base-T.
  *	
@@ -110,13 +99,9 @@
 #define SK_HWEV_UPDATE_STAT	5	/* Update Statistics by PNMI */
 #define SK_HWEV_SET_LMODE	6	/* Set Link Mode by PNMI */
 #define SK_HWEV_SET_FLOWMODE	7	/* Set Flow Control Mode by PNMI */
-#define SK_HWEV_SET_ROLE	8	/* Set Master/Slave (Role) by PNMI */
-#define SK_HWEV_HALFDUP_CHK	9	/* Set Master/Slave (Role) by PNMI */
 
 #define	SK_WA_ACT_TIME		(5000000L)	/* 5 sec */
 #define	SK_WA_INA_TIME		(100000L)	/* 100 msec */
-
-#define	SK_HALFDUP_CHK_TIME	(10000L)	/* 10 msec */
 
 /*
  * Define the error numbers and messages

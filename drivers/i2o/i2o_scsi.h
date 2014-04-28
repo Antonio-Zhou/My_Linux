@@ -5,9 +5,7 @@
 #include <linux/version.h>
 #endif
 
-#ifndef LinuxVersionCode
 #define LinuxVersionCode(v, p, s) (((v)<<16)+((p)<<8)+(s))
-#endif
 
 #include <linux/types.h>
 #include <linux/kdev_t.h>
@@ -15,8 +13,6 @@
 #define I2O_SCSI_ID 15
 #define I2O_SCSI_CAN_QUEUE 4
 #define I2O_SCSI_CMD_PER_LUN 6
-
-extern struct proc_dir_entry proc_scsi_i2o_scsi;
 
 extern int i2o_scsi_detect(Scsi_Host_Template *);
 extern const char *i2o_scsi_info(struct Scsi_Host *);
@@ -26,11 +22,10 @@ extern int i2o_scsi_abort(Scsi_Cmnd *);
 extern int i2o_scsi_reset(Scsi_Cmnd *, unsigned int);
 extern int i2o_scsi_bios_param(Disk *, kdev_t, int *);
 extern void i2o_scsi_setup(char *str, int *ints);
-extern int i2o_scsi_release(struct Scsi_Host *host);
 
 #define I2OSCSI {                                          \
 		  next: NULL,				    \
-                  proc_dir:          &proc_scsi_i2o_scsi,\
+                  proc_name:         "i2o_scsi",   \
                   name:              "I2O SCSI Layer", 	    \
                   detect:            i2o_scsi_detect,       \
                   release:	     i2o_scsi_release,	    \
