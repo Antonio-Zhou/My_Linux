@@ -1,4 +1,4 @@
-My_Linux
+My_Work
 ========
 
-This is my Linux kernel note,include:
+This branch use the git to sort out the old Linux source(from 0.01 to 2.3.99)
