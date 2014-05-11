@@ -1,4 +1,4 @@
-My_Linux
+My_Work
 ========
 
-This is my Linux kernel note,include:
+This branch is the the notes in Linux-2.6.11 according to the book Understanding The Linux Kernel
