@@ -1,3 +1,8 @@
+/*
+ * 标准参数头文件,以宏的形式定义变量参数列表
+ * 主要说明了一个类型(va_list)和三个宏(va_start,va_arg和va_end),用于vsprintf,vprintf,vfprintf函数
+ * */
+
 #ifndef _STDARG_H
 #define _STDARG_H
 

@@ -1,3 +1,7 @@
+/*
+ * 标准定义头文件,定义NULL,offsetof(TYPE,MEMBER)
+ * */
+
 #ifndef _STDDEF_H
 #define _STDDEF_H
 

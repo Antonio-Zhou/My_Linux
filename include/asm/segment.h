@@ -1,3 +1,7 @@
+/*
+ * 段操作头文件,定义了有关段寄存器操作的嵌入式汇编函数
+ * */
+
 extern inline unsigned char get_fs_byte(const char * addr)
 {
 	unsigned register char _v;

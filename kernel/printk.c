@@ -1,4 +1,8 @@
 /*
+ * 包含一个内核专用信息显示函数printk()
+ * */
+
+/*
  *  linux/kernel/printk.c
  *
  *  (C) 1991  Linus Torvalds

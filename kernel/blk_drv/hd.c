@@ -1,4 +1,9 @@
 /*
+ * 主要实现对硬盘数据块进行读/写的底层驱动函数
+ * 主要是do_hd_request()函数
+ * */
+
+/*
  *  linux/kernel/hd.c
  *
  *  (C) 1991  Linus Torvalds
@@ -68,36 +73,57 @@ extern void hd_interrupt(void);
 extern void rd_load(void);
 
 /* This may be used only once, enforced by 'static int callable' */
+
+/*
+ * 功能: main.c里的init()中setup的对应函数: 系统设置函数
+ * 	 读取CMOS和硬盘参数表信息,用于设置硬盘分区结构hd并尝试加载RAM虚拟盘和根文件系统
+ * 参数: void * BIOS-->由初始化程序init/main.c中init子程序设置为指向硬盘参数表结构的指针
+ * 	该硬盘参数表结构包含2个硬盘参数表的内容(32字节),是从内存0x90080处复制而来
+ * 返回值:
+ * */
 int sys_setup(void * BIOS)
 {
-	static int callable = 1;
+	static int callable = 1;	/*限制本函数只能被调用一次的标志*/
 	int i,drive;
 	unsigned char cmos_disks;
 	struct partition *p;
 	struct buffer_head * bh;
 
-	if (!callable)
+	if (!callable)			/*这只callable标志位*/
+	{
 		return -1;
+	}
 	callable = 0;
+/*如果没有定义HD_DYPE读取内存0X90080处开始的硬盘参数表*/
 #ifndef HD_TYPE
 	for (drive=0 ; drive<2 ; drive++) {
-		hd_info[drive].cyl = *(unsigned short *) BIOS;
-		hd_info[drive].head = *(unsigned char *) (2+BIOS);
-		hd_info[drive].wpcom = *(unsigned short *) (5+BIOS);
-		hd_info[drive].ctl = *(unsigned char *) (8+BIOS);
-		hd_info[drive].lzone = *(unsigned short *) (12+BIOS);
-		hd_info[drive].sect = *(unsigned char *) (14+BIOS);
-		BIOS += 16;
+		hd_info[drive].cyl = *(unsigned short *) BIOS;		/*柱面数*/
+		hd_info[drive].head = *(unsigned char *) (2+BIOS);	/*磁头数*/
+		hd_info[drive].wpcom = *(unsigned short *) (5+BIOS);	/*写前预补偿柱面号*/
+		hd_info[drive].ctl = *(unsigned char *) (8+BIOS);	/*控制字节*/
+		hd_info[drive].lzone = *(unsigned short *) (12+BIOS);	/*磁头着陆区柱面号*/
+		hd_info[drive].sect = *(unsigned char *) (14+BIOS);	/*每磁道扇区数*/
+		BIOS += 16;						/*指向下一个参数表*/
 	}
+
+	/*判断第2个硬盘柱面数是否是0就可以知道是否有第2个硬盘*/
 	if (hd_info[1].cyl)
 		NR_HD=2;
 	else
 		NR_HD=1;
 #endif
+
+	/*
+	 * 硬盘信息数组已经设置好,并确定了系统的硬盘数NR_HD,现在设置硬盘分区结构数组hd[]
+	 * 项0: 第一个硬盘的整体参数
+	 * 项5: 第二个硬盘的整体参数
+	 * 项1-4: 第一个硬盘的4个分区参数
+	 * 和项6-9: 第二个硬盘的4个分区参数
+	 * */
 	for (i=0 ; i<NR_HD ; i++) {
-		hd[i*5].start_sect = 0;
+		hd[i*5].start_sect = 0;					/*硬盘其实扇区号*/
 		hd[i*5].nr_sects = hd_info[i].head*
-				hd_info[i].sect*hd_info[i].cyl;
+				hd_info[i].sect*hd_info[i].cyl;		/*硬盘总扇区数*/
 	}
 
 	/*
@@ -122,39 +148,71 @@ int sys_setup(void * BIOS)
 		
 	*/
 
+	/*
+	 * 检测硬盘到底是不是AT 控制器兼容
+	 * 从CMOS偏移地址0x12  处读出硬盘类型字节
+	 * 低半字节(存放着第2个硬盘类型值)不为0-->表示系统有两硬盘
+	 * 0x12处读出的值为0-->系统中没有AT兼容盘
+	 * */
 	if ((cmos_disks = CMOS_READ(0x12)) & 0xf0)
+	{
 		if (cmos_disks & 0x0f)
+		{
 			NR_HD = 2;
+		}
 		else
+		{
 			NR_HD = 1;
+		}
+	}
 	else
+	{
 		NR_HD = 0;
+	}
+
+	/*
+	 * NR_HD = 0: 两个硬盘都不是AT控制器兼容的,两个硬盘数据结构全清零
+	 * NR_HD = 1: 将第二个硬盘参数清空
+	 * */
 	for (i = NR_HD ; i < 2 ; i++) {
 		hd[i*5].start_sect = 0;
 		hd[i*5].nr_sects = 0;
 	}
+
+	/*
+	 * 以上真正确定了NR_HD
+	 * 下面读取每个硬盘上第一个扇区中的分区表信息,用来设置分区结构数组hd[]中硬盘各分区信息
+	 * */
 	for (drive=0 ; drive<NR_HD ; drive++) {
-		if (!(bh = bread(0x300 + drive*5,0))) {
+		if (!(bh = bread(0x300 + drive*5,0))) {					/*0x300,0x305是设备号*/
 			printk("Unable to read partition table of drive %d\n\r",
 				drive);
 			panic("");
 		}
 		if (bh->b_data[510] != 0x55 || (unsigned char)
-		    bh->b_data[511] != 0xAA) {
+		    bh->b_data[511] != 0xAA) {						/*判断硬盘标志0xAA55*/
 			printk("Bad partition table on drive %d\n\r",drive);
 			panic("");
 		}
-		p = 0x1BE + (void *)bh->b_data;
+		p = 0x1BE + (void *)bh->b_data;						/*分区表位于第1扇区0x1BE处*/
 		for (i=1;i<5;i++,p++) {
 			hd[i+5*drive].start_sect = p->start_sect;
 			hd[i+5*drive].nr_sects = p->nr_sects;
 		}
-		brelse(bh);
+		brelse(bh);								/*释放为存放硬盘数据块而申请的缓冲区*/
 	}
+
+	/*
+	 * 前面完成设置硬盘分区结构数组hd[]
+	 * 接下来
+	 * 1.尝试在系统内存虚拟盘中加装启动盘中包含的根文件系统映像,如果有,则尝试把该映像加载并存放到虚拟盘中
+	 * 2.把此时的根文件系统设备号ROOT_DEV修改成虚拟盘的设备号
+	 * 3.安装根文件系统
+	 * */
 	if (NR_HD)
 		printk("Partition table%s ok.\n\r",(NR_HD>1)?"s":"");
-	rd_load();
-	mount_root();
+	rd_load();									/*尝试创建并加装虚拟盘*/
+	mount_root();									/*安装根文件系统*/
 	return (0);
 }
 
@@ -234,6 +292,11 @@ static void reset_hd(int nr)
 		hd_info[nr].cyl,WIN_SPECIFY,&recal_intr);
 }
 
+/*
+ * 意外硬盘中断调用函数
+ * 发生意外硬盘中断函数时,硬盘中断处理程序中调用默认C处理函数
+ * 在被调用函数指针为空时调用该函数
+ * */
 void unexpected_hd_interrupt(void)
 {
 	printk("Unexpected HD interrupt\n\r");

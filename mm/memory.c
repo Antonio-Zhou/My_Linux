@@ -1,4 +1,10 @@
 /*
+ * 包括对内存进行初始化的函数mem_init()
+ * 由page.s的内存处理中断过程调用的do_no_page()和do_wp_page()函数在创建新进程而执行复制进程操作时,
+ * 即使用该文件中的内存处理函数来分配管理内存空间
+ * */
+
+/*
  *  linux/mm/memory.c
  *
  *  (C) 1991  Linus Torvalds
@@ -28,6 +34,7 @@
 #include <linux/head.h>
 #include <linux/kernel.h>
 
+/*volatile表示函数不会再返回到调用者代码中*/
 volatile void do_exit(long code);
 
 static inline volatile void oom(void)
@@ -258,14 +265,29 @@ void do_wp_page(unsigned long error_code,unsigned long address)
 
 }
 
+/*
+ * 功能: 写页面验证
+ * 参数: unsigned long address-->内存地址
+ * 返回值: 无
+ * */
 void write_verify(unsigned long address)
 {
 	unsigned long page;
 
+	/*
+	 * 取线性地址对应的页目录项,根据页目录项中的(P)位判断目录项对应的页表是否存在,不存在则返回.
+	 * 对于不存在页面没有共享和写时复制可言
+	 * 若对不存在页面执行写操作,会产生缺页异常
+	 * */
 	if (!( (page = *((unsigned long *) ((address>>20) & 0xffc)) )&1))
 		return;
+	/*
+	 * 取页表地址,加上指定页面中的页表项偏移值,得对应地址的页表项指针
+	 * 该表项中包含给定线性地址对应的物理页面
+	 * */
 	page &= 0xfffff000;
-	page += ((address>>10) & 0xffc);
+	page += ((address>>10) & 0xffc);	/*页表项偏移值??*/
+	/*不可写(位1)且存在(位0)-->共享页面和复制页面操作(写时复制)*/
 	if ((3 & *(unsigned long *) page) == 1)  /* non-writeable, present */
 		un_wp_page((unsigned long *) page);
 	return;
@@ -341,6 +363,11 @@ static int try_to_share(unsigned long address, struct task_struct * p)
  * We first check if it is at all feasible by checking executable->i_count.
  * It should be >1 if there are other tasks sharing this inode.
  */
+
+/*
+ * struct m_inode * executable的作用体现
+ * 根据进程的executable所指节点的引用计数可判断系统中是否有多个拷贝存在,是的话,会尝试页面共享
+ * */
 static int share_page(unsigned long address)
 {
 	struct task_struct ** p;
@@ -396,8 +423,20 @@ void do_no_page(unsigned long error_code,unsigned long address)
 	oom();
 }
 
+
+/*
+ * 功能:物理内存管理初始化,对1MB 以上内存区域以页面为单位进行管理前的初始化设置工作
+ * 一个页面长度是4KB字节。使用页面映射字节数组men_map[]  来管理所有这些页面
+ * 每当一个我物理内存页面被占用时就把mem_map[]  中对应字节值增1；释放-1
+ * 字节值 = 0-->空闲;
+ * 字节值 >=1-->对应页面被占用或被不同程序共享占用
+ * */
 void mem_init(long start_mem, long end_mem)
 {
+	/*
+	 * 这里最主要理解的是">>12": 求某一内存的页面数
+	 * 因为">>12"刚好是4KB-->页面的大小
+	 * */
 	int i;
 
 	HIGH_MEMORY = end_mem;

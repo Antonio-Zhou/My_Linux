@@ -1,4 +1,9 @@
 /*
+ * 实现低层块设备数据读/写函数ll_rw_block()
+ * 内核中所有其他程序都是通过该函数对块设备进行读写操作,尤其是在fs/buffer.c中
+ * */
+
+/*
  *  linux/kernel/blk_dev/ll_rw.c
  *
  * (C) 1991 Linus Torvalds
@@ -154,12 +159,17 @@ void ll_rw_block(int rw, struct buffer_head * bh)
 	make_request(major,rw,bh);
 }
 
+/*
+ * 功能: 块设备初始化函数,由main.c调用
+ * 参数:
+ * 返回值:
+ * */
 void blk_dev_init(void)
 {
 	int i;
 
 	for (i=0 ; i<NR_REQUEST ; i++) {
-		request[i].dev = -1;
+		request[i].dev = -1;		/*将所有请求项置为空闲项(dev = -1)*/
 		request[i].next = NULL;
 	}
 }

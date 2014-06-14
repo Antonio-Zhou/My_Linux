@@ -1,4 +1,8 @@
 /*
+ * 软驱动头文件,含有软盘控制器参数的一些定义
+ * */
+
+/*
  * This file contains some defines for the floppy disk controller.
  * Various sources. Mostly "IBM Microcomputers: A Programmers
  * Handbook", Sanches and Canton.

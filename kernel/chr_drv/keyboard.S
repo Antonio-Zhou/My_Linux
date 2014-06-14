@@ -1,4 +1,8 @@
 /*
+ * 主要实现了键盘中断处理过程keyboard_interrupt
+ * */
+
+/*
  *  linux/kernel/keyboard.S
  *
  *  (C) 1991  Linus Torvalds

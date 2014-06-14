@@ -1,3 +1,7 @@
+/*
+ * 系统调用头文件,含有72个系统调用C函数处理程序,以"sys_ "开头
+ * */
+
 extern int sys_setup();
 extern int sys_exit();
 extern int sys_fork();

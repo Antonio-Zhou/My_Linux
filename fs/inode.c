@@ -1,4 +1,8 @@
 /*
+ * 包含针对文件系统i节点操作的函数
+ * */
+
+/*
  *  linux/fs/inode.c
  *
  *  (C) 1991  Linus Torvalds

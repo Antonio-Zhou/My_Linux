@@ -1,3 +1,7 @@
+/*
+ * head头文件,定义了段描述符的简单结构,和几个选择符常量
+ * */
+
 #ifndef _HEAD_H
 #define _HEAD_H
 

@@ -1,4 +1,8 @@
 /*
+ * 主要包含一个执行程序函数do_execve(),它是所有exec()函数簇中的主要函数
+ * */
+
+/*
  *  linux/fs/exec.c
  *
  *  (C) 1991  Linus Torvalds

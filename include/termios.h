@@ -1,3 +1,7 @@
+/*
+ * 终端输入输出函数头文件,主要定义控制异步通信口的终端接口
+ * */
+
 #ifndef _TERMIOS_H
 #define _TERMIOS_H
 

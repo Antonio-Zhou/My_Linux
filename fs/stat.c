@@ -1,4 +1,8 @@
 /*
+ * 实现两个获取文件状态的系统调用函数
+ * */
+
+/*
  *  linux/fs/stat.c
  *
  *  (C) 1991  Linus Torvalds

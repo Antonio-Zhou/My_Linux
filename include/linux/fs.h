@@ -1,4 +1,8 @@
 /*
+ * 文件系统头文件,定义文件表结构(file,buffer_head,m_inode)等
+ * */
+
+/*
  * This file has definitions for some important file table
  * structures etc.
  */

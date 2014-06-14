@@ -1,3 +1,7 @@
+/*
+ * 字符串头文件,主要定义了一些有关字符串操作的嵌入函数
+ * */
+
 #ifndef _STRING_H_
 #define _STRING_H_
 
@@ -35,6 +39,10 @@ __asm__("cld\n"
 return dest;
 }
 
+/*
+ * inline 和extern组合一起的作用几乎类同一个宏定义,
+ * 使用这种组合方式就是把带有组合关键词的一个函数定义放在头文件.h中,并把不含关键词的另一个相同函数定义放在一个库文件中
+ * */
 extern inline char * strncpy(char * dest,const char *src,int count)
 {
 __asm__("cld\n"
@@ -104,25 +112,29 @@ __asm__("cld\n"
 return __res;
 }
 
+/*
+ * \n\t是为了gcc预处理程序输出列表好看
+ * 字符串1和字符串2前count个字符进行比较
+ * */
 extern inline int strncmp(const char * cs,const char * ct,int count)
 {
-register int __res __asm__("ax");
-__asm__("cld\n"
-	"1:\tdecl %3\n\t"
-	"js 2f\n\t"
-	"lodsb\n\t"
-	"scasb\n\t"
-	"jne 3f\n\t"
-	"testb %%al,%%al\n\t"
-	"jne 1b\n"
-	"2:\txorl %%eax,%%eax\n\t"
-	"jmp 4f\n"
-	"3:\tmovl $1,%%eax\n\t"
-	"jl 4f\n\t"
-	"negl %%eax\n"
+register int __res __asm__("ax");	/*_res是寄存器变量*/
+__asm__("cld\n"				/*清方向位*/
+	"1:\tdecl %3\n\t"		/*count --*/
+	"js 2f\n\t"			/*如果count<0，则向前跳转到标号2*/
+	"lodsb\n\t"			/*取字符串2的字符ds:[esi]->al,并且esi++*/
+	"scasb\n\t"			/*比较a1与串1的字符es:[edi],并且edi++*/
+	"jne 3f\n\t"			/*如果不相等就跳转到标号3*/
+	"testb %%al,%%al\n\t"		/*该字符是NULL?*/
+	"jne 1b\n"			/*不是,向后跳转到标号1,继续比较*/
+	"2:\txorl %%eax,%%eax\n\t"	/*是NULL字符,则eax清零(返回值)*/
+	"jmp 4f\n"			/*向前跳转到标号4,结束*/
+	"3:\tmovl $1,%%eax\n\t"		/*eax中置1*/
+	"jl 4f\n\t"			/*如果前面比较中的串2<串1,则返回1,结束*/
+	"negl %%eax\n"			/*否则eax=-eax,返回负值,结束*/
 	"4:"
 	:"=a" (__res):"D" (cs),"S" (ct),"c" (count):"si","di","cx");
-return __res;
+return __res;				/*返回比较结果*/
 }
 
 extern inline char * strchr(const char * s,char c)

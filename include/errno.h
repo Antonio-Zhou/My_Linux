@@ -1,3 +1,7 @@
+/*
+ * 错误号头文件,包含系统中各种出错号
+ * */
+
 #ifndef _ERRNO_H
 #define _ERRNO_H
 

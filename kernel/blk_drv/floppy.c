@@ -1,4 +1,9 @@
 /*
+ * 主要实现了对软盘数据块的读/写驱动函数
+ * 主要是do_fd_request()函数
+ * */
+
+/*
  *  linux/kernel/floppy.c
  *
  *  (C) 1991  Linus Torvalds

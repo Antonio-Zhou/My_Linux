@@ -1,3 +1,7 @@
+/*
+ * 内核配置头文件,定义键盘语言和键盘类型(HD_TYPE)等可选项
+ * */
+
 #ifndef _CONFIG_H
 #define _CONFIG_H
 

@@ -1,3 +1,7 @@
+/*
+ * 常数符号头文件,目前仅定义了i节点中i_mode字段的个标志位
+ * */
+
 #ifndef _CONST_H
 #define _CONST_H
 

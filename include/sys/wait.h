@@ -1,3 +1,7 @@
+/*
+ * 等待调用头文件,定义系统调用wait()和waitpid()及相关常数符号
+ * */
+
 #ifndef _SYS_WAIT_H
 #define _SYS_WAIT_H
 

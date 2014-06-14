@@ -1,4 +1,8 @@
 /*
+ * 对内存高速缓存区进行处理
+ * */
+
+/*
  *  linux/fs/buffer.c
  *
  *  (C) 1991  Linus Torvalds
@@ -268,10 +272,21 @@ struct buffer_head * bread(int dev,int block)
 {
 	struct buffer_head * bh;
 
+/*
+ * 在高速缓冲区中申请一块缓冲块,如果返回NULL-->停机,然后判断是否已有可用数据
+ * 如果该缓冲数据块中的数据是有效的,可以直接使用,则返回
+ * */
 	if (!(bh=getblk(dev,block)))
 		panic("bread: getblk returned NULL\n");
 	if (bh->b_uptodate)
 		return bh;
+
+/*
+ * 否则调用底层块设备读写ll_rw_block(),产生读设备块请求.
+ * 然后等待指定数据块被读入,并等待缓冲区解锁.
+ * 在睡眠醒来之后,如果该缓冲区已更新,则返回缓冲区头指针,退出
+ * 否则表明读设备操作失败,释放该缓冲区,返回NULL
+ * */
 	ll_rw_block(READ,bh);
 	wait_on_buffer(bh);
 	if (bh->b_uptodate)

@@ -1,3 +1,8 @@
+/*
+ * Linux标准头文件,定义了各种符号常量和类型,并声明了各种函数
+ * 如__LIBRARY__,还包括系统调用号和内嵌汇编_syscall0()
+ * */
+
 #ifndef _UNISTD_H
 #define _UNISTD_H
 
@@ -57,6 +62,10 @@
 
 #ifdef __LIBRARY__
 
+/*
+ * 系统功能调用功能号
+ * 对应于include/linux/sys.h中定义放入系统调用处理程序指针数组表sys_call_table[]中项的索引值
+ * */
 #define __NR_setup	0	/* used only by init, to get system going */
 #define __NR_exit	1
 #define __NR_fork	2
@@ -130,17 +139,18 @@
 #define __NR_setreuid	70
 #define __NR_setregid	71
 
+/*为了方便系统调用而定义的*/
 #define _syscall0(type,name) \
 type name(void) \
 { \
 long __res; \
-__asm__ volatile ("int $0x80" \
-	: "=a" (__res) \
-	: "0" (__NR_##name)); \
-if (__res >= 0) \
+__asm__ volatile ("int $0x80" \			/*调用系统中断0x80*/
+	: "=a" (__res) \			/*返回值-->eax(_res)*/
+	: "0" (__NR_##name)); \			/*输入系统中断调用号__NR_name*/
+if (__res >= 0) \				/*如果返回值>=0,则直接返回该值*/
 	return (type) __res; \
 errno = -__res; \
-return -1; \
+return -1; \					/*否则置出错号,并返回-1*/
 }
 
 #define _syscall1(type,name,atype,a) \

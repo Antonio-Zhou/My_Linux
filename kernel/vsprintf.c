@@ -1,4 +1,8 @@
 /*
+ * 实现了现在已经归入标准库函数中的字符串格式化函数
+ * */
+
+/*
  *  linux/kernel/vsprintf.c
  *
  *  (C) 1991  Linus Torvalds

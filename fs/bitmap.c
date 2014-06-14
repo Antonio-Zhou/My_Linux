@@ -1,4 +1,8 @@
 /*
+ * 用于处理文件系统中i节点和逻辑数据块的位图
+ * */
+
+/*
  *  linux/fs/bitmap.c
  *
  *  (C) 1991  Linus Torvalds

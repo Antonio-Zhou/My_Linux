@@ -1,4 +1,9 @@
 /*
+ * 包括有关调度的基本函数(sleep_on,wakeup,scheedule等)以及一些简单的系统调用函数
+ * 另外还有几个与定时相关的软盘操作函数
+ * */
+
+/*
  *  linux/kernel/sched.c
  *
  *  (C) 1991  Linus Torvalds
@@ -10,30 +15,53 @@
  * call functions (type getpid(), which just extracts a field from
  * current-task
  */
+
+/*
+ * 调度程序头文件,定义了任务结构task_struct,第一个初始化任务的数据.
+ * 还有一些以宏形式定义的有关描述符参数设置和获取的嵌入式汇编函数程序
+ * */
 #include <linux/sched.h>
-#include <linux/kernel.h>
-#include <linux/sys.h>
-#include <linux/fdreg.h>
-#include <asm/system.h>
-#include <asm/io.h>
-#include <asm/segment.h>
+#include <linux/kernel.h>		/*内核头文件-->含有一些内核常用函数的原形定义*/
+#include <linux/sys.h>			/*系统调用头文件-->含有72个系统调用C函数处理程序,以'sys_'开头*/
+#include <linux/fdreg.h>		/*软驱动头文件-->含有软盘控制器参数的一些定义*/
+#include <asm/system.h>			/*系统头文件-->定义了设置或修改描述符/中断门等的嵌入式汇编宏*/
+#include <asm/io.h>			/*io头文件-->定义了硬件端口输入/输出宏汇编语句*/
+#include <asm/segment.h>		/*段操作头文件-->定义了有关段寄存器操作的嵌入式汇编函数*/
 
-#include <signal.h>
+#include <signal.h>			/*信号头文件-->定义信号符号常量,sigaction结构,操作函数原形*/
 
+/*
+ * 取信号nr在信号中对应位的二进制数值.信号编号1-32.
+ * 例如信号5的位图数值=00001000b
+ * */
 #define _S(nr) (1<<((nr)-1))
+
+/*除SIGKILL和SIGSTOP外其他信号都是可阻塞的,这两位置0,其他位都置1*/
 #define _BLOCKABLE (~(_S(SIGKILL) | _S(SIGSTOP)))
 
+/*
+ * 功能: 内核调试函数-->显示任务号nr的进程号,进程状态和内核堆栈空闲字节数
+ * 参数: int nr-->任务号,进程号
+ * 	 struct task_struct * p -->进程控制块指针
+ * 返回值: 无
+ * */
 void show_task(int nr,struct task_struct * p)
 {
-	int i,j = 4096-sizeof(struct task_struct);
+	int i,j = 4096-sizeof(struct task_struct);		/*j表示一页中除去task_struct外空间,task_struct在一页的低端*/
 
 	printk("%d: pid=%d, state=%d, ",nr,p->pid,p->state);
 	i=0;
-	while (i<j && !((char *)(p+1))[i])
+	while (i<j && !((char *)(p+1))[i])			/*((char *)(p+1))[i]:不是很理解???????????????*/
 		i++;
 	printk("%d (of %d) chars free in kernel stack\n\r",i,j);
 }
 
+/*
+ * 功能: 显示所有任务的任务号,进程号,进程状态和内核堆栈空闲字节数
+ * 		NR_TASKS--系统能容纳的最大进程数(64)
+ * 参数: 无
+ * 返回值: 无
+ * */
 void show_stat(void)
 {
 	int i;
@@ -43,6 +71,10 @@ void show_stat(void)
 			show_task(i,task[i]);
 }
 
+/*
+ * PC机8253定时芯片的输出时钟频率约为1.193180MHZ,linux定时器发出中断的频率是100HZ,10ms发出一次时钟中断
+ * LATCH是设置8253芯片的初值
+ * */
 #define LATCH (1193180/HZ)
 
 extern void mem_use(void);
@@ -50,20 +82,39 @@ extern void mem_use(void);
 extern int timer_interrupt(void);
 extern int system_call(void);
 
+
+/*每个任务在内核态运行时都有自己的内核态堆栈,这里定义了任务的内核态堆栈结构*/
+
+/*
+ * 定义了任务联合(任务结构成员和stack字符数组成员)
+ * 因为一个任务的数据结构与其内核态堆栈在同一内存页中,所以从堆栈寄存器ss可以获得数据段选择符
+ * */
 union task_union {
 	struct task_struct task;
 	char stack[PAGE_SIZE];
 };
 
-static union task_union init_task = {INIT_TASK,};
+static union task_union init_task = {INIT_TASK,};		/*定义初始任务的数据*/
 
+/*
+ * 从开机开始算起的滴答数时间值(10ms/滴答)。系统时钟中断每发生一次即一个滴答
+ * volatile: 向编译器指明变量的内容可能会由于被其他程序修改而变化
+ * 通常在程序中申请一个变量时编译器会把它尽可能的放到通用寄存器中
+ * 这里就是要求gcc不对jiffies进行优化处理,也不要移动位置,并且需要从内存中取其值
+ * 时钟中断处理过程等程序会改变其值
+ * */
 long volatile jiffies=0;
-long startup_time=0;
-struct task_struct *current = &(init_task.task);
-struct task_struct *last_task_used_math = NULL;
+long startup_time=0;						/*开机时间*/
+struct task_struct *current = &(init_task.task);		/*当前任务指针，初始化指向任务0*/
+struct task_struct *last_task_used_math = NULL;			/*使用过协处理器任务的指针*/
 
-struct task_struct * task[NR_TASKS] = {&(init_task.task), };
+struct task_struct * task[NR_TASKS] = {&(init_task.task), };	/*任务指针数组*/
 
+/*
+ * 任务0的用户态堆栈空间
+ * PAGE_SIZE>>2==1024长字
+ * 1K 项,4K字节
+ * */
 long user_stack [ PAGE_SIZE>>2 ] ;
 
 struct {
@@ -74,20 +125,42 @@ struct {
  *  'math_state_restore()' saves the current math information in the
  * old math state array, and gets the new ones from the current task
  */
+
+/*
+ * 功能: 当任务被调度交换以后,该函数用以保存原任务的协处理器状态(上下文),并恢复新调度进来的当前任务的协处理器执行状态
+ * 参数: 无
+ * 返回值: 无
+ * */
 void math_state_restore()
 {
+	/*如果任务没变则返回(上一个任务就是当前任务),这里的上一个任务是指刚被交换出去的任务*/
 	if (last_task_used_math == current)
 		return;
+	/*
+	 * 在发送协处理器命令前要发送WAIT命令,如果上一个任务使用了协处理器,保存其状态
+	 * fwait: 浮点等
+	 * */
 	__asm__("fwait");
 	if (last_task_used_math) {
 		__asm__("fnsave %0"::"m" (last_task_used_math->tss.i387));
 	}
+
+	/*
+	 * last_task_used_math指向当前任务,以备当前任务被交换出去使用
+	 * 此时如果当前任务使用过协处理器,则恢复其状态,
+	 * 否则是第一次使用,发送初始化命令,并设置使用了协处理器标志
+	 * */
 	last_task_used_math=current;
-	if (current->used_math) {
+	/*使用过*/
+	if (current->used_math)
+	{
+		/*读取状态*/
 		__asm__("frstor %0"::"m" (current->tss.i387));
-	} else {
-		__asm__("fninit"::);
-		current->used_math=1;
+	}
+	else 
+	{
+		__asm__("fninit"::);		/*向协处理器发送初始化命令*/
+		current->used_math=1;		/*设置使用协处理器的标志*/
 	}
 }
 
@@ -101,22 +174,34 @@ void math_state_restore()
  * tasks can run. It can not be killed, and it cannot sleep. The 'state'
  * information in task[0] is never used.
  */
+
+/*
+ * 功能: 进程调度策略-->基于优先级排队的调度策略,选出要被执行的进程
+ * 入参: 无
+ * 返回值: 无
+ * */
 void schedule(void)
 {
 	int i,next,c;
-	struct task_struct ** p;
+	struct task_struct ** p;		/*任务结构指针的指针*/
 
 /* check alarm, wake up any interruptible tasks that have got a signal */
 
+	/*从任务数组最后一个任务开始循环检测alarm,跳过空指针项*/
 	for(p = &LAST_TASK ; p > &FIRST_TASK ; --p)
 		if (*p) {
+			/*
+			 * 设置过alarm,而且已经过期alarm<jiffies,在信号位图中置SIGALRM信号.然后清SIGALRM
+			 * 默认操作是终止进程
+			 * */
 			if ((*p)->alarm && (*p)->alarm < jiffies) {
 					(*p)->signal |= (1<<(SIGALRM-1));
 					(*p)->alarm = 0;
 				}
+			/*如果信号位图中除被阻塞的信号外还有其他信号,并且任务处于可中断状态,则置任务就绪状态*/
 			if (((*p)->signal & ~(_BLOCKABLE & (*p)->blocked)) &&
 			(*p)->state==TASK_INTERRUPTIBLE)
-				(*p)->state=TASK_RUNNING;
+				(*p)->state=TASK_RUNNING;		/*置为就绪可执行状态*/
 		}
 
 /* this is the scheduler proper: */
@@ -126,12 +211,18 @@ void schedule(void)
 		next = 0;
 		i = NR_TASKS;
 		p = &task[NR_TASKS];
+		/*循环数组，跳过不含任务的数组槽。
+			比较每个任务的counter，哪个值大，运行时间就不长，next就指向那个任务号*/
 		while (--i) {
 			if (!*--p)
 				continue;
 			if ((*p)->state == TASK_RUNNING && (*p)->counter > c)
 				c = (*p)->counter, next = i;
 		}
+		/*
+		 * 若有counter!=0的结果,或者系统中没有一个可运行的任务存在,则退出while(1),执行切换操作!
+		 * 否则根据优先级更新每个任务的counter值
+		 * */
 		if (c) break;
 		for(p = &LAST_TASK ; p > &FIRST_TASK ; --p)
 			if (*p)
@@ -141,6 +232,14 @@ void schedule(void)
 	switch_to(next);
 }
 
+/*
+ * 功能: pause()系统调用.
+ * 	 转换当前任务的状态为可中断的等待状态,将导致进程进入睡眠状态,直到收到一个信号
+ * 	 该信号用于终止进程或者使进程调用一个捕获函数
+ * 参数: 无
+ * 返回值:
+ * 未实现
+ * */
 int sys_pause(void)
 {
 	current->state = TASK_INTERRUPTIBLE;
@@ -148,22 +247,37 @@ int sys_pause(void)
 	return 0;
 }
 
+/*
+ * 功能: 把当前任务置为不可中断的等待状态,并让睡眠队列头指针指向当前任务
+ * 	 只要明确的唤醒才会返回.提供了进程与中断处理程序之间的同步机制
+ * 参数: struct task_struct **p-->等待任务队列头指针
+ * 返回值: 无
+ * */
 void sleep_on(struct task_struct **p)
 {
 	struct task_struct *tmp;
 
+	/*指针无效退出,若当前任务为任务0,则死机*/
 	if (!p)
 		return;
 	if (current == &(init_task.task))
 		panic("task[0] trying to sleep");
+	/*将当前任务插入到*p的等待队列中,设置状态,重现调度*/
 	tmp = *p;
 	*p = current;
 	current->state = TASK_UNINTERRUPTIBLE;
 	schedule();
+	/*只要当这个等待任务被唤醒时,调度程序才又返回到这里,表示进程已被明确的唤醒(就绪态)*/
+	*p = tmp;
 	if (tmp)
 		tmp->state=0;
 }
 
+/*
+ * 功能: 将当前任务置为可中断的等待状态,并放入*p指定的等待队列中
+ * 参数: struct task_struct **p-->队列头指针(可中断)
+ * 返回值: 无
+ * */
 void interruptible_sleep_on(struct task_struct **p)
 {
 	struct task_struct *tmp;
@@ -172,24 +286,35 @@ void interruptible_sleep_on(struct task_struct **p)
 		return;
 	if (current == &(init_task.task))
 		panic("task[0] trying to sleep");
+	/*将当前任务插入到*p的等待队列中,设置状态,重现调度*/
 	tmp=*p;
 	*p=current;
 repeat:	current->state = TASK_INTERRUPTIBLE;
 	schedule();
+	/*
+	 * 要当这个等待任务被唤醒时,调度程序才又返回到这里,
+	 * 表示进程已被明确的唤醒并执行,若*p 不是当前任务,则先唤醒它们,自己仍然等待
+	 * */
 	if (*p && *p != current) {
 		(**p).state=0;
 		goto repeat;
 	}
+	/*误.*p = tmp,让队列头指针指向其余任务,否则在当前任务之前插入的任务均被抹掉了*/
 	*p=NULL;
 	if (tmp)
 		tmp->state=0;
 }
 
+/*
+ * 功能: 唤醒*p指向的任务,是最后进入队列的任务
+ * 参数: struct task_struct **p-->任务等待队列的头指针
+ * 返回值: 无
+ * */
 void wake_up(struct task_struct **p)
 {
 	if (p && *p) {
-		(**p).state=0;
-		*p=NULL;
+		(**p).state=0;	/*置为就绪状态*/
+		*p=NULL;	/*这句应该去掉*/
 	}
 }
 
@@ -198,6 +323,8 @@ void wake_up(struct task_struct **p)
  * proper. They are here because the floppy needs a timer, and this
  * was the easiest way of doing it.
  */
+
+
 static struct task_struct * wait_motor[4] = {NULL,NULL,NULL,NULL};
 static int  mon_timer[4]={0,0,0,0};
 static int moff_timer[4]={0,0,0,0};
@@ -382,15 +509,23 @@ int sys_nice(long increment)
 	return 0;
 }
 
+/*
+ * 功能: 调度程序初始化函数,进行系统调用中断int128 的重新设置好
+ * 参数:
+ * 返回值:
+ * */
+
 void sched_init(void)
 {
 	int i;
-	struct desc_struct * p;
+	struct desc_struct * p;		/*描述符表结构指针*/
 
 	if (sizeof(struct sigaction) != 16)
 		panic("Struct sigaction MUST be 16 bytes");
 	set_tss_desc(gdt+FIRST_TSS_ENTRY,&(init_task.task.tss));
 	set_ldt_desc(gdt+FIRST_LDT_ENTRY,&(init_task.task.ldt));
+
+	/*清任务数组和描述符表项(从1 开始，所以初始任务的描述符还在)*/
 	p = gdt+2+FIRST_TSS_ENTRY;
 	for(i=1;i<NR_TASKS;i++) {
 		task[i] = NULL;
@@ -400,12 +535,33 @@ void sched_init(void)
 		p++;
 	}
 /* Clear NT, so that we won't have troubles with that later on */
-	__asm__("pushfl ; andl $0xffffbfff,(%esp) ; popfl");
+	/*
+	 * NT标志用于控制程序的递归调用.
+	 * 当NT置位时,那么当前中断任务执行ire指令时会引起任务切换
+	 * */
+	__asm__("pushfl ; andl $0xffffbfff,(%esp) ; popfl");			/*复位NT标志*/
+
+	/*
+	 * 将任务0的TSS段选择符加载到任务寄存器tr;
+	 * 将局部描述符部段选择符加载到局部描述符寄存器ldtr
+	 * 注意: 是将GDT中相应LDT描述符的选择符加载到ldtr.只明确加这一次,
+	 * 以后新任务LDT的加载,是CPU根据TSS中的LDT项自动加载的
+	 * */
 	ltr(0);
 	lldt(0);
+
+	/*
+	 * 初始化8253定时器.通道0,选择工作方式3,二进制计数方式
+	 * LATCH是初始化定时计数值
+	 * */
 	outb_p(0x36,0x43);		/* binary, mode 3, LSB/MSB, ch 0 */
 	outb_p(LATCH & 0xff , 0x40);	/* LSB */
 	outb(LATCH >> 8 , 0x40);	/* MSB */
+
+	/*
+	 * 设置时钟中断处理程序句柄(设置时钟中断门),修改中断控制器屏蔽码,
+	 * 允许时钟中断,然后设置系统调用中断门
+	 * */
 	set_intr_gate(0x20,&timer_interrupt);
 	outb(inb_p(0x21)&~0x01,0x21);
 	set_system_gate(0x80,&system_call);

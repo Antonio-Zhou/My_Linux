@@ -1,4 +1,8 @@
 /*
+ * tty头文件,定义了有关tty_io,串行通信方面的参数,常数
+ * */
+
+/*
  * 'tty.h' defines some structures used by tty_io.c and some defines.
  *
  * NOTE! Don't touch this without checking that nothing in rs_io.s or

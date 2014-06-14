@@ -6,15 +6,31 @@
 # unless it's something special (ie not a .c file).
 #
 
-AR	=gar
-AS	=gas
-LD	=gld
-LDFLAGS	=-s -x
-CC	=gcc
+AR	=gar			#GNU二进制文件处理程序,用于创建,修改以及归档文件中抽取文件
+AS	=gas			#GNU汇编程序
+LD	=gld			#GNU连接程序
+LDFLAGS	=-s -x			#连接程序的所有参数
+				#-s: 输出文件中省略所有符号信息
+				#-x: 删除所有局部符号
+CC	=gcc			#GNU C 语言编译器
+
+#c编译程序选项
+#-Wall: 显示所有的警告信息
+#-O: 优化选项,优化代码长度和执行时间
+#-fstrength-reduce: 优化循环执行代码,排除重复变量
+#-fomit-frame-pointer: 省略保存不必要的框架指针
+#-fcombine-regs: 合并寄存器,减少寄存器类的使用
+#-finline-functions: 将所有简单短小的函数代码嵌入调用程序中
+#-mstring-insns: Linus自己填加的优化选项,以后都不再使用
+#-nostdinc -I../include: 不使用默认路径中的包含文件,而使用这里指定目录中的(../include)
 CFLAGS	=-Wall -O -fstrength-reduce -fomit-frame-pointer -fcombine-regs \
 	-finline-functions -mstring-insns -nostdinc -I../include
+
+#C前处理选项
+#-E: 只运行C前处理,对所有指定的C程序进行预处理并将处理结果输出到标准输出设备或指定的输出文件
 CPP	=gcc -E -nostdinc -I../include
 
+#make产生文件的规则
 .c.s:
 	$(CC) $(CFLAGS) \
 	-S -o $*.s $<
@@ -24,21 +40,27 @@ CPP	=gcc -E -nostdinc -I../include
 	$(CC) $(CFLAGS) \
 	-c -o $*.o $<
 
+#定义目标文件变量OBJS
 OBJS  = sched.o system_call.o traps.o asm.o fork.o \
 	panic.o printk.o vsprintf.o sys.o exit.o \
 	signal.o mktime.o
 
+#在有了先决条件OBJS后使用下面的命令链接成目标kernel.o
+#-r: 指示生成可重定向的输出,即产生可以作为连接器ld输入的目标文件
 kernel.o: $(OBJS)
 	$(LD) -r -o kernel.o $(OBJS)
 	sync
 
+#执行清理工具
+#-f: 忽略不存在的文件,并且不显示删除信息
 clean:
 	rm -f core *.o *.a tmp_make keyboard.s
 	for i in *.c;do rm -f `basename $$i .c`.s;done
-	(cd chr_drv; make clean)
+	(cd chr_drv; make clean)		#进入chr_drv/目录,执行该目录Makefile中的clean规则
 	(cd blk_drv; make clean)
 	(cd math; make clean)
 
+#用于检查各文件之间的依赖关系,不是很明白
 dep:
 	sed '/\#\#\# Dependencies/q' < Makefile > tmp_make
 	(for i in *.c;do echo -n `echo $$i | sed 's,\.c,\.s,'`" "; \

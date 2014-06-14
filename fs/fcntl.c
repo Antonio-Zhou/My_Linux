@@ -1,4 +1,8 @@
 /*
+ * 用于实现文件i/o控制的系统调用函数
+ * */
+
+/*
  *  linux/fs/fcntl.c
  *
  *  (C) 1991  Linus Torvalds

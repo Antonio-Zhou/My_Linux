@@ -1,3 +1,7 @@
+/*
+ * 字符类型头文件,定义了一些有关字符类型判断和转换的宏
+ * */
+
 #ifndef _CTYPE_H
 #define _CTYPE_H
 

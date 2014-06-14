@@ -1,4 +1,8 @@
 /*
+ * 包含管道读写函数和创建管道的系统调用
+ * */
+
+/*
  *  linux/fs/pipe.c
  *
  *  (C) 1991  Linus Torvalds

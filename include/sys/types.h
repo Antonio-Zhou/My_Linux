@@ -1,3 +1,7 @@
+/*
+ * 类型头文件,定义了基本的系统数据类型
+ * */
+
 #ifndef _SYS_TYPES_H
 #define _SYS_TYPES_H
 

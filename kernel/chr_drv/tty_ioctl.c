@@ -1,4 +1,10 @@
 /*
+ * 实现了tty 的io 的控制接口函数tty_ioctl()
+ * 对termio(s)终端io结构的读写函数
+ * 并在实现系统调用sys_ioctl()的fs/ioctl.c程序中被调用
+ * */
+
+/*
  *  linux/kernel/chr_drv/tty_ioctl.c
  *
  *  (C) 1991  Linus Torvalds

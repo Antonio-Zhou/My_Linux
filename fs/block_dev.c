@@ -1,4 +1,8 @@
 /*
+ * 包含块数据读和写函数
+ * */
+
+/*
  *  linux/fs/block_dev.c
  *
  *  (C) 1991  Linus Torvalds

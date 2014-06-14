@@ -1,3 +1,7 @@
+/*
+ * 用户时间头文件,定义了访问和修改时间结构以及utime()原型
+ * */
+
 #ifndef _UTIME_H
 #define _UTIME_H
 

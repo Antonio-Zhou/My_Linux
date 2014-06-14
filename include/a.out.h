@@ -1,8 +1,13 @@
+/*
+ * 定义了a.out执行文件格式和一些宏
+ * */
+
 #ifndef _A_OUT_H
 #define _A_OUT_H
 
 #define __GNU_EXEC_MACROS__
 
+/*目标文件的执行头部分*/
 struct exec {
   unsigned long a_magic;	/* Use macros N_MAGIC, etc for access */
   unsigned a_text;		/* length of text, in bytes */
@@ -108,25 +113,30 @@ struct exec {
 #endif
 
 #ifndef N_NLIST_DECLARED
+
+/*符号表记录项*/
 struct nlist {
   union {
-    char *n_name;
-    struct nlist *n_next;
-    long n_strx;
+    char *n_name;		/*字符串指针*/
+    struct nlist *n_next;	/*或者是指向另一个符号项结构的指针 */
+    long n_strx;		/*或者是符号名称在字符串中的字节偏移值*/
   } n_un;
-  unsigned char n_type;
-  char n_other;
+  unsigned char n_type;		/*该字节分成3个字段,指明了符号类型.最后一个比特位若为1:指明符号是否是外部的(全局的)*/
+  char n_other;			/*通常不用*/
   short n_desc;
-  unsigned long n_value;
+  unsigned long n_value;	/*符号的值*/
 };
 #endif
 
+/*符号的主要类型*/
 #ifndef N_UNDF
-#define N_UNDF 0
+#define N_UNDF 0		/*模块文件中未定义的符号*/
 #endif
 #ifndef N_ABS
-#define N_ABS 2
+#define N_ABS 2			/*符号是一个绝对的不可重定位的.符号的值就是固定值*/
 #endif
+
+/*下面三个都是本模块文件中定义的符号,符号的值就是模块中该符号的可重定位地址*/
 #ifndef N_TEXT
 #define N_TEXT 4
 #endif
@@ -136,6 +146,7 @@ struct nlist {
 #ifndef N_BSS
 #define N_BSS 8
 #endif
+/*用于支持未初始化的外部数据*/
 #ifndef N_COMM
 #define N_COMM 18
 #endif

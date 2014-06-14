@@ -1,4 +1,8 @@
 /*
+ * 内核头文件,含有一些内核常用函数的原型定义
+ * */
+
+/*
  * 'kernel.h' contains some often-used function prototypes etc
  */
 void verify_area(void * addr,int count);

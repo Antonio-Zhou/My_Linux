@@ -1,4 +1,8 @@
 /*
+ * 包含字符设备读写函数rw_char()
+ * */
+
+/*
  *  linux/fs/char_dev.c
  *
  *  (C) 1991  Linus Torvalds

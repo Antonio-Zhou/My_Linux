@@ -1,3 +1,7 @@
+/*
+ * 文件状态头文件,含有文件或文件系统状态结构stat{}和常量
+ * */
+
 #ifndef _SYS_STAT_H
 #define _SYS_STAT_H
 

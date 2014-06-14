@@ -1,4 +1,8 @@
 /*
+ * 包含对文件系统超级块的处理函数
+ * */
+
+/*
  *  linux/fs/super.c
  *
  *  (C) 1991  Linus Torvalds

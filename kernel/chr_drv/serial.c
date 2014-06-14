@@ -1,4 +1,9 @@
 /*
+ * 用于异步串行通信芯片UATR进行初始化,并设置两个通信端口的中断向量
+ * 还包括tty用于串口输出的rs_write()
+ * */
+
+/*
  *  linux/kernel/serial.c
  *
  *  (C) 1991  Linus Torvalds
@@ -34,13 +39,26 @@ static void init(int port)
 	(void)inb(port);	/* read data port to reset things (?) */
 }
 
+
+/*
+ * 功能: 初始化串行中断程序和串行接口
+ * 参数: 无
+ * 返回值: 无
+ * */
 void rs_init(void)
 {
-	set_intr_gate(0x24,rs1_interrupt);
-	set_intr_gate(0x23,rs2_interrupt);
-	init(tty_table[1].read_q.data);
-	init(tty_table[2].read_q.data);
-	outb(inb_p(0x21)&0xE7,0x21);
+	/*设置两个串行口的中断门描述符.rs1_interrupt是串口1的中断处理过程指针*/
+	set_intr_gate(0x24,rs1_interrupt);		/*设置串口1的中断门向量(IRQ4 信号)*/
+	set_intr_gate(0x23,rs2_interrupt);		/*设置串口2的中断门向量(IRQ3 信号)*/
+	init(tty_table[1].read_q.data);			/*初始化串行口1(.data是基口地址)*/
+	init(tty_table[2].read_q.data);			/*初始化串行口2*/
+	outb(inb_p(0x21)&0xE7,0x21);			/*允许主8259A响应IRQ3,IRQ4中断请求疑问,这里的port为什么是0x21  ---- OK*/
+
+	/*
+	 * outb(inb_p(0x21)&0xE7,0x21);解析:
+	 * inb_p(0x21):返回读取0x21的字节,即8259A芯片当前屏蔽字节,
+	 * 然后和0xE7相与,将位3和位4置0,即响应相对应的中断请求.这里就是IRQ3,IRQ4
+	 * */
 }
 
 /*

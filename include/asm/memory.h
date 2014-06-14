@@ -1,4 +1,8 @@
 /*
+ * 内存拷贝头文件,含有memcpy()嵌入式汇编宏函数
+ * */
+
+/*
  *  NOTE!!! memcpy(dest,src,n) assumes ds=es=normal data segment. This
  *  goes for all kernel functions (ds=es=kernel space, fs=local data,
  *  gs=null), as well as for all well-behaving user programs (ds=es=

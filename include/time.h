@@ -1,3 +1,7 @@
+/*
+ * 时间类型头文件,定义了进程中运行时间结构tm以及times()函数原型
+ * */
+
 #ifndef _TIME_H
 #define _TIME_H
 

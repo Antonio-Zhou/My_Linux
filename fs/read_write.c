@@ -1,4 +1,8 @@
 /*
+ * 用于实现文件读/  写和定位三个系统调用函数
+ * */
+
+/*
  *  linux/fs/read_write.c
  *
  *  (C) 1991  Linus Torvalds

@@ -1,4 +1,8 @@
 /*
+ * 将引用kernel/chr_drv/tty.c中的所有函数,实现字符设备的io控制功能
+ * */
+
+/*
  *  linux/fs/ioctl.c
  *
  *  (C) 1991  Linus Torvalds

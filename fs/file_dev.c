@@ -1,4 +1,8 @@
 /*
+ * 包含基于i节点和描述符结构的文件读写函数
+ * */
+
+/*
  *  linux/fs/file_dev.c
  *
  *  (C) 1991  Linus Torvalds

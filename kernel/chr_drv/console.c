@@ -1,4 +1,9 @@
 /*
+ * 主要包含控制台初始化程序和控制台写函数con_write().
+ * 用于被tty设备调用,还包括对显示器和键盘中断的初始化设置程序con_init()
+ * */
+
+/*
  *  linux/kernel/console.c
  *
  *  (C) 1991  Linus Torvalds
@@ -36,15 +41,16 @@
  * These are set up by the setup-routine at boot-time:
  */
 
-#define ORIG_X			(*(unsigned char *)0x90000)
-#define ORIG_Y			(*(unsigned char *)0x90001)
-#define ORIG_VIDEO_PAGE		(*(unsigned short *)0x90004)
-#define ORIG_VIDEO_MODE		((*(unsigned short *)0x90006) & 0xff)
-#define ORIG_VIDEO_COLS 	(((*(unsigned short *)0x90006) & 0xff00) >> 8)
-#define ORIG_VIDEO_LINES	(25)
-#define ORIG_VIDEO_EGA_AX	(*(unsigned short *)0x90008)
-#define ORIG_VIDEO_EGA_BX	(*(unsigned short *)0x9000a)
-#define ORIG_VIDEO_EGA_CX	(*(unsigned short *)0x9000c)
+/*强制类型装换:指针类型表明了该指针指向的位置到底存储了一个什么类型的数*/
+#define ORIG_X			(*(unsigned char *)0x90000)				/*初始光标列号*/
+#define ORIG_Y			(*(unsigned char *)0x90001)				/*初始光标行号*/
+#define ORIG_VIDEO_PAGE		(*(unsigned short *)0x90004)				/*显示页面*/
+#define ORIG_VIDEO_MODE		((*(unsigned short *)0x90006) & 0xff)			/*显示模式*/
+#define ORIG_VIDEO_COLS 	(((*(unsigned short *)0x90006) & 0xff00) >> 8)		/*字符列数 为什么不直接使用0x90007 ??*/
+#define ORIG_VIDEO_LINES	(25)							/*显示行数*/
+#define ORIG_VIDEO_EGA_AX	(*(unsigned short *)0x90008)				/*[??]*/
+#define ORIG_VIDEO_EGA_BX	(*(unsigned short *)0x9000a)				/*显示内存大小和色彩模式*/
+#define ORIG_VIDEO_EGA_CX	(*(unsigned short *)0x9000c)				/*显示卡特征参数*/
 
 #define VIDEO_TYPE_MDA		0x10	/* Monochrome Text Display	*/
 #define VIDEO_TYPE_CGA		0x11	/* CGA Display 			*/
@@ -614,32 +620,58 @@ void con_write(struct tty_struct * tty)
  * Reads the information preserved by setup.s to determine the current display
  * type and sets everything accordingly.
  */
+
+/*
+ * 功能:
+ * 	1.根据setup.s程序取得的系统硬件参数初始化设置几个本函数专用的静态全局变量
+ * 	2.根据显示卡模式和显示类型分别设置显示内存起始位置以及显示索引寄存器和显示数据寄存器端口号
+ * 	3.设置键盘中断陷阱描述符并复位对键盘中断的屏蔽位,以允许键盘开始工作
+ * 参数: 无
+ * 返回值: 无
+ * */
 void con_init(void)
 {
+	/*
+	 * 被保存在寄存器中,以便高效访问和操作
+	 * 若想指定寄存器(eax)，则"register unsigned char a asm("ax");"
+	 * */
 	register unsigned char a;
 	char *display_desc = "????";
 	char *display_ptr;
 
-	video_num_columns = ORIG_VIDEO_COLS;
-	video_size_row = video_num_columns * 2;
-	video_num_lines = ORIG_VIDEO_LINES;
-	video_page = ORIG_VIDEO_PAGE;
-	video_erase_char = 0x0720;
-	
+	/*根据系统硬件参数，初始化本函数专用的静态全局变量*/
+	video_num_columns = ORIG_VIDEO_COLS;		/*显示器显示字符列数*/
+	video_size_row = video_num_columns * 2;		/*每行字符需要使用字节数*/
+	video_num_lines = ORIG_VIDEO_LINES;		/*显示器显示字符行数*/
+	video_page = ORIG_VIDEO_PAGE;			/*当前显示页面*/
+	video_erase_char = 0x0720;			/*檫除字符0x0720(0x20是字符,0x07是属性)*/
+
+	/*
+	 * 根据显示模式设置所使用的显示内存起始位置以及显示寄存器索引端口号和显示寄存器数据端口号
+	 * 7:单色显示器
+	 * */
 	if (ORIG_VIDEO_MODE == 7)			/* Is this a monochrome display? */
 	{
-		video_mem_start = 0xb0000;
-		video_port_reg = 0x3b4;
-		video_port_val = 0x3b5;
+		video_mem_start = 0xb0000;		/*设置单显映像内存其实地址*/
+		video_port_reg = 0x3b4;			/*设置单显索引寄存器端口*/
+		video_port_val = 0x3b5;			/*设置单显数据寄存器端口*/
+
+		/*
+		 * 根据BIOS中断0x10功能0x12获得的显示模式信息,判断显示卡是单色还是彩色
+		 * bx寄存器返回值不等于0X10-->EGA卡
+		 * 注意: 这里使用了bx在调用中断int 0x10前后是否被改变的方法来判断卡的类型
+		 * 	改变-->显示卡支持Ah=12h功能调用,是EGA或VGA
+		 * 	不变-->显示卡不支持,是一般单色显示卡
+		 * */
 		if ((ORIG_VIDEO_EGA_BX & 0xff) != 0x10)
 		{
-			video_type = VIDEO_TYPE_EGAM;
-			video_mem_end = 0xb8000;
-			display_desc = "EGAm";
+			video_type = VIDEO_TYPE_EGAM;		/*设置显示卡类型(EGA单色)*/
+			video_mem_end = 0xb8000;		/*设置显示内存末端地址*/
+			display_desc = "EGAm";			/*设置显示描述字符串,在系统初始化期间会显示在屏幕右上角*/
 		}
 		else
 		{
-			video_type = VIDEO_TYPE_MDA;
+			video_type = VIDEO_TYPE_MDA;		/*设置显示卡类型(DMA单色)*/
 			video_mem_end	= 0xb2000;
 			display_desc = "*MDA";
 		}
@@ -664,7 +696,12 @@ void con_init(void)
 	}
 
 	/* Let the user known what kind of display driver we are using */
-	
+
+	/*
+	 * 显示描述字符串,直接将字符串写到显示内存的相应位置处
+	 * 方法是:将显示指针display_ptr指到屏幕第一行右端差4个字符处(-8)
+	 * 	 循环复制字符串的字符,并每复制1个字符串都空开1个属性字节
+	 * */
 	display_ptr = ((char *)video_mem_start) + video_size_row - 8;
 	while (*display_desc)
 	{
@@ -673,18 +710,20 @@ void con_init(void)
 	}
 	
 	/* Initialize the variables used for scrolling (mostly EGA/VGA)	*/
-	
-	origin	= video_mem_start;
-	scr_end	= video_mem_start + video_num_lines * video_size_row;
-	top	= 0;
-	bottom	= video_num_lines;
 
-	gotoxy(ORIG_X,ORIG_Y);
+	/*初始化用于滚屏的变量*/
+	origin	= video_mem_start;					/*滚屏起始显示内存地址*/
+	scr_end	= video_mem_start + video_num_lines * video_size_row;	/*结束地址*/
+	top	= 0;							/*最顶行号*/
+	bottom	= video_num_lines;					/*最底行号*/
+
+	/*初始化当前所在位置和光标对应的内存位置pos.并设置设置键盘中断0x21陷阱门描述符*/
+	gotoxy(ORIG_X,ORIG_Y);						/**/
 	set_trap_gate(0x21,&keyboard_interrupt);
-	outb_p(inb_p(0x21)&0xfd,0x21);
-	a=inb_p(0x61);
-	outb_p(a|0x80,0x61);
-	outb(a,0x61);
+	outb_p(inb_p(0x21)&0xfd,0x21);					/*取消对键盘中断的屏蔽,允许IRQ1*/
+	a=inb_p(0x61);							/*读取键盘端口0x61*/
+	outb_p(a|0x80,0x61);						/*设置禁止键盘工作(位7置位)*/
+	outb(a,0x61);							/*再允许键盘工作,用以复位键盘*/
 }
 /* from bsd-net-2: */
 

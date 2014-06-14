@@ -1,4 +1,8 @@
 /*
+ * 用于删除文件时释放文件所占用的设备数据空间
+ * */
+
+/*
  *  linux/fs/truncate.c
  *
  *  (C) 1991  Linus Torvalds

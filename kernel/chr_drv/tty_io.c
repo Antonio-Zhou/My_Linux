@@ -1,4 +1,9 @@
 /*
+ * 包含tty字符设备函数tty_read()和写函数tty_write(),
+ * 为文件系统提供上层访问的接口,还包括在串行中断处理过程中调用c函数do_tty_interrupt(),将会在中断类型是读字符的处理中调用
+ * */
+
+/*
  *  linux/kernel/tty_io.c
  *
  *  (C) 1991  Linus Torvalds
@@ -104,8 +109,8 @@ struct tty_queue * table_list[]={
 
 void tty_init(void)
 {
-	rs_init();
-	con_init();
+	rs_init();		/*串口中断初始化*/
+	con_init();		/*控制台中断初始化*/
 }
 
 void tty_intr(struct tty_struct * tty, int mask)

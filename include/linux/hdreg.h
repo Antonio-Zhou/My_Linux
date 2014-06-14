@@ -1,4 +1,8 @@
 /*
+ * 硬盘参数头文件,定义访问硬盘寄存器端口,状态码,分区表的信息
+ * */
+
+/*
  * This file contains some defines for the AT-hd-controller.
  * Various sources. Check out some definitions (see comments with
  * a ques).
