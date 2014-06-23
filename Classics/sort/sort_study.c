@@ -10,26 +10,26 @@
 #define FALSE	0
 
 typedef int DataType;
-int size;	/*数组的大小*/
+int size;		/*数组的大小*/
 int INC[4] = {5,3,2,1};	/*采用span=n/2,span=span/2方法获取增量表;该增量表的大小为4*/
 DataType arr[10] = {15, 76, 99, 56, 90, 6, 108, 44, 88, 66};
 
 /*初始化数组*/
 void InitArr(void)
 {
-	arr[0]=15;
-	arr[1]=76;
-	arr[2]=99;
-	arr[3]=56;
-	arr[4]=90;
-	arr[5]=6;
-	arr[6]=108;
-	arr[7]=44;
-	arr[8]=88;
-	arr[9]=66;
+	arr[0] = 15;
+	arr[1] = 76;
+	arr[2] = 99;
+	arr[3] = 56;
+	arr[4] = 90;
+	arr[5] = 6;
+	arr[6] = 108;
+	arr[7] = 44;
+	arr[8] = 88;
+	arr[9] = 66;
 }
 
-void swap(DataType *a,DataType *b)
+void swap(DataType *a, DataType *b)
 {
 	DataType temp;
 
@@ -39,39 +39,43 @@ void swap(DataType *a,DataType *b)
 }
 
 /*
- *	插入排序1:直接插入排序,升序
- *  算法思想：
- *  	将待排序的数据分为有序组（初使大小为1）和无序区，依次将无序中的第一个元素从右至左查找适当的插入位置，直到无序区的大小为1.
- */
+ * 插入排序1:直接插入排序,升序
+ * 算法思想:
+ * 	将待排序的数据分为有序组(初使大小为1)和无序区,依次将无序中的第一个元素从右至左查找适当的插入位置,直到无序区的大小为1.
+ * */
 void DirectInsertSort(DataType R[],int n)
 {
 	int i,j;
-	DataType temp;	/*用于保存无序组中的第1个元素(不妨称为参考值)*/
+	/*用于保存无序组中的第1个元素(不妨称为参考值)*/
+	DataType temp;
 
-	/*总共要进行n-1轮处理，每一轮的处理使得有序区的大小加1*/
+	/*总共要进行n-1轮处理,每一轮的处理使得有序区的大小加1*/
 	for (i=0; i<n-1; i++) {	
-		temp = R[i+1];	/*将当前无序组中的第一个元素保存，防止其在数据的比较、后移中被占位而丢失*/
+		/*将当前无序组中的第一个元素保存,防止其在数据的比较,后移中被占位而丢失*/
+		temp = R[i+1];
 		j = i;
-		/*从参考值的位置从右至左扫描，直至发现比参考值小的数或到达有序组的左端*/
+		/*从参考值的位置从右至左扫描,直至发现比参考值小的数或到达有序组的左端*/
 		while (R[j]>temp && j>-1)  
 			R[j+1] = R[j--]; /*如果扫描中发现比参考值大的数则将该数后移一位*/
-		R[j+1] = temp;	/*将参考值放入空位*/
+		R[j+1] = temp;		/*将参考值放入空位*/
 	}
 }
 
-/*	插入排序2:希尔排序，又称缩小增量排序
- *  算法描述：
- *  	设待排序的对象序列有 n 个对象，首先取一个整数 span<n 作为间隔，将全部对象分为span个子序列，所有距离为span的对象放在同一个序列中，在每一个子序列中分别施行直接插入排序
- *  	再缩小间隔span。如取span=span/2，重复上述的子序列划分和排序工作，直到最后取span为1为止。
- */
-void ShellSort(DataType R[],int n,int INC[],int NofINC)
+/*
+ * 插入排序2:希尔排序，又称缩小增量排序
+ * 算法描述:
+ * 	设待排序的对象序列有n个对象,
+ * 	首先取一个整数span<n作为间隔,将全部对象分为span个子序列,所有距离为span的对象放在同一个序列中,在每一个子序列中分别施行直接插入排序
+ * 	再缩小间隔span.如取span=span/2,重复上述的子序列划分和排序工作,直到最后取span为1为止.
+ * */
+void ShellSort(DataType R[], int n, int INC[], int NofINC)
 {
 	int i, j, k, m, span; /*span为增量(间隔)*/
 	DataType temp;
 
 	for (m=0; m<NofINC; m++) {
 		span = INC[m];	/*取本轮的增量*/
-		/*将原序列分为span个序列，分别为{R0，R0+span,…};{R1，R1+span,…};…{Rspan-1，Rspan-1+span,…};*/
+		/*将原序列分为span个序列,分别为{R0,R0+span,…};{R1,R1+span,…};…{Rspan-1,Rspan-1+span,…};*/
 		for (k=0; k<span; k++)
 			/*下面再对每一个子序列进行直接插入排序*/
 			for (i=k; i<n-span; i+=span) {
@@ -81,15 +85,15 @@ void ShellSort(DataType R[],int n,int INC[],int NofINC)
 					R[j+span] = R[j];
 					j -= span;
 				}
-				R[j+span]=temp;
+				R[j+span] = temp;
 			}
 	}
 }
 
 /*
  * 不带增量表的希尔排序
- */
-void ShellSort2(DataType R[],int n)	 
+ * */
+void ShellSort2(DataType R[], int n)
 {
 	int i, j, k, span; /*span为增量(间隔)*/ 
 	DataType temp;
@@ -112,23 +116,24 @@ void ShellSort2(DataType R[],int n)
 	}while(span != 1);
 }
 
-/*	选择排序1：直接选择排序
- *   算法思想：
- *	将待排序的数据元素分为有序(初始为空)和无序两组，依次将本轮无序的数据元素中值最小的数据元素与无序组中的第一个元素交换，直到无序组的元素个数为1。
- */
+/*
+ * 选择排序1:直接选择排序
+ * 算法思想:
+ * 	将待排序的数据元素分为有序(初始为空)和无序两组，依次将本轮无序的数据元素中值最小的数据元素与无序组中的第一个元素交换，直到无序组的元素个数为1。
+ * */
 void DirectSelectSort(DataType R[],int n)
 {
 	int i,j,min;	/*min用于记录无序组中值最小的数据元素的下标*/
 	DataType temp;
 
-	/*总共要进行n-1轮处理，每一轮的处理使得有序区的大小加1*/
+	/*总共要进行n-1轮处理,每一轮的处理使得有序区的大小加1*/
 	for (i=0; i<n-1; i++) {
 		min = i;  /*将无序组中的第一个元素的下标作为min的初值*/
-		/*从左至右，查找该无序组中的最小值，并用min保存其下标*/
+		/*从左至右,查找该无序组中的最小值,并用min保存其下标*/
 		for (j=i+1; j<n; j++)
 			if(R[j] < R[min]) 
 				min = j;
-		/*如果无序组中的最小数不是该无序组中的第1个元素，则将两数交换*/
+		/*如果无序组中的最小数不是该无序组中的第1个元素,则将两数交换*/
 		if (min != i) {
 			temp = R[i];
 			R[i] = R[min];
@@ -138,8 +143,8 @@ void DirectSelectSort(DataType R[],int n)
 }
 
 /*
- * 冒泡排序，降序
- */
+ * 冒泡排序,降序
+ * */
 void BubbleSort(DataType R[],int n)
 {
 	int i,j;
@@ -160,29 +165,29 @@ void BubbleSort(DataType R[],int n)
 
 /*
  * 快速排序
- */
+ * */
 void QuickSort(DataType R[],int low,int high)
 {
 	DataType temp;
 	int i = low,j = high;
-	temp = R[i]; /*基准，经过一轮排序后，该序列左边的数都不大于基准，右边的数都不小于基准*/
+	temp = R[i]; /*基准,经过一轮排序后,该序列左边的数都不大于基准,右边的数都不小于基准*/
 
 	do {
 		/*从右向左扫描*/
 		while ((R[j]>=temp) && (i<j))
 			j--;
-		/*右边存在小于基准的数，将它放在左边的空位*/
+		/*右边存在小于基准的数,将它放在左边的空位*/
 		if(i < j)	
 			R[i++] = R[j];
 		/*从左向右扫描*/
 		while((R[i]<=temp) && (i<j)) 
 			i++;
-		/*左边存在大于基准的数，将它放在右边的空位*/
+		/*左边存在大于基准的数,将它放在右边的空位*/
 		if(i < j)
 			R[j--] = R[i];
-	}while(i != j); /*当i==j时，结束一轮的排序*/
+	}while(i != j); /*当i==j时,结束一轮的排序*/
 
-	R[i] = temp; /*将基准放在恰当的位置，使该序列满足：左边的数都不大于基准，右边的数都不小于基准*/
+	R[i] = temp; /*将基准放在恰当的位置,使该序列满足:左边的数都不大于基准,右边的数都不小于基准*/
 	/*对基准左边序列进行递归*/
 	if(low < i-1)
 		QuickSort(R, low, i-1);
@@ -194,7 +199,7 @@ void QuickSort(DataType R[],int low,int high)
 /*
  * 归并排序
  * 合并一个序列中的两个有序的数据段Rs~Rm,Rm+1~Rh
- */
+ * */
 void Merge(DataType R[],int s,int m,int h)
 {
 	int i = s,j = m+1,k = 0;
@@ -237,7 +242,7 @@ void MergeSort(DataType R[],int s,int h)
 
 /*
  * 动态建立数组
- */
+ * */
 DataType *CreateArray()
 {
 	int i;
@@ -254,16 +259,15 @@ DataType *CreateArray()
 
 /*
  * 打印所有数据
- */
+ * */
 void PrintArray(DataType R[],int n)
 {
 	int i;
 
-	for(i=0; i<n; i++)
-	{
+	for (i=0; i<n; i++) {
 		printf("%d\t", *(R+i));
 		if(!(i+1) % 10)
-			printf("\r\n");
+			printf("\n");
 	}
 }
 
